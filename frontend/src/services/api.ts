@@ -1,7 +1,8 @@
 import axios, { AxiosError, AxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/store/authStore'
 
-const API_BASE_URL = '/api/v1'
+// 환경변수에서 API URL 가져오기 (프로덕션 배포 시 설정)
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api/v1'
 
 const api = axios.create({
   baseURL: API_BASE_URL,

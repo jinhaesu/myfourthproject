@@ -62,10 +62,23 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
+# CORS middleware - wildcard 패턴 지원
+def get_cors_origins():
+    """CORS origins 처리 - wildcard 패턴 지원"""
+    origins = []
+    for origin in settings.CORS_ORIGINS:
+        if "*" in origin:
+            # wildcard는 allow_origin_regex로 처리
+            continue
+        origins.append(origin)
+    return origins
+
+# CORS 설정
+cors_origins = get_cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=cors_origins if cors_origins else ["*"],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -97,6 +110,16 @@ app.include_router(api_router, prefix="/api/v1")
 @app.get("/health")
 async def health_check():
     """Health check endpoint for load balancers"""
+    return {
+        "status": "healthy",
+        "app": settings.APP_NAME,
+        "version": settings.APP_VERSION
+    }
+
+
+@app.get("/api/v1/health")
+async def api_health_check():
+    """API Health check endpoint"""
     return {
         "status": "healthy",
         "app": settings.APP_NAME,

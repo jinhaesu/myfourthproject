@@ -84,8 +84,12 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
 
-    # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8080"]
+    # CORS - 환경변수로 설정 가능 (쉼표로 구분)
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "https://*.vercel.app",
+    ]
 
     # Douzone Integration
     DOUZONE_API_URL: Optional[str] = None
