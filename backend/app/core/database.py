@@ -28,13 +28,21 @@ class Base(DeclarativeBase):
 
 
 # Create async engine
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    pool_size=settings.DATABASE_POOL_SIZE,
-    max_overflow=settings.DATABASE_MAX_OVERFLOW,
-    echo=settings.DEBUG,
-    future=True
-)
+# SQLite는 pool_size, max_overflow를 지원하지 않음
+if settings.DATABASE_URL.startswith("sqlite"):
+    engine = create_async_engine(
+        settings.DATABASE_URL,
+        echo=settings.DEBUG,
+        future=True
+    )
+else:
+    engine = create_async_engine(
+        settings.DATABASE_URL,
+        pool_size=settings.DATABASE_POOL_SIZE,
+        max_overflow=settings.DATABASE_MAX_OVERFLOW,
+        echo=settings.DEBUG,
+        future=True
+    )
 
 # Session factory
 async_session_factory = async_sessionmaker(
