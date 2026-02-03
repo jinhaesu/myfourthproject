@@ -1,0 +1,270 @@
+import axios, { AxiosError, AxiosRequestConfig } from 'axios'
+import { useAuthStore } from '@/store/authStore'
+
+const API_BASE_URL = '/api/v1'
+
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+})
+
+// Request interceptor - add auth token
+api.interceptors.request.use(
+  (config) => {
+    const token = useAuthStore.getState().accessToken
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+  },
+  (error) => Promise.reject(error)
+)
+
+// Response interceptor - handle token refresh
+api.interceptors.response.use(
+  (response) => response,
+  async (error: AxiosError) => {
+    const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean }
+
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true
+
+      const refreshToken = useAuthStore.getState().refreshToken
+
+      if (refreshToken) {
+        try {
+          const response = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+            refresh_token: refreshToken,
+          })
+
+          const { access_token } = response.data
+          useAuthStore.setState({ accessToken: access_token })
+
+          if (originalRequest.headers) {
+            originalRequest.headers.Authorization = `Bearer ${access_token}`
+          }
+
+          return api(originalRequest)
+        } catch (refreshError) {
+          useAuthStore.getState().logout()
+          window.location.href = '/login'
+        }
+      } else {
+        useAuthStore.getState().logout()
+        window.location.href = '/login'
+      }
+    }
+
+    return Promise.reject(error)
+  }
+)
+
+// Auth API
+export const authApi = {
+  login: (username: string, password: string, otpCode?: string) =>
+    api.post('/auth/login', { username, password, otp_code: otpCode }),
+
+  logout: () => api.post('/auth/logout'),
+
+  refresh: (refreshToken: string) =>
+    api.post('/auth/refresh', { refresh_token: refreshToken }),
+}
+
+// Vouchers API
+export const vouchersApi = {
+  list: (params?: {
+    page?: number
+    size?: number
+    departmentId?: number
+    status?: string
+    fromDate?: string
+    toDate?: string
+    search?: string
+  }) => api.get('/vouchers/', { params }),
+
+  get: (id: number) => api.get(`/vouchers/${id}`),
+
+  create: (data: any, userId: number) =>
+    api.post('/vouchers/', data, { params: { user_id: userId } }),
+
+  update: (id: number, data: any, userId: number) =>
+    api.patch(`/vouchers/${id}`, data, { params: { user_id: userId } }),
+
+  confirm: (id: number, userId: number, finalAccountId?: number) =>
+    api.post(`/vouchers/${id}/confirm`, null, {
+      params: { user_id: userId, final_account_id: finalAccountId },
+    }),
+
+  delete: (id: number) => api.delete(`/vouchers/${id}`),
+
+  getAccounts: (categoryId?: number, search?: string) =>
+    api.get('/vouchers/accounts/', { params: { category_id: categoryId, search } }),
+
+  importCardTransactions: (transactions: any[], departmentId: number, userId: number) =>
+    api.post('/vouchers/import/card', transactions, {
+      params: { department_id: departmentId, user_id: userId },
+    }),
+}
+
+// Approvals API
+export const approvalsApi = {
+  getPending: (userId: number, includeDelegated = true) =>
+    api.get('/approvals/pending', { params: { user_id: userId, include_delegated: includeDelegated } }),
+
+  get: (id: number) => api.get(`/approvals/${id}`),
+
+  create: (data: any, userId: number) =>
+    api.post('/approvals/', data, { params: { user_id: userId } }),
+
+  action: (id: number, actionData: any, userId: number) =>
+    api.post(`/approvals/${id}/action`, actionData, { params: { user_id: userId } }),
+
+  cancel: (id: number, userId: number, reason?: string) =>
+    api.post(`/approvals/${id}/cancel`, null, { params: { user_id: userId, reason } }),
+
+  getHistory: (id: number) => api.get(`/approvals/${id}/history`),
+
+  getLines: (departmentId?: number) =>
+    api.get('/approvals/lines/', { params: { department_id: departmentId } }),
+}
+
+// Treasury API
+export const treasuryApi = {
+  getCashPosition: () => api.get('/treasury/cash-position'),
+
+  getBankAccounts: () => api.get('/treasury/accounts/'),
+
+  autoReconcile: (bankAccountId?: number, fromDate?: string, toDate?: string) =>
+    api.post('/treasury/reconcile', null, {
+      params: { bank_account_id: bankAccountId, from_date: fromDate, to_date: toDate },
+    }),
+
+  getReceivables: (status?: string, customerName?: string) =>
+    api.get('/treasury/receivables/', { params: { status, customer_name: customerName } }),
+
+  getPayables: (status?: string, vendorName?: string) =>
+    api.get('/treasury/payables/', { params: { status, vendor_name: vendorName } }),
+
+  getArAging: (asOfDate?: string) =>
+    api.get('/treasury/receivables/aging', { params: { as_of_date: asOfDate } }),
+
+  getApAging: (asOfDate?: string) =>
+    api.get('/treasury/payables/aging', { params: { as_of_date: asOfDate } }),
+
+  getUpcomingPayments: (daysAhead = 30, bankAccountId?: number) =>
+    api.get('/treasury/payment-schedules/upcoming', {
+      params: { days_ahead: daysAhead, bank_account_id: bankAccountId },
+    }),
+}
+
+// Budget API
+export const budgetApi = {
+  list: (fiscalYear?: number, departmentId?: number, status?: string) =>
+    api.get('/budget/', { params: { fiscal_year: fiscalYear, department_id: departmentId, status } }),
+
+  get: (id: number) => api.get(`/budget/${id}`),
+
+  create: (data: any, userId: number) =>
+    api.post('/budget/', data, { params: { user_id: userId } }),
+
+  check: (departmentId: number, accountId: number, amount: number, voucherDate?: string) =>
+    api.post('/budget/check', null, {
+      params: { department_id: departmentId, account_id: accountId, amount, voucher_date: voucherDate },
+    }),
+
+  getSummary: (departmentId: number, fiscalYear?: number) =>
+    api.get(`/budget/summary/${departmentId}`, { params: { fiscal_year: fiscalYear } }),
+
+  getVsActual: (fiscalYear: number, departmentId?: number) =>
+    api.get('/budget/vs-actual', { params: { fiscal_year: fiscalYear, department_id: departmentId } }),
+}
+
+// AI API
+export const aiApi = {
+  classify: (data: {
+    description: string
+    merchantName?: string
+    merchantCategory?: string
+    amount: number
+    transactionTime?: string
+  }) =>
+    api.post('/ai/classify', {
+      description: data.description,
+      merchant_name: data.merchantName,
+      merchant_category: data.merchantCategory,
+      amount: data.amount,
+      transaction_time: data.transactionTime,
+    }),
+
+  submitFeedback: (data: any, userId: number) =>
+    api.post('/ai/feedback', data, { params: { user_id: userId } }),
+
+  getModelStatus: () => api.get('/ai/model-status'),
+
+  getCustomTags: (tagType?: string, departmentId?: number) =>
+    api.get('/ai/tags/', { params: { tag_type: tagType, department_id: departmentId } }),
+}
+
+// Forecast API
+export const forecastApi = {
+  getPL: (periodStart: string, periodEnd: string, departmentId?: number) =>
+    api.get('/forecast/pl', {
+      params: { period_start: periodStart, period_end: periodEnd, department_id: departmentId },
+    }),
+
+  getCashFlow: (forecastDays = 30, startDate?: string) =>
+    api.get('/forecast/cashflow', { params: { forecast_days: forecastDays, start_date: startDate } }),
+
+  runScenario: (data: any) => api.post('/forecast/scenario', data),
+
+  getDashboard: () => api.get('/forecast/dashboard'),
+}
+
+// Reports API
+export const reportsApi = {
+  exportVouchersExcel: (fromDate: string, toDate: string, departmentId?: number, status?: string) =>
+    api.get('/reports/vouchers/excel', {
+      params: { from_date: fromDate, to_date: toDate, department_id: departmentId, status },
+      responseType: 'blob',
+    }),
+
+  exportBudgetVsActualExcel: (fiscalYear: number, departmentId?: number) =>
+    api.get('/reports/budget-vs-actual/excel', {
+      params: { fiscal_year: fiscalYear, department_id: departmentId },
+      responseType: 'blob',
+    }),
+
+  exportAgingExcel: (reportType: 'receivables' | 'payables', asOfDate?: string) =>
+    api.get('/reports/aging/excel', {
+      params: { report_type: reportType, as_of_date: asOfDate },
+      responseType: 'blob',
+    }),
+
+  exportToDouzone: (fromDate: string, toDate: string, exportType = 'excel') =>
+    api.post('/reports/douzone-export', null, {
+      params: { from_date: fromDate, to_date: toDate, export_type: exportType },
+      responseType: 'blob',
+    }),
+}
+
+// Users API
+export const usersApi = {
+  get: (id: number) => api.get(`/users/${id}`),
+
+  create: (data: any) => api.post('/users/', data),
+
+  update: (id: number, data: any) => api.patch(`/users/${id}`, data),
+
+  changePassword: (id: number, currentPassword: string, newPassword: string) =>
+    api.post(`/users/${id}/change-password`, null, {
+      params: { current_password: currentPassword, new_password: newPassword },
+    }),
+
+  getDepartments: () => api.get('/users/departments/'),
+
+  getRoles: () => api.get('/users/roles/'),
+}
+
+export default api
