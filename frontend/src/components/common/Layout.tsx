@@ -14,6 +14,7 @@ import {
   XMarkIcon,
   ArrowRightOnRectangleIcon,
   UserCircleIcon,
+  UsersIcon,
 } from '@heroicons/react/24/outline'
 
 const navigation = [
@@ -25,6 +26,7 @@ const navigation = [
   { name: '예측/시뮬레이션', href: '/forecast', icon: ChartBarIcon },
   { name: '보고서', href: '/reports', icon: DocumentChartBarIcon },
   { name: '설정', href: '/settings', icon: Cog6ToothIcon },
+  { name: '관리자', href: '/admin', icon: UsersIcon },
 ]
 
 export default function Layout() {

@@ -14,7 +14,8 @@ from app.api.endpoints import (
     ai,
     forecast,
     reports,
-    admin
+    admin,
+    data_import
 )
 
 api_router = APIRouter()
@@ -87,4 +88,11 @@ api_router.include_router(
     admin.router,
     prefix="/admin",
     tags=["관리자"]
+)
+
+# 데이터 가져오기/내보내기
+api_router.include_router(
+    data_import.router,
+    prefix="/data",
+    tags=["데이터"]
 )

@@ -143,3 +143,114 @@ async def get_roles(
     service = UserService(db)
     roles = await service.get_roles()
     return [RoleResponse.model_validate(r) for r in roles]
+
+
+# ========== 관리자 API ==========
+
+@router.get("/admin/all", response_model=List[UserResponse])
+async def get_all_users(
+    db: AsyncSession = Depends(get_db)
+):
+    """모든 사용자 목록 조회 (관리자용)"""
+    service = UserService(db)
+    users = await service.get_all_users()
+    return [UserResponse.model_validate(u) for u in users]
+
+
+@router.get("/admin/pending", response_model=List[UserResponse])
+async def get_pending_users(
+    db: AsyncSession = Depends(get_db)
+):
+    """승인 대기 사용자 목록 조회"""
+    service = UserService(db)
+    users = await service.get_pending_users()
+    return [UserResponse.model_validate(u) for u in users]
+
+
+@router.post("/admin/{user_id}/approve")
+async def approve_user(
+    user_id: int,
+    employee_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """사용자 가입 승인"""
+    service = UserService(db)
+
+    try:
+        user = await service.approve_user(user_id, employee_id)
+        return {
+            "message": "사용자가 승인되었습니다.",
+            "user": UserResponse.model_validate(user)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/admin/{user_id}/reject")
+async def reject_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """사용자 가입 거절"""
+    service = UserService(db)
+
+    try:
+        await service.reject_user(user_id)
+        return {"message": "사용자 가입이 거절되었습니다."}
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/admin/{user_id}/activate")
+async def activate_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """사용자 활성화"""
+    service = UserService(db)
+
+    try:
+        user = await service.activate_user(user_id)
+        return {
+            "message": "사용자가 활성화되었습니다.",
+            "user": UserResponse.model_validate(user)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/admin/{user_id}/deactivate")
+async def deactivate_user(
+    user_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """사용자 비활성화"""
+    service = UserService(db)
+
+    try:
+        user = await service.deactivate_user(user_id)
+        return {
+            "message": "사용자가 비활성화되었습니다.",
+            "user": UserResponse.model_validate(user)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.patch("/admin/{user_id}/role")
+async def update_user_role(
+    user_id: int,
+    role_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """사용자 역할 변경"""
+    service = UserService(db)
+
+    try:
+        user = await service.update_user(user_id, role_id=role_id)
+        return {
+            "message": "사용자 역할이 변경되었습니다.",
+            "user": UserResponse.model_validate(user)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

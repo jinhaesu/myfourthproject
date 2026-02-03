@@ -4,12 +4,25 @@ Smart Finance Core - Authentication API
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 
 from app.core.database import get_db
 from app.schemas.user import UserLogin, Token, UserResponse
 from app.services.user_service import UserService
 
 router = APIRouter()
+
+
+class RegisterRequest(BaseModel):
+    """회원가입 요청"""
+    email: EmailStr
+    username: str
+    password: str
+    full_name: str
+    phone: Optional[str] = None
+    department_code: Optional[str] = None
+    position: Optional[str] = None
 
 
 @router.post("/login", response_model=Token)
@@ -98,3 +111,77 @@ async def logout(
     """로그아웃"""
     # 실제로는 세션 무효화 처리
     return {"message": "로그아웃 되었습니다."}
+
+
+@router.post("/register")
+async def register(
+    request: RegisterRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    회원가입 신청
+
+    - 신청 후 관리자 승인이 필요합니다
+    - 승인 후 로그인이 가능합니다
+    """
+    service = UserService(db)
+
+    # 이메일 중복 확인
+    existing = await service.get_by_email(request.email)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="이미 등록된 이메일입니다."
+        )
+
+    # 사용자명 중복 확인
+    existing = await service.get_by_username(request.username)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="이미 사용 중인 사용자명입니다."
+        )
+
+    # 회원가입 신청 (is_active=False로 생성, 관리자 승인 필요)
+    user = await service.create_pending_user(
+        email=request.email,
+        username=request.username,
+        password=request.password,
+        full_name=request.full_name,
+        phone=request.phone,
+        department_code=request.department_code,
+        position=request.position
+    )
+
+    return {
+        "message": "회원가입 신청이 완료되었습니다. 관리자 승인 후 로그인이 가능합니다.",
+        "user_id": user.id,
+        "email": user.email
+    }
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_current_user_info(
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """현재 로그인한 사용자 정보 조회"""
+    # Authorization 헤더에서 토큰 추출
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="인증이 필요합니다."
+        )
+
+    token = auth_header.split(" ")[1]
+    service = UserService(db)
+    user = await service.get_user_from_token(token)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않은 토큰입니다."
+        )
+
+    return user

@@ -321,3 +321,148 @@ class UserService:
         """역할 목록 조회"""
         result = await self.db.execute(select(Role))
         return result.scalars().all()
+
+    async def get_by_email(self, email: str) -> Optional[User]:
+        """이메일로 사용자 조회"""
+        result = await self.db.execute(
+            select(User).where(User.email == email)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_by_username(self, username: str) -> Optional[User]:
+        """사용자명으로 사용자 조회"""
+        result = await self.db.execute(
+            select(User).where(User.username == username)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_pending_user(
+        self,
+        email: str,
+        username: str,
+        password: str,
+        full_name: str,
+        phone: Optional[str] = None,
+        department_code: Optional[str] = None,
+        position: Optional[str] = None
+    ) -> User:
+        """승인 대기 중인 사용자 생성 (회원가입 신청)"""
+        import uuid
+
+        # 부서 조회
+        department_id = None
+        if department_code:
+            dept_result = await self.db.execute(
+                select(Department).where(Department.code == department_code)
+            )
+            dept = dept_result.scalar_one_or_none()
+            if dept:
+                department_id = dept.id
+
+        # 기본 역할 조회 (일반직원)
+        role_result = await self.db.execute(
+            select(Role).where(Role.role_type == "staff")
+        )
+        role = role_result.scalar_one_or_none()
+
+        # 임시 사번 생성
+        temp_employee_id = f"PENDING-{uuid.uuid4().hex[:8].upper()}"
+
+        user = User(
+            employee_id=temp_employee_id,
+            email=email,
+            username=username,
+            hashed_password=get_password_hash(password),
+            full_name=full_name,
+            phone=phone,
+            position=position,
+            department_id=department_id,
+            role_id=role.id if role else None,
+            is_active=False,  # 승인 전까지 비활성
+            is_superuser=False,
+            password_changed_at=datetime.utcnow()
+        )
+
+        self.db.add(user)
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
+
+    async def get_user_from_token(self, token: str) -> Optional[User]:
+        """토큰에서 사용자 정보 추출"""
+        payload = decode_token(token)
+        if not payload:
+            return None
+
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+
+        return await self.db.get(User, int(user_id))
+
+    async def get_pending_users(self) -> List[User]:
+        """승인 대기 중인 사용자 목록 조회"""
+        result = await self.db.execute(
+            select(User).where(User.is_active == False)
+        )
+        return result.scalars().all()
+
+    async def approve_user(self, user_id: int, employee_id: str) -> User:
+        """사용자 승인"""
+        user = await self.db.get(User, user_id)
+        if not user:
+            raise ValueError("사용자를 찾을 수 없습니다.")
+
+        user.is_active = True
+        user.employee_id = employee_id
+        user.updated_at = datetime.utcnow()
+
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
+
+    async def reject_user(self, user_id: int) -> bool:
+        """사용자 가입 거절 (삭제)"""
+        user = await self.db.get(User, user_id)
+        if not user:
+            raise ValueError("사용자를 찾을 수 없습니다.")
+
+        if user.is_active:
+            raise ValueError("이미 활성화된 사용자입니다.")
+
+        await self.db.delete(user)
+        await self.db.commit()
+        return True
+
+    async def get_all_users(self) -> List[User]:
+        """모든 사용자 목록 조회"""
+        result = await self.db.execute(
+            select(User).order_by(User.created_at.desc())
+        )
+        return result.scalars().all()
+
+    async def deactivate_user(self, user_id: int) -> User:
+        """사용자 비활성화"""
+        user = await self.db.get(User, user_id)
+        if not user:
+            raise ValueError("사용자를 찾을 수 없습니다.")
+
+        user.is_active = False
+        user.updated_at = datetime.utcnow()
+
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
+
+    async def activate_user(self, user_id: int) -> User:
+        """사용자 활성화"""
+        user = await self.db.get(User, user_id)
+        if not user:
+            raise ValueError("사용자를 찾을 수 없습니다.")
+
+        user.is_active = True
+        user.updated_at = datetime.utcnow()
+
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user

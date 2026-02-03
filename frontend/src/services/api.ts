@@ -70,6 +70,18 @@ export const authApi = {
 
   refresh: (refreshToken: string) =>
     api.post('/auth/refresh', { refresh_token: refreshToken }),
+
+  register: (data: {
+    email: string
+    username: string
+    password: string
+    full_name: string
+    phone?: string
+    department_code?: string
+    position?: string
+  }) => api.post('/auth/register', data),
+
+  getMe: () => api.get('/auth/me'),
 }
 
 // Vouchers API
@@ -265,6 +277,52 @@ export const usersApi = {
   getDepartments: () => api.get('/users/departments/'),
 
   getRoles: () => api.get('/users/roles/'),
+
+  // Admin APIs
+  getAllUsers: () => api.get('/users/admin/all'),
+
+  getPendingUsers: () => api.get('/users/admin/pending'),
+
+  approveUser: (userId: number, employeeId: string) =>
+    api.post(`/users/admin/${userId}/approve`, null, { params: { employee_id: employeeId } }),
+
+  rejectUser: (userId: number) => api.post(`/users/admin/${userId}/reject`),
+
+  activateUser: (userId: number) => api.post(`/users/admin/${userId}/activate`),
+
+  deactivateUser: (userId: number) => api.post(`/users/admin/${userId}/deactivate`),
+
+  updateUserRole: (userId: number, roleId: number) =>
+    api.patch(`/users/admin/${userId}/role`, null, { params: { role_id: roleId } }),
+}
+
+// Data Import/Export API
+export const dataApi = {
+  uploadVouchers: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/data/vouchers/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
+  downloadVouchers: (params?: { start_date?: string; end_date?: string; status_filter?: string }) =>
+    api.get('/data/vouchers/download', { params, responseType: 'blob' }),
+
+  downloadTemplate: () =>
+    api.get('/data/vouchers/template', { responseType: 'blob' }),
+
+  downloadAccountsList: () =>
+    api.get('/data/accounts/download', { responseType: 'blob' }),
+
+  uploadHistoricalData: (file: File, dataType: string) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/data/historical-data/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params: { data_type: dataType },
+    })
+  },
 }
 
 export default api
