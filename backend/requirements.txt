@@ -36,6 +36,7 @@ redis==5.0.1
 
 # Monitoring & Logging
 loguru==0.7.2
+prometheus-fastapi-instrumentator==6.1.0
 
 # Utilities
 aiofiles==23.2.1
