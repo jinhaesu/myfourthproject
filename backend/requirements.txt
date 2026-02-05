@@ -1,4 +1,4 @@
-# Smart Finance Core - Backend Dependencies
+# Smart Finance Core - Backend Dependencies (Lightweight)
 # FastAPI & Web Framework
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
@@ -13,13 +13,10 @@ asyncpg==0.29.0
 alembic==1.13.1
 psycopg2-binary==2.9.9
 
-# AI & Machine Learning
-scikit-learn==1.4.0
+# Basic Data Processing (lightweight)
 pandas==2.2.0
 numpy==1.26.3
-torch==2.1.2
-transformers==4.37.0
-prophet==1.1.5
+scikit-learn==1.4.0
 joblib==1.3.2
 
 # Data Processing
@@ -28,34 +25,19 @@ xlsxwriter==3.1.9
 python-dateutil==2.8.2
 pytz==2024.1
 
-# OCR & Document Processing
-pytesseract==0.3.10
-pdf2image==1.17.0
-Pillow==10.2.0
-
 # Security & Validation
 pydantic==2.5.3
 pydantic-settings==2.1.0
 python-dotenv==1.0.0
 cryptography==42.0.0
 
-# Caching & Task Queue
+# Caching
 redis==5.0.1
-celery==5.3.6
 
 # Monitoring & Logging
 loguru==0.7.2
-prometheus-fastapi-instrumentator==6.1.0
-
-# Testing
-pytest==7.4.4
-pytest-asyncio==0.23.3
-pytest-cov==4.1.0
-httpx==0.26.0
-
-# AWS S3 (for archiving)
-boto3==1.34.14
 
 # Utilities
 aiofiles==23.2.1
 orjson==3.9.12
+Pillow==10.2.0
