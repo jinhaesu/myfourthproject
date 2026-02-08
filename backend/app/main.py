@@ -7,17 +7,35 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
+import sys
+import os
 
-from app.core.config import settings
-from app.core.database import init_db, close_db
-from app.api.router import api_router
-
-# Logging setup
+# Logging setup - 먼저 설정
 logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
+    level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# 시작 시 환경 정보 출력
+logger.info(f"Python version: {sys.version}")
+logger.info(f"Working directory: {os.getcwd()}")
+logger.info(f"PORT env: {os.environ.get('PORT', 'not set')}")
+
+try:
+    from app.core.config import settings
+    logger.info("Config loaded successfully")
+except Exception as e:
+    logger.error(f"Failed to load config: {e}")
+    raise
+
+try:
+    from app.core.database import init_db, close_db
+    logger.info("Database module loaded")
+except Exception as e:
+    logger.error(f"Failed to load database module: {e}")
+    init_db = None
+    close_db = None
 
 
 @asynccontextmanager
@@ -25,20 +43,22 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
     logger.info("Starting Smart Finance Core...")
-    try:
-        await init_db()
-        logger.info("Database initialized")
-    except Exception as e:
-        logger.warning(f"Database initialization failed: {e}")
-        logger.warning("Application will start without database - configure DATABASE_URL")
+    if init_db:
+        try:
+            await init_db()
+            logger.info("Database initialized")
+        except Exception as e:
+            logger.warning(f"Database initialization failed: {e}")
+            logger.warning("Application will start without database")
     yield
     # Shutdown
     logger.info("Shutting down Smart Finance Core...")
-    try:
-        await close_db()
-        logger.info("Database connections closed")
-    except Exception as e:
-        logger.warning(f"Error closing database: {e}")
+    if close_db:
+        try:
+            await close_db()
+            logger.info("Database connections closed")
+        except Exception as e:
+            logger.warning(f"Error closing database: {e}")
 
 
 # Create FastAPI application
@@ -109,7 +129,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # Include API router
-app.include_router(api_router, prefix="/api/v1")
+try:
+    from app.api.router import api_router
+    app.include_router(api_router, prefix="/api/v1")
+    logger.info("API router loaded successfully")
+except Exception as e:
+    logger.error(f"Failed to load API router: {e}")
+    logger.error("API endpoints will not be available")
 
 
 # Health check endpoint
