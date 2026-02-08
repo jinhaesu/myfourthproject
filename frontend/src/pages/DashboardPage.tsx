@@ -4,7 +4,6 @@ import { useAuthStore } from '@/store/authStore'
 import {
   BanknotesIcon,
   ArrowTrendingUpIcon,
-  ArrowTrendingDownIcon,
   ClipboardDocumentCheckIcon,
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline'
