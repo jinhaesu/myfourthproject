@@ -15,7 +15,8 @@ from app.api.endpoints import (
     forecast,
     reports,
     admin,
-    data_import
+    data_import,
+    ai_classification
 )
 
 api_router = APIRouter()
@@ -95,4 +96,10 @@ api_router.include_router(
     data_import.router,
     prefix="/data",
     tags=["데이터"]
+)
+
+# AI 계정 분류 (학습 및 자동분류)
+api_router.include_router(
+    ai_classification.router,
+    tags=["AI 계정분류"]
 )

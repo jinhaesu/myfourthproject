@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from prometheus_fastapi_instrumentator import Instrumentator
 import logging
 
 from app.core.config import settings
@@ -57,8 +56,8 @@ app = FastAPI(
 * Frontend: React.js with TypeScript
     """,
     version=settings.APP_VERSION,
-    docs_url="/docs" if settings.DEBUG else None,
-    redoc_url="/redoc" if settings.DEBUG else None,
+    docs_url="/docs",
+    redoc_url="/redoc",
     lifespan=lifespan
 )
 
@@ -84,9 +83,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Prometheus metrics
+# Production logging
 if not settings.DEBUG:
-    Instrumentator().instrument(app).expose(app)
+    logger.info("Running in production mode")
 
 
 # Global exception handler

@@ -15,11 +15,13 @@ import {
   ArrowRightOnRectangleIcon,
   UserCircleIcon,
   UsersIcon,
+  CpuChipIcon,
 } from '@heroicons/react/24/outline'
 
 const navigation = [
   { name: '대시보드', href: '/dashboard', icon: HomeIcon },
   { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
+  { name: 'AI 분류', href: '/ai-classification', icon: CpuChipIcon },
   { name: '결재함', href: '/approvals', icon: ClipboardDocumentCheckIcon },
   { name: '자금관리', href: '/treasury', icon: BanknotesIcon },
   { name: '예산관리', href: '/budget', icon: CalculatorIcon },

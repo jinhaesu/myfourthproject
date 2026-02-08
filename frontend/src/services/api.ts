@@ -297,6 +297,67 @@ export const usersApi = {
     api.patch(`/users/admin/${userId}/role`, null, { params: { role_id: roleId } }),
 }
 
+// AI Classification API (학습 및 자동분류)
+export const aiClassificationApi = {
+  // 상태 조회
+  getStatus: () => api.get('/ai-classification/status'),
+
+  // 계정과목 목록
+  getAccounts: () => api.get('/ai-classification/accounts'),
+
+  // 과거 데이터 업로드 (학습용)
+  uploadHistorical: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/ai-classification/upload-historical', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
+  // 모델 학습
+  trainModel: (minSamples = 50) =>
+    api.post('/ai-classification/train', null, { params: { min_samples: minSamples } }),
+
+  // 단일 항목 분류
+  classifyItems: (items: Array<{
+    id?: string
+    description: string
+    merchant_name?: string
+    amount?: number
+    transaction_date?: string
+  }>) => api.post('/ai-classification/classify', { items }),
+
+  // 파일 분류
+  classifyFile: (file: File) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/ai-classification/classify-file', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
+  // 피드백 제출
+  submitFeedback: (items: Array<{
+    description: string
+    merchant_name?: string
+    amount?: number
+    predicted_account_code: string
+    actual_account_code: string
+    correction_reason?: string
+  }>) => api.post('/ai-classification/feedback', { items }),
+
+  // 템플릿 다운로드
+  downloadTemplate: (templateType: 'historical' | 'classify' = 'historical') =>
+    api.get('/ai-classification/template', {
+      params: { template_type: templateType },
+      responseType: 'blob',
+    }),
+
+  // 학습 이력
+  getTrainingHistory: (limit = 10) =>
+    api.get('/ai-classification/training-history', { params: { limit } }),
+}
+
 // Data Import/Export API
 export const dataApi = {
   uploadVouchers: (file: File) => {
