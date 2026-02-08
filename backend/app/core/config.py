@@ -22,10 +22,10 @@ class Settings(BaseSettings):
     PORT: int = 8000
     WORKERS: int = 4
 
-    # Database
+    # Database (SQLite를 기본값으로 사용, 프로덕션에서는 PostgreSQL 설정 필요)
     DATABASE_URL: str = Field(
-        default="postgresql+asyncpg://postgres:password@localhost:5432/smartfinance",
-        description="PostgreSQL connection string"
+        default="sqlite+aiosqlite:///./smartfinance.db",
+        description="Database connection string"
     )
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
