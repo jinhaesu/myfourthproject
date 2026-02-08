@@ -187,7 +187,6 @@ export default function AIClassificationPage() {
 
   // Update classification result
   const updateClassificationResult = (index: number, accountCode: string) => {
-    const account = accounts.find((a) => a.code === accountCode)
     setClassificationResults((prev) =>
       prev.map((r, i) =>
         i === index
