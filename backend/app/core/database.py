@@ -5,10 +5,12 @@ PostgreSQL 데이터베이스 연결 및 세션 관리
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import MetaData
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
+import logging
+import os
 
-from app.core.config import settings
+logger = logging.getLogger(__name__)
 
 # Naming convention for constraints
 convention = {
@@ -27,34 +29,54 @@ class Base(DeclarativeBase):
     metadata = metadata
 
 
-# Create async engine
-# SQLite는 pool_size, max_overflow를 지원하지 않음
-if settings.DATABASE_URL.startswith("sqlite"):
-    engine = create_async_engine(
-        settings.DATABASE_URL,
-        echo=settings.DEBUG,
-        future=True
-    )
-else:
-    engine = create_async_engine(
-        settings.DATABASE_URL,
-        pool_size=settings.DATABASE_POOL_SIZE,
-        max_overflow=settings.DATABASE_MAX_OVERFLOW,
-        echo=settings.DEBUG,
-        future=True
-    )
+# 데이터베이스 URL 가져오기 (환경변수 우선)
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./smartfinance.db")
 
-# Session factory
-async_session_factory = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autoflush=False
-)
+# Railway PostgreSQL URL 변환 (postgres:// -> postgresql+asyncpg://)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+logger.info(f"Database URL scheme: {DATABASE_URL.split('://')[0] if '://' in DATABASE_URL else 'unknown'}")
+
+# Create async engine
+engine: Optional[any] = None
+async_session_factory: Optional[any] = None
+
+try:
+    if DATABASE_URL.startswith("sqlite"):
+        engine = create_async_engine(
+            DATABASE_URL,
+            echo=False,
+            future=True
+        )
+    else:
+        engine = create_async_engine(
+            DATABASE_URL,
+            pool_size=5,
+            max_overflow=10,
+            echo=False,
+            future=True
+        )
+
+    async_session_factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False
+    )
+    logger.info("Database engine created successfully")
+except Exception as e:
+    logger.error(f"Failed to create database engine: {e}")
+    engine = None
+    async_session_factory = None
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for getting database session"""
+    if async_session_factory is None:
+        raise RuntimeError("Database not configured")
     async with async_session_factory() as session:
         try:
             yield session
@@ -69,6 +91,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 @asynccontextmanager
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
     """Context manager for database session"""
+    if async_session_factory is None:
+        raise RuntimeError("Database not configured")
     async with async_session_factory() as session:
         try:
             yield session
@@ -82,10 +106,14 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
 
 async def init_db():
     """Initialize database tables"""
+    if engine is None:
+        logger.warning("Database engine not available, skipping init")
+        return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
 
 async def close_db():
     """Close database connections"""
-    await engine.dispose()
+    if engine:
+        await engine.dispose()
