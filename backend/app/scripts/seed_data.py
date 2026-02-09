@@ -13,7 +13,7 @@ from datetime import datetime
 from sqlalchemy import select
 from app.core.database import async_session_factory, init_db
 from app.core.security import get_password_hash
-from app.models.user import User, Role, Department
+from app.models.user import User, Role, Department, RoleType
 from app.models.accounting import Account, AccountCategory
 
 
@@ -29,7 +29,7 @@ async def create_roles():
         roles = [
             Role(
                 name="관리자",
-                role_type="admin",
+                role_type=RoleType.ADMIN,
                 description="시스템 전체 관리 권한",
                 can_create_voucher=True,
                 can_approve_voucher=True,
@@ -45,7 +45,7 @@ async def create_roles():
             ),
             Role(
                 name="재무담당자",
-                role_type="finance",
+                role_type=RoleType.FINANCE_MANAGER,
                 description="재무/회계 업무 담당",
                 can_create_voucher=True,
                 can_approve_voucher=True,
@@ -61,7 +61,7 @@ async def create_roles():
             ),
             Role(
                 name="팀장",
-                role_type="manager",
+                role_type=RoleType.TEAM_LEADER,
                 description="팀 단위 결재 권한",
                 can_create_voucher=True,
                 can_approve_voucher=True,
@@ -77,7 +77,7 @@ async def create_roles():
             ),
             Role(
                 name="일반직원",
-                role_type="staff",
+                role_type=RoleType.EMPLOYEE,
                 description="기본 사용자 권한",
                 can_create_voucher=True,
                 can_approve_voucher=False,
