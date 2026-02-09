@@ -241,15 +241,23 @@ async def seed_database(secret: str):
                 await db.commit()
                 logger.info("Departments created")
 
-            # 관리자 계정 생성
+            # 관리자 계정 생성 또는 업데이트
             result = await db.execute(select(User).where(User.email == "admin@smartfinance.com"))
-            if not result.scalar_one_or_none():
-                # 역할과 부서 조회
-                role_result = await db.execute(select(Role).where(Role.name == "관리자"))
-                admin_role = role_result.scalar_one()
-                dept_result = await db.execute(select(Department).where(Department.code == "FIN"))
-                fin_dept = dept_result.scalar_one()
+            existing_user = result.scalar_one_or_none()
 
+            # 역할과 부서 조회
+            role_result = await db.execute(select(Role).where(Role.name == "관리자"))
+            admin_role = role_result.scalar_one()
+            dept_result = await db.execute(select(Department).where(Department.code == "FIN"))
+            fin_dept = dept_result.scalar_one()
+
+            if existing_user:
+                # 기존 사용자 비밀번호 업데이트
+                existing_user.hashed_password = get_password_hash("Admin123!@#")
+                existing_user.is_active = True
+                await db.commit()
+                logger.info("Admin user password updated")
+            else:
                 admin_user = User(
                     email="admin@smartfinance.com",
                     username="admin",
