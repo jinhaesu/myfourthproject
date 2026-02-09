@@ -128,7 +128,7 @@ class Voucher(Base):
     description: Mapped[str] = mapped_column(String(500))  # 적요
 
     # Transaction source
-    transaction_type: Mapped[TransactionType] = mapped_column(SQLEnum(TransactionType))
+    transaction_type: Mapped[TransactionType] = mapped_column(SQLEnum(TransactionType, native_enum=False))
     external_ref: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True
     )  # 외부 참조번호 (카드승인번호 등)
@@ -143,12 +143,12 @@ class Voucher(Base):
 
     # Status
     status: Mapped[VoucherStatus] = mapped_column(
-        SQLEnum(VoucherStatus), default=VoucherStatus.DRAFT
+        SQLEnum(VoucherStatus, native_enum=False), default=VoucherStatus.DRAFT
     )
 
     # AI Classification
     ai_classification_status: Mapped[Optional[AIClassificationStatus]] = mapped_column(
-        SQLEnum(AIClassificationStatus), nullable=True
+        SQLEnum(AIClassificationStatus, native_enum=False), nullable=True
     )
     ai_confidence_score: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(5, 4), nullable=True

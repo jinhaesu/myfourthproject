@@ -63,7 +63,7 @@ class AIClassificationLog(Base):
         Integer, ForeignKey("accounts.id"), nullable=True
     )
     classification_result: Mapped[ClassificationResult] = mapped_column(
-        SQLEnum(ClassificationResult), default=ClassificationResult.UNKNOWN
+        SQLEnum(ClassificationResult, native_enum=False), default=ClassificationResult.UNKNOWN
     )
 
     # User feedback

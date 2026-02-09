@@ -70,7 +70,7 @@ class BankAccount(Base):
     account_holder: Mapped[str] = mapped_column(String(100))  # 예금주
 
     # Type
-    account_type: Mapped[BankAccountType] = mapped_column(SQLEnum(BankAccountType))
+    account_type: Mapped[BankAccountType] = mapped_column(SQLEnum(BankAccountType, native_enum=False))
     account_alias: Mapped[str] = mapped_column(String(100))  # 계좌 별칭
 
     # Balance
@@ -128,7 +128,7 @@ class BankTransaction(Base):
     # Transaction info
     transaction_date: Mapped[date] = mapped_column(Date, index=True)
     transaction_time: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)  # HH:MM:SS
-    direction: Mapped[TransactionDirection] = mapped_column(SQLEnum(TransactionDirection))
+    direction: Mapped[TransactionDirection] = mapped_column(SQLEnum(TransactionDirection, native_enum=False))
 
     # Amount
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
@@ -146,7 +146,7 @@ class BankTransaction(Base):
 
     # Reconciliation
     reconciliation_status: Mapped[ReconciliationStatus] = mapped_column(
-        SQLEnum(ReconciliationStatus), default=ReconciliationStatus.UNMATCHED
+        SQLEnum(ReconciliationStatus, native_enum=False), default=ReconciliationStatus.UNMATCHED
     )
     matched_voucher_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("vouchers.id"), nullable=True
@@ -210,7 +210,7 @@ class Receivable(Base):
 
     # Status
     status: Mapped[ReceivableStatus] = mapped_column(
-        SQLEnum(ReceivableStatus), default=ReceivableStatus.PENDING
+        SQLEnum(ReceivableStatus, native_enum=False), default=ReceivableStatus.PENDING
     )
 
     # Virtual account for this receivable
@@ -268,7 +268,7 @@ class Payable(Base):
 
     # Status
     status: Mapped[PayableStatus] = mapped_column(
-        SQLEnum(PayableStatus), default=PayableStatus.PENDING
+        SQLEnum(PayableStatus, native_enum=False), default=PayableStatus.PENDING
     )
 
     # Payment info

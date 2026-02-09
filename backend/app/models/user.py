@@ -14,15 +14,15 @@ import enum
 from app.core.database import Base
 
 
-class RoleType(enum.Enum):
+class RoleType(str, enum.Enum):
     """사용자 역할 유형"""
-    ADMIN = "admin"  # 시스템 관리자
-    CFO = "cfo"  # 재무 책임자
-    FINANCE_MANAGER = "finance_manager"  # 재무팀장
-    FINANCE_STAFF = "finance_staff"  # 재무팀원
-    DEPARTMENT_HEAD = "department_head"  # 부서장
-    TEAM_LEADER = "team_leader"  # 팀장
-    EMPLOYEE = "employee"  # 일반 직원
+    ADMIN = "ADMIN"  # 시스템 관리자
+    CFO = "CFO"  # 재무 책임자
+    FINANCE_MANAGER = "FINANCE_MANAGER"  # 재무팀장
+    FINANCE_STAFF = "FINANCE_STAFF"  # 재무팀원
+    DEPARTMENT_HEAD = "DEPARTMENT_HEAD"  # 부서장
+    TEAM_LEADER = "TEAM_LEADER"  # 팀장
+    EMPLOYEE = "EMPLOYEE"  # 일반 직원
 
 
 class User(Base):
@@ -88,7 +88,7 @@ class Role(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(100), unique=True)
-    role_type: Mapped[RoleType] = mapped_column(SQLEnum(RoleType))
+    role_type: Mapped[RoleType] = mapped_column(SQLEnum(RoleType, native_enum=False))
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Permissions (JSON-like flags)

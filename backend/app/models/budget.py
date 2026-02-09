@@ -43,7 +43,7 @@ class Budget(Base):
     # Period
     fiscal_year: Mapped[int] = mapped_column(Integer, index=True)  # 회계연도
     period_type: Mapped[BudgetPeriodType] = mapped_column(
-        SQLEnum(BudgetPeriodType), default=BudgetPeriodType.YEARLY
+        SQLEnum(BudgetPeriodType, native_enum=False), default=BudgetPeriodType.YEARLY
     )
     period_number: Mapped[int] = mapped_column(Integer, default=1)  # 월/분기 번호
 
@@ -60,7 +60,7 @@ class Budget(Base):
 
     # Status
     status: Mapped[BudgetStatus] = mapped_column(
-        SQLEnum(BudgetStatus), default=BudgetStatus.DRAFT
+        SQLEnum(BudgetStatus, native_enum=False), default=BudgetStatus.DRAFT
     )
 
     # Alert thresholds

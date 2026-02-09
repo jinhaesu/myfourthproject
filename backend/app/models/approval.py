@@ -61,7 +61,7 @@ class ApprovalRequest(Base):
 
     # Status
     status: Mapped[ApprovalStatus] = mapped_column(
-        SQLEnum(ApprovalStatus), default=ApprovalStatus.PENDING
+        SQLEnum(ApprovalStatus, native_enum=False), default=ApprovalStatus.PENDING
     )
     current_step: Mapped[int] = mapped_column(Integer, default=1)  # 현재 결재 단계
     total_steps: Mapped[int] = mapped_column(Integer, default=1)  # 총 결재 단계
@@ -120,12 +120,12 @@ class ApprovalStep(Base):
 
     # Status
     status: Mapped[ApprovalStatus] = mapped_column(
-        SQLEnum(ApprovalStatus), default=ApprovalStatus.PENDING
+        SQLEnum(ApprovalStatus, native_enum=False), default=ApprovalStatus.PENDING
     )
 
     # Action
     action_type: Mapped[Optional[ApprovalActionType]] = mapped_column(
-        SQLEnum(ApprovalActionType), nullable=True
+        SQLEnum(ApprovalActionType, native_enum=False), nullable=True
     )
     action_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 결재 의견
