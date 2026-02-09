@@ -10,11 +10,51 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from datetime import datetime
-from sqlalchemy import select
-from app.core.database import async_session_factory, init_db
+from sqlalchemy import select, text
+from app.core.database import async_session_factory, init_db, engine
 from app.core.security import get_password_hash
 from app.models.user import User, Role, Department, RoleType
 from app.models.accounting import Account, AccountCategory
+
+
+async def reset_database():
+    """데이터베이스 초기화 - 모든 테이블과 enum 타입 삭제"""
+    print("🔧 데이터베이스 초기화 중...")
+
+    async with engine.begin() as conn:
+        # 모든 테이블 삭제
+        tables = [
+            "login_attempts", "data_snapshots", "audit_logs", "custom_tags",
+            "ai_model_versions", "ai_training_data", "ai_classification_logs",
+            "budget_usage", "budget_lines", "budgets",
+            "reconciliation_matches", "payment_schedules", "payables", "receivables",
+            "bank_transactions", "bank_accounts",
+            "approval_history", "approval_lines", "approval_steps", "approval_requests",
+            "voucher_attachments", "voucher_lines", "vouchers",
+            "accounts", "account_categories", "user_sessions", "users", "departments", "roles",
+        ]
+
+        for table in tables:
+            try:
+                await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
+            except:
+                pass
+
+        # 모든 enum 타입 삭제
+        enums = [
+            "roletype", "transactiontype", "voucherstatus", "aiclassificationstatus",
+            "approvalstatus", "approvalactiontype", "bankaccounttype", "transactiondirection",
+            "reconciliationstatus", "receivablestatus", "payablestatus",
+            "budgetperiodtype", "budgetstatus", "classificationresult",
+        ]
+
+        for enum in enums:
+            try:
+                await conn.execute(text(f"DROP TYPE IF EXISTS {enum} CASCADE"))
+            except:
+                pass
+
+    print("✅ 데이터베이스 초기화 완료")
 
 
 async def create_roles():
@@ -356,9 +396,10 @@ async def main():
     print("🚀 Smart Finance Core 초기 데이터 생성 시작")
     print("=" * 50)
 
-    # 데이터베이스 초기화
+    # 기존 테이블/enum 삭제 후 재생성
+    await reset_database()
     await init_db()
-    print("✅ 데이터베이스 테이블 확인 완료")
+    print("✅ 데이터베이스 테이블 생성 완료")
 
     # 기본 데이터 생성
     await create_roles()
