@@ -11,7 +11,7 @@ from sqlalchemy import select, and_, or_, func
 from app.models.treasury import (
     BankAccount, BankTransaction, Receivable, Payable,
     PaymentSchedule, ReconciliationMatch,
-    TransactionDirection, ReceivableStatus, PayableStatus,
+    BankAccountType, TransactionDirection, ReceivableStatus, PayableStatus,
     ReconciliationStatus
 )
 from app.models.accounting import Voucher
@@ -131,7 +131,7 @@ class TreasuryManager:
                     )
                 )
             )
-            receivable = result.scalar_first()
+            receivable = result.scalars().first()
             if receivable:
                 return {
                     "type": "receivable",
@@ -267,7 +267,13 @@ class TreasuryManager:
         receivable.collected_amount += amount
         receivable.outstanding_amount = receivable.original_amount - receivable.collected_amount
 
-        if receivable.outstanding_amount <= 0:
+        if receivable.outstanding_amount < 0:
+            # 초과 입금: 잔액을 0으로 설정하고 상태를 수금 완료로 표시
+            # 초과분은 별도 처리 필요 (선수금 등)
+            receivable.outstanding_amount = Decimal("0")
+            receivable.status = ReceivableStatus.COLLECTED
+            receivable.collected_at = datetime.utcnow()
+        elif receivable.outstanding_amount == 0:
             receivable.status = ReceivableStatus.COLLECTED
             receivable.collected_at = datetime.utcnow()
         elif receivable.collected_amount > 0:
@@ -286,7 +292,13 @@ class TreasuryManager:
         payable.paid_amount += amount
         payable.outstanding_amount = payable.original_amount - payable.paid_amount
 
-        if payable.outstanding_amount <= 0:
+        if payable.outstanding_amount < 0:
+            # 초과 지급: 잔액을 0으로 설정하고 상태를 지급완료로 표시
+            # 초과분은 별도 처리 필요 (선급금 등)
+            payable.outstanding_amount = Decimal("0")
+            payable.status = PayableStatus.PAID
+            payable.paid_at = datetime.utcnow()
+        elif payable.outstanding_amount == 0:
             payable.status = PayableStatus.PAID
             payable.paid_at = datetime.utcnow()
         elif payable.paid_amount > 0:
@@ -482,7 +494,7 @@ class TreasuryManager:
             select(BankAccount).where(
                 and_(
                     BankAccount.is_active == True,
-                    BankAccount.account_type != "virtual"
+                    BankAccount.account_type != BankAccountType.VIRTUAL
                 )
             )
         )

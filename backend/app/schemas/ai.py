@@ -110,7 +110,7 @@ class AIModelStatusResponse(BaseModel):
     accuracy: Optional[Decimal] = None
     f1_score: Optional[Decimal] = None
     training_samples: int
-    last_trained: datetime
+    last_trained: Optional[datetime] = None
     is_production: bool
     pending_feedback_count: int
     next_retrain_at: Optional[datetime] = None

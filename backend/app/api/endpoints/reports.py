@@ -156,7 +156,7 @@ async def export_budget_vs_actual_excel(
 
 @router.get("/aging/excel")
 async def export_aging_excel(
-    report_type: str = Query(..., regex="^(receivables|payables)$"),
+    report_type: str = Query(..., pattern="^(receivables|payables)$"),
     as_of_date: Optional[date] = None,
     db: AsyncSession = Depends(get_db)
 ):
@@ -215,7 +215,7 @@ async def export_aging_excel(
 async def export_to_douzone_format(
     from_date: date,
     to_date: date,
-    export_type: str = Query("excel", regex="^(excel|api)$"),
+    export_type: str = Query("excel", pattern="^(excel|api)$"),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -224,12 +224,15 @@ async def export_to_douzone_format(
     - 더존 Smart A / iCube 업로드용 양식으로 변환합니다
     """
     import openpyxl
-    from app.models.accounting import Voucher, VoucherStatus
+    from app.models.accounting import Voucher, VoucherLine, VoucherStatus
     from sqlalchemy import select, and_
+    from sqlalchemy.orm import selectinload
 
-    # 확정된 전표만
+    # 확정된 전표만 (lines와 account를 eager loading)
     result = await db.execute(
-        select(Voucher).where(
+        select(Voucher)
+        .options(selectinload(Voucher.lines).selectinload(VoucherLine.account))
+        .where(
             and_(
                 Voucher.voucher_date >= from_date,
                 Voucher.voucher_date <= to_date,
@@ -237,7 +240,7 @@ async def export_to_douzone_format(
             )
         ).order_by(Voucher.voucher_date)
     )
-    vouchers = result.scalars().all()
+    vouchers = result.scalars().unique().all()
 
     # 더존 양식 엑셀 생성
     wb = openpyxl.Workbook()

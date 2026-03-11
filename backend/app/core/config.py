@@ -91,6 +91,11 @@ class Settings(BaseSettings):
         "https://*.vercel.app",
     ]
 
+    # Resend Email (OTP 인증)
+    RESEND_API_KEY: Optional[str] = None
+    RESEND_FROM_EMAIL: str = "Smart Finance <onboarding@resend.dev>"
+    ALLOWED_EMAILS: List[str] = []  # 빈 리스트면 모든 이메일 허용, 값이 있으면 화이트리스트
+
     # Douzone Integration
     DOUZONE_API_URL: Optional[str] = None
     DOUZONE_API_KEY: Optional[str] = None

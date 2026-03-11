@@ -64,23 +64,19 @@ api.interceptors.response.use(
 
 // Auth API
 export const authApi = {
-  login: (username: string, password: string, otpCode?: string) =>
-    api.post('/auth/login', { username, password, otp_code: otpCode }),
+  login: (email: string) =>
+    api.post('/auth/login', { email }),
+
+  verifyOtp: (email: string, otpCode: string) =>
+    api.post('/auth/verify-otp', { email, otp_code: otpCode }),
+
+  resendOtp: (email: string) =>
+    api.post('/auth/resend-otp', { email }),
 
   logout: () => api.post('/auth/logout'),
 
   refresh: (refreshToken: string) =>
     api.post('/auth/refresh', { refresh_token: refreshToken }),
-
-  register: (data: {
-    email: string
-    username: string
-    password: string
-    full_name: string
-    phone?: string
-    department_code?: string
-    position?: string
-  }) => api.post('/auth/register', data),
 
   getMe: () => api.get('/auth/me'),
 }
@@ -95,7 +91,20 @@ export const vouchersApi = {
     fromDate?: string
     toDate?: string
     search?: string
-  }) => api.get('/vouchers/', { params }),
+  }) =>
+    api.get('/vouchers/', {
+      params: params
+        ? {
+            page: params.page,
+            size: params.size,
+            department_id: params.departmentId,
+            status: params.status,
+            from_date: params.fromDate,
+            to_date: params.toDate,
+            search: params.search,
+          }
+        : undefined,
+    }),
 
   get: (id: number) => api.get(`/vouchers/${id}`),
 
@@ -111,6 +120,11 @@ export const vouchersApi = {
     }),
 
   delete: (id: number) => api.delete(`/vouchers/${id}`),
+
+  cancel: (id: number, userId: number, reason?: string) =>
+    api.post(`/vouchers/${id}/cancel`, null, {
+      params: { user_id: userId, reason: reason || '' },
+    }),
 
   getAccounts: (categoryId?: number, search?: string) =>
     api.get('/vouchers/accounts/', { params: { category_id: categoryId, search } }),
@@ -295,6 +309,17 @@ export const usersApi = {
 
   updateUserRole: (userId: number, roleId: number) =>
     api.patch(`/users/admin/${userId}/role`, null, { params: { role_id: roleId } }),
+}
+
+// Admin API (감사로그, 시스템 상태)
+export const adminApi = {
+  getAuditLogs: (params?: { limit?: number; action_type?: string; user_id?: number }) =>
+    api.get('/admin/audit-logs', { params }),
+
+  getSnapshots: (params?: { limit?: number }) =>
+    api.get('/admin/snapshots', { params }),
+
+  getSystemHealth: () => api.get('/health'),
 }
 
 // AI Classification API (학습 및 자동분류)

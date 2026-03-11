@@ -5,7 +5,7 @@ Smart Finance Core - Accounting Schemas
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional, List
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AccountResponse(BaseModel):
@@ -45,6 +45,15 @@ class VoucherLineCreate(BaseModel):
         if v < 0:
             raise ValueError('금액은 0 이상이어야 합니다')
         return v
+
+    @model_validator(mode='after')
+    def validate_debit_credit_exclusive(self) -> 'VoucherLineCreate':
+        """복식부기 원칙: 한 전표행은 차변 또는 대변 중 하나만 가능"""
+        if self.debit_amount > 0 and self.credit_amount > 0:
+            raise ValueError('한 전표 행에 차변과 대변을 동시에 입력할 수 없습니다')
+        if self.debit_amount == 0 and self.credit_amount == 0:
+            raise ValueError('차변 또는 대변 중 하나는 반드시 입력해야 합니다')
+        return self
 
 
 class VoucherLineResponse(BaseModel):
@@ -87,11 +96,17 @@ class VoucherCreate(BaseModel):
         if not v:
             raise ValueError('최소 1개의 전표 행이 필요합니다')
 
+        if len(v) < 2:
+            raise ValueError('복식부기 원칙에 따라 최소 2개의 전표 행(차변/대변)이 필요합니다')
+
         total_debit = sum(line.debit_amount for line in v)
         total_credit = sum(line.credit_amount for line in v)
 
         if total_debit != total_credit:
             raise ValueError(f'차변 합계({total_debit})와 대변 합계({total_credit})가 일치하지 않습니다')
+
+        if total_debit == Decimal("0"):
+            raise ValueError('전표 금액이 0원일 수 없습니다')
 
         return v
 
@@ -114,11 +129,17 @@ class VoucherUpdate(BaseModel):
         if not v:
             raise ValueError('최소 1개의 전표 행이 필요합니다')
 
+        if len(v) < 2:
+            raise ValueError('복식부기 원칙에 따라 최소 2개의 전표 행(차변/대변)이 필요합니다')
+
         total_debit = sum(line.debit_amount for line in v)
         total_credit = sum(line.credit_amount for line in v)
 
         if total_debit != total_credit:
             raise ValueError(f'차변 합계({total_debit})와 대변 합계({total_credit})가 일치하지 않습니다')
+
+        if total_debit == Decimal("0"):
+            raise ValueError('전표 금액이 0원일 수 없습니다')
 
         return v
 

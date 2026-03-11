@@ -80,15 +80,15 @@ class CashFlowForecastResponse(BaseModel):
 
     # Summary by period
     daily_forecast: List[dict]  # [{date, opening, inflows, outflows, closing}, ...]
-    weekly_summary: List[dict]
+    weekly_summary: List[dict] = []
 
     # By category
-    operating_inflows: Decimal
-    operating_outflows: Decimal
-    investing_inflows: Decimal
-    investing_outflows: Decimal
-    financing_inflows: Decimal
-    financing_outflows: Decimal
+    operating_inflows: Decimal = Decimal("0")
+    operating_outflows: Decimal = Decimal("0")
+    investing_inflows: Decimal = Decimal("0")
+    investing_outflows: Decimal = Decimal("0")
+    financing_inflows: Decimal = Decimal("0")
+    financing_outflows: Decimal = Decimal("0")
 
     # Projected closing
     projected_closing_balance: Decimal

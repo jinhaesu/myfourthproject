@@ -18,7 +18,7 @@ import {
   CpuChipIcon,
 } from '@heroicons/react/24/outline'
 
-const navigation = [
+const baseNavigation = [
   { name: '대시보드', href: '/dashboard', icon: HomeIcon },
   { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
   { name: 'AI 분류', href: '/ai-classification', icon: CpuChipIcon },
@@ -28,14 +28,17 @@ const navigation = [
   { name: '예측/시뮬레이션', href: '/forecast', icon: ChartBarIcon },
   { name: '보고서', href: '/reports', icon: DocumentChartBarIcon },
   { name: '설정', href: '/settings', icon: Cog6ToothIcon },
-  { name: '관리자', href: '/admin', icon: UsersIcon },
 ]
+
+const adminNavItem = { name: '관리자', href: '/admin', icon: UsersIcon }
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
+  const isAdmin = user?.roleName === 'admin' || user?.roleName === 'super_admin'
+  const navigation = isAdmin ? [...baseNavigation, adminNavItem] : baseNavigation
 
   const handleLogout = () => {
     logout()

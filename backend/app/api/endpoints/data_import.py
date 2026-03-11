@@ -12,7 +12,7 @@ from sqlalchemy import select
 import pandas as pd
 
 from app.core.database import get_db
-from app.models.accounting import Voucher, VoucherLine, Account
+from app.models.accounting import Voucher, VoucherLine, Account, TransactionType, VoucherStatus
 from app.models.user import User, Department
 
 router = APIRouter()
@@ -116,12 +116,12 @@ async def upload_vouchers_excel(
                     voucher_date=voucher_date,
                     transaction_date=transaction_date,
                     description=str(row['적요']),
-                    transaction_type="general",
+                    transaction_type=TransactionType.GENERAL,
                     department_id=dept_id,
                     created_by=default_user.id,
                     total_debit=debit_amount,
                     total_credit=credit_amount,
-                    status="draft",
+                    status=VoucherStatus.DRAFT,
                     merchant_name=str(row['거래처명']) if '거래처명' in row and pd.notna(row['거래처명']) else None
                 )
                 db.add(voucher)
@@ -188,7 +188,7 @@ async def download_vouchers_excel(
             query = query.where(Voucher.voucher_date <= end)
 
         if status_filter:
-            query = query.where(Voucher.status == status_filter)
+            query = query.where(Voucher.status == VoucherStatus(status_filter))
 
         result = await db.execute(query)
         vouchers = result.scalars().all()
@@ -204,7 +204,7 @@ async def download_vouchers_excel(
                 "거래처명": v.merchant_name or "",
                 "차변합계": float(v.total_debit),
                 "대변합계": float(v.total_credit),
-                "상태": v.status,
+                "상태": v.status.value if hasattr(v.status, 'value') else str(v.status),
                 "생성일시": v.created_at.strftime("%Y-%m-%d %H:%M:%S")
             })
 

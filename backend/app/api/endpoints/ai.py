@@ -31,14 +31,26 @@ async def classify_transaction(
     """
     classifier = AIClassifierService()
 
-    result = await classifier.classify(
-        db=db,
-        description=request.description,
-        merchant_name=request.merchant_name,
-        merchant_category=request.merchant_category,
-        amount=request.amount,
-        transaction_time=request.transaction_time
-    )
+    try:
+        result = await classifier.classify(
+            db=db,
+            description=request.description,
+            merchant_name=request.merchant_name,
+            merchant_category=request.merchant_category,
+            amount=request.amount,
+            transaction_time=request.transaction_time
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"AI 분류 처리 중 오류가 발생했습니다: {str(e)}"
+        )
+
+    if not result.get("primary_prediction"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="분류 결과를 생성할 수 없습니다. 입력 데이터를 확인해주세요."
+        )
 
     return AIClassificationResponse(
         primary_prediction=AIClassificationPrediction(**result["primary_prediction"]),
@@ -67,18 +79,24 @@ async def submit_feedback(
     """
     classifier = AIClassifierService()
 
-    log_id = await classifier.record_feedback(
-        db=db,
-        voucher_id=feedback.voucher_id,
-        description=feedback.description,
-        merchant_name=feedback.merchant_name,
-        amount=feedback.amount,
-        predicted_account_id=feedback.predicted_account_id,
-        actual_account_id=feedback.actual_account_id,
-        user_id=user_id,
-        correction_reason=feedback.correction_reason,
-        custom_tags=feedback.custom_tags
-    )
+    try:
+        log_id = await classifier.record_feedback(
+            db=db,
+            voucher_id=feedback.voucher_id,
+            description=feedback.description,
+            merchant_name=feedback.merchant_name,
+            amount=feedback.amount,
+            predicted_account_id=feedback.predicted_account_id,
+            actual_account_id=feedback.actual_account_id,
+            user_id=user_id,
+            correction_reason=feedback.correction_reason,
+            custom_tags=feedback.custom_tags
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"피드백 기록 중 오류가 발생했습니다: {str(e)}"
+        )
 
     return AIFeedbackResponse(
         success=True,
@@ -132,7 +150,7 @@ async def get_model_status(
             AIModelVersion.is_active == True
         )
     )
-    model = result.scalar_first()
+    model = result.scalars().first()
 
     # 대기 중인 피드백 수
     result = await db.execute(
@@ -154,20 +172,56 @@ async def get_model_status(
             pending_feedback_count=pending_count
         )
     else:
-        from datetime import datetime
         return AIModelStatusResponse(
             current_version="default_v1.0",
             model_type="random_forest",
             accuracy=None,
             f1_score=None,
             training_samples=0,
-            last_trained=datetime.utcnow(),
+            last_trained=None,
             is_production=False,
             pending_feedback_count=pending_count
         )
 
 
 # ==================== 커스텀 태그 ====================
+
+def custom_tag_to_response(tag) -> dict:
+    """CustomTag ORM을 CustomTagResponse 호환 dict로 변환"""
+    import json
+    from decimal import Decimal
+
+    # ai_keywords: JSON string -> List[str]
+    ai_keywords = []
+    if tag.ai_keywords:
+        try:
+            ai_keywords = json.loads(tag.ai_keywords)
+        except (json.JSONDecodeError, TypeError):
+            ai_keywords = []
+
+    remaining = None
+    if tag.budget_amount is not None:
+        remaining = tag.budget_amount - (tag.used_amount or Decimal("0"))
+
+    return {
+        "id": tag.id,
+        "code": tag.code,
+        "name": tag.name,
+        "description": tag.description,
+        "tag_type": tag.tag_type,
+        "color": tag.color,
+        "department_id": tag.department_id,
+        "department_name": None,  # no relationship loaded
+        "start_date": tag.start_date,
+        "end_date": tag.end_date,
+        "budget_amount": tag.budget_amount,
+        "used_amount": tag.used_amount or Decimal("0"),
+        "remaining_amount": remaining,
+        "is_active": tag.is_active,
+        "ai_keywords": ai_keywords,
+        "created_at": tag.created_at,
+    }
+
 
 @router.post("/tags/", response_model=CustomTagResponse, status_code=status.HTTP_201_CREATED)
 async def create_custom_tag(
@@ -201,7 +255,7 @@ async def create_custom_tag(
     db.add(tag)
     await db.commit()
 
-    return CustomTagResponse.model_validate(tag)
+    return custom_tag_to_response(tag)
 
 
 @router.get("/tags/", response_model=List[CustomTagResponse])
@@ -237,4 +291,4 @@ async def get_custom_tags(
     result = await db.execute(query)
     tags = result.scalars().all()
 
-    return [CustomTagResponse.model_validate(t) for t in tags]
+    return [custom_tag_to_response(t) for t in tags]

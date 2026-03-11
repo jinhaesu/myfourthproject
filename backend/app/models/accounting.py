@@ -22,6 +22,7 @@ class TransactionType(enum.Enum):
     CASH = "cash"  # 현금
     TAX_INVOICE = "tax_invoice"  # 세금계산서
     EXPENSE_REPORT = "expense_report"  # 지출결의
+    GENERAL = "general"  # 일반 (엑셀 업로드 등)
 
 
 class VoucherStatus(enum.Enum):
@@ -175,6 +176,7 @@ class Voucher(Base):
     )
 
     # Relationships
+    department: Mapped[Optional["Department"]] = relationship("Department")
     lines: Mapped[List["VoucherLine"]] = relationship(
         "VoucherLine", back_populates="voucher", cascade="all, delete-orphan"
     )

@@ -16,6 +16,27 @@ from app.services.user_service import UserService
 router = APIRouter()
 
 
+def user_to_response(user) -> dict:
+    """User ORM 객체를 UserResponse 호환 dict로 변환"""
+    return {
+        "id": user.id,
+        "employee_id": user.employee_id,
+        "email": user.email,
+        "username": user.username,
+        "full_name": user.full_name,
+        "phone": user.phone,
+        "position": user.position,
+        "department_id": user.department_id,
+        "department_name": user.department.name if user.department else None,
+        "role_id": user.role_id,
+        "role_name": user.role.name if user.role else None,
+        "is_active": user.is_active,
+        "two_factor_enabled": user.two_factor_enabled,
+        "created_at": user.created_at,
+        "last_login": user.last_login,
+    }
+
+
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user_data: UserCreate,
@@ -36,7 +57,7 @@ async def create_user(
             department_id=user_data.department_id,
             role_id=user_data.role_id
         )
-        return UserResponse.model_validate(user)
+        return user_to_response(user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -56,7 +77,7 @@ async def get_user(
             detail="사용자를 찾을 수 없습니다."
         )
 
-    return UserResponse.model_validate(user)
+    return user_to_response(user)
 
 
 @router.patch("/{user_id}", response_model=UserResponse)
@@ -70,7 +91,7 @@ async def update_user(
 
     try:
         user = await service.update_user(user_id, **user_data.model_dump(exclude_unset=True))
-        return UserResponse.model_validate(user)
+        return user_to_response(user)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -154,7 +175,7 @@ async def get_all_users(
     """모든 사용자 목록 조회 (관리자용)"""
     service = UserService(db)
     users = await service.get_all_users()
-    return [UserResponse.model_validate(u) for u in users]
+    return [user_to_response(u) for u in users]
 
 
 @router.get("/admin/pending", response_model=List[UserResponse])
@@ -164,7 +185,7 @@ async def get_pending_users(
     """승인 대기 사용자 목록 조회"""
     service = UserService(db)
     users = await service.get_pending_users()
-    return [UserResponse.model_validate(u) for u in users]
+    return [user_to_response(u) for u in users]
 
 
 @router.post("/admin/{user_id}/approve")
@@ -180,7 +201,7 @@ async def approve_user(
         user = await service.approve_user(user_id, employee_id)
         return {
             "message": "사용자가 승인되었습니다.",
-            "user": UserResponse.model_validate(user)
+            "user": user_to_response(user)
         }
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -213,7 +234,7 @@ async def activate_user(
         user = await service.activate_user(user_id)
         return {
             "message": "사용자가 활성화되었습니다.",
-            "user": UserResponse.model_validate(user)
+            "user": user_to_response(user)
         }
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -231,7 +252,7 @@ async def deactivate_user(
         user = await service.deactivate_user(user_id)
         return {
             "message": "사용자가 비활성화되었습니다.",
-            "user": UserResponse.model_validate(user)
+            "user": user_to_response(user)
         }
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -250,7 +271,7 @@ async def update_user_role(
         user = await service.update_user(user_id, role_id=role_id)
         return {
             "message": "사용자 역할이 변경되었습니다.",
-            "user": UserResponse.model_validate(user)
+            "user": user_to_response(user)
         }
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
