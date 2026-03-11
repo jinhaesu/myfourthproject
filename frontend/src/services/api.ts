@@ -67,6 +67,12 @@ export const authApi = {
   login: (username: string, password: string, otpCode?: string) =>
     api.post('/auth/login', { username, password, otp_code: otpCode }),
 
+  verifyOtp: (username: string, otpCode: string) =>
+    api.post('/auth/verify-otp', { username, otp_code: otpCode }),
+
+  resendOtp: (username: string) =>
+    api.post('/auth/resend-otp', { username }),
+
   logout: () => api.post('/auth/logout'),
 
   refresh: (refreshToken: string) =>

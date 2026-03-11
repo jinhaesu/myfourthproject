@@ -111,6 +111,11 @@ export default function LoginPage() {
   const navigate = useNavigate()
   const login = useAuthStore((state) => state.login)
   const [requires2FA, setRequires2FA] = useState(false)
+  const [requiresEmailOtp, setRequiresEmailOtp] = useState(false)
+  const [emailHint, setEmailHint] = useState('')
+  const [otpCode, setOtpCode] = useState('')
+  const [loginUsername, setLoginUsername] = useState('')
+  const [otpCountdown, setOtpCountdown] = useState(0)
   const [isLoading, setIsLoading] = useState(false)
   const [isRegisterMode, setIsRegisterMode] = useState(false)
 
@@ -129,12 +134,43 @@ export default function LoginPage() {
 
   const watchedRegisterPassword = registerForm.watch('password') || ''
 
+  // OTP countdown timer
+  useState(() => {
+    if (otpCountdown <= 0) return
+    const timer = setInterval(() => {
+      setOtpCountdown((prev) => (prev <= 1 ? 0 : prev - 1))
+    }, 1000)
+    return () => clearInterval(timer)
+  })
+
+  const handleLoginSuccess = (result: any) => {
+    login(
+      {
+        id: result.user.id,
+        employeeId: result.user.employee_id,
+        email: result.user.email,
+        username: result.user.username,
+        fullName: result.user.full_name,
+        departmentId: result.user.department_id,
+        departmentName: result.user.department_name,
+        roleId: result.user.role_id,
+        roleName: result.user.role_name,
+        position: result.user.position,
+      },
+      result.access_token,
+      result.refresh_token
+    )
+    toast.success('로그인 성공')
+    navigate('/dashboard')
+  }
+
   const onLoginSubmit = async (data: LoginForm) => {
     setIsLoading(true)
     try {
       const response = await authApi.login(data.username, data.password, data.otpCode)
       const result = response.data
 
+      // 기존 2FA (TOTP) 처리
       if (result.requires_2fa && !data.otpCode) {
         setRequires2FA(true)
         toast.success('2차 인증 코드를 입력하세요')
@@ -142,30 +178,53 @@ export default function LoginPage() {
         return
       }
 
-      login(
-        {
-          id: result.user.id,
-          employeeId: result.user.employee_id,
-          email: result.user.email,
-          username: result.user.username,
-          fullName: result.user.full_name,
-          departmentId: result.user.department_id,
-          departmentName: result.user.department_name,
-          roleId: result.user.role_id,
-          roleName: result.user.role_name,
-          position: result.user.position,
-        },
-        result.access_token,
-        result.refresh_token
-      )
+      // 이메일 OTP 필요
+      if (result.requires_email_otp) {
+        setRequiresEmailOtp(true)
+        setEmailHint(result.email_hint || '')
+        setLoginUsername(data.username)
+        setOtpCountdown(300) // 5분
+        toast.success(`인증 코드가 ${result.email_hint || '이메일'}로 전송되었습니다`)
+        setIsLoading(false)
+        return
+      }
 
-      toast.success('로그인 성공')
-      navigate('/dashboard')
+      // 바로 로그인 (OTP 미설정 시)
+      handleLoginSuccess(result)
     } catch (error: any) {
       const message = error.response?.data?.detail || '로그인에 실패했습니다'
       toast.error(message)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const onOtpSubmit = async () => {
+    if (otpCode.length !== 6) {
+      toast.error('6자리 인증 코드를 입력하세요')
+      return
+    }
+    setIsLoading(true)
+    try {
+      const response = await authApi.verifyOtp(loginUsername, otpCode)
+      handleLoginSuccess(response.data)
+    } catch (error: any) {
+      const message = error.response?.data?.detail || 'OTP 인증에 실패했습니다'
+      toast.error(message)
+      setOtpCode('')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const onResendOtp = async () => {
+    try {
+      const response = await authApi.resendOtp(loginUsername)
+      setOtpCountdown(300)
+      setOtpCode('')
+      toast.success(`인증 코드가 ${response.data.email_hint || '이메일'}로 재전송되었습니다`)
+    } catch {
+      toast.error('인증 코드 재전송에 실패했습니다')
     }
   }
 
@@ -230,7 +289,74 @@ export default function LoginPage() {
           </div>
 
           <div className="p-6">
-            {!isRegisterMode ? (
+            {requiresEmailOtp ? (
+              /* Email OTP Verification */
+              <div className="space-y-4">
+                <div className="text-center">
+                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-100 mb-4">
+                    <svg className="w-8 h-8 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                  </div>
+                  <h2 className="text-lg font-semibold text-gray-900">이메일 인증</h2>
+                  <p className="text-sm text-gray-500 mt-1">
+                    <span className="font-medium text-gray-700">{emailHint}</span>으로<br />
+                    전송된 6자리 인증 코드를 입력하세요
+                  </p>
+                </div>
+
+                <div>
+                  <input
+                    type="text"
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    className="w-full px-4 py-3 text-center text-2xl font-mono tracking-[0.5em] border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="000000"
+                    maxLength={6}
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && otpCode.length === 6) onOtpSubmit()
+                    }}
+                  />
+                </div>
+
+                {otpCountdown > 0 && (
+                  <p className="text-center text-sm text-gray-500">
+                    유효 시간: <span className="font-medium text-blue-600">{Math.floor(otpCountdown / 60)}:{String(otpCountdown % 60).padStart(2, '0')}</span>
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={onOtpSubmit}
+                  disabled={isLoading || otpCode.length !== 6}
+                  className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-lg font-medium hover:from-blue-700 hover:to-indigo-700 transition-all disabled:opacity-50"
+                >
+                  {isLoading ? '인증 중...' : '인증 확인'}
+                </button>
+
+                <div className="flex items-center justify-between text-sm">
+                  <button
+                    type="button"
+                    onClick={onResendOtp}
+                    className="text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    인증 코드 재전송
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRequiresEmailOtp(false)
+                      setOtpCode('')
+                      setOtpCountdown(0)
+                    }}
+                    className="text-gray-500 hover:text-gray-700"
+                  >
+                    로그인으로 돌아가기
+                  </button>
+                </div>
+              </div>
+            ) : !isRegisterMode ? (
               /* Login Form */
               <form onSubmit={loginForm.handleSubmit(onLoginSubmit)} className="space-y-4">
                 <div>
