@@ -240,10 +240,16 @@ async def seed_inactive_user(
 
 @pytest_asyncio.fixture
 async def auth_tokens(client: AsyncClient, seed_user: User) -> dict:
-    """Login with seed_user and return the token response dict."""
-    resp = await client.post(
-        "/api/v1/auth/login",
-        json={"username": "testuser", "password": "Test1234!"},
-    )
-    assert resp.status_code == 200, f"Login failed: {resp.text}"
-    return resp.json()
+    """Generate tokens directly for test user (bypasses email OTP flow)."""
+    from app.core.security import create_access_token, create_refresh_token
+    from app.core.config import settings
+
+    access_token = create_access_token({"sub": str(seed_user.id)})
+    refresh_token = create_refresh_token({"sub": str(seed_user.id)})
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }

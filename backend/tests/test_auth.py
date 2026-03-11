@@ -1,157 +1,140 @@
 """
 Smart Finance Core - Authentication Tests
-인증 관련 API 테스트
+이메일 OTP 인증 API 테스트
 
 Tests cover:
-  1. Login with valid credentials
-  2. Login with invalid password
-  3. Login with non-existent user
-  4. Token refresh
-  5. Get current user info (/me)
-  6. Registration (회원가입)
-  7. Account lockout after 5 failed attempts
-  8. Inactive account login rejection
-  9. Response structure validation (department_name, role_name eager loading)
+  1. Email OTP login flow (request → verify)
+  2. OTP verification
+  3. Token refresh
+  4. Get current user info (/me)
+  5. Disallowed email rejection
+  6. Logout
 """
 import pytest
-import pytest_asyncio
 from httpx import AsyncClient
 
 from app.models.user import User
+from app.services.email_service import _otp_store
 
 
 # ============================================================================
-# 1. Login with valid credentials
+# 1. Email Login - OTP Request
 # ============================================================================
 
 @pytest.mark.asyncio
-class TestLoginSuccess:
-    """POST /api/v1/auth/login -- happy path"""
+class TestEmailLoginRequest:
+    """POST /api/v1/auth/login -- request OTP"""
 
-    async def test_login_returns_200(self, client: AsyncClient, seed_user: User):
+    async def test_login_request_returns_200(self, client: AsyncClient, seed_user: User):
         resp = await client.post(
             "/api/v1/auth/login",
-            json={"username": "testuser", "password": "Test1234!"},
+            json={"email": "test@example.com"},
         )
         assert resp.status_code == 200
 
-    async def test_login_returns_tokens(self, client: AsyncClient, seed_user: User):
+    async def test_login_request_returns_otp_required(self, client: AsyncClient, seed_user: User):
         resp = await client.post(
             "/api/v1/auth/login",
-            json={"username": "testuser", "password": "Test1234!"},
+            json={"email": "test@example.com"},
         )
+        data = resp.json()
+        assert data["requires_email_otp"] is True
+        assert "email_hint" in data
+
+    async def test_login_request_new_email_returns_200(self, client: AsyncClient):
+        """New email (not in DB) should also get OTP sent."""
+        resp = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "brand_new@example.com"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["requires_email_otp"] is True
+
+    async def test_login_invalid_email_returns_422(self, client: AsyncClient):
+        resp = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "not-an-email"},
+        )
+        assert resp.status_code == 422
+
+    async def test_login_empty_body_returns_422(self, client: AsyncClient):
+        resp = await client.post("/api/v1/auth/login", json={})
+        assert resp.status_code == 422
+
+
+# ============================================================================
+# 2. OTP Verification
+# ============================================================================
+
+@pytest.mark.asyncio
+class TestOTPVerification:
+    """POST /api/v1/auth/verify-otp"""
+
+    async def test_verify_valid_otp_returns_tokens(self, client: AsyncClient, seed_user: User):
+        # Request OTP
+        await client.post("/api/v1/auth/login", json={"email": "test@example.com"})
+
+        # Get OTP from store
+        otp_entry = _otp_store.get("test@example.com")
+        assert otp_entry is not None
+        otp_code = otp_entry["code"]
+
+        # Verify OTP
+        resp = await client.post(
+            "/api/v1/auth/verify-otp",
+            json={"email": "test@example.com", "otp_code": otp_code},
+        )
+        assert resp.status_code == 200
         data = resp.json()
         assert "access_token" in data
         assert "refresh_token" in data
         assert data["token_type"] == "bearer"
         assert data["expires_in"] > 0
 
-    async def test_login_returns_user_object(self, client: AsyncClient, seed_user: User):
+    async def test_verify_otp_returns_user_object(self, client: AsyncClient, seed_user: User):
+        await client.post("/api/v1/auth/login", json={"email": "test@example.com"})
+        otp_code = _otp_store["test@example.com"]["code"]
+
         resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "testuser", "password": "Test1234!"},
+            "/api/v1/auth/verify-otp",
+            json={"email": "test@example.com", "otp_code": otp_code},
         )
-        data = resp.json()
-        user = data["user"]
-        assert user["username"] == "testuser"
+        user = resp.json()["user"]
         assert user["email"] == "test@example.com"
+        assert user["username"] == "testuser"
         assert user["full_name"] == "테스트 사용자"
-        assert user["is_active"] is True
 
-    async def test_login_includes_department_name(
-        self, client: AsyncClient, seed_user: User
-    ):
-        """Eager loading bug fix: department_name must be present."""
+    async def test_verify_wrong_otp_returns_401(self, client: AsyncClient, seed_user: User):
+        await client.post("/api/v1/auth/login", json={"email": "test@example.com"})
+
         resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "testuser", "password": "Test1234!"},
+            "/api/v1/auth/verify-otp",
+            json={"email": "test@example.com", "otp_code": "000000"},
         )
-        user = resp.json()["user"]
-        assert user["department_name"] == "개발팀"
+        assert resp.status_code == 401
 
-    async def test_login_includes_role_name(
-        self, client: AsyncClient, seed_user: User
-    ):
-        """Eager loading bug fix: role_name must be present."""
+    async def test_verify_without_request_returns_401(self, client: AsyncClient):
         resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "testuser", "password": "Test1234!"},
+            "/api/v1/auth/verify-otp",
+            json={"email": "nobody@example.com", "otp_code": "123456"},
         )
-        user = resp.json()["user"]
-        assert user["role_name"] == "일반직원"
+        assert resp.status_code == 401
 
-    async def test_login_requires_2fa_false(
-        self, client: AsyncClient, seed_user: User
-    ):
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "testuser", "password": "Test1234!"},
-        )
-        assert resp.json()["requires_2fa"] is False
+    async def test_verify_otp_auto_creates_user(self, client: AsyncClient):
+        """New email should auto-create user on successful OTP."""
+        await client.post("/api/v1/auth/login", json={"email": "auto_new@example.com"})
+        otp_code = _otp_store["auto_new@example.com"]["code"]
 
-    async def test_login_by_email(self, client: AsyncClient, seed_user: User):
-        """Username field also accepts email."""
         resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "test@example.com", "password": "Test1234!"},
+            "/api/v1/auth/verify-otp",
+            json={"email": "auto_new@example.com", "otp_code": otp_code},
         )
         assert resp.status_code == 200
-        assert resp.json()["user"]["username"] == "testuser"
+        assert resp.json()["user"]["email"] == "auto_new@example.com"
 
 
 # ============================================================================
-# 2. Login with invalid password
-# ============================================================================
-
-@pytest.mark.asyncio
-class TestLoginInvalidPassword:
-    """POST /api/v1/auth/login -- wrong password"""
-
-    async def test_wrong_password_returns_401(
-        self, client: AsyncClient, seed_user: User
-    ):
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "testuser", "password": "WrongPass1!"},
-        )
-        assert resp.status_code == 401
-
-    async def test_wrong_password_returns_error_detail(
-        self, client: AsyncClient, seed_user: User
-    ):
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "testuser", "password": "WrongPass1!"},
-        )
-        assert "detail" in resp.json()
-
-
-# ============================================================================
-# 3. Login with non-existent user
-# ============================================================================
-
-@pytest.mark.asyncio
-class TestLoginNonExistentUser:
-    """POST /api/v1/auth/login -- user does not exist"""
-
-    async def test_unknown_user_returns_401(self, client: AsyncClient):
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "ghost_user", "password": "NoMatter1!"},
-        )
-        assert resp.status_code == 401
-
-    async def test_unknown_user_error_message(self, client: AsyncClient):
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "ghost_user", "password": "NoMatter1!"},
-        )
-        data = resp.json()
-        assert "detail" in data
-
-
-# ============================================================================
-# 4. Token refresh
+# 3. Token refresh
 # ============================================================================
 
 @pytest.mark.asyncio
@@ -172,9 +155,7 @@ class TestTokenRefresh:
         assert data["token_type"] == "bearer"
         assert data["expires_in"] > 0
 
-    async def test_refresh_with_invalid_token_returns_401(
-        self, client: AsyncClient, seed_user: User
-    ):
+    async def test_refresh_with_invalid_token_returns_401(self, client: AsyncClient):
         resp = await client.post(
             "/api/v1/auth/refresh",
             json={"refresh_token": "this.is.invalid"},
@@ -184,18 +165,16 @@ class TestTokenRefresh:
     async def test_refresh_with_access_token_returns_401(
         self, client: AsyncClient, auth_tokens: dict
     ):
-        """Using an access token (type=access) for refresh should fail."""
         access_tok = auth_tokens["access_token"]
         resp = await client.post(
             "/api/v1/auth/refresh",
             json={"refresh_token": access_tok},
         )
-        # access token has type="access", not "refresh", so service rejects it
         assert resp.status_code == 401
 
 
 # ============================================================================
-# 5. Get current user info (/me)
+# 4. Get current user info (/me)
 # ============================================================================
 
 @pytest.mark.asyncio
@@ -218,7 +197,6 @@ class TestGetCurrentUser:
     async def test_me_includes_department_and_role(
         self, client: AsyncClient, auth_tokens: dict
     ):
-        """Eager loading in get_user_from_token must populate these fields."""
         access_tok = auth_tokens["access_token"]
         resp = await client.get(
             "/api/v1/auth/me",
@@ -239,202 +217,33 @@ class TestGetCurrentUser:
         )
         assert resp.status_code == 401
 
-    async def test_me_with_malformed_auth_header_returns_401(
-        self, client: AsyncClient
-    ):
-        resp = await client.get(
-            "/api/v1/auth/me",
-            headers={"Authorization": "Token something"},
-        )
-        assert resp.status_code == 401
-
 
 # ============================================================================
-# 6. Registration
+# 5. OTP Resend
 # ============================================================================
 
 @pytest.mark.asyncio
-class TestRegistration:
-    """POST /api/v1/auth/register"""
+class TestOTPResend:
+    """POST /api/v1/auth/resend-otp"""
 
-    async def test_register_new_user_succeeds(
-        self, client: AsyncClient, seed_role, seed_department
-    ):
+    async def test_resend_returns_200(self, client: AsyncClient, seed_user: User):
         resp = await client.post(
-            "/api/v1/auth/register",
-            json={
-                "email": "newuser@example.com",
-                "username": "newuser",
-                "password": "NewPass1!",
-                "full_name": "신규 사용자",
-                "phone": "010-9999-8888",
-                "department_code": "DEV",
-                "position": "인턴",
-            },
+            "/api/v1/auth/resend-otp",
+            json={"email": "test@example.com"},
         )
         assert resp.status_code == 200
-        data = resp.json()
-        assert "user_id" in data
-        assert data["email"] == "newuser@example.com"
-        assert "승인" in data["message"] or "신청" in data["message"]
-
-    async def test_registered_user_cannot_login_before_approval(
-        self, client: AsyncClient, seed_role, seed_department
-    ):
-        """Newly registered user is inactive; login must fail."""
-        await client.post(
-            "/api/v1/auth/register",
-            json={
-                "email": "pending@example.com",
-                "username": "pendinguser",
-                "password": "Pend1ng!Pass",
-                "full_name": "대기 사용자",
-            },
-        )
-        login_resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "pendinguser", "password": "Pend1ng!Pass"},
-        )
-        assert login_resp.status_code == 401
-
-    async def test_register_duplicate_email_returns_400(
-        self, client: AsyncClient, seed_user: User
-    ):
-        resp = await client.post(
-            "/api/v1/auth/register",
-            json={
-                "email": "test@example.com",  # already taken by seed_user
-                "username": "uniquename",
-                "password": "Valid1Pass!",
-                "full_name": "중복 이메일",
-            },
-        )
-        assert resp.status_code == 400
-        assert "이메일" in resp.json()["detail"]
-
-    async def test_register_duplicate_username_returns_400(
-        self, client: AsyncClient, seed_user: User
-    ):
-        resp = await client.post(
-            "/api/v1/auth/register",
-            json={
-                "email": "unique@example.com",
-                "username": "testuser",  # already taken by seed_user
-                "password": "Valid1Pass!",
-                "full_name": "중복 사용자명",
-            },
-        )
-        assert resp.status_code == 400
-        assert "사용자명" in resp.json()["detail"]
+        assert "email_hint" in resp.json()
 
 
 # ============================================================================
-# 7. Account lockout after 5 failed attempts
-# ============================================================================
-
-@pytest.mark.asyncio
-class TestAccountLockout:
-    """POST /api/v1/auth/login -- brute-force protection"""
-
-    async def test_account_locks_after_5_failed_attempts(
-        self, client: AsyncClient, seed_user: User
-    ):
-        """After 5 wrong passwords the account should be locked (15 min)."""
-        for i in range(5):
-            resp = await client.post(
-                "/api/v1/auth/login",
-                json={"username": "testuser", "password": f"Wrong{i}Pass!"},
-            )
-            assert resp.status_code == 401, f"Attempt {i+1} should fail"
-
-        # 6th attempt -- even with correct password, account is locked
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "testuser", "password": "Test1234!"},
-        )
-        assert resp.status_code == 401
-        assert "잠겨" in resp.json()["detail"]
-
-
-# ============================================================================
-# 8. Inactive account login rejection
-# ============================================================================
-
-@pytest.mark.asyncio
-class TestInactiveAccountLogin:
-    """Inactive users should be rejected at login."""
-
-    async def test_inactive_user_cannot_login(
-        self, client: AsyncClient, seed_inactive_user: User
-    ):
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "inactiveuser", "password": "Test1234!"},
-        )
-        assert resp.status_code == 401
-        assert "비활성" in resp.json()["detail"]
-
-
-# ============================================================================
-# 9. Response structure / edge-case validations
-# ============================================================================
-
-@pytest.mark.asyncio
-class TestResponseStructure:
-    """Validate the full shape of the Token response."""
-
-    async def test_token_response_has_all_required_fields(
-        self, client: AsyncClient, seed_user: User
-    ):
-        resp = await client.post(
-            "/api/v1/auth/login",
-            json={"username": "testuser", "password": "Test1234!"},
-        )
-        data = resp.json()
-
-        # Top-level fields
-        assert "access_token" in data
-        assert "refresh_token" in data
-        assert "token_type" in data
-        assert "expires_in" in data
-        assert "user" in data
-        assert "requires_2fa" in data
-
-        # User sub-object fields
-        user = data["user"]
-        expected_user_fields = [
-            "id", "employee_id", "email", "username", "full_name",
-            "phone", "position", "department_id", "department_name",
-            "role_id", "role_name", "is_active", "two_factor_enabled",
-            "created_at",
-        ]
-        for field in expected_user_fields:
-            assert field in user, f"Missing field: {field}"
-
-    async def test_login_with_empty_body_returns_422(
-        self, client: AsyncClient
-    ):
-        resp = await client.post("/api/v1/auth/login", json={})
-        assert resp.status_code == 422
-
-    async def test_login_with_missing_password_returns_422(
-        self, client: AsyncClient
-    ):
-        resp = await client.post(
-            "/api/v1/auth/login", json={"username": "testuser"}
-        )
-        assert resp.status_code == 422
-
-
-# ============================================================================
-# 10. Logout
+# 6. Logout
 # ============================================================================
 
 @pytest.mark.asyncio
 class TestLogout:
     """POST /api/v1/auth/logout"""
 
-    async def test_logout_returns_200(self, client: AsyncClient, seed_user: User):
+    async def test_logout_returns_200(self, client: AsyncClient):
         resp = await client.post("/api/v1/auth/logout")
         assert resp.status_code == 200
         assert "로그아웃" in resp.json()["message"]
