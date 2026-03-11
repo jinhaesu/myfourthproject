@@ -105,12 +105,24 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db():
-    """Initialize database tables"""
+    """Initialize database tables (with retry for cold-start connections)"""
+    import asyncio
+
     if engine is None:
         logger.warning("Database engine not available, skipping init")
         return
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+
+    for attempt in range(3):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables created successfully")
+            return
+        except Exception as e:
+            logger.warning(f"DB init attempt {attempt + 1}/3 failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
+    raise RuntimeError("Failed to initialize database after 3 attempts")
 
 
 async def close_db():
