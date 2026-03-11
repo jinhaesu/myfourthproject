@@ -171,6 +171,124 @@ async def root():
     }
 
 
+# Database seed endpoint (일회성 초기화용)
+@app.post("/api/v1/setup/seed")
+async def seed_database(secret: str):
+    """
+    데이터베이스 초기 데이터 생성
+    SECRET_KEY를 파라미터로 전달해야 실행됨
+    """
+    if secret != settings.SECRET_KEY:
+        return {"error": "Invalid secret key"}
+
+    try:
+        from datetime import datetime
+        from sqlalchemy import select, text
+        from app.core.database import async_session_factory, engine
+        from app.core.security import get_password_hash
+        from app.models.user import User, Role, Department, RoleType
+        from app.models.accounting import Account, AccountCategory
+
+        logger.info("Starting database seed...")
+
+        # 테이블 생성 확인
+        async with engine.begin() as conn:
+            # roles 테이블 확인
+            result = await conn.execute(text("SELECT COUNT(*) FROM roles"))
+            role_count = result.scalar()
+            logger.info(f"Current role count: {role_count}")
+
+        async with async_session_factory() as db:
+            # 역할 존재 확인
+            result = await db.execute(select(Role).where(Role.name == "관리자"))
+            if result.scalar_one_or_none():
+                logger.info("Roles already exist, checking users...")
+            else:
+                # 역할 생성
+                roles = [
+                    Role(name="관리자", role_type=RoleType.ADMIN, description="시스템 전체 관리 권한",
+                         can_create_voucher=True, can_approve_voucher=True, can_finalize_voucher=True,
+                         can_manage_budget=True, can_view_all_departments=True, can_manage_users=True,
+                         can_configure_ai=True, can_export_data=True, can_view_reports=True,
+                         can_manage_accounts=True, approval_limit=999999999),
+                    Role(name="재무담당자", role_type=RoleType.FINANCE_MANAGER, description="재무/회계 업무 담당",
+                         can_create_voucher=True, can_approve_voucher=True, can_finalize_voucher=True,
+                         can_manage_budget=True, can_view_all_departments=True, can_export_data=True,
+                         can_view_reports=True, can_manage_accounts=True, approval_limit=50000000),
+                    Role(name="팀장", role_type=RoleType.TEAM_LEADER, description="팀 단위 결재 권한",
+                         can_create_voucher=True, can_approve_voucher=True, can_export_data=True,
+                         can_view_reports=True, approval_limit=10000000),
+                    Role(name="일반직원", role_type=RoleType.EMPLOYEE, description="기본 사용자 권한",
+                         can_create_voucher=True, can_export_data=True, can_view_reports=True, approval_limit=0),
+                ]
+                for role in roles:
+                    db.add(role)
+                await db.commit()
+                logger.info("Roles created")
+
+            # 부서 생성
+            result = await db.execute(select(Department).where(Department.code == "FIN"))
+            if not result.scalar_one_or_none():
+                departments = [
+                    Department(code="EXEC", name="경영진", description="경영진"),
+                    Department(code="FIN", name="재무팀", description="재무/회계 담당"),
+                    Department(code="DEV", name="개발팀", description="소프트웨어 개발"),
+                    Department(code="HR", name="인사팀", description="인사/총무"),
+                    Department(code="SALES", name="영업팀", description="영업/마케팅"),
+                ]
+                for dept in departments:
+                    db.add(dept)
+                await db.commit()
+                logger.info("Departments created")
+
+            # 관리자 계정 생성 또는 업데이트
+            result = await db.execute(select(User).where(User.email == "admin@smartfinance.com"))
+            existing_user = result.scalar_one_or_none()
+
+            # 역할과 부서 조회
+            role_result = await db.execute(select(Role).where(Role.name == "관리자"))
+            admin_role = role_result.scalar_one()
+            dept_result = await db.execute(select(Department).where(Department.code == "FIN"))
+            fin_dept = dept_result.scalar_one()
+
+            if existing_user:
+                # 기존 사용자 비밀번호 업데이트
+                existing_user.hashed_password = get_password_hash("Admin123!@#")
+                existing_user.is_active = True
+                await db.commit()
+                logger.info("Admin user password updated")
+            else:
+                admin_user = User(
+                    email="admin@smartfinance.com",
+                    username="admin",
+                    hashed_password=get_password_hash("Admin123!@#"),
+                    full_name="시스템 관리자",
+                    employee_id="EMP001",
+                    phone="010-1234-5678",
+                    position="시스템관리자",
+                    role_id=admin_role.id,
+                    department_id=fin_dept.id,
+                    is_active=True,
+                    is_superuser=True,
+                )
+                db.add(admin_user)
+                await db.commit()
+                logger.info("Admin user created")
+
+            return {
+                "status": "success",
+                "message": "Database seeded successfully",
+                "credentials": {
+                    "email": "admin@smartfinance.com",
+                    "username": "admin",
+                    "password": "Admin123!@#"
+                }
+            }
+    except Exception as e:
+        logger.error(f"Seed failed: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

@@ -14,7 +14,15 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
 from app.core.config import settings
+
+# HTTP Bearer scheme for JWT tokens
+security_scheme = HTTPBearer()
 
 
 # Password hashing context
@@ -167,15 +175,6 @@ class AuditLogger:
     ) -> dict:
         """
         Create audit log entry
-
-        Args:
-            user_id: ID of user performing action
-            action: Action type (CREATE, READ, UPDATE, DELETE)
-            resource_type: Type of resource (voucher, approval, etc.)
-            resource_id: ID of the resource
-            old_value: Previous state (for updates)
-            new_value: New state (for creates/updates)
-            ip_address: Client IP address
         """
         return {
             "timestamp": datetime.utcnow().isoformat(),
@@ -193,13 +192,6 @@ class AuditLogger:
 data_encryption = DataEncryption()
 
 
-# Create a proper FastAPI dependency
-from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
-security_scheme = HTTPBearer()
-
-
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
 ):
@@ -207,37 +199,42 @@ async def get_current_user(
     FastAPI dependency: extracts and validates the current user from JWT.
     Returns the User ORM object with department and role eagerly loaded.
     """
-    from app.core.database import get_db
-    from sqlalchemy.ext.asyncio import AsyncSession
-    from sqlalchemy import select
+    from app.core.database import async_session_factory
+    from app.models.user import User
     from sqlalchemy.orm import selectinload
 
     token = credentials.credentials
     payload = decode_token(token)
-    if not payload:
+
+    if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="유효하지 않은 토큰입니다.",
+            detail="유효하지 않은 인증 토큰입니다.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Check token type
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않은 토큰 타입입니다.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     user_id = payload.get("sub")
-    if not user_id:
+    if user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="유효하지 않은 토큰입니다.",
+            detail="토큰에 사용자 정보가 없습니다.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # We need a db session - import here to avoid circular imports
-    from app.core.database import async_session_factory
     if async_session_factory is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="데이터베이스를 사용할 수 없습니다.",
         )
 
-    from app.models.user import User
     async with async_session_factory() as db:
         result = await db.execute(
             select(User)
@@ -246,7 +243,7 @@ async def get_current_user(
         )
         user = result.scalar_one_or_none()
 
-    if not user:
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="사용자를 찾을 수 없습니다.",
@@ -272,8 +269,6 @@ def require_role(*role_types: "RoleType"):
         # 또는 파라미터로:
         async def endpoint(user = Depends(require_role(RoleType.ADMIN, RoleType.FINANCE_STAFF))):
     """
-    from app.models.user import RoleType as RT
-
     async def _check(user=Depends(get_current_user)):
         if not user.role or user.role.role_type not in role_types:
             raise HTTPException(
