@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
+from sqlalchemy.orm import selectinload
 
 from app.core.security import (
     verify_password, get_password_hash, validate_password_strength,
@@ -47,7 +48,7 @@ class UserService:
                 (User.email == email) | (User.username == username) | (User.employee_id == employee_id)
             )
         )
-        if existing.scalar_first():
+        if existing.scalars().first():
             raise ValueError("이미 존재하는 이메일, 사용자명 또는 사번입니다.")
 
         # 비밀번호 강도 검증
@@ -85,9 +86,11 @@ class UserService:
         Returns:
             (user, message, requires_2fa)
         """
-        # 사용자 조회
+        # 사용자 조회 (department, role 관계를 eager loading)
         result = await self.db.execute(
-            select(User).where(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(
                 (User.username == username) | (User.email == username)
             )
         )
@@ -227,7 +230,12 @@ class UserService:
 
     async def get_user(self, user_id: int) -> Optional[User]:
         """사용자 조회"""
-        return await self.db.get(User, user_id)
+        result = await self.db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.id == user_id)
+        )
+        return result.scalar_one_or_none()
 
     async def get_user_by_username(self, username: str) -> Optional[User]:
         """사용자명으로 조회"""
@@ -238,7 +246,12 @@ class UserService:
 
     async def update_user(self, user_id: int, **updates) -> User:
         """사용자 정보 수정"""
-        user = await self.db.get(User, user_id)
+        result = await self.db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
         if not user:
             raise ValueError("사용자를 찾을 수 없습니다.")
 
@@ -311,11 +324,13 @@ class UserService:
     async def get_departments(self) -> List[Department]:
         """부서 목록 조회"""
         result = await self.db.execute(
-            select(Department).where(
+            select(Department)
+            .options(selectinload(Department.children))
+            .where(
                 Department.is_active == True
             ).order_by(Department.level, Department.sort_order)
         )
-        return result.scalars().all()
+        return result.scalars().unique().all()
 
     async def get_roles(self) -> List[Role]:
         """역할 목록 조회"""
@@ -361,7 +376,7 @@ class UserService:
 
         # 기본 역할 조회 (일반직원)
         role_result = await self.db.execute(
-            select(Role).where(Role.role_type == "staff")
+            select(Role).where(Role.role_type == RoleType.EMPLOYEE)
         )
         role = role_result.scalar_one_or_none()
 
@@ -398,18 +413,30 @@ class UserService:
         if not user_id:
             return None
 
-        return await self.db.get(User, int(user_id))
+        result = await self.db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.id == int(user_id))
+        )
+        return result.scalar_one_or_none()
 
     async def get_pending_users(self) -> List[User]:
         """승인 대기 중인 사용자 목록 조회"""
         result = await self.db.execute(
-            select(User).where(User.is_active == False)
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.is_active == False)
         )
         return result.scalars().all()
 
     async def approve_user(self, user_id: int, employee_id: str) -> User:
         """사용자 승인"""
-        user = await self.db.get(User, user_id)
+        result = await self.db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
         if not user:
             raise ValueError("사용자를 찾을 수 없습니다.")
 
@@ -437,13 +464,20 @@ class UserService:
     async def get_all_users(self) -> List[User]:
         """모든 사용자 목록 조회"""
         result = await self.db.execute(
-            select(User).order_by(User.created_at.desc())
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .order_by(User.created_at.desc())
         )
         return result.scalars().all()
 
     async def deactivate_user(self, user_id: int) -> User:
         """사용자 비활성화"""
-        user = await self.db.get(User, user_id)
+        result = await self.db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
         if not user:
             raise ValueError("사용자를 찾을 수 없습니다.")
 
@@ -456,7 +490,12 @@ class UserService:
 
     async def activate_user(self, user_id: int) -> User:
         """사용자 활성화"""
-        user = await self.db.get(User, user_id)
+        result = await self.db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
         if not user:
             raise ValueError("사용자를 찾을 수 없습니다.")
 

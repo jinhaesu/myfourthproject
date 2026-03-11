@@ -87,6 +87,7 @@ class ApprovalRequest(Base):
     requester: Mapped["User"] = relationship(
         "User", back_populates="created_approvals", foreign_keys=[requester_id]
     )
+    department: Mapped[Optional["Department"]] = relationship("Department")
     steps: Mapped[List["ApprovalStep"]] = relationship(
         "ApprovalStep", back_populates="approval_request",
         cascade="all, delete-orphan", order_by="ApprovalStep.step_order"

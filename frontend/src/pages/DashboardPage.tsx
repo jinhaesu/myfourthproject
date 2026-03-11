@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { forecastApi, approvalsApi, treasuryApi } from '@/services/api'
+import { useNavigate } from 'react-router-dom'
+import { forecastApi, approvalsApi, treasuryApi, budgetApi } from '@/services/api'
 import { useAuthStore } from '@/store/authStore'
 import {
   BanknotesIcon,
@@ -8,8 +9,6 @@ import {
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline'
 import {
-  LineChart,
-  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -17,6 +16,7 @@ import {
   ResponsiveContainer,
   BarChart,
   Bar,
+  Legend,
 } from 'recharts'
 
 function formatCurrency(value: number) {
@@ -33,19 +33,25 @@ function StatCard({
   change,
   changeType,
   icon: Icon,
+  isLoading,
 }: {
   title: string
   value: string
   change?: string
   changeType?: 'positive' | 'negative' | 'neutral'
   icon: React.ComponentType<{ className?: string }>
+  isLoading?: boolean
 }) {
   return (
     <div className="card">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm font-medium text-gray-500">{title}</p>
-          <p className="mt-1 text-2xl font-semibold text-gray-900">{value}</p>
+          {isLoading ? (
+            <div className="mt-1 h-8 w-32 bg-gray-200 rounded animate-pulse" />
+          ) : (
+            <p className="mt-1 text-2xl font-semibold text-gray-900">{value}</p>
+          )}
           {change && (
             <p
               className={`mt-1 text-sm ${
@@ -70,8 +76,10 @@ function StatCard({
 
 export default function DashboardPage() {
   const user = useAuthStore((state) => state.user)
+  const navigate = useNavigate()
+  const currentYear = new Date().getFullYear()
 
-  const { data: dashboardData } = useQuery({
+  const { data: dashboardData, isLoading: dashLoading } = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => forecastApi.getDashboard().then((res) => res.data),
   })
@@ -83,27 +91,46 @@ export default function DashboardPage() {
     enabled: !!user?.id,
   })
 
-  const { data: cashPosition } = useQuery({
+  const { data: cashPosition, isLoading: cashLoading } = useQuery({
     queryKey: ['cashPosition'],
     queryFn: () => treasuryApi.getCashPosition().then((res) => res.data),
   })
 
-  // Sample chart data
-  const revenueData = [
-    { month: '1월', actual: 120, budget: 100 },
-    { month: '2월', actual: 150, budget: 120 },
-    { month: '3월', actual: 130, budget: 130 },
-    { month: '4월', actual: 180, budget: 140 },
-    { month: '5월', actual: 160, budget: 150 },
-    { month: '6월', actual: 200, budget: 160 },
-  ]
+  // Real budget vs actual data for chart
+  const { data: vsActualData } = useQuery({
+    queryKey: ['budgetVsActual', currentYear],
+    queryFn: () => budgetApi.getVsActual(currentYear).then((res) => res.data),
+  })
 
-  const cashFlowData = [
-    { date: '1주차', inflow: 50, outflow: 30 },
-    { date: '2주차', inflow: 80, outflow: 60 },
-    { date: '3주차', inflow: 45, outflow: 70 },
-    { date: '4주차', inflow: 90, outflow: 50 },
-  ]
+  // Real cash flow forecast for chart
+  const { data: cashFlowForecast } = useQuery({
+    queryKey: ['cashFlowChart'],
+    queryFn: () => forecastApi.getCashFlow(28).then((res) => res.data),
+  })
+
+  // Transform budget vs actual data for chart
+  const revenueChartData = vsActualData?.items?.slice(0, 8).map((item: any) => ({
+    name: item.account_name?.length > 6 ? item.account_name.slice(0, 6) + '…' : item.account_name,
+    budget: Math.round(Number(item.budget_amount) / 10000),
+    actual: Math.round(Number(item.actual_amount) / 10000),
+  })) || []
+
+  // Transform cash flow forecast to weekly summary
+  const cashFlowChartData = (() => {
+    const daily = cashFlowForecast?.daily_forecast || []
+    if (daily.length === 0) return []
+    const weeks: { date: string; inflow: number; outflow: number }[] = []
+    for (let i = 0; i < daily.length; i += 7) {
+      const chunk = daily.slice(i, i + 7)
+      const weekNum = Math.floor(i / 7) + 1
+      weeks.push({
+        date: `${weekNum}주차`,
+        inflow: Math.round(chunk.reduce((s: number, d: any) => s + (Number(d.inflows) || 0), 0) / 10000),
+        outflow: Math.round(chunk.reduce((s: number, d: any) => s + (Number(d.outflows) || 0), 0) / 10000),
+      })
+    }
+    return weeks
+  })()
 
   return (
     <div className="space-y-6">
@@ -118,21 +145,20 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           title="당월 매출"
-          value={formatCurrency(dashboardData?.mtd_revenue || 1234567890)}
-          change="전월 대비 +12.5%"
-          changeType="positive"
+          value={formatCurrency(dashboardData?.mtd_revenue || 0)}
+          isLoading={dashLoading}
           icon={ArrowTrendingUpIcon}
         />
         <StatCard
           title="당월 영업이익"
-          value={formatCurrency(dashboardData?.mtd_operating_income || 234567890)}
-          change="목표 대비 +5.3%"
-          changeType="positive"
+          value={formatCurrency(dashboardData?.mtd_operating_income || 0)}
+          isLoading={dashLoading}
           icon={ArrowTrendingUpIcon}
         />
         <StatCard
           title="현재 현금잔액"
-          value={formatCurrency(cashPosition?.total_balance || 5678901234)}
+          value={formatCurrency(cashPosition?.total_balance || 0)}
+          isLoading={cashLoading}
           icon={BanknotesIcon}
         />
         <StatCard
@@ -145,61 +171,54 @@ export default function DashboardPage() {
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card">
-          <h3 className="card-header">매출 추이 (예산 vs 실적)</h3>
+          <h3 className="card-header">예산 vs 실적 (만원)</h3>
           <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={revenueData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
-                <YAxis stroke="#6b7280" fontSize={12} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'white',
-                    border: '1px solid #e5e7eb',
-                    borderRadius: '8px',
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="actual"
-                  name="실적"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                  dot={{ fill: '#3b82f6' }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="budget"
-                  name="예산"
-                  stroke="#9ca3af"
-                  strokeWidth={2}
-                  strokeDasharray="5 5"
-                  dot={{ fill: '#9ca3af' }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {revenueChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={revenueChartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="name" stroke="#6b7280" fontSize={11} angle={-30} textAnchor="end" height={60} />
+                  <YAxis stroke="#6b7280" fontSize={12} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}
+                    formatter={(value: number) => `${value.toLocaleString()}만원`}
+                  />
+                  <Legend />
+                  <Bar dataKey="budget" name="예산" fill="#93c5fd" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="actual" name="실적" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-400">
+                예산 데이터가 없습니다.
+              </div>
+            )}
           </div>
         </div>
 
         <div className="card">
-          <h3 className="card-header">주간 현금흐름</h3>
+          <h3 className="card-header">주간 현금흐름 예측 (만원)</h3>
           <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={cashFlowData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                <XAxis dataKey="date" stroke="#6b7280" fontSize={12} />
-                <YAxis stroke="#6b7280" fontSize={12} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'white',
-                    border: '1px solid #e5e7eb',
-                    borderRadius: '8px',
-                  }}
-                />
-                <Bar dataKey="inflow" name="입금" fill="#10b981" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="outflow" name="출금" fill="#ef4444" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {cashFlowChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={cashFlowChartData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                  <XAxis dataKey="date" stroke="#6b7280" fontSize={12} />
+                  <YAxis stroke="#6b7280" fontSize={12} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}
+                    formatter={(value: number) => `${value.toLocaleString()}만원`}
+                  />
+                  <Legend />
+                  <Bar dataKey="inflow" name="입금" fill="#10b981" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="outflow" name="출금" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-400">
+                현금흐름 데이터가 없습니다.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -209,7 +228,7 @@ export default function DashboardPage() {
         <div className="card">
           <h3 className="card-header">알림</h3>
           <div className="space-y-3">
-            {dashboardData?.cash_alerts?.length > 0 ? (
+            {dashboardData?.cash_alerts && dashboardData.cash_alerts.length > 0 ? (
               dashboardData.cash_alerts.map((alert: any, index: number) => (
                 <div
                   key={index}
@@ -234,7 +253,8 @@ export default function DashboardPage() {
             {pendingApprovals?.pending_approvals?.slice(0, 5).map((approval: any) => (
               <div
                 key={approval.id}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                onClick={() => navigate('/approvals')}
+                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg cursor-pointer hover:bg-gray-100 transition-colors"
               >
                 <div>
                   <p className="text-sm font-medium text-gray-900">{approval.title}</p>

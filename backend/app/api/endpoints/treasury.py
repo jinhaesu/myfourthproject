@@ -19,6 +19,34 @@ from app.services.treasury_manager import TreasuryManager
 router = APIRouter()
 
 
+def _mask_account_number(account_number: str) -> str:
+    """계좌번호 마스킹"""
+    if not account_number or len(account_number) < 4:
+        return account_number or ""
+    return "*" * (len(account_number) - 4) + account_number[-4:]
+
+
+def bank_account_to_response(account) -> dict:
+    """BankAccount ORM을 BankAccountResponse 호환 dict로 변환"""
+    return {
+        "id": account.id,
+        "bank_code": account.bank_code,
+        "bank_name": account.bank_name,
+        "account_number_masked": _mask_account_number(account.account_number),
+        "account_holder": account.account_holder,
+        "account_type": account.account_type.value if hasattr(account.account_type, 'value') else str(account.account_type),
+        "account_alias": account.account_alias,
+        "current_balance": account.current_balance,
+        "available_balance": account.available_balance,
+        "last_balance_update": account.last_balance_update,
+        "gl_account_id": account.gl_account_id,
+        "is_virtual_account_enabled": account.is_virtual_account_enabled,
+        "api_connected": account.api_connected,
+        "api_last_sync": account.api_last_sync,
+        "is_active": account.is_active,
+    }
+
+
 # ==================== 은행 계좌 ====================
 
 @router.post("/accounts/", response_model=BankAccountResponse, status_code=status.HTTP_201_CREATED)
@@ -27,13 +55,15 @@ async def create_bank_account(
     db: AsyncSession = Depends(get_db)
 ):
     """은행 계좌 등록"""
-    from app.models.treasury import BankAccount
+    from app.models.treasury import BankAccount, BankAccountType
 
-    account = BankAccount(**account_data.model_dump())
+    account = BankAccount(
+        **{**account_data.model_dump(), "account_type": BankAccountType(account_data.account_type)}
+    )
     db.add(account)
     await db.commit()
 
-    return BankAccountResponse.model_validate(account)
+    return bank_account_to_response(account)
 
 
 @router.get("/accounts/", response_model=List[BankAccountResponse])
@@ -49,7 +79,7 @@ async def get_bank_accounts(
     )
     accounts = result.scalars().all()
 
-    return [BankAccountResponse.model_validate(a) for a in accounts]
+    return [bank_account_to_response(a) for a in accounts]
 
 
 @router.get("/cash-position")
@@ -88,6 +118,28 @@ async def auto_reconcile(
 
 # ==================== 매출채권 ====================
 
+def receivable_to_response(r) -> dict:
+    """Receivable ORM을 ReceivableResponse 호환 dict로 변환"""
+    return {
+        "id": r.id,
+        "customer_name": r.customer_name,
+        "customer_business_number": r.customer_business_number,
+        "invoice_number": r.invoice_number,
+        "tax_invoice_number": r.tax_invoice_number,
+        "original_amount": r.original_amount,
+        "collected_amount": r.collected_amount,
+        "outstanding_amount": r.outstanding_amount,
+        "invoice_date": r.invoice_date,
+        "due_date": r.due_date,
+        "status": r.status.value if hasattr(r.status, 'value') else str(r.status),
+        "assigned_virtual_account": r.assigned_virtual_account,
+        "days_overdue": r.days_overdue,
+        "notes": r.notes,
+        "created_at": r.created_at,
+        "collected_at": r.collected_at,
+    }
+
+
 @router.post("/receivables/", response_model=ReceivableResponse, status_code=status.HTTP_201_CREATED)
 async def create_receivable(
     receivable_data: ReceivableCreate,
@@ -103,7 +155,7 @@ async def create_receivable(
     db.add(receivable)
     await db.commit()
 
-    return ReceivableResponse.model_validate(receivable)
+    return receivable_to_response(receivable)
 
 
 @router.get("/receivables/", response_model=List[ReceivableResponse])
@@ -128,7 +180,7 @@ async def get_receivables(
     result = await db.execute(query)
     receivables = result.scalars().all()
 
-    return [ReceivableResponse.model_validate(r) for r in receivables]
+    return [receivable_to_response(r) for r in receivables]
 
 
 @router.get("/receivables/aging", response_model=AgingReportResponse)
@@ -140,15 +192,62 @@ async def get_ar_aging(
     manager = TreasuryManager(db)
     report = await manager.get_ar_aging_report(as_of_date)
 
+    # items를 AgingReportItem 형식으로 변환
+    items = [
+        {
+            "customer_or_vendor": item.get("customer", ""),
+            "total_amount": item.get("total", 0),
+            "current": item.get("current", 0),
+            "days_1_30": item.get("days_1_30", 0),
+            "days_31_60": item.get("days_31_60", 0),
+            "days_61_90": item.get("days_61_90", 0),
+            "days_over_90": item.get("days_over_90", 0),
+        }
+        for item in report["items"]
+    ]
+    summary_data = report["summary"]
+    summary = {
+        "customer_or_vendor": "합계",
+        "total_amount": summary_data.get("total", 0),
+        "current": summary_data.get("current", 0),
+        "days_1_30": summary_data.get("days_1_30", 0),
+        "days_31_60": summary_data.get("days_31_60", 0),
+        "days_61_90": summary_data.get("days_61_90", 0),
+        "days_over_90": summary_data.get("days_over_90", 0),
+    }
+
     return AgingReportResponse(
         report_type="receivables",
         report_date=as_of_date or date.today(),
-        items=report["items"],
-        summary=report["summary"]
+        items=items,
+        summary=summary
     )
 
 
 # ==================== 매입채무 ====================
+
+def payable_to_response(p) -> dict:
+    """Payable ORM을 PayableResponse 호환 dict로 변환"""
+    return {
+        "id": p.id,
+        "vendor_name": p.vendor_name,
+        "vendor_business_number": p.vendor_business_number,
+        "invoice_number": p.invoice_number,
+        "tax_invoice_number": p.tax_invoice_number,
+        "original_amount": p.original_amount,
+        "paid_amount": p.paid_amount,
+        "outstanding_amount": p.outstanding_amount,
+        "invoice_date": p.invoice_date,
+        "due_date": p.due_date,
+        "status": p.status.value if hasattr(p.status, 'value') else str(p.status),
+        "payment_bank_account_id": p.payment_bank_account_id,
+        "vendor_bank_account": p.vendor_bank_account,
+        "days_overdue": p.days_overdue,
+        "notes": p.notes,
+        "created_at": p.created_at,
+        "paid_at": p.paid_at,
+    }
+
 
 @router.post("/payables/", response_model=PayableResponse, status_code=status.HTTP_201_CREATED)
 async def create_payable(
@@ -165,7 +264,7 @@ async def create_payable(
     db.add(payable)
     await db.commit()
 
-    return PayableResponse.model_validate(payable)
+    return payable_to_response(payable)
 
 
 @router.get("/payables/", response_model=List[PayableResponse])
@@ -190,7 +289,7 @@ async def get_payables(
     result = await db.execute(query)
     payables = result.scalars().all()
 
-    return [PayableResponse.model_validate(p) for p in payables]
+    return [payable_to_response(p) for p in payables]
 
 
 @router.get("/payables/aging", response_model=AgingReportResponse)
@@ -202,11 +301,35 @@ async def get_ap_aging(
     manager = TreasuryManager(db)
     report = await manager.get_ap_aging_report(as_of_date)
 
+    # items를 AgingReportItem 형식으로 변환
+    items = [
+        {
+            "customer_or_vendor": item.get("vendor", ""),
+            "total_amount": item.get("total", 0),
+            "current": item.get("current", 0),
+            "days_1_30": item.get("days_1_30", 0),
+            "days_31_60": item.get("days_31_60", 0),
+            "days_61_90": item.get("days_61_90", 0),
+            "days_over_90": item.get("days_over_90", 0),
+        }
+        for item in report["items"]
+    ]
+    summary_data = report["summary"]
+    summary = {
+        "customer_or_vendor": "합계",
+        "total_amount": summary_data.get("total", 0),
+        "current": summary_data.get("current", 0),
+        "days_1_30": summary_data.get("days_1_30", 0),
+        "days_31_60": summary_data.get("days_31_60", 0),
+        "days_61_90": summary_data.get("days_61_90", 0),
+        "days_over_90": summary_data.get("days_over_90", 0),
+    }
+
     return AgingReportResponse(
         report_type="payables",
         report_date=as_of_date or date.today(),
-        items=report["items"],
-        summary=report["summary"]
+        items=items,
+        summary=summary
     )
 
 
@@ -231,7 +354,10 @@ async def create_payment_schedule(
         )
         return PaymentScheduleResponse.model_validate(schedule)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        error_msg = str(e)
+        if "찾을 수 없" in error_msg or "not found" in error_msg.lower():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=error_msg)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
 
 
 @router.get("/payment-schedules/upcoming", response_model=List[PaymentScheduleResponse])

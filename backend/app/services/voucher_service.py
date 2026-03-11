@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
+from sqlalchemy.orm import selectinload
 
 from app.models.accounting import (
     Voucher, VoucherLine, VoucherAttachment,
@@ -117,18 +118,25 @@ class VoucherService:
             self.db.add(line)
 
         await self.db.commit()
-        return voucher
+        # Reload with eager-loaded relationships for response
+        return await self.get_voucher(voucher.id)
 
     async def _generate_voucher_number(self, voucher_date: date) -> str:
-        """전표번호 생성"""
+        """전표번호 생성 (동시성 안전)
+
+        SELECT ... FOR UPDATE를 사용하여 동시 요청 시
+        동일한 전표번호가 생성되는 Race Condition을 방지합니다.
+        """
         prefix = f"V{voucher_date.strftime('%Y%m%d')}"
 
         result = await self.db.execute(
             select(Voucher).where(
                 Voucher.voucher_number.like(f"{prefix}%")
             ).order_by(Voucher.voucher_number.desc())
+            .with_for_update()
+            .limit(1)
         )
-        last_voucher = result.scalar_first()
+        last_voucher = result.scalars().first()
 
         if last_voucher:
             last_seq = int(last_voucher.voucher_number[-4:])
@@ -140,7 +148,15 @@ class VoucherService:
 
     async def get_voucher(self, voucher_id: int) -> Optional[Voucher]:
         """전표 조회"""
-        return await self.db.get(Voucher, voucher_id)
+        result = await self.db.execute(
+            select(Voucher)
+            .options(
+                selectinload(Voucher.lines).selectinload(VoucherLine.account),
+                selectinload(Voucher.department),
+            )
+            .where(Voucher.id == voucher_id)
+        )
+        return result.scalar_one_or_none()
 
     async def get_vouchers(
         self,
@@ -183,14 +199,17 @@ class VoucherService:
         total = result.scalar()
 
         # 목록 조회
-        query = select(Voucher)
+        query = select(Voucher).options(
+            selectinload(Voucher.lines).selectinload(VoucherLine.account),
+            selectinload(Voucher.department),
+        )
         if conditions:
             query = query.where(and_(*conditions))
         query = query.order_by(Voucher.voucher_date.desc(), Voucher.voucher_number.desc())
         query = query.offset((page - 1) * size).limit(size)
 
         result = await self.db.execute(query)
-        vouchers = result.scalars().all()
+        vouchers = result.scalars().unique().all()
 
         return vouchers, total
 
@@ -220,6 +239,22 @@ class VoucherService:
 
         # 라인 업데이트
         if "lines" in updates and updates["lines"]:
+            # 먼저 차대변 균형 검증
+            new_total_debit = sum(
+                Decimal(str(ld.get("debit_amount", 0))) for ld in updates["lines"]
+            )
+            new_total_credit = sum(
+                Decimal(str(ld.get("credit_amount", 0))) for ld in updates["lines"]
+            )
+
+            if new_total_debit != new_total_credit:
+                raise ValueError(
+                    f"차변 합계({new_total_debit})와 대변 합계({new_total_credit})가 일치하지 않습니다."
+                )
+
+            if new_total_debit == Decimal("0"):
+                raise ValueError("전표 금액이 0원일 수 없습니다.")
+
             # 기존 라인 삭제
             for line in voucher.lines:
                 await self.db.delete(line)
@@ -254,7 +289,8 @@ class VoucherService:
         voucher.updated_at = datetime.utcnow()
 
         await self.db.commit()
-        return voucher
+        # Reload with eager-loaded relationships for response
+        return await self.get_voucher(voucher.id)
 
     async def confirm_voucher(
         self,
@@ -293,20 +329,80 @@ class VoucherService:
                 voucher.ai_classification_status = AIClassificationStatus.USER_CONFIRMED
 
         await self.db.commit()
-        return voucher
+        # Reload with eager-loaded relationships for response
+        return await self.get_voucher(voucher.id)
 
     async def delete_voucher(self, voucher_id: int) -> bool:
-        """전표 삭제"""
+        """전표 삭제 (소프트 삭제 - 감사추적 보존)
+
+        임시저장 상태만 소프트 삭제 가능.
+        확정된 전표는 역분개(cancel_voucher)를 사용해야 합니다.
+        """
         voucher = await self.db.get(Voucher, voucher_id)
         if not voucher:
             raise ValueError("전표를 찾을 수 없습니다.")
 
-        if voucher.status not in [VoucherStatus.DRAFT, VoucherStatus.CANCELLED]:
-            raise ValueError("임시저장 또는 취소 상태의 전표만 삭제할 수 있습니다.")
+        if voucher.status not in [VoucherStatus.DRAFT]:
+            raise ValueError(
+                "임시저장 상태의 전표만 삭제할 수 있습니다. "
+                "확정 전표는 '전표 취소(역분개)' 기능을 사용하세요."
+            )
 
-        await self.db.delete(voucher)
+        voucher.status = VoucherStatus.CANCELLED
         await self.db.commit()
         return True
+
+    async def cancel_voucher(self, voucher_id: int, user_id: int, reason: str = "") -> "Voucher":
+        """확정 전표 취소 - 역분개 전표 자동 생성
+
+        회계 감사 원칙에 따라 원본 전표를 삭제하지 않고,
+        차변/대변을 반대로 하는 역분개 전표를 생성합니다.
+        """
+        original = await self.get_voucher(voucher_id)
+        if not original:
+            raise ValueError("전표를 찾을 수 없습니다.")
+
+        if original.status != VoucherStatus.CONFIRMED:
+            raise ValueError("확정 상태의 전표만 역분개할 수 있습니다.")
+
+        # 원본 전표 취소 상태로 변경
+        original.status = VoucherStatus.CANCELLED
+        cancel_desc = f"[역분개] {original.description}" + (f" (사유: {reason})" if reason else "")
+
+        # 역분개 전표 생성: 차변↔대변 반전
+        reversing_number = await self._generate_voucher_number(date.today())
+        reversing = Voucher(
+            voucher_number=reversing_number,
+            voucher_date=date.today(),
+            transaction_date=original.transaction_date,
+            description=cancel_desc,
+            transaction_type=original.transaction_type,
+            total_debit=original.total_credit,
+            total_credit=original.total_debit,
+            department_id=original.department_id,
+            creator_id=user_id,
+            status=VoucherStatus.CONFIRMED,
+            confirmed_at=datetime.utcnow(),
+            confirmed_by_id=user_id,
+        )
+        self.db.add(reversing)
+        await self.db.flush()
+
+        # 역분개 전표 라인: 차변/대변 반전
+        for orig_line in original.lines:
+            rev_line = VoucherLine(
+                voucher_id=reversing.id,
+                line_number=orig_line.line_number,
+                account_id=orig_line.account_id,
+                debit_amount=orig_line.credit_amount,
+                credit_amount=orig_line.debit_amount,
+                description=f"[역분개] {orig_line.description or ''}",
+                counterparty_name=orig_line.counterparty_name,
+            )
+            self.db.add(rev_line)
+
+        await self.db.commit()
+        return await self.get_voucher(reversing.id)
 
     async def batch_import_card_transactions(
         self,
@@ -334,16 +430,19 @@ class VoucherService:
                 # 자동 분류된 계정과목으로 전표 생성
                 account_id = ai_result["primary_prediction"]["account_id"]
 
+                # 카드 결제 대변: 미지급금 계정 조회
+                credit_account = await self._get_card_payable_account()
+
                 lines = [
                     {
                         "account_id": account_id,
                         "debit_amount": txn["amount"],
-                        "credit_amount": 0,
+                        "credit_amount": Decimal("0"),
                         "description": txn.get("description")
                     },
                     {
-                        "account_id": 1,  # 현금/예금 계정 (설정 필요)
-                        "debit_amount": 0,
+                        "account_id": credit_account.id,
+                        "debit_amount": Decimal("0"),
                         "credit_amount": txn["amount"]
                     }
                 ]
@@ -376,3 +475,16 @@ class VoucherService:
             "error_count": error_count,
             "errors": errors
         }
+
+    async def _get_card_payable_account(self) -> Account:
+        """법인카드 결제 시 대변 계정 (미지급금) 조회"""
+        result = await self.db.execute(
+            select(Account).where(
+                Account.code == "220100",  # 미지급금 (K-IFRS 표준코드)
+                Account.is_active == True
+            )
+        )
+        account = result.scalars().first()
+        if not account:
+            raise ValueError("미지급금 계정(220100)이 설정되지 않았습니다. 계정과목을 확인하세요.")
+        return account

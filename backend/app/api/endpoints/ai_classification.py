@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 import pandas as pd
 
+from sqlalchemy import case as sa_case
+
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
@@ -96,14 +98,21 @@ async def get_ai_status(
     )
 
     # 분류 로그 통계
+    from app.models.ai import ClassificationResult
     log_stats = await db.execute(
         select(
             func.count(AIClassificationLog.id).label("total"),
             func.sum(
-                func.case((AIClassificationLog.classification_result == "correct", 1), else_=0)
+                sa_case(
+                    (AIClassificationLog.classification_result == ClassificationResult.CORRECT, 1),
+                    else_=0
+                )
             ).label("correct"),
             func.sum(
-                func.case((AIClassificationLog.classification_result == "corrected", 1), else_=0)
+                sa_case(
+                    (AIClassificationLog.classification_result == ClassificationResult.CORRECTED, 1),
+                    else_=0
+                )
             ).label("corrected")
         )
     )

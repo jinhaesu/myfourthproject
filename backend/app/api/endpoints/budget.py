@@ -18,6 +18,59 @@ from app.services.budget_service import BudgetService
 router = APIRouter()
 
 
+def budget_to_response(budget) -> dict:
+    """Budget ORM 객체를 BudgetResponse 호환 dict로 변환"""
+    lines = []
+    for line in (budget.lines if hasattr(budget, 'lines') and budget.lines else []):
+        usage_pct = (line.used_amount / line.annual_amount * 100) if line.annual_amount else Decimal("0")
+        lines.append({
+            "id": line.id,
+            "account_id": line.account_id,
+            "account_code": line.account.code if hasattr(line, 'account') and line.account else None,
+            "account_name": line.account.name if hasattr(line, 'account') and line.account else None,
+            "jan_amount": line.jan_amount,
+            "feb_amount": line.feb_amount,
+            "mar_amount": line.mar_amount,
+            "apr_amount": line.apr_amount,
+            "may_amount": line.may_amount,
+            "jun_amount": line.jun_amount,
+            "jul_amount": line.jul_amount,
+            "aug_amount": line.aug_amount,
+            "sep_amount": line.sep_amount,
+            "oct_amount": line.oct_amount,
+            "nov_amount": line.nov_amount,
+            "dec_amount": line.dec_amount,
+            "annual_amount": line.annual_amount,
+            "used_amount": line.used_amount,
+            "remaining_amount": line.remaining_amount,
+            "usage_percentage": usage_pct,
+            "notes": line.notes,
+        })
+
+    usage_pct = (budget.used_amount / budget.total_amount * 100) if budget.total_amount else Decimal("0")
+
+    return {
+        "id": budget.id,
+        "fiscal_year": budget.fiscal_year,
+        "period_type": budget.period_type,
+        "period_number": budget.period_number,
+        "department_id": budget.department_id,
+        "department_name": budget.department.name if hasattr(budget, 'department') and budget.department else None,
+        "budget_name": budget.budget_name,
+        "total_amount": budget.total_amount,
+        "used_amount": budget.used_amount,
+        "remaining_amount": budget.remaining_amount,
+        "usage_percentage": usage_pct,
+        "status": budget.status.value if hasattr(budget.status, 'value') else str(budget.status),
+        "warning_threshold": budget.warning_threshold,
+        "critical_threshold": budget.critical_threshold,
+        "description": budget.description,
+        "lines": lines,
+        "created_at": budget.created_at,
+        "approved_at": budget.approved_at,
+    }
+
+
 @router.post("/", response_model=BudgetResponse, status_code=status.HTTP_201_CREATED)
 async def create_budget(
     budget_data: BudgetCreate,
@@ -44,7 +97,7 @@ async def create_budget(
             warning_threshold=budget_data.warning_threshold,
             critical_threshold=budget_data.critical_threshold
         )
-        return BudgetResponse.model_validate(budget)
+        return budget_to_response(budget)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -57,8 +110,9 @@ async def get_budgets(
     db: AsyncSession = Depends(get_db)
 ):
     """예산 목록 조회"""
-    from app.models.budget import Budget, BudgetStatus
+    from app.models.budget import Budget, BudgetLine, BudgetStatus
     from sqlalchemy import select, and_
+    from sqlalchemy.orm import selectinload
 
     conditions = []
 
@@ -69,34 +123,18 @@ async def get_budgets(
     if status:
         conditions.append(Budget.status == BudgetStatus(status))
 
-    query = select(Budget)
+    query = select(Budget).options(
+        selectinload(Budget.lines).selectinload(BudgetLine.account),
+        selectinload(Budget.department),
+    )
     if conditions:
         query = query.where(and_(*conditions))
     query = query.order_by(Budget.fiscal_year.desc(), Budget.department_id)
 
     result = await db.execute(query)
-    budgets = result.scalars().all()
+    budgets = result.scalars().unique().all()
 
-    return [BudgetResponse.model_validate(b) for b in budgets]
-
-
-@router.get("/{budget_id}", response_model=BudgetResponse)
-async def get_budget(
-    budget_id: int,
-    db: AsyncSession = Depends(get_db)
-):
-    """예산 상세 조회"""
-    from app.models.budget import Budget
-
-    budget = await db.get(Budget, budget_id)
-
-    if not budget:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="예산을 찾을 수 없습니다."
-        )
-
-    return BudgetResponse.model_validate(budget)
+    return [budget_to_response(b) for b in budgets]
 
 
 @router.post("/check", response_model=BudgetCheckResponse)
@@ -156,6 +194,35 @@ async def get_budget_vs_actual(
     result = await service.get_budget_vs_actual(fiscal_year, department_id)
 
     return BudgetVsActualResponse(**result)
+
+
+@router.get("/{budget_id}", response_model=BudgetResponse)
+async def get_budget(
+    budget_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """예산 상세 조회"""
+    from app.models.budget import Budget, BudgetLine
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(Budget)
+        .options(
+            selectinload(Budget.lines).selectinload(BudgetLine.account),
+            selectinload(Budget.department),
+        )
+        .where(Budget.id == budget_id)
+    )
+    budget = result.scalar_one_or_none()
+
+    if not budget:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="예산을 찾을 수 없습니다."
+        )
+
+    return budget_to_response(budget)
 
 
 @router.post("/{budget_id}/activate")

@@ -4,13 +4,14 @@ Smart Finance Core - Admin API
 """
 from datetime import datetime
 from typing import Optional, List
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import require_admin
 from app.services.audit_service import AuditService
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin())])
 
 
 @router.get("/audit-logs")
@@ -72,8 +73,8 @@ async def get_audit_logs(
 
 @router.post("/snapshots")
 async def create_snapshot(
-    snapshot_type: str = Query(..., regex="^(daily|monthly|manual)$"),
-    data_type: str = Query(..., regex="^(vouchers|approvals|audit_logs|full)$"),
+    snapshot_type: str = Query(..., pattern="^(daily|monthly|manual)$"),
+    data_type: str = Query(..., pattern="^(vouchers|approvals|audit_logs|full)$"),
     user_id: int = Query(..., description="현재 사용자 ID"),
     db: AsyncSession = Depends(get_db)
 ):
@@ -144,7 +145,7 @@ async def get_snapshots(
 
 @router.get("/audit-report")
 async def generate_audit_report(
-    report_type: str = Query("activity", regex="^(activity|security|compliance)$"),
+    report_type: str = Query("activity", pattern="^(activity|security|compliance)$"),
     from_date: datetime = None,
     to_date: datetime = None,
     db: AsyncSession = Depends(get_db)
@@ -181,8 +182,10 @@ async def get_system_health(
     except Exception as e:
         db_status = f"unhealthy: {str(e)}"
 
+    health_status = "healthy" if db_status == "healthy" else "degraded"
+
     return {
-        "status": "healthy" if db_status == "healthy" else "degraded",
+        "status": health_status,
         "components": {
             "database": db_status,
             "api": "healthy"

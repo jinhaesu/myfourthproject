@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { vouchersApi } from '@/services/api'
+import toast from 'react-hot-toast'
+import { vouchersApi, reportsApi } from '@/services/api'
 import { PlusIcon, FunnelIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline'
 
 const statusLabels: Record<string, { label: string; className: string }> = {
@@ -50,7 +51,32 @@ export default function VouchersPage() {
           <p className="text-gray-500 mt-1">전표를 생성하고 관리합니다.</p>
         </div>
         <div className="flex gap-3">
-          <button className="btn-secondary">
+          <button
+            className="btn-secondary"
+            onClick={async () => {
+              if (!filters.fromDate || !filters.toDate) {
+                toast.error('엑셀 다운로드를 위해 기간을 설정해주세요.')
+                return
+              }
+              try {
+                const response = await reportsApi.exportVouchersExcel(
+                  filters.fromDate,
+                  filters.toDate,
+                  undefined,
+                  filters.status || undefined
+                )
+                const url = window.URL.createObjectURL(new Blob([response.data]))
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `전표목록_${filters.fromDate}_${filters.toDate}.xlsx`
+                a.click()
+                window.URL.revokeObjectURL(url)
+                toast.success('엑셀 파일이 다운로드되었습니다.')
+              } catch (error: any) {
+                toast.error(error.response?.data?.detail || '다운로드에 실패했습니다.')
+              }
+            }}
+          >
             <ArrowDownTrayIcon className="h-5 w-5 mr-2" />
             엑셀 다운로드
           </button>
@@ -125,7 +151,7 @@ export default function VouchersPage() {
                   로딩 중...
                 </td>
               </tr>
-            ) : data?.items?.length > 0 ? (
+            ) : data?.items && data.items.length > 0 ? (
               data.items.map((voucher: any) => (
                 <tr key={voucher.id}>
                   <td>

@@ -7,12 +7,13 @@ from decimal import Decimal
 from typing import Optional, List, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
+from sqlalchemy.orm import selectinload
 import numpy as np
 
 from app.models.accounting import Voucher, VoucherLine, VoucherStatus, Account, AccountCategory
 from app.models.approval import ApprovalRequest, ApprovalStatus
-from app.models.treasury import Receivable, Payable, BankAccount, PaymentSchedule
-from app.models.budget import Budget, BudgetLine
+from app.models.treasury import Receivable, Payable, BankAccount, BankAccountType, PaymentSchedule
+from app.models.budget import Budget, BudgetLine, BudgetStatus
 
 
 class ForecastingEngine:
@@ -73,12 +74,23 @@ class ForecastingEngine:
             forecasted = fixed_costs.get(account_id, Decimal("0"))
             budget = budget_amounts.get(account_id, Decimal("0"))
 
+            category = self._get_pl_category(account)
+
+            # 금액 부호 보정:
+            # 원장 데이터는 (차변 - 대변) 으로 집계됨.
+            # 수익/영업외수익 계정은 대변이 정상 잔액이므로 음수로 나옴 -> 부호 반전 필요
+            # 비용/원가 계정은 차변이 정상 잔액이므로 양수 그대로 사용
+            if category in ("revenue", "other_income"):
+                confirmed = -confirmed
+                pending = -pending
+                forecasted = -forecasted
+
             total = confirmed + pending + forecasted
 
             item = {
                 "account_code": account.code,
                 "account_name": account.name,
-                "category": self._get_pl_category(account),
+                "category": category,
                 "confirmed_amount": confirmed,
                 "pending_amount": pending,
                 "forecasted_amount": forecasted,
@@ -88,7 +100,6 @@ class ForecastingEngine:
                 "variance_percentage": ((total - budget) / budget * 100) if budget else None
             }
 
-            category = item["category"]
             if category == "revenue":
                 revenue_items.append(item)
             elif category == "cogs":
@@ -196,10 +207,16 @@ class ForecastingEngine:
         period_end: date,
         department_id: Optional[int]
     ) -> Dict[int, Decimal]:
-        """고정비 예측 (과거 데이터 기반)"""
-        # 과거 3개월 평균으로 추정
+        """
+        고정비 예측 (과거 데이터 기반)
+        과거 3개월간의 계정과목별 합계를 구한 후 월 평균을 산출하고,
+        예측 기간의 월 수에 맞게 조정한다.
+        """
         lookback_start = period_start - timedelta(days=90)
         lookback_end = period_start - timedelta(days=1)
+
+        # 실제 lookback 기간의 월 수 계산
+        lookback_months = max(1, (lookback_end - lookback_start).days // 30)
 
         conditions = [
             Voucher.voucher_date >= lookback_start,
@@ -209,17 +226,21 @@ class ForecastingEngine:
         if department_id:
             conditions.append(Voucher.department_id == department_id)
 
+        # 계정과목별 총액을 구한 후, lookback 월 수로 나눠서 월 평균 산출
         result = await self.db.execute(
             select(
                 VoucherLine.account_id,
-                func.avg(VoucherLine.debit_amount - VoucherLine.credit_amount).label("avg_amount")
+                func.sum(VoucherLine.debit_amount - VoucherLine.credit_amount).label("total_amount")
             ).join(Voucher).where(and_(*conditions)).group_by(VoucherLine.account_id)
         )
 
-        # 월 수로 나눠서 예측 기간에 맞게 조정
+        # 예측 기간의 월 수
         months_in_period = max(1, (period_end - period_start).days // 30)
+
         return {
-            row.account_id: Decimal(str(float(row.avg_amount) * months_in_period))
+            row.account_id: Decimal(str(
+                round(float(row.total_amount) / lookback_months * months_in_period, 2)
+            ))
             for row in result.all()
         }
 
@@ -229,43 +250,79 @@ class ForecastingEngine:
         period_end: date,
         department_id: Optional[int]
     ) -> Dict[int, Decimal]:
-        """예산 금액 조회"""
-        fiscal_year = period_start.year
-        current_month = period_start.month
+        """예산 금액 조회 (기간 내 모든 월의 예산 합산, 연도 넘김 지원)"""
+        month_names = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                       'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 
-        conditions = [Budget.fiscal_year == fiscal_year, Budget.status == "active"]
+        # 연도가 다른 경우를 처리하기 위해 (year, month) 쌍의 리스트 생성
+        year_months = []
+        current = period_start.replace(day=1)
+        end = period_end.replace(day=1)
+        while current <= end:
+            year_months.append((current.year, current.month))
+            if current.month == 12:
+                current = current.replace(year=current.year + 1, month=1)
+            else:
+                current = current.replace(month=current.month + 1)
+
+        # 관련 연도들의 예산을 조회
+        fiscal_years = list(set(ym[0] for ym in year_months))
+
+        conditions = [Budget.fiscal_year.in_(fiscal_years), Budget.status == BudgetStatus.ACTIVE]
         if department_id:
             conditions.append(Budget.department_id == department_id)
 
         result = await self.db.execute(
-            select(Budget).where(and_(*conditions))
+            select(Budget)
+            .options(selectinload(Budget.lines))
+            .where(and_(*conditions))
         )
-        budgets = result.scalars().all()
+        budgets = result.scalars().unique().all()
 
-        budget_amounts = {}
+        budget_amounts: Dict[int, Decimal] = {}
         for budget in budgets:
             for line in budget.lines:
-                month_attr = f"{['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'][current_month - 1]}_amount"
-                amount = getattr(line, month_attr, Decimal("0"))
-                if line.account_id in budget_amounts:
-                    budget_amounts[line.account_id] += amount
-                else:
-                    budget_amounts[line.account_id] = amount
+                total = Decimal("0")
+                for yr, m in year_months:
+                    if yr == budget.fiscal_year:
+                        month_attr = f"{month_names[m - 1]}_amount"
+                        total += getattr(line, month_attr, Decimal("0")) or Decimal("0")
+
+                if total > 0:
+                    if line.account_id in budget_amounts:
+                        budget_amounts[line.account_id] += total
+                    else:
+                        budget_amounts[line.account_id] = total
 
         return budget_amounts
 
     def _get_pl_category(self, account: Account) -> str:
-        """계정과목의 손익 카테고리 분류"""
+        """
+        계정과목의 손익 카테고리 분류 (K-IFRS 6자리 코드 기준)
+
+        코드 체계:
+        - 41xxxx: 매출(수익)
+        - 51xxxx~52xxxx: 매출원가(COGS)
+        - 81xxxx~84xxxx: 판매비와관리비(Operating Expense)
+        - 91xxxx: 영업외수익 (other_income)
+        - 95xxxx: 영업외비용 (other_expense)
+        """
         code = account.code
-        if code.startswith("4"):
+
+        # 매출/수익 (41xxxx)
+        if code.startswith("41"):
             return "revenue"
-        elif code.startswith("5"):
+        # 매출원가 (51xxxx, 52xxxx)
+        elif code.startswith("51") or code.startswith("52"):
             return "cogs"
+        # 판매비와관리비 (81xxxx ~ 84xxxx)
         elif code.startswith("8"):
             return "operating_expense"
-        elif code.startswith("9"):
-            if "income" in account.name.lower() or "이익" in account.name:
-                return "other_income"
+        # 영업외수익 (91xxxx)
+        elif code.startswith("91"):
+            return "other_income"
+        # 영업외비용 (95xxxx)
+        elif code.startswith("95"):
             return "other_expense"
         return "other"
 
@@ -289,7 +346,7 @@ class ForecastingEngine:
             select(func.sum(BankAccount.current_balance)).where(
                 and_(
                     BankAccount.is_active == True,
-                    BankAccount.account_type != "virtual"
+                    BankAccount.account_type != BankAccountType.VIRTUAL
                 )
             )
         )
@@ -453,17 +510,17 @@ class ForecastingEngine:
             "net_income": float(baseline_pl["net_income"])
         }
 
-        # 시나리오 적용
+        # 시나리오 적용 (복합 성장률 적용)
         scenario_results = []
         cumulative_cash = 0
 
-        for period in range(1, forecast_periods + 1):
-            # 초기값 = 기준값
-            revenue = baseline["revenue"]
-            cogs = baseline["cogs"]
-            opex = baseline["operating_expense"]
+        # 기간별 누적 성장 추적
+        revenue = baseline["revenue"]
+        cogs = baseline["cogs"]
+        opex = baseline["operating_expense"]
 
-            # 변수 적용
+        for period in range(1, forecast_periods + 1):
+            # 변수 적용 (매 기간 누적 적용 - 복합 성장)
             for var in variables:
                 change = float(var.get("change_value", 0))
 
@@ -508,11 +565,15 @@ class ForecastingEngine:
         # 시나리오 요약
         final_result = scenario_results[-1]
 
+        total_scenario_revenue = sum(r["revenue"] for r in scenario_results)
+        total_scenario_oi = sum(r["operating_income"] for r in scenario_results)
+        total_scenario_ni = sum(r["net_income"] for r in scenario_results)
+
         scenario_summary = {
-            "total_revenue": sum(r["revenue"] for r in scenario_results),
-            "total_operating_income": sum(r["operating_income"] for r in scenario_results),
-            "total_net_income": sum(r["net_income"] for r in scenario_results),
-            "average_margin": sum(r["operating_income"] for r in scenario_results) / sum(r["revenue"] for r in scenario_results) * 100
+            "total_revenue": total_scenario_revenue,
+            "total_operating_income": total_scenario_oi,
+            "total_net_income": total_scenario_ni,
+            "average_margin": (total_scenario_oi / total_scenario_revenue * 100) if total_scenario_revenue else Decimal("0")
         }
 
         baseline_total_revenue = baseline["revenue"] * forecast_periods
@@ -531,7 +592,7 @@ class ForecastingEngine:
             "scenario_summary": scenario_summary,
             "period_results": scenario_results,
             "revenue_change": scenario_summary["total_revenue"] - Decimal(str(baseline_total_revenue)),
-            "revenue_change_pct": (float(scenario_summary["total_revenue"]) - baseline_total_revenue) / baseline_total_revenue * 100,
+            "revenue_change_pct": ((float(scenario_summary["total_revenue"]) - baseline_total_revenue) / baseline_total_revenue * 100) if baseline_total_revenue else 0,
             "operating_income_change": scenario_summary["total_operating_income"] - Decimal(str(baseline_total_oi)),
             "operating_income_change_pct": (float(scenario_summary["total_operating_income"]) - baseline_total_oi) / baseline_total_oi * 100 if baseline_total_oi else 0,
             "net_income_change": scenario_summary["total_net_income"] - Decimal(str(baseline_total_ni)),

@@ -7,8 +7,9 @@ from decimal import Decimal
 from typing import Optional, List, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
+from sqlalchemy.orm import selectinload
 
-from app.models.budget import Budget, BudgetLine, BudgetUsage, BudgetStatus
+from app.models.budget import Budget, BudgetLine, BudgetUsage, BudgetStatus, BudgetPeriodType
 from app.models.accounting import Account, Voucher, VoucherLine, VoucherStatus
 from app.models.user import Department
 
@@ -48,9 +49,15 @@ class BudgetService:
             for line in lines
         )
 
+        # Convert period_type string to enum
+        if isinstance(period_type, str):
+            period_type_enum = BudgetPeriodType(period_type)
+        else:
+            period_type_enum = period_type
+
         budget = Budget(
             fiscal_year=fiscal_year,
-            period_type=period_type,
+            period_type=period_type_enum,
             period_number=period_number,
             department_id=department_id,
             budget_name=budget_name,
@@ -97,7 +104,17 @@ class BudgetService:
             self.db.add(budget_line)
 
         await self.db.commit()
-        return budget
+
+        # Reload with eager-loaded relationships for response
+        result = await self.db.execute(
+            select(Budget)
+            .options(
+                selectinload(Budget.lines).selectinload(BudgetLine.account),
+                selectinload(Budget.department),
+            )
+            .where(Budget.id == budget.id)
+        )
+        return result.scalar_one_or_none()
 
     async def check_budget(
         self,
@@ -137,10 +154,18 @@ class BudgetService:
                 )
             )
         )
-        budget = result.scalar_first()
+        budget = result.scalars().first()
 
         if not budget:
+            department = await self.db.get(Department, department_id)
+            account = await self.db.get(Account, account_id)
             return {
+                "department_id": department_id,
+                "department_name": department.name if department else "",
+                "account_id": account_id,
+                "account_name": account.name if account else "",
+                "fiscal_year": fiscal_year,
+                "current_month": current_month,
                 "is_available": True,
                 "alert_level": "normal",
                 "message": "예산이 설정되지 않았습니다.",
@@ -164,10 +189,18 @@ class BudgetService:
                 )
             )
         )
-        budget_line = result.scalar_first()
+        budget_line = result.scalars().first()
 
         if not budget_line:
+            department = await self.db.get(Department, department_id)
+            account = await self.db.get(Account, account_id)
             return {
+                "department_id": department_id,
+                "department_name": department.name if department else "",
+                "account_id": account_id,
+                "account_name": account.name if account else "",
+                "fiscal_year": fiscal_year,
+                "current_month": current_month,
                 "is_available": True,
                 "alert_level": "normal",
                 "message": f"해당 계정({account_id})에 대한 예산이 없습니다.",
@@ -215,10 +248,10 @@ class BudgetService:
             alert_level = "exceeded"
             is_available = False
             message = f"월간 예산 초과 (요청: {amount:,.0f}원, 잔액: {monthly_remaining:,.0f}원)"
-        elif annual_usage_pct >= float(budget.critical_threshold):
+        elif annual_usage_pct >= budget.critical_threshold:
             alert_level = "critical"
             message = f"연간 예산 사용률 위험 ({annual_usage_pct:.1f}%)"
-        elif annual_usage_pct >= float(budget.warning_threshold):
+        elif annual_usage_pct >= budget.warning_threshold:
             alert_level = "warning"
             message = f"연간 예산 사용률 경고 ({annual_usage_pct:.1f}%)"
         else:
@@ -264,8 +297,12 @@ class BudgetService:
         else:
             end_date = date(year, month + 1, 1)
 
+        # 순비용 = 차변 합계 - 대변 합계 (비용 환입 반영)
         result = await self.db.execute(
-            select(func.sum(VoucherLine.debit_amount)).join(Voucher).where(
+            select(
+                func.coalesce(func.sum(VoucherLine.debit_amount), 0)
+                - func.coalesce(func.sum(VoucherLine.credit_amount), 0)
+            ).join(Voucher).where(
                 and_(
                     Voucher.department_id == department_id,
                     VoucherLine.account_id == account_id,
@@ -275,7 +312,8 @@ class BudgetService:
                 )
             )
         )
-        return result.scalar() or Decimal("0")
+        net_amount = result.scalar() or Decimal("0")
+        return max(net_amount, Decimal("0"))  # 음수는 0으로 처리
 
     async def record_budget_usage(
         self,
@@ -295,7 +333,7 @@ class BudgetService:
                 )
             )
         )
-        budget_line = result.scalar_first()
+        budget_line = result.scalars().first()
 
         if not budget_line:
             return
@@ -337,9 +375,14 @@ class BudgetService:
             conditions.append(Budget.department_id == department_id)
 
         result = await self.db.execute(
-            select(Budget).where(and_(*conditions))
+            select(Budget)
+            .options(
+                selectinload(Budget.lines).selectinload(BudgetLine.account),
+                selectinload(Budget.department),
+            )
+            .where(and_(*conditions))
         )
-        budgets = result.scalars().all()
+        budgets = result.scalars().unique().all()
 
         items = []
         total_budget = Decimal("0")
@@ -347,7 +390,7 @@ class BudgetService:
 
         for budget in budgets:
             for line in budget.lines:
-                account = await self.db.get(Account, line.account_id)
+                account = line.account
                 actual = line.used_amount
                 variance = actual - line.annual_amount
                 variance_pct = (variance / line.annual_amount * 100) if line.annual_amount else Decimal("0")
@@ -390,7 +433,12 @@ class BudgetService:
             fiscal_year = date.today().year
 
         result = await self.db.execute(
-            select(Budget).where(
+            select(Budget)
+            .options(
+                selectinload(Budget.lines).selectinload(BudgetLine.account),
+                selectinload(Budget.department),
+            )
+            .where(
                 and_(
                     Budget.department_id == department_id,
                     Budget.fiscal_year == fiscal_year,
@@ -398,7 +446,7 @@ class BudgetService:
                 )
             )
         )
-        budget = result.scalar_first()
+        budget = result.scalars().first()
 
         if not budget:
             return {
@@ -407,7 +455,7 @@ class BudgetService:
                 "message": "예산이 설정되지 않았습니다."
             }
 
-        department = await self.db.get(Department, department_id)
+        department = budget.department
 
         usage_pct = (budget.used_amount / budget.total_amount * 100) if budget.total_amount else Decimal("0")
 
@@ -443,6 +491,22 @@ class BudgetService:
             reverse=True
         )[:10]
 
+        # 비용/자본지출 구분 (계정코드 기준)
+        expense_budget = Decimal("0")
+        expense_used = Decimal("0")
+        capex_budget = Decimal("0")
+        capex_used = Decimal("0")
+
+        for line in budget.lines:
+            account_code = line.account.code if line.account else ""
+            # 자본적 지출 (유형자산 16xxxx, 무형자산 17xxxx, 투자자산 15xxxx)
+            if account_code.startswith("15") or account_code.startswith("16") or account_code.startswith("17"):
+                capex_budget += line.annual_amount
+                capex_used += line.used_amount
+            else:
+                expense_budget += line.annual_amount
+                expense_used += line.used_amount
+
         return {
             "department_id": department_id,
             "department_name": department.name if department else "",
@@ -451,6 +515,10 @@ class BudgetService:
             "total_used": budget.used_amount,
             "total_remaining": budget.remaining_amount,
             "usage_percentage": usage_pct,
+            "expense_budget": expense_budget,
+            "expense_used": expense_used,
+            "capex_budget": capex_budget,
+            "capex_used": capex_used,
             "monthly_trend": monthly_trend,
             "top_accounts": top_accounts
         }

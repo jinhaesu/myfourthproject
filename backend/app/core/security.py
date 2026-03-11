@@ -191,3 +191,115 @@ class AuditLogger:
 
 # Instantiate encryption helper
 data_encryption = DataEncryption()
+
+
+# Create a proper FastAPI dependency
+from fastapi import Depends, HTTPException, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+security_scheme = HTTPBearer()
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+):
+    """
+    FastAPI dependency: extracts and validates the current user from JWT.
+    Returns the User ORM object with department and role eagerly loaded.
+    """
+    from app.core.database import get_db
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    token = credentials.credentials
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않은 토큰입니다.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="유효하지 않은 토큰입니다.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # We need a db session - import here to avoid circular imports
+    from app.core.database import async_session_factory
+    if async_session_factory is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="데이터베이스를 사용할 수 없습니다.",
+        )
+
+    from app.models.user import User
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.id == int(user_id))
+        )
+        user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="사용자를 찾을 수 없습니다.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="비활성화된 계정입니다.",
+        )
+
+    return user
+
+
+def require_role(*role_types: "RoleType"):
+    """역할 기반 접근 제어 의존성 팩토리
+
+    Usage:
+        @router.get("/admin-only", dependencies=[Depends(require_role(RoleType.ADMIN))])
+        async def admin_endpoint(...): ...
+
+        # 또는 파라미터로:
+        async def endpoint(user = Depends(require_role(RoleType.ADMIN, RoleType.FINANCE_STAFF))):
+    """
+    from app.models.user import RoleType as RT
+
+    async def _check(user=Depends(get_current_user)):
+        if not user.role or user.role.role_type not in role_types:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="이 작업을 수행할 권한이 없습니다.",
+            )
+        return user
+    return _check
+
+
+def require_admin():
+    """관리자 전용"""
+    from app.models.user import RoleType
+    return require_role(RoleType.ADMIN)
+
+
+def require_finance():
+    """재무팀 이상"""
+    from app.models.user import RoleType
+    return require_role(RoleType.ADMIN, RoleType.FINANCE_STAFF, RoleType.FINANCE_MANAGER)
+
+
+def require_manager_or_above():
+    """팀장 이상"""
+    from app.models.user import RoleType
+    return require_role(
+        RoleType.ADMIN, RoleType.FINANCE_MANAGER,
+        RoleType.DEPARTMENT_HEAD, RoleType.TEAM_LEADER
+    )

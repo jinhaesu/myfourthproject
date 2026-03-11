@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -6,6 +6,12 @@ import { z } from 'zod'
 import toast from 'react-hot-toast'
 import { useAuthStore } from '@/store/authStore'
 import { authApi } from '@/services/api'
+import {
+  EyeIcon,
+  EyeSlashIcon,
+  CheckCircleIcon,
+  XCircleIcon,
+} from '@heroicons/react/24/outline'
 
 const loginSchema = z.object({
   username: z.string().min(1, '사용자명을 입력하세요'),
@@ -30,12 +36,88 @@ const registerSchema = z.object({
 type LoginForm = z.infer<typeof loginSchema>
 type RegisterForm = z.infer<typeof registerSchema>
 
+// --- Password strength helpers ---
+interface PasswordCheck {
+  label: string
+  met: boolean
+}
+
+function getPasswordChecks(password: string): PasswordCheck[] {
+  return [
+    { label: '8자 이상', met: password.length >= 8 },
+    { label: '대문자 포함', met: /[A-Z]/.test(password) },
+    { label: '소문자 포함', met: /[a-z]/.test(password) },
+    { label: '숫자 포함', met: /[0-9]/.test(password) },
+    { label: '특수문자 포함', met: /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password) },
+  ]
+}
+
+function getStrengthLevel(checks: PasswordCheck[]): { level: number; label: string; color: string } {
+  const metCount = checks.filter((c) => c.met).length
+  if (metCount <= 1) return { level: 1, label: '매우 약함', color: 'bg-red-500' }
+  if (metCount === 2) return { level: 2, label: '약함', color: 'bg-orange-500' }
+  if (metCount === 3) return { level: 3, label: '보통', color: 'bg-yellow-500' }
+  if (metCount === 4) return { level: 4, label: '강함', color: 'bg-blue-500' }
+  return { level: 5, label: '매우 강함', color: 'bg-green-500' }
+}
+
+function PasswordStrengthIndicator({ password }: { password: string }) {
+  const checks = useMemo(() => getPasswordChecks(password), [password])
+  const strength = useMemo(() => getStrengthLevel(checks), [checks])
+
+  if (!password) return null
+
+  return (
+    <div className="mt-2 space-y-2">
+      {/* Strength bar */}
+      <div className="flex items-center gap-2">
+        <div className="flex-1 flex gap-1">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div
+              key={i}
+              className={`h-1.5 flex-1 rounded-full transition-colors ${
+                i <= strength.level ? strength.color : 'bg-gray-200'
+              }`}
+            />
+          ))}
+        </div>
+        <span className={`text-xs font-medium ${
+          strength.level <= 2 ? 'text-red-600' :
+          strength.level === 3 ? 'text-yellow-600' :
+          'text-green-600'
+        }`}>
+          {strength.label}
+        </span>
+      </div>
+
+      {/* Checklist */}
+      <ul className="grid grid-cols-2 gap-1">
+        {checks.map((check) => (
+          <li key={check.label} className="flex items-center gap-1 text-xs">
+            {check.met ? (
+              <CheckCircleIcon className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+            ) : (
+              <XCircleIcon className="h-3.5 w-3.5 text-gray-300 flex-shrink-0" />
+            )}
+            <span className={check.met ? 'text-green-700' : 'text-gray-400'}>{check.label}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 export default function LoginPage() {
   const navigate = useNavigate()
   const login = useAuthStore((state) => state.login)
   const [requires2FA, setRequires2FA] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isRegisterMode, setIsRegisterMode] = useState(false)
+
+  // Show/hide password toggles
+  const [showLoginPassword, setShowLoginPassword] = useState(false)
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false)
+  const [showRegisterConfirm, setShowRegisterConfirm] = useState(false)
 
   const loginForm = useForm<LoginForm>({
     resolver: zodResolver(loginSchema),
@@ -44,6 +126,8 @@ export default function LoginPage() {
   const registerForm = useForm<RegisterForm>({
     resolver: zodResolver(registerSchema),
   })
+
+  const watchedRegisterPassword = registerForm.watch('password') || ''
 
   const onLoginSubmit = async (data: LoginForm) => {
     setIsLoading(true)
@@ -169,13 +253,27 @@ export default function LoginPage() {
                   <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-1">
                     비밀번호
                   </label>
-                  <input
-                    id="login-password"
-                    type="password"
-                    {...loginForm.register('password')}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="비밀번호"
-                  />
+                  <div className="relative">
+                    <input
+                      id="login-password"
+                      type={showLoginPassword ? 'text' : 'password'}
+                      {...loginForm.register('password')}
+                      className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="비밀번호"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowLoginPassword(!showLoginPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      tabIndex={-1}
+                    >
+                      {showLoginPassword ? (
+                        <EyeSlashIcon className="h-5 w-5" />
+                      ) : (
+                        <EyeIcon className="h-5 w-5" />
+                      )}
+                    </button>
+                  </div>
                   {loginForm.formState.errors.password && (
                     <p className="mt-1 text-sm text-red-600">{loginForm.formState.errors.password.message}</p>
                   )}
@@ -254,31 +352,63 @@ export default function LoginPage() {
                     )}
                   </div>
 
-                  <div>
+                  {/* Password with strength indicator */}
+                  <div className="col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       비밀번호 <span className="text-red-500">*</span>
                     </label>
-                    <input
-                      type="password"
-                      {...registerForm.register('password')}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      placeholder="8자 이상"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showRegisterPassword ? 'text' : 'password'}
+                        {...registerForm.register('password')}
+                        className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="8자 이상"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowRegisterPassword(!showRegisterPassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        tabIndex={-1}
+                      >
+                        {showRegisterPassword ? (
+                          <EyeSlashIcon className="h-5 w-5" />
+                        ) : (
+                          <EyeIcon className="h-5 w-5" />
+                        )}
+                      </button>
+                    </div>
                     {registerForm.formState.errors.password && (
                       <p className="mt-1 text-sm text-red-600">{registerForm.formState.errors.password.message}</p>
                     )}
+                    {/* Password Strength Indicator */}
+                    <PasswordStrengthIndicator password={watchedRegisterPassword} />
                   </div>
 
-                  <div>
+                  {/* Confirm password */}
+                  <div className="col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       비밀번호 확인 <span className="text-red-500">*</span>
                     </label>
-                    <input
-                      type="password"
-                      {...registerForm.register('passwordConfirm')}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      placeholder="비밀번호 재입력"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showRegisterConfirm ? 'text' : 'password'}
+                        {...registerForm.register('passwordConfirm')}
+                        className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="비밀번호 재입력"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowRegisterConfirm(!showRegisterConfirm)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        tabIndex={-1}
+                      >
+                        {showRegisterConfirm ? (
+                          <EyeSlashIcon className="h-5 w-5" />
+                        ) : (
+                          <EyeIcon className="h-5 w-5" />
+                        )}
+                      </button>
+                    </div>
                     {registerForm.formState.errors.passwordConfirm && (
                       <p className="mt-1 text-sm text-red-600">{registerForm.formState.errors.passwordConfirm.message}</p>
                     )}

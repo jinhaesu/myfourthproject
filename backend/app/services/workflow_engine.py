@@ -14,7 +14,7 @@ from app.models.approval import (
     ApprovalRequest, ApprovalStep, ApprovalLine, ApprovalHistory,
     ApprovalStatus, ApprovalActionType
 )
-from app.models.budget import Budget, BudgetLine
+from app.models.budget import Budget, BudgetLine, BudgetStatus
 from app.services.budget_service import BudgetService
 
 
@@ -176,7 +176,7 @@ class WorkflowEngine:
                 ApprovalLine.is_default.desc()
             )
         )
-        line = result.scalar_first()
+        line = result.scalars().first()
 
         if line:
             return {
@@ -218,7 +218,7 @@ class WorkflowEngine:
                     )
                 )
             )
-            approver = result.scalar_first()
+            approver = result.scalars().first()
             if approver:
                 return approver.id
 
@@ -232,7 +232,7 @@ class WorkflowEngine:
                     )
                 )
             )
-            approver = result.scalar_first()
+            approver = result.scalars().first()
             if approver:
                 return approver.id
 
@@ -246,12 +246,28 @@ class WorkflowEngine:
                     )
                 )
             )
-            approver = result.scalar_first()
+            approver = result.scalars().first()
             if approver:
                 return approver.id
 
-        # 기본값: 기안자 (자기 결재 - 실제로는 상위자로 변경 필요)
-        return requester.id
+        # 자기결재 금지: 결재자를 찾지 못한 경우 관리자에게 전달
+        # admin 역할 사용자 찾기
+        result = await self.db.execute(
+            select(User).where(
+                and_(
+                    User.is_active == True,
+                    User.role.has(role_type=RoleType.ADMIN)
+                )
+            )
+        )
+        admin = result.scalars().first()
+        if admin and admin.id != requester.id:
+            return admin.id
+
+        raise ValueError(
+            "적합한 결재자를 찾을 수 없습니다. "
+            "관리자에게 결재선 설정을 요청하세요."
+        )
 
     async def _check_budget(self, voucher: Voucher) -> dict:
         """예산 체크"""
@@ -277,11 +293,11 @@ class WorkflowEngine:
                     and_(
                         Budget.department_id == voucher.department_id,
                         Budget.fiscal_year == current_year,
-                        Budget.status == "active"
+                        Budget.status == BudgetStatus.ACTIVE
                     )
                 )
             )
-            budget = result.scalar_first()
+            budget = result.scalars().first()
 
             if not budget:
                 return {
@@ -327,7 +343,7 @@ class WorkflowEngine:
                 ApprovalRequest.request_number.like(f"{prefix}%")
             ).order_by(ApprovalRequest.request_number.desc())
         )
-        last_request = result.scalar_first()
+        last_request = result.scalars().first()
 
         if last_request:
             last_seq = int(last_request.request_number[-4:])

@@ -116,6 +116,54 @@ async def create_roles():
                 approval_limit=10000000,
             ),
             Role(
+                name="재무책임자(CFO)",
+                role_type=RoleType.CFO,
+                description="재무 최고 책임자",
+                can_create_voucher=True,
+                can_approve_voucher=True,
+                can_finalize_voucher=True,
+                can_manage_budget=True,
+                can_view_all_departments=True,
+                can_manage_users=False,
+                can_configure_ai=True,
+                can_export_data=True,
+                can_view_reports=True,
+                can_manage_accounts=True,
+                approval_limit=999999999,
+            ),
+            Role(
+                name="재무팀원",
+                role_type=RoleType.FINANCE_STAFF,
+                description="재무팀 실무 담당자",
+                can_create_voucher=True,
+                can_approve_voucher=False,
+                can_finalize_voucher=True,
+                can_manage_budget=False,
+                can_view_all_departments=True,
+                can_manage_users=False,
+                can_configure_ai=False,
+                can_export_data=True,
+                can_view_reports=True,
+                can_manage_accounts=True,
+                approval_limit=5000000,
+            ),
+            Role(
+                name="부서장",
+                role_type=RoleType.DEPARTMENT_HEAD,
+                description="부서 단위 결재 및 관리 권한",
+                can_create_voucher=True,
+                can_approve_voucher=True,
+                can_finalize_voucher=False,
+                can_manage_budget=True,
+                can_view_all_departments=False,
+                can_manage_users=False,
+                can_configure_ai=False,
+                can_export_data=True,
+                can_view_reports=True,
+                can_manage_accounts=False,
+                approval_limit=30000000,
+            ),
+            Role(
                 name="일반직원",
                 role_type=RoleType.EMPLOYEE,
                 description="기본 사용자 권한",
@@ -148,20 +196,25 @@ async def create_departments():
             print("부서가 이미 존재합니다.")
             return
 
-        departments = [
-            Department(code="HQ", name="본사", level=1, sort_order=1, is_active=True),
-            Department(code="FIN", name="재무팀", level=2, sort_order=2, cost_center_code="CC-FIN", is_active=True),
-            Department(code="HR", name="인사팀", level=2, sort_order=3, cost_center_code="CC-HR", is_active=True),
-            Department(code="DEV", name="개발팀", level=2, sort_order=4, cost_center_code="CC-DEV", is_active=True),
-            Department(code="SALES", name="영업팀", level=2, sort_order=5, cost_center_code="CC-SALES", is_active=True),
-            Department(code="MKT", name="마케팅팀", level=2, sort_order=6, cost_center_code="CC-MKT", is_active=True),
+        # 본사(HQ) 먼저 생성하여 ID 확보
+        hq = Department(code="HQ", name="본사", level=1, sort_order=1, is_active=True)
+        db.add(hq)
+        await db.flush()  # ID 할당을 위해 flush
+
+        # 하위 부서 생성 (parent_id = HQ)
+        sub_departments = [
+            Department(code="FIN", name="재무팀", parent_id=hq.id, level=2, sort_order=2, cost_center_code="CC-FIN", is_active=True),
+            Department(code="HR", name="인사팀", parent_id=hq.id, level=2, sort_order=3, cost_center_code="CC-HR", is_active=True),
+            Department(code="DEV", name="개발팀", parent_id=hq.id, level=2, sort_order=4, cost_center_code="CC-DEV", is_active=True),
+            Department(code="SALES", name="영업팀", parent_id=hq.id, level=2, sort_order=5, cost_center_code="CC-SALES", is_active=True),
+            Department(code="MKT", name="마케팅팀", parent_id=hq.id, level=2, sort_order=6, cost_center_code="CC-MKT", is_active=True),
         ]
 
-        for dept in departments:
+        for dept in sub_departments:
             db.add(dept)
 
         await db.commit()
-        print(f"✅ {len(departments)}개 부서 생성 완료")
+        print(f"✅ {1 + len(sub_departments)}개 부서 생성 완료")
 
 
 async def create_account_categories():
@@ -190,7 +243,7 @@ async def create_account_categories():
 async def create_accounts():
     """기본 계정과목 생성"""
     async with async_session_factory() as db:
-        result = await db.execute(select(Account).where(Account.code == "101"))
+        result = await db.execute(select(Account).where(Account.code == "110100"))
         if result.scalar_one_or_none():
             print("계정과목이 이미 존재합니다.")
             return
@@ -200,70 +253,133 @@ async def create_accounts():
         categories = {cat.code: cat.id for cat in cat_result.scalars().all()}
 
         accounts = [
-            # 자산 (1xx)
-            Account(code="101", name="현금", category_id=categories["1"], level=1, is_detail=True,
+            # ============================================================
+            # K-IFRS 기준 한국 표준 계정과목 코드 (6자리)
+            # 자산: 1xxxxx, 부채: 2xxxxx, 자본: 3xxxxx
+            # 매출/수익: 4xxxxx, 매출원가: 5xxxxx
+            # 판매비와관리비: 8xxxxx, 영업외손익: 9xxxxx
+            # ============================================================
+
+            # 자산 (1xxxxx)
+            Account(code="110100", name="현금", category_id=categories["1"], level=1, is_detail=True,
                    keywords="현금,cash", is_active=True),
-            Account(code="102", name="보통예금", category_id=categories["1"], level=1, is_detail=True,
+            Account(code="110200", name="보통예금", category_id=categories["1"], level=1, is_detail=True,
                    keywords="예금,은행,입금", is_active=True),
-            Account(code="103", name="매출채권", category_id=categories["1"], level=1, is_detail=True,
+            Account(code="110300", name="정기예금", category_id=categories["1"], level=1, is_detail=True,
+                   keywords="정기예금,적금", is_active=True),
+            Account(code="120100", name="매출채권", category_id=categories["1"], level=1, is_detail=True,
                    keywords="외상,미수금,채권", is_active=True),
-            Account(code="104", name="선급금", category_id=categories["1"], level=1, is_detail=True,
+            Account(code="120200", name="받을어음", category_id=categories["1"], level=1, is_detail=True,
+                   keywords="어음,받을어음", is_active=True),
+            Account(code="130100", name="선급금", category_id=categories["1"], level=1, is_detail=True,
                    keywords="선급,미리지급", is_active=True),
-            Account(code="105", name="재고자산", category_id=categories["1"], level=1, is_detail=True,
+            Account(code="130200", name="선급비용", category_id=categories["1"], level=1, is_detail=True,
+                   keywords="선급비용,선납", is_active=True),
+            Account(code="140100", name="재고자산", category_id=categories["1"], level=1, is_detail=True,
                    keywords="재고,상품,제품", is_active=True),
+            Account(code="150100", name="부가세대급금", category_id=categories["1"], level=1, is_detail=True,
+                   keywords="부가세,매입세액", is_active=True),
 
-            # 부채 (2xx)
-            Account(code="201", name="매입채무", category_id=categories["2"], level=1, is_detail=True,
+            # 부채 (2xxxxx)
+            Account(code="210100", name="매입채무", category_id=categories["2"], level=1, is_detail=True,
                    keywords="외상,미지급,채무", is_active=True),
-            Account(code="202", name="미지급금", category_id=categories["2"], level=1, is_detail=True,
+            Account(code="210200", name="지급어음", category_id=categories["2"], level=1, is_detail=True,
+                   keywords="어음,지급어음", is_active=True),
+            Account(code="220100", name="미지급금", category_id=categories["2"], level=1, is_detail=True,
                    keywords="미지급,미결제", is_active=True),
-            Account(code="203", name="예수금", category_id=categories["2"], level=1, is_detail=True,
-                   keywords="원천세,4대보험", is_active=True),
-            Account(code="204", name="단기차입금", category_id=categories["2"], level=1, is_detail=True,
+            Account(code="220200", name="미지급비용", category_id=categories["2"], level=1, is_detail=True,
+                   keywords="미지급비용,발생비용", is_active=True),
+            Account(code="230100", name="예수금", category_id=categories["2"], level=1, is_detail=True,
+                   keywords="원천세,4대보험,예수금", is_active=True),
+            Account(code="230200", name="부가세예수금", category_id=categories["2"], level=1, is_detail=True,
+                   keywords="부가세,매출세액", is_active=True),
+            Account(code="240100", name="단기차입금", category_id=categories["2"], level=1, is_detail=True,
                    keywords="대출,차입", is_active=True),
+            Account(code="250100", name="선수금", category_id=categories["2"], level=1, is_detail=True,
+                   keywords="선수금,선수", is_active=True),
 
-            # 자본 (3xx)
-            Account(code="301", name="자본금", category_id=categories["3"], level=1, is_detail=True,
+            # 자본 (3xxxxx)
+            Account(code="310100", name="자본금", category_id=categories["3"], level=1, is_detail=True,
                    keywords="자본,출자", is_active=True),
-            Account(code="302", name="이익잉여금", category_id=categories["3"], level=1, is_detail=True,
+            Account(code="320100", name="자본잉여금", category_id=categories["3"], level=1, is_detail=True,
+                   keywords="자본잉여,주식발행초과금", is_active=True),
+            Account(code="330100", name="이익잉여금", category_id=categories["3"], level=1, is_detail=True,
                    keywords="이익,잉여", is_active=True),
 
-            # 수익 (4xx)
-            Account(code="401", name="매출", category_id=categories["4"], level=1, is_detail=True,
-                   keywords="매출,판매,수익", is_active=True),
-            Account(code="402", name="이자수익", category_id=categories["4"], level=1, is_detail=True,
-                   keywords="이자,예금이자", is_active=True),
-            Account(code="403", name="기타수익", category_id=categories["4"], level=1, is_detail=True,
-                   keywords="기타,잡이익", is_active=True),
+            # 매출/수익 (4xxxxx)
+            Account(code="410100", name="상품매출", category_id=categories["4"], level=1, is_detail=True,
+                   keywords="매출,판매,수익,상품매출", is_active=True),
+            Account(code="410200", name="제품매출", category_id=categories["4"], level=1, is_detail=True,
+                   keywords="제품매출,제조판매", is_active=True),
+            Account(code="410300", name="서비스매출", category_id=categories["4"], level=1, is_detail=True,
+                   keywords="서비스매출,용역매출", is_active=True),
 
-            # 비용 (5xx)
-            Account(code="501", name="급여", category_id=categories["5"], level=1, is_detail=True,
+            # 매출원가 (5xxxxx)
+            Account(code="510100", name="상품매출원가", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="매출원가,상품원가", is_active=True),
+            Account(code="510200", name="제품매출원가", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="제조원가,제품원가", is_active=True),
+            Account(code="520100", name="원재료비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="원재료,재료비", is_active=True),
+            Account(code="520200", name="노무비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="노무비,생산인건비", is_active=True),
+            Account(code="520300", name="제조경비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="제조경비,공장경비", is_active=True),
+
+            # 판매비와관리비 (8xxxxx) - 한국 표준
+            Account(code="810100", name="급여", category_id=categories["5"], level=1, is_detail=True,
                    keywords="급여,월급,인건비,salary", common_merchants="급여이체", is_active=True),
-            Account(code="502", name="복리후생비", category_id=categories["5"], level=1, is_detail=True,
+            Account(code="810200", name="퇴직급여", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="퇴직급여,퇴직금", is_active=True),
+            Account(code="813100", name="복리후생비", category_id=categories["5"], level=1, is_detail=True,
                    keywords="복리후생,식대,회식,경조사", common_merchants="식당,카페,편의점", is_active=True),
-            Account(code="503", name="여비교통비", category_id=categories["5"], level=1, is_detail=True,
-                   keywords="교통비,택시,주유,출장", common_merchants="택시,주유소,KTX,항공", is_active=True),
-            Account(code="504", name="접대비", category_id=categories["5"], level=1, is_detail=True,
+            Account(code="813200", name="접대비", category_id=categories["5"], level=1, is_detail=True,
                    keywords="접대,거래처,식사대접", common_merchants="식당,골프장", is_active=True),
-            Account(code="505", name="통신비", category_id=categories["5"], level=1, is_detail=True,
+            Account(code="813300", name="여비교통비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="교통비,택시,주유,출장", common_merchants="택시,주유소,KTX,항공", is_active=True),
+            Account(code="813400", name="통신비", category_id=categories["5"], level=1, is_detail=True,
                    keywords="통신,전화,인터넷,휴대폰", common_merchants="SKT,KT,LGU+", is_active=True),
-            Account(code="506", name="수도광열비", category_id=categories["5"], level=1, is_detail=True,
-                   keywords="전기,수도,가스,난방", common_merchants="한전,수도사업소", is_active=True),
-            Account(code="507", name="세금과공과", category_id=categories["5"], level=1, is_detail=True,
-                   keywords="세금,공과금,재산세", is_active=True),
-            Account(code="508", name="임차료", category_id=categories["5"], level=1, is_detail=True,
-                   keywords="임대료,월세,사무실", is_active=True),
-            Account(code="509", name="수선비", category_id=categories["5"], level=1, is_detail=True,
-                   keywords="수리,수선,유지보수", is_active=True),
-            Account(code="510", name="소모품비", category_id=categories["5"], level=1, is_detail=True,
+            Account(code="813500", name="소모품비", category_id=categories["5"], level=1, is_detail=True,
                    keywords="소모품,사무용품,문구", common_merchants="오피스디포,알파문구", is_active=True),
-            Account(code="511", name="광고선전비", category_id=categories["5"], level=1, is_detail=True,
+            Account(code="813600", name="광고선전비", category_id=categories["5"], level=1, is_detail=True,
                    keywords="광고,마케팅,홍보", common_merchants="구글,페이스북,네이버", is_active=True),
-            Account(code="512", name="지급수수료", category_id=categories["5"], level=1, is_detail=True,
+            Account(code="813700", name="지급수수료", category_id=categories["5"], level=1, is_detail=True,
                    keywords="수수료,용역,외주", is_active=True),
-            Account(code="513", name="감가상각비", category_id=categories["5"], level=1, is_detail=True,
+            Account(code="813800", name="교육훈련비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="교육,훈련,세미나,연수", is_active=True),
+            Account(code="813900", name="도서인쇄비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="도서,인쇄,명함,출판", is_active=True),
+            Account(code="814000", name="회의비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="회의,회의실,다과", is_active=True),
+            Account(code="820100", name="수도광열비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="전기,수도,가스,난방", common_merchants="한전,수도사업소", is_active=True),
+            Account(code="820200", name="세금과공과", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="세금,공과금,재산세", is_active=True),
+            Account(code="820300", name="임차료", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="임대료,월세,사무실", is_active=True),
+            Account(code="820400", name="수선비", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="수리,수선,유지보수", is_active=True),
+            Account(code="830100", name="감가상각비", category_id=categories["5"], level=1, is_detail=True,
                    keywords="감가상각,depreciation", is_active=True),
-            Account(code="514", name="잡손실", category_id=categories["5"], level=1, is_detail=True,
+            Account(code="840100", name="보험료", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="보험,보험료,화재보험", is_active=True),
+
+            # 영업외수익 (9xxxxx - 수익성)
+            Account(code="910100", name="이자수익", category_id=categories["4"], level=1, is_detail=True,
+                   keywords="이자,예금이자", is_active=True),
+            Account(code="910200", name="배당금수익", category_id=categories["4"], level=1, is_detail=True,
+                   keywords="배당금,배당수익", is_active=True),
+            Account(code="910300", name="유형자산처분이익", category_id=categories["4"], level=1, is_detail=True,
+                   keywords="자산처분,처분이익", is_active=True),
+            Account(code="910900", name="잡이익", category_id=categories["4"], level=1, is_detail=True,
+                   keywords="잡이익,기타이익", is_active=True),
+
+            # 영업외비용 (9xxxxx - 비용성)
+            Account(code="950100", name="이자비용", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="이자비용,대출이자", is_active=True),
+            Account(code="950200", name="유형자산처분손실", category_id=categories["5"], level=1, is_detail=True,
+                   keywords="자산처분,처분손실", is_active=True),
+            Account(code="950900", name="잡손실", category_id=categories["5"], level=1, is_detail=True,
                    keywords="잡손실,기타비용", is_active=True),
         ]
 

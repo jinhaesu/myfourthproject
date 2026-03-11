@@ -172,3 +172,4 @@ temp/
 # Test files
 .coverage
 htmlcov/
+.claude/worktrees/

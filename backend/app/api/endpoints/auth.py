@@ -25,6 +25,32 @@ class RegisterRequest(BaseModel):
     position: Optional[str] = None
 
 
+class RefreshRequest(BaseModel):
+    """토큰 갱신 요청"""
+    refresh_token: str
+
+
+def user_to_response(user) -> dict:
+    """User ORM 객체를 UserResponse 호환 dict로 변환"""
+    return {
+        "id": user.id,
+        "employee_id": user.employee_id,
+        "email": user.email,
+        "username": user.username,
+        "full_name": user.full_name,
+        "phone": user.phone,
+        "position": user.position,
+        "department_id": user.department_id,
+        "department_name": user.department.name if user.department else None,
+        "role_id": user.role_id,
+        "role_name": user.role.name if user.role else None,
+        "is_active": user.is_active,
+        "two_factor_enabled": user.two_factor_enabled,
+        "created_at": user.created_at,
+        "last_login": user.last_login,
+    }
+
+
 @router.post("/login", response_model=Token)
 async def login(
     request: Request,
@@ -65,7 +91,7 @@ async def login(
                 "refresh_token": "",
                 "token_type": "bearer",
                 "expires_in": 0,
-                "user": UserResponse.model_validate(user),
+                "user": user_to_response(user),
                 "requires_2fa": True
             }
 
@@ -81,19 +107,19 @@ async def login(
 
     return {
         **tokens,
-        "user": UserResponse.model_validate(user),
+        "user": user_to_response(user),
         "requires_2fa": False
     }
 
 
 @router.post("/refresh", response_model=dict)
 async def refresh_token(
-    refresh_token: str,
+    request_body: RefreshRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """토큰 갱신"""
     service = UserService(db)
-    result = await service.refresh_token(refresh_token)
+    result = await service.refresh_token(request_body.refresh_token)
 
     if not result:
         raise HTTPException(
@@ -160,7 +186,7 @@ async def register(
     }
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me")
 async def get_current_user_info(
     request: Request,
     db: AsyncSession = Depends(get_db)
@@ -184,4 +210,4 @@ async def get_current_user_info(
             detail="유효하지 않은 토큰입니다."
         )
 
-    return user
+    return user_to_response(user)

@@ -95,7 +95,20 @@ export const vouchersApi = {
     fromDate?: string
     toDate?: string
     search?: string
-  }) => api.get('/vouchers/', { params }),
+  }) =>
+    api.get('/vouchers/', {
+      params: params
+        ? {
+            page: params.page,
+            size: params.size,
+            department_id: params.departmentId,
+            status: params.status,
+            from_date: params.fromDate,
+            to_date: params.toDate,
+            search: params.search,
+          }
+        : undefined,
+    }),
 
   get: (id: number) => api.get(`/vouchers/${id}`),
 
@@ -111,6 +124,11 @@ export const vouchersApi = {
     }),
 
   delete: (id: number) => api.delete(`/vouchers/${id}`),
+
+  cancel: (id: number, userId: number, reason?: string) =>
+    api.post(`/vouchers/${id}/cancel`, null, {
+      params: { user_id: userId, reason: reason || '' },
+    }),
 
   getAccounts: (categoryId?: number, search?: string) =>
     api.get('/vouchers/accounts/', { params: { category_id: categoryId, search } }),
@@ -295,6 +313,17 @@ export const usersApi = {
 
   updateUserRole: (userId: number, roleId: number) =>
     api.patch(`/users/admin/${userId}/role`, null, { params: { role_id: roleId } }),
+}
+
+// Admin API (감사로그, 시스템 상태)
+export const adminApi = {
+  getAuditLogs: (params?: { limit?: number; action_type?: string; user_id?: number }) =>
+    api.get('/admin/audit-logs', { params }),
+
+  getSnapshots: (params?: { limit?: number }) =>
+    api.get('/admin/snapshots', { params }),
+
+  getSystemHealth: () => api.get('/health'),
 }
 
 // AI Classification API (학습 및 자동분류)
