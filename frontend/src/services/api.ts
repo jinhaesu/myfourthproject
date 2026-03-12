@@ -465,6 +465,8 @@ export const dataApi = {
 // Financial Reports API (계정별 원장 기반 재무보고서)
 export const financialApi = {
   getUploadHistory: () => api.get('/ai-classification/upload-history'),
+  getSummary: (uploadId: number) =>
+    api.get('/financial/summary', { params: { upload_id: uploadId } }),
   getTrialBalance: (uploadId: number) =>
     api.get('/financial/trial-balance', { params: { upload_id: uploadId } }),
   getIncomeStatement: (uploadId: number, year?: number, month?: number) =>

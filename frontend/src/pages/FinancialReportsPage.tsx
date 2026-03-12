@@ -105,8 +105,16 @@ export default function FinancialReportsPage() {
 // ============================================================================
 function StatementsTab({ uploadId }: { uploadId: number }) {
   const currentYear = new Date().getFullYear()
-  const [year, setYear] = useState(currentYear)
+  const [yearOverride, setYearOverride] = useState<number | null>(null)
   const [month, setMonth] = useState<number | null>(null)
+
+  // summary에서 데이터 연도 자동 감지
+  const { data: summaryData } = useQuery({
+    queryKey: ['financialSummary', uploadId],
+    queryFn: () => financialApi.getSummary(uploadId).then((r) => r.data),
+  })
+  const dataYear = summaryData?.data_year || currentYear
+  const year = yearOverride ?? dataYear
 
   const { data: incomeData, isLoading: incLoading } = useQuery({
     queryKey: ['financialIncome', uploadId, year, month],
@@ -129,8 +137,8 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
       <div className="card">
         <div className="flex items-center gap-3 flex-wrap">
           <label className="text-sm font-medium text-gray-700">연도</label>
-          <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="input w-28">
-            {[currentYear - 2, currentYear - 1, currentYear, currentYear + 1].map((y) => (
+          <select value={year} onChange={(e) => setYearOverride(Number(e.target.value))} className="input w-28">
+            {[dataYear - 1, dataYear, dataYear + 1, currentYear].filter((v, i, a) => a.indexOf(v) === i).sort().map((y) => (
               <option key={y} value={y}>{y}년</option>
             ))}
           </select>
