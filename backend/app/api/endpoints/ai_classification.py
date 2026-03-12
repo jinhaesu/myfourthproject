@@ -407,19 +407,34 @@ async def upload_historical_data(
     await db.flush()
 
     try:
-        # Step 2: 파일 파싱
+        # Step 2: 파일 파싱 (멀티 시트 지원)
         is_ledger_format = False
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
         else:
             engine = 'xlrd' if file.filename.endswith('.xls') else 'openpyxl'
-            df_raw = pd.read_excel(io.BytesIO(content), header=None, engine=engine)
+            # 모든 시트 읽기
+            all_sheets = pd.read_excel(io.BytesIO(content), header=None, engine=engine, sheet_name=None)
 
-            if _is_account_ledger_format(df_raw):
-                is_ledger_format = True
-                df = _parse_account_ledger(df_raw)
+            ledger_dfs = []
+            normal_dfs = []
+            for sheet_name, df_raw in all_sheets.items():
+                if df_raw.shape[0] < 2:
+                    continue
+                if _is_account_ledger_format(df_raw):
+                    is_ledger_format = True
+                    ledger_dfs.append(_parse_account_ledger(df_raw))
+                else:
+                    normal_dfs.append(pd.read_excel(
+                        io.BytesIO(content), engine=engine, sheet_name=sheet_name
+                    ))
+
+            if ledger_dfs:
+                df = pd.concat(ledger_dfs, ignore_index=True)
+            elif normal_dfs:
+                df = pd.concat(normal_dfs, ignore_index=True)
             else:
-                df = pd.read_excel(io.BytesIO(content), engine=engine)
+                raise HTTPException(status_code=400, detail="유효한 데이터가 있는 시트를 찾을 수 없습니다.")
 
         # 컬럼명 정규화
         column_mapping = {
