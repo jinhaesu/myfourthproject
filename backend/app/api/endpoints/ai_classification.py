@@ -62,6 +62,19 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
     current_account_name = None
     header_row_idx = None
     col_map = {}  # column index -> field name
+    ledger_year = None  # 기간 행에서 추출한 연도
+
+    # 먼저 기간 행에서 연도 추출 (예: "2025.01.01 ~ 2025.12.31")
+    for r in range(min(5, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                year_match = re.search(r'(20\d{2})\s*[./-]', str(cell))
+                if year_match:
+                    ledger_year = year_match.group(1)
+                    break
+        if ledger_year:
+            break
 
     for idx in range(df_raw.shape[0]):
         row_vals = [df_raw.iloc[idx, c] if c < df_raw.shape[1] else None for c in range(df_raw.shape[1])]
@@ -143,11 +156,16 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
                 except (ValueError, TypeError):
                     credit_val = 0
 
-        # 날짜 추출
+        # 날짜 추출 (연도 없으면 기간 행의 연도 추가)
         date_val = None
         for c_idx, field_name in col_map.items():
             if field_name == "date" and c_idx < len(row_vals) and pd.notna(row_vals[c_idx]):
-                date_val = str(row_vals[c_idx]).strip()
+                raw_date = str(row_vals[c_idx]).strip()
+                # "01-15" 또는 "01.15" 형식이면 연도 추가
+                if raw_date and ledger_year and not re.match(r'^\d{4}', raw_date):
+                    date_val = f"{ledger_year}-{raw_date.replace('.', '-')}"
+                else:
+                    date_val = raw_date
                 break
 
         # account_code: 코드 열 사용 (상대 계정), 없으면 현재 계정 코드 사용
