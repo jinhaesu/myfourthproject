@@ -382,6 +382,14 @@ export const aiClassificationApi = {
   // 학습 이력
   getTrainingHistory: (limit = 10) =>
     api.get('/ai-classification/training-history', { params: { limit } }),
+
+  // 업로드 이력
+  getUploadHistory: (limit = 20) =>
+    api.get('/ai-classification/upload-history', { params: { limit } }),
+
+  // 업로드 삭제
+  deleteUpload: (uploadId: number) =>
+    api.delete(`/ai-classification/upload/${uploadId}`),
 }
 
 // Sales Automation API

@@ -1,5 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { aiClassificationApi } from '@/services/api'
+import { TrashIcon } from '@heroicons/react/24/outline'
 
 // Types
 interface AIStatus {
@@ -23,6 +25,20 @@ interface AIStatus {
     status: string
     created_at: string
   } | null
+}
+
+interface UploadHistoryItem {
+  id: number
+  filename: string
+  file_size: number
+  file_type: string
+  upload_type: string
+  row_count: number
+  saved_count: number
+  error_count: number
+  status: string
+  error_message: string | null
+  created_at: string
 }
 
 interface Account {
@@ -54,8 +70,6 @@ type TabType = 'status' | 'upload' | 'classify' | 'results'
 
 export default function AIClassificationPage() {
   const [activeTab, setActiveTab] = useState<TabType>('status')
-  const [status, setStatus] = useState<AIStatus | null>(null)
-  const [accounts, setAccounts] = useState<Account[]>([])
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -68,35 +82,40 @@ export default function AIClassificationPage() {
   const [classificationResults, setClassificationResults] = useState<ClassificationResult[]>([])
   const [classifyStats, setClassifyStats] = useState<any>(null)
 
-  // Fetch status
-  const fetchStatus = useCallback(async () => {
-    try {
-      const response = await aiClassificationApi.getStatus()
-      setStatus(response.data)
-    } catch (error) {
-      console.error('Failed to fetch AI status:', error)
-    }
-  }, [])
+  const queryClient = useQueryClient()
 
-  // Fetch accounts
-  const fetchAccounts = useCallback(async () => {
-    try {
-      const response = await aiClassificationApi.getAccounts()
-      setAccounts(response.data)
-    } catch (error) {
-      console.error('Failed to fetch accounts:', error)
-    }
-  }, [])
+  // React Query - fetch status
+  const { data: status } = useQuery<AIStatus>({
+    queryKey: ['aiStatus'],
+    queryFn: () => aiClassificationApi.getStatus().then((r) => r.data),
+    retry: 3,
+    retryDelay: 1000,
+  })
 
-  useEffect(() => {
-    fetchStatus()
-    fetchAccounts()
-  }, [fetchStatus, fetchAccounts])
+  // React Query - fetch upload history
+  const { data: uploadHistory } = useQuery<UploadHistoryItem[]>({
+    queryKey: ['aiUploadHistory'],
+    queryFn: () => aiClassificationApi.getUploadHistory().then((r) => r.data),
+    retry: 3,
+    retryDelay: 1000,
+  })
 
-  // Show message
+  // React Query - fetch accounts
+  const { data: accounts = [] } = useQuery<Account[]>({
+    queryKey: ['aiAccounts'],
+    queryFn: () => aiClassificationApi.getAccounts().then((r) => r.data),
+    retry: 3,
+  })
+
   const showMessage = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text })
     setTimeout(() => setMessage(null), 5000)
+  }
+
+  const refreshData = () => {
+    queryClient.invalidateQueries({ queryKey: ['aiStatus'] })
+    queryClient.invalidateQueries({ queryKey: ['aiUploadHistory'] })
+    queryClient.invalidateQueries({ queryKey: ['financialUploadHistory'] })
   }
 
   // Handle historical data upload
@@ -105,16 +124,30 @@ export default function AIClassificationPage() {
       showMessage('error', '파일을 선택해주세요.')
       return
     }
-
     setLoading(true)
     try {
       const response = await aiClassificationApi.uploadHistorical(uploadFile)
       setUploadResult(response.data)
       showMessage('success', response.data.message)
       setUploadFile(null)
-      fetchStatus()
+      refreshData()
     } catch (error: any) {
       showMessage('error', error.response?.data?.detail || '업로드 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Handle delete upload
+  const handleDeleteUpload = async (uploadId: number, filename: string) => {
+    if (!confirm(`'${filename}' 데이터를 삭제하시겠습니까?\n관련 거래 데이터가 모두 삭제됩니다.`)) return
+    setLoading(true)
+    try {
+      const response = await aiClassificationApi.deleteUpload(uploadId)
+      showMessage('success', response.data.message)
+      refreshData()
+    } catch (error: any) {
+      showMessage('error', error.response?.data?.detail || '삭제 실패')
     } finally {
       setLoading(false)
     }
@@ -126,12 +159,11 @@ export default function AIClassificationPage() {
       showMessage('error', '학습 데이터가 최소 50개 이상 필요합니다.')
       return
     }
-
     setLoading(true)
     try {
       const response = await aiClassificationApi.trainModel(50)
       showMessage('success', response.data.message)
-      fetchStatus()
+      refreshData()
     } catch (error: any) {
       showMessage('error', error.response?.data?.detail || '학습 실패')
     } finally {
@@ -145,7 +177,6 @@ export default function AIClassificationPage() {
       showMessage('error', '분류할 파일을 선택해주세요.')
       return
     }
-
     setLoading(true)
     try {
       const response = await aiClassificationApi.classifyFile(classifyFile)
@@ -170,12 +201,10 @@ export default function AIClassificationPage() {
     const modifiedItems = classificationResults.filter(
       (r) => r.actual_account_code && r.actual_account_code !== r.predicted_account_code
     )
-
     if (modifiedItems.length === 0) {
       showMessage('error', '수정된 항목이 없습니다.')
       return
     }
-
     setLoading(true)
     try {
       const feedbackItems = modifiedItems.map((item) => ({
@@ -185,10 +214,9 @@ export default function AIClassificationPage() {
         predicted_account_code: item.predicted_account_code,
         actual_account_code: item.actual_account_code!,
       }))
-
       const response = await aiClassificationApi.submitFeedback(feedbackItems)
       showMessage('success', response.data.message)
-      fetchStatus()
+      refreshData()
     } catch (error: any) {
       showMessage('error', error.response?.data?.detail || '피드백 제출 실패')
     } finally {
@@ -199,11 +227,7 @@ export default function AIClassificationPage() {
   // Update classification result
   const updateClassificationResult = (index: number, accountCode: string) => {
     setClassificationResults((prev) =>
-      prev.map((r, i) =>
-        i === index
-          ? { ...r, actual_account_code: accountCode }
-          : r
-      )
+      prev.map((r, i) => (i === index ? { ...r, actual_account_code: accountCode } : r))
     )
   }
 
@@ -218,24 +242,28 @@ export default function AIClassificationPage() {
       a.download = type === 'historical' ? 'historical_template.xlsx' : 'classify_template.xlsx'
       a.click()
       window.URL.revokeObjectURL(url)
-    } catch (error) {
+    } catch {
       showMessage('error', '템플릿 다운로드 실패')
     }
+  }
+
+  const fmtNum = (v: number) => new Intl.NumberFormat('ko-KR').format(v)
+  const fmtSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes}B`
+    if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)}KB`
+    return `${(bytes / 1048576).toFixed(1)}MB`
   }
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">AI 계정 분류</h1>
 
-      {/* Message */}
       {message && (
-        <div
-          className={`mb-4 p-4 rounded-lg ${
-            message.type === 'success'
-              ? 'bg-green-100 text-green-800 border border-green-200'
-              : 'bg-red-100 text-red-800 border border-red-200'
-          }`}
-        >
+        <div className={`mb-4 p-4 rounded-lg ${
+          message.type === 'success'
+            ? 'bg-green-100 text-green-800 border border-green-200'
+            : 'bg-red-100 text-red-800 border border-red-200'
+        }`}>
           {message.text}
         </div>
       )}
@@ -243,15 +271,15 @@ export default function AIClassificationPage() {
       {/* Tabs */}
       <div className="border-b border-gray-200 mb-6">
         <nav className="flex space-x-8">
-          {[
+          {([
             { id: 'status', label: '상태/통계' },
             { id: 'upload', label: '과거 데이터 업로드' },
             { id: 'classify', label: '자동 분류' },
             { id: 'results', label: '분류 결과' },
-          ].map((tab) => (
+          ] as const).map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as TabType)}
+              onClick={() => setActiveTab(tab.id)}
               className={`py-4 px-1 border-b-2 font-medium text-sm ${
                 activeTab === tab.id
                   ? 'border-blue-500 text-blue-600'
@@ -271,17 +299,13 @@ export default function AIClassificationPage() {
             <div className="bg-white p-6 rounded-lg shadow border">
               <h3 className="text-sm font-medium text-gray-500">모델 버전</h3>
               <p className="mt-2 text-2xl font-semibold">{status?.model_version || '-'}</p>
-              <p className="text-sm text-gray-400">
-                {status?.is_trained ? '학습됨' : '미학습'}
-              </p>
+              <p className="text-sm text-gray-400">{status?.is_trained ? '학습됨' : '미학습'}</p>
             </div>
-
             <div className="bg-white p-6 rounded-lg shadow border">
               <h3 className="text-sm font-medium text-gray-500">학습 데이터</h3>
-              <p className="mt-2 text-2xl font-semibold">{status?.training_samples?.toLocaleString() || 0}</p>
+              <p className="mt-2 text-2xl font-semibold">{fmtNum(status?.training_samples || 0)}</p>
               <p className="text-sm text-gray-400">개 항목</p>
             </div>
-
             <div className="bg-white p-6 rounded-lg shadow border">
               <h3 className="text-sm font-medium text-gray-500">모델 정확도</h3>
               <p className="mt-2 text-2xl font-semibold">
@@ -289,7 +313,6 @@ export default function AIClassificationPage() {
               </p>
               <p className="text-sm text-gray-400">교차 검증 기준</p>
             </div>
-
             <div className="bg-white p-6 rounded-lg shadow border">
               <h3 className="text-sm font-medium text-gray-500">분류 정확도</h3>
               <p className="mt-2 text-2xl font-semibold">
@@ -309,28 +332,67 @@ export default function AIClassificationPage() {
                 <p className="text-sm text-gray-500">완료된 업로드</p>
               </div>
               <div>
-                <p className="text-3xl font-bold text-green-600">{(status?.total_raw_transactions || 0).toLocaleString()}</p>
+                <p className="text-3xl font-bold text-green-600">{fmtNum(status?.total_raw_transactions || 0)}</p>
                 <p className="text-sm text-gray-500">보관된 거래 데이터</p>
               </div>
               <div>
-                <p className="text-3xl font-bold text-purple-600">{(status?.training_samples || 0).toLocaleString()}</p>
+                <p className="text-3xl font-bold text-purple-600">{fmtNum(status?.training_samples || 0)}</p>
                 <p className="text-sm text-gray-500">학습 데이터</p>
               </div>
             </div>
-            {status?.latest_upload && (
-              <div className="mt-4 p-3 bg-gray-50 rounded-lg text-sm text-gray-600">
-                최근 업로드: <span className="font-medium">{status.latest_upload.filename}</span>
-                {' '}({status.latest_upload.saved_count.toLocaleString()}건 저장,{' '}
-                {status.latest_upload.created_at ? new Date(status.latest_upload.created_at).toLocaleDateString('ko-KR') : '-'})
-                <span className={`ml-2 px-2 py-0.5 rounded text-xs font-medium ${
-                  status.latest_upload.status === 'completed' ? 'bg-green-100 text-green-700' :
-                  status.latest_upload.status === 'processing' ? 'bg-yellow-100 text-yellow-700' :
-                  'bg-red-100 text-red-700'
-                }`}>
-                  {status.latest_upload.status === 'completed' ? '완료' :
-                   status.latest_upload.status === 'processing' ? '처리중' : '실패'}
-                </span>
+          </div>
+
+          {/* Upload History List */}
+          <div className="bg-white p-6 rounded-lg shadow border">
+            <h3 className="text-lg font-medium mb-4">업로드 이력</h3>
+            {uploadHistory && uploadHistory.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">파일명</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">크기</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">저장건수</th>
+                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">상태</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">업로드일</th>
+                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">삭제</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {uploadHistory.map((u) => (
+                      <tr key={u.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 text-sm font-medium">{u.filename}</td>
+                        <td className="px-4 py-3 text-sm text-right text-gray-500">{fmtSize(u.file_size)}</td>
+                        <td className="px-4 py-3 text-sm text-right">{fmtNum(u.saved_count || 0)}건</td>
+                        <td className="px-4 py-3 text-center">
+                          <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                            u.status === 'completed' ? 'bg-green-100 text-green-700' :
+                            u.status === 'processing' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-red-100 text-red-700'
+                          }`}>
+                            {u.status === 'completed' ? '완료' : u.status === 'processing' ? '처리중' : '실패'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-500">
+                          {u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <button
+                            onClick={() => handleDeleteUpload(u.id, u.filename)}
+                            disabled={loading}
+                            className="text-red-500 hover:text-red-700 disabled:opacity-50"
+                            title="삭제"
+                          >
+                            <TrashIcon className="h-5 w-5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+            ) : (
+              <p className="text-center py-4 text-gray-400 text-sm">업로드 이력이 없습니다.</p>
             )}
           </div>
 
@@ -365,7 +427,7 @@ export default function AIClassificationPage() {
                 {loading ? '학습 중...' : '모델 재학습'}
               </button>
               <p className="text-sm text-gray-500 self-center">
-                최소 50개 이상의 학습 데이터 필요 (현재: {status?.training_samples || 0}개)
+                최소 50개 이상의 학습 데이터 필요 (현재: {fmtNum(status?.training_samples || 0)}개)
               </p>
             </div>
             {status?.last_trained_at && (
@@ -417,9 +479,7 @@ export default function AIClassificationPage() {
                 className="mb-4"
               />
               {uploadFile && (
-                <p className="text-sm text-gray-600 mb-4">
-                  선택된 파일: {uploadFile.name}
-                </p>
+                <p className="text-sm text-gray-600 mb-4">선택된 파일: {uploadFile.name}</p>
               )}
               <button
                 onClick={handleUploadHistorical}
@@ -490,9 +550,7 @@ export default function AIClassificationPage() {
                 className="mb-4"
               />
               {classifyFile && (
-                <p className="text-sm text-gray-600 mb-4">
-                  선택된 파일: {classifyFile.name}
-                </p>
+                <p className="text-sm text-gray-600 mb-4">선택된 파일: {classifyFile.name}</p>
               )}
               <button
                 onClick={handleClassifyFile}
@@ -534,15 +592,13 @@ export default function AIClassificationPage() {
             <div className="bg-white rounded-lg shadow border overflow-hidden">
               <div className="p-4 border-b flex justify-between items-center">
                 <h3 className="text-lg font-medium">분류 결과</h3>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleSubmitFeedback}
-                    disabled={loading}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300"
-                  >
-                    수정사항 저장 (AI 학습)
-                  </button>
-                </div>
+                <button
+                  onClick={handleSubmitFeedback}
+                  disabled={loading}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300"
+                >
+                  수정사항 저장 (AI 학습)
+                </button>
               </div>
 
               <div className="overflow-x-auto">
@@ -562,24 +618,18 @@ export default function AIClassificationPage() {
                       <tr key={index} className={result.needs_review ? 'bg-yellow-50' : ''}>
                         <td className="px-4 py-3 text-sm">{result.description}</td>
                         <td className="px-4 py-3 text-sm text-gray-500">{result.merchant_name || '-'}</td>
-                        <td className="px-4 py-3 text-sm text-right">
-                          {result.amount?.toLocaleString() || 0}
-                        </td>
+                        <td className="px-4 py-3 text-sm text-right">{result.amount?.toLocaleString() || 0}</td>
                         <td className="px-4 py-3 text-sm">
                           <span className="font-medium">{result.predicted_account_code}</span>
                           <br />
                           <span className="text-gray-500">{result.predicted_account_name}</span>
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <span
-                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                              result.confidence >= 0.85
-                                ? 'bg-green-100 text-green-800'
-                                : result.confidence >= 0.6
-                                ? 'bg-yellow-100 text-yellow-800'
-                                : 'bg-red-100 text-red-800'
-                            }`}
-                          >
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                            result.confidence >= 0.85 ? 'bg-green-100 text-green-800' :
+                            result.confidence >= 0.6 ? 'bg-yellow-100 text-yellow-800' :
+                            'bg-red-100 text-red-800'
+                          }`}>
                             {(result.confidence * 100).toFixed(0)}%
                           </span>
                         </td>

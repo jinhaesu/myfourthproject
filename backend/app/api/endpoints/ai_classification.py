@@ -946,6 +946,32 @@ async def download_template(
     )
 
 
+@router.delete("/upload/{upload_id}")
+async def delete_upload(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """업로드 데이터 삭제 (원본 거래 데이터 + 업로드 이력)"""
+    from app.models.ai import AIDataUploadHistory
+
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="업로드 이력을 찾을 수 없습니다.")
+
+    filename = upload.filename
+    row_count = upload.saved_count or upload.row_count or 0
+
+    # cascade="all, delete-orphan" 설정으로 raw_transactions 자동 삭제
+    await db.delete(upload)
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"'{filename}' 삭제 완료 ({row_count}건의 거래 데이터 삭제됨)"
+    }
+
+
 @router.get("/training-history")
 async def get_training_history(
     limit: int = Query(default=10, description="조회 개수"),

@@ -1,7 +1,9 @@
 """
 Smart Finance Core - Financial Reports API
 업로드된 계정별 원장 데이터 기반 재무보고서
-- 은행 원장(보통예금 등) 기반: 입금(차변)/출금(대변) 분석
+- 손익계산서: 계정 카테고리별 분류 (수익/비용)
+- 재무상태표: 자산/부채/자본 분류
+- 시산표, 월별 추이
 """
 import math
 import re
@@ -16,7 +18,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.ai import AIRawTransactionData, AIDataUploadHistory
-from app.models.accounting import Account
+from app.models.accounting import Account, AccountCategory
 
 router = APIRouter()
 
@@ -44,12 +46,10 @@ async def _resolve_account_names(db: AsyncSession, upload_id: int, codes: list) 
     """계정 코드 → 이름 매핑 (accounts 테이블 → raw data fallback)"""
     if not codes:
         return {}
-    # 1) accounts 테이블
     result = await db.execute(
         select(Account.code, Account.name).where(Account.code.in_(codes))
     )
     names = {r.code: r.name for r in result.all()}
-    # 2) raw data fallback
     missing = [c for c in codes if c not in names]
     if missing:
         raw_result = await db.execute(
@@ -72,6 +72,24 @@ async def _resolve_account_names(db: AsyncSession, upload_id: int, codes: list) 
     return names
 
 
+def _date_filters(year: Optional[int], month: Optional[int]):
+    """날짜 필터 생성"""
+    filters = []
+    if year and month:
+        prefix = f"{year}-{str(month).zfill(2)}"
+        prefix2 = f"{year}.{str(month).zfill(2)}"
+        filters.append(
+            (AIRawTransactionData.transaction_date.like(f"{prefix}%"))
+            | (AIRawTransactionData.transaction_date.like(f"{prefix2}%"))
+        )
+    elif year:
+        filters.append(
+            (AIRawTransactionData.transaction_date.like(f"{year}-%"))
+            | (AIRawTransactionData.transaction_date.like(f"{year}.%"))
+        )
+    return filters
+
+
 # ============ Endpoints ============
 
 @router.get("/summary")
@@ -83,7 +101,6 @@ async def get_financial_summary(
     """재무 요약 - 대시보드용 핵심 지표"""
     upload = await _validate_upload(db, upload_id)
 
-    # 전체 합계
     totals = await db.execute(
         select(
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("total_debit"),
@@ -93,7 +110,6 @@ async def get_financial_summary(
     )
     t = totals.one()
 
-    # 고유 계정 수
     acct_count = await db.scalar(
         select(func.count(func.distinct(AIRawTransactionData.account_code)))
         .where(AIRawTransactionData.upload_id == upload_id)
@@ -129,7 +145,6 @@ async def get_financial_summary(
     in_codes = [r.account_code for r in top_inflows]
     in_names = await _resolve_account_names(db, upload_id, in_codes)
 
-    # 원장 계정 정보
     source_result = await db.execute(
         select(func.distinct(AIRawTransactionData.source_account_code))
         .where(
@@ -166,19 +181,27 @@ async def get_trial_balance(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """시산표 - 상대 계정별 차변/대변 합계"""
+    """시산표 - 계정별 차변/대변 합계 (카테고리 포함)"""
     await _validate_upload(db, upload_id)
 
     result = await db.execute(
         select(
             AIRawTransactionData.account_code,
+            AccountCategory.code.label("cat_code"),
+            AccountCategory.name.label("cat_name"),
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
             func.count(AIRawTransactionData.id).label("tx_count"),
         )
+        .outerjoin(Account, AIRawTransactionData.account_code == Account.code)
+        .outerjoin(AccountCategory, Account.category_id == AccountCategory.id)
         .where(AIRawTransactionData.upload_id == upload_id)
-        .group_by(AIRawTransactionData.account_code)
-        .order_by(AIRawTransactionData.account_code)
+        .group_by(
+            AIRawTransactionData.account_code,
+            AccountCategory.code,
+            AccountCategory.name,
+        )
+        .order_by(AccountCategory.code, AIRawTransactionData.account_code)
     )
     rows = result.all()
 
@@ -196,6 +219,8 @@ async def get_trial_balance(
         items.append({
             "account_code": r.account_code,
             "account_name": names.get(r.account_code, f"계정 {r.account_code}"),
+            "category_code": r.cat_code or "0",
+            "category_name": r.cat_name or "미분류",
             "debit_total": d,
             "credit_total": c,
             "balance": d - c,
@@ -219,82 +244,111 @@ async def get_income_statement(
     current_user: User = Depends(get_current_user),
 ):
     """
-    손익계산서 (입출금 분석)
-    은행 원장 기반: 차변=입금(수입), 대변=출금(지출)
-    월별/연도별 필터 지원
+    손익계산서 - 계정 카테고리별 분류
+    수익(4): 매출, 영업수익 등
+    비용(5): 판매비, 관리비, 매출원가 등
+    기타(1,2,3,0): 자산/부채/자본 관련 거래
     """
     await _validate_upload(db, upload_id)
 
     filters = [AIRawTransactionData.upload_id == upload_id]
+    filters.extend(_date_filters(year, month))
 
-    # 날짜 필터 (transaction_date 문자열 기반)
-    if year and month:
-        prefix = f"{year}-{str(month).zfill(2)}"
-        prefix2 = f"{year}.{str(month).zfill(2)}"
-        filters.append(
-            (AIRawTransactionData.transaction_date.like(f"{prefix}%"))
-            | (AIRawTransactionData.transaction_date.like(f"{prefix2}%"))
-        )
-    elif year:
-        filters.append(
-            (AIRawTransactionData.transaction_date.like(f"{year}-%"))
-            | (AIRawTransactionData.transaction_date.like(f"{year}.%"))
-        )
-
+    # JOIN with Account/AccountCategory for proper classification
     result = await db.execute(
         select(
             AIRawTransactionData.account_code,
+            AccountCategory.code.label("cat_code"),
+            AccountCategory.name.label("cat_name"),
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
             func.count(AIRawTransactionData.id).label("tx_count"),
         )
+        .outerjoin(Account, AIRawTransactionData.account_code == Account.code)
+        .outerjoin(AccountCategory, Account.category_id == AccountCategory.id)
         .where(*filters)
-        .group_by(AIRawTransactionData.account_code)
-        .order_by(func.sum(AIRawTransactionData.debit_amount).desc())
+        .group_by(
+            AIRawTransactionData.account_code,
+            AccountCategory.code,
+            AccountCategory.name,
+        )
+        .order_by(
+            AccountCategory.code,
+            func.coalesce(
+                func.sum(AIRawTransactionData.debit_amount)
+                + func.sum(AIRawTransactionData.credit_amount), 0
+            ).desc()
+        )
     )
     rows = result.all()
 
     codes = [r.account_code for r in rows]
     names = await _resolve_account_names(db, upload_id, codes)
 
-    inflows = []  # 입금 (차변)
-    outflows = []  # 출금 (대변)
-    total_inflow = 0.0
-    total_outflow = 0.0
+    # Category ordering and Korean labels
+    CATEGORY_ORDER = {
+        "4": {"name": "수익 (매출)", "order": 1},
+        "5": {"name": "비용 (판매비와관리비)", "order": 2},
+        "1": {"name": "자산 관련", "order": 3},
+        "2": {"name": "부채 관련", "order": 4},
+        "3": {"name": "자본 관련", "order": 5},
+        "0": {"name": "미분류", "order": 6},
+    }
 
+    sections = {}
     for r in rows:
+        cat_code = r.cat_code or "0"
+        cat_info = CATEGORY_ORDER.get(cat_code, {"name": r.cat_name or "기타", "order": 9})
+
+        if cat_code not in sections:
+            sections[cat_code] = {
+                "category_code": cat_code,
+                "category_name": cat_info["name"],
+                "order": cat_info["order"],
+                "items": [],
+                "debit_total": 0.0,
+                "credit_total": 0.0,
+            }
+
         d = float(r.debit_total)
         c = float(r.credit_total)
-        name = names.get(r.account_code, f"계정 {r.account_code}")
+        acct_name = names.get(r.account_code, f"계정 {r.account_code}")
 
-        if d > 0:
-            inflows.append({
-                "account_code": r.account_code,
-                "account_name": name,
-                "amount": d,
-                "tx_count": r.tx_count,
-            })
-            total_inflow += d
+        sections[cat_code]["items"].append({
+            "account_code": r.account_code,
+            "account_name": acct_name,
+            "debit_amount": d,
+            "credit_amount": c,
+            "net_amount": d - c,
+            "tx_count": r.tx_count,
+        })
+        sections[cat_code]["debit_total"] += d
+        sections[cat_code]["credit_total"] += c
 
-        if c > 0:
-            outflows.append({
-                "account_code": r.account_code,
-                "account_name": name,
-                "amount": c,
-                "tx_count": r.tx_count,
-            })
-            total_outflow += c
+    # Sort sections by order
+    sorted_sections = sorted(sections.values(), key=lambda x: x.pop("order"))
 
-    # 정렬: 큰 금액순
-    inflows.sort(key=lambda x: -x["amount"])
-    outflows.sort(key=lambda x: -x["amount"])
+    # Calculate totals
+    # Revenue: from bank ledger, revenue appears as debit (cash in)
+    rev = sections.get("4", {"debit_total": 0.0, "credit_total": 0.0})
+    total_revenue = rev["debit_total"]
+
+    # Expenses: from bank ledger, expenses appear as credit (cash out)
+    exp = sections.get("5", {"debit_total": 0.0, "credit_total": 0.0})
+    total_expense = exp["credit_total"]
+
+    # Total inflow/outflow across all categories
+    total_inflow = sum(s["debit_total"] for s in sections.values())
+    total_outflow = sum(s["credit_total"] for s in sections.values())
 
     return {
         "upload_id": upload_id,
         "year": year,
         "month": month,
-        "inflows": inflows,
-        "outflows": outflows,
+        "sections": sorted_sections,
+        "total_revenue": total_revenue,
+        "total_expense": total_expense,
+        "net_income": total_revenue - total_expense,
         "total_inflow": total_inflow,
         "total_outflow": total_outflow,
         "net_flow": total_inflow - total_outflow,
@@ -307,7 +361,12 @@ async def get_balance_sheet(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """재무상태표 - 원장 계정별 잔액 현황"""
+    """
+    재무상태표 - 자산/부채/자본 분류
+    자산(1): 유동자산, 비유동자산
+    부채(2): 유동부채, 비유동부채
+    자본(3): 자본금, 이익잉여금 등
+    """
     upload = await _validate_upload(db, upload_id)
 
     # 원장 계정(source_account_code)별 잔액
@@ -327,29 +386,80 @@ async def get_balance_sheet(
         .order_by(AIRawTransactionData.source_account_code)
     )
     source_rows = source_result.all()
-
     source_codes = [r.source_account_code for r in source_rows]
     source_names = await _resolve_account_names(db, upload_id, source_codes)
 
-    # 상대 계정별 잔액 (상위 15개)
+    # 상대 계정별 잔액 - 카테고리 포함
     counter_result = await db.execute(
         select(
             AIRawTransactionData.account_code,
+            AccountCategory.code.label("cat_code"),
+            AccountCategory.name.label("cat_name"),
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("total_debit"),
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("total_credit"),
             func.count(AIRawTransactionData.id).label("tx_count"),
         )
+        .outerjoin(Account, AIRawTransactionData.account_code == Account.code)
+        .outerjoin(AccountCategory, Account.category_id == AccountCategory.id)
         .where(AIRawTransactionData.upload_id == upload_id)
-        .group_by(AIRawTransactionData.account_code)
-        .order_by(func.sum(AIRawTransactionData.debit_amount + AIRawTransactionData.credit_amount).desc())
-        .limit(20)
+        .group_by(
+            AIRawTransactionData.account_code,
+            AccountCategory.code,
+            AccountCategory.name,
+        )
+        .order_by(
+            AccountCategory.code,
+            func.coalesce(
+                func.sum(AIRawTransactionData.debit_amount)
+                + func.sum(AIRawTransactionData.credit_amount), 0
+            ).desc()
+        )
     )
     counter_rows = counter_result.all()
-
     counter_codes = [r.account_code for r in counter_rows]
     counter_names = await _resolve_account_names(db, upload_id, counter_codes)
 
-    accounts = []
+    BS_CATEGORY = {
+        "1": {"name": "자산", "order": 1},
+        "2": {"name": "부채", "order": 2},
+        "3": {"name": "자본", "order": 3},
+        "4": {"name": "수익 (손익)", "order": 4},
+        "5": {"name": "비용 (손익)", "order": 5},
+        "0": {"name": "미분류", "order": 6},
+    }
+
+    sections = {}
+    for r in counter_rows:
+        cat_code = r.cat_code or "0"
+        cat_info = BS_CATEGORY.get(cat_code, {"name": r.cat_name or "기타", "order": 9})
+
+        if cat_code not in sections:
+            sections[cat_code] = {
+                "category_code": cat_code,
+                "category_name": cat_info["name"],
+                "order": cat_info["order"],
+                "items": [],
+                "debit_total": 0.0,
+                "credit_total": 0.0,
+            }
+
+        d = float(r.total_debit)
+        c = float(r.total_credit)
+        sections[cat_code]["items"].append({
+            "account_code": r.account_code,
+            "account_name": counter_names.get(r.account_code, f"계정 {r.account_code}"),
+            "debit_total": d,
+            "credit_total": c,
+            "balance": d - c,
+            "tx_count": r.tx_count,
+        })
+        sections[cat_code]["debit_total"] += d
+        sections[cat_code]["credit_total"] += c
+
+    sorted_sections = sorted(sections.values(), key=lambda x: x.pop("order"))
+
+    # Source account (원장) totals
+    ledger_accounts = []
     total_debit = 0.0
     total_credit = 0.0
     for r in source_rows:
@@ -357,7 +467,7 @@ async def get_balance_sheet(
         c = float(r.total_credit)
         total_debit += d
         total_credit += c
-        accounts.append({
+        ledger_accounts.append({
             "account_code": r.source_account_code,
             "account_name": source_names.get(r.source_account_code, f"계정 {r.source_account_code}"),
             "debit_total": d,
@@ -366,27 +476,22 @@ async def get_balance_sheet(
             "tx_count": r.tx_count,
         })
 
-    counterparts = []
-    for r in counter_rows:
-        d = float(r.total_debit)
-        c = float(r.total_credit)
-        counterparts.append({
-            "account_code": r.account_code,
-            "account_name": counter_names.get(r.account_code, f"계정 {r.account_code}"),
-            "debit_total": d,
-            "credit_total": c,
-            "balance": d - c,
-            "tx_count": r.tx_count,
-        })
+    # Calculate balance sheet totals
+    asset_section = sections.get("1", {"debit_total": 0, "credit_total": 0})
+    liability_section = sections.get("2", {"debit_total": 0, "credit_total": 0})
+    equity_section = sections.get("3", {"debit_total": 0, "credit_total": 0})
 
     return {
         "upload_id": upload_id,
         "filename": upload.filename,
-        "accounts": accounts,
+        "ledger_accounts": ledger_accounts,
+        "sections": sorted_sections,
         "total_debit": total_debit,
         "total_credit": total_credit,
         "net_balance": total_debit - total_credit,
-        "counterparts": counterparts,
+        "total_assets": asset_section["debit_total"] - asset_section["credit_total"],
+        "total_liabilities": liability_section["credit_total"] - liability_section["debit_total"],
+        "total_equity": equity_section["credit_total"] - equity_section["debit_total"],
     }
 
 
