@@ -45,9 +45,10 @@ const statusBadge: Record<string, { className: string; label: string }> = {
 }
 
 const channelTypeBadge: Record<string, { className: string; label: string }> = {
-  online: { className: 'bg-blue-100 text-blue-800', label: '온라인' },
+  online_marketplace: { className: 'bg-blue-100 text-blue-800', label: '온라인' },
+  own_website: { className: 'bg-indigo-100 text-indigo-800', label: '자사몰' },
   offline: { className: 'bg-green-100 text-green-800', label: '오프라인' },
-  wholesale: { className: 'bg-purple-100 text-purple-800', label: '도매' },
+  wholesale: { className: 'bg-purple-100 text-purple-800', label: '도매/B2B' },
 }
 
 // ============================================================================
@@ -678,9 +679,38 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
       return
     }
 
-    const payload = { ...formData }
-    if (!payload.login_password) {
-      delete (payload as any).login_password
+    // 백엔드 필드명으로 매핑
+    const channelTypeMap: Record<string, string> = {
+      online: 'online_marketplace',
+      offline: 'offline',
+      wholesale: 'wholesale',
+      own_website: 'own_website',
+    }
+
+    const payload: any = {
+      code: formData.channel_code,
+      name: formData.name,
+      channel_type: channelTypeMap[formData.channel_type] || formData.channel_type,
+      api_type: formData.collection_method,
+      platform_url: formData.platform_url || null,
+      commission_rate: formData.commission_rate,
+      settlement_day: formData.settlement_day,
+      is_active: formData.is_active,
+    }
+
+    // API 방식일 때만 API 필드 포함
+    if (formData.collection_method === 'api') {
+      payload.seller_id = formData.seller_id || null
+      payload.api_key = formData.api_key || null
+      payload.api_secret = formData.api_secret || null
+    }
+
+    // 스크래핑 방식일 때만 로그인 필드 포함
+    if (formData.collection_method === 'scraping') {
+      payload.login_id = formData.login_id || null
+      if (formData.login_password) {
+        payload.login_password = formData.login_password
+      }
     }
 
     if (isEdit) {
@@ -715,9 +745,10 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
             <div>
               <label className="label">채널유형</label>
               <select value={formData.channel_type} onChange={(e) => setFormData({ ...formData, channel_type: e.target.value })} className={inputClass}>
-                <option value="online">온라인</option>
+                <option value="online">온라인 마켓플레이스</option>
+                <option value="own_website">자사몰</option>
                 <option value="offline">오프라인</option>
-                <option value="wholesale">도매</option>
+                <option value="wholesale">도매/B2B</option>
               </select>
             </div>
             <div>
@@ -728,27 +759,6 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
                 <option value="manual">수동</option>
               </select>
             </div>
-          </div>
-
-          <div>
-            <label className="label">플랫폼 URL</label>
-            <input type="url" value={formData.platform_url} onChange={(e) => setFormData({ ...formData, platform_url: e.target.value })} className={inputClass} placeholder="https://..." />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="label">셀러 ID</label>
-              <input type="text" value={formData.seller_id} onChange={(e) => setFormData({ ...formData, seller_id: e.target.value })} className={inputClass} />
-            </div>
-            <div>
-              <label className="label">API Key</label>
-              <input type="password" value={formData.api_key} onChange={(e) => setFormData({ ...formData, api_key: e.target.value })} className={inputClass} />
-            </div>
-          </div>
-
-          <div>
-            <label className="label">API Secret</label>
-            <input type="password" value={formData.api_secret} onChange={(e) => setFormData({ ...formData, api_secret: e.target.value })} className={inputClass} />
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -762,16 +772,53 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
             </div>
           </div>
 
+          <div>
+            <label className="label">플랫폼 URL</label>
+            <input type="url" value={formData.platform_url} onChange={(e) => setFormData({ ...formData, platform_url: e.target.value })} className={inputClass} placeholder="https://wing.coupang.com 등 (선택)" />
+          </div>
+
+          {/* API 방식일 때만 API 연동 필드 */}
+          {formData.collection_method === 'api' && (
+            <div className="bg-blue-50 rounded-lg p-4 space-y-3">
+              <p className="text-sm font-medium text-blue-700">API 연동 설정</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="label">셀러 ID</label>
+                  <input type="text" value={formData.seller_id} onChange={(e) => setFormData({ ...formData, seller_id: e.target.value })} className={inputClass} />
+                </div>
+                <div>
+                  <label className="label">API Key</label>
+                  <input type="password" value={formData.api_key} onChange={(e) => setFormData({ ...formData, api_key: e.target.value })} className={inputClass} />
+                </div>
+              </div>
+              <div>
+                <label className="label">API Secret</label>
+                <input type="password" value={formData.api_secret} onChange={(e) => setFormData({ ...formData, api_secret: e.target.value })} className={inputClass} />
+              </div>
+            </div>
+          )}
+
+          {/* 스크래핑 방식일 때만 로그인 필드 */}
           {formData.collection_method === 'scraping' && (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="label">로그인 ID (스크래핑용)</label>
-                <input type="text" value={formData.login_id} onChange={(e) => setFormData({ ...formData, login_id: e.target.value })} className={inputClass} />
+            <div className="bg-amber-50 rounded-lg p-4 space-y-3">
+              <p className="text-sm font-medium text-amber-700">스크래핑 로그인 설정</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="label">로그인 ID</label>
+                  <input type="text" value={formData.login_id} onChange={(e) => setFormData({ ...formData, login_id: e.target.value })} className={inputClass} />
+                </div>
+                <div>
+                  <label className="label">비밀번호</label>
+                  <input type="password" value={formData.login_password} onChange={(e) => setFormData({ ...formData, login_password: e.target.value })} className={inputClass} />
+                </div>
               </div>
-              <div>
-                <label className="label">비밀번호 (스크래핑용)</label>
-                <input type="password" value={formData.login_password} onChange={(e) => setFormData({ ...formData, login_password: e.target.value })} className={inputClass} />
-              </div>
+            </div>
+          )}
+
+          {/* 수동 방식 안내 */}
+          {formData.collection_method === 'manual' && (
+            <div className="bg-gray-50 rounded-lg p-4">
+              <p className="text-sm text-gray-600">수동 방식: 매출 데이터를 직접 입력하거나 엑셀로 업로드합니다.</p>
             </div>
           )}
 

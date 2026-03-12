@@ -26,6 +26,141 @@ from app.services.ai_classifier import AIClassifierService
 router = APIRouter(prefix="/ai-classification", tags=["AI 분류"])
 
 
+# ============ 계정별 원장 파싱 헬퍼 ============
+
+def _is_account_ledger_format(df_raw: pd.DataFrame) -> bool:
+    """더존/ERP '계정별 원장' 양식인지 감지"""
+    if df_raw.shape[0] < 8:
+        return False
+    # 첫 몇 행의 모든 셀에서 "계정별 원장" 패턴 검색 (공백 제거 후)
+    for r in range(min(3, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                normalized = str(cell).replace(" ", "").strip()
+                if "계정별" in normalized and "원장" in normalized:
+                    return True
+    return False
+
+
+def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    '계정별 원장' 양식 파싱
+    구조:
+      Row 0: "계정별 원장"
+      Row 2: 기간 (예: 2025.01.01 ~ 2025.12.31)
+      Row 4: 회사명 ... [코드] 계정과목명
+      Row 6: 헤더 (날짜, 적요란, 코드, 거래처, 차변, 대변, 잔액)
+      Row 7: 전기이월
+      Row 8+: 거래 데이터
+      여러 계정이 연속되어 나올 수 있음
+    """
+    import re
+
+    rows = []
+    current_account_code = None
+    header_row_idx = None
+    col_map = {}  # column index -> field name
+
+    for idx in range(df_raw.shape[0]):
+        row_vals = [df_raw.iloc[idx, c] if c < df_raw.shape[1] else None for c in range(df_raw.shape[1])]
+
+        # 계정 헤더 감지: "[코드] 계정명" 패턴 찾기
+        for cell in row_vals:
+            if pd.notna(cell):
+                cell_str = str(cell).strip()
+                match = re.search(r'\[(\d+)\]\s*(.+)', cell_str)
+                if match:
+                    current_account_code = match.group(1).strip()
+                    break
+
+        # 헤더 행 감지: "날짜" 컬럼 (공백 제거 후 비교)
+        first_val = str(row_vals[0]).replace(" ", "").strip() if pd.notna(row_vals[0]) else ""
+        if first_val == "날짜":
+            header_row_idx = idx
+            # 컬럼 매핑 구축
+            col_map = {}
+            for c_idx, val in enumerate(row_vals):
+                if pd.notna(val):
+                    col_name = str(val).replace(" ", "").strip()
+                    if col_name == "날짜":
+                        col_map[c_idx] = "date"
+                    elif col_name in ("적요란", "적요"):
+                        col_map[c_idx] = "description"
+                    elif col_name == "코드":
+                        col_map[c_idx] = "code"
+                    elif col_name in ("거래처", "거래처명"):
+                        col_map[c_idx] = "merchant"
+                    elif col_name == "차변":
+                        col_map[c_idx] = "debit"
+                    elif col_name == "대변":
+                        col_map[c_idx] = "credit"
+                    elif col_name == "잔액":
+                        col_map[c_idx] = "balance"
+            continue
+
+        if header_row_idx is None or not col_map:
+            continue
+
+        # 데이터 행 파싱: 전기이월, 월계, 누계, 빈 행 건너뛰기
+        desc_val = None
+        for c_idx, field_name in col_map.items():
+            if field_name == "description" and c_idx < len(row_vals):
+                desc_val = row_vals[c_idx]
+                break
+
+        if desc_val is None or pd.isna(desc_val):
+            continue
+
+        desc_str = str(desc_val).strip()
+        if desc_str in ("", "전기이월", "전월이월", "월계", "누계", "합계", "이월잔액"):
+            continue
+
+        # 코드 필드 추출
+        code_val = None
+        merchant_val = None
+        debit_val = 0
+        credit_val = 0
+
+        for c_idx, field_name in col_map.items():
+            if c_idx >= len(row_vals):
+                continue
+            val = row_vals[c_idx]
+            if field_name == "code" and pd.notna(val):
+                code_val = str(val).strip()
+            elif field_name == "merchant" and pd.notna(val):
+                merchant_val = str(val).strip()
+            elif field_name == "debit" and pd.notna(val):
+                try:
+                    debit_val = float(val)
+                except (ValueError, TypeError):
+                    debit_val = 0
+            elif field_name == "credit" and pd.notna(val):
+                try:
+                    credit_val = float(val)
+                except (ValueError, TypeError):
+                    credit_val = 0
+
+        # account_code: 코드 열 사용 (상대 계정), 없으면 현재 계정 코드 사용
+        account_code = code_val if code_val else current_account_code
+        if not account_code:
+            continue
+
+        amount = debit_val if debit_val > 0 else credit_val
+
+        rows.append({
+            "적요란": desc_str,
+            "거래처": merchant_val or "",
+            "금액": amount,
+            "코드": account_code,
+        })
+
+    if not rows:
+        raise ValueError("계정별 원장에서 유효한 거래 데이터를 찾을 수 없습니다.")
+
+    return pd.DataFrame(rows)
+
+
 # ============ Pydantic Models ============
 
 class TrainingDataItem(BaseModel):
@@ -195,11 +330,21 @@ async def upload_historical_data(
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
         else:
-            df = pd.read_excel(io.BytesIO(content))
+            # .xls / .xlsx 모두 지원
+            engine = 'xlrd' if file.filename.endswith('.xls') else 'openpyxl'
+            # 먼저 헤더 없이 읽어 "계정별 원장" 양식 감지
+            df_raw = pd.read_excel(io.BytesIO(content), header=None, engine=engine)
+
+            if _is_account_ledger_format(df_raw):
+                df = _parse_account_ledger(df_raw)
+            else:
+                # 일반 양식: 첫 행이 헤더
+                df = pd.read_excel(io.BytesIO(content), engine=engine)
 
         # 컬럼명 정규화
         column_mapping = {
             '적요': 'description',
+            '적요란': 'description',
             '거래내역': 'description',
             '내역': 'description',
             '거래처명': 'merchant_name',
@@ -210,11 +355,12 @@ async def upload_historical_data(
             '계정과목코드': 'account_code',
             '계정코드': 'account_code',
             '계정과목': 'account_code',
+            '코드': 'account_code',
             '계정과목명': 'account_name',
             '계정명': 'account_name'
         }
 
-        df.columns = [column_mapping.get(col.strip(), col.strip()) for col in df.columns]
+        df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
 
         # 필수 컬럼 확인
         if 'description' not in df.columns:
@@ -382,11 +528,13 @@ async def classify_file(
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
         else:
-            df = pd.read_excel(io.BytesIO(content))
+            engine = 'xlrd' if file.filename.endswith('.xls') else 'openpyxl'
+            df = pd.read_excel(io.BytesIO(content), engine=engine)
 
         # 컬럼명 정규화
         column_mapping = {
             '적요': 'description',
+            '적요란': 'description',
             '거래내역': 'description',
             '내역': 'description',
             '거래처명': 'merchant_name',
@@ -398,7 +546,7 @@ async def classify_file(
             '일자': 'transaction_date'
         }
 
-        df.columns = [column_mapping.get(col.strip(), col.strip()) for col in df.columns]
+        df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
 
         if 'description' not in df.columns:
             raise HTTPException(status_code=400, detail="'적요' 또는 '거래내역' 컬럼이 필요합니다.")
