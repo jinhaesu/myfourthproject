@@ -83,7 +83,7 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
         for cell in row_vals:
             if pd.notna(cell):
                 cell_str = str(cell).strip()
-                match = re.search(r'\[(\d+)\]\s*(.+)', cell_str)
+                match = re.search(r'\[(\d{1,6})\]\s*(.+)', cell_str)
                 if match:
                     current_account_code = match.group(1).strip()
                     current_account_name = match.group(2).strip()
