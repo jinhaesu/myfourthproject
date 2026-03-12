@@ -16,7 +16,8 @@ from app.api.endpoints import (
     reports,
     admin,
     data_import,
-    ai_classification
+    ai_classification,
+    sales
 )
 
 api_router = APIRouter()
@@ -102,4 +103,11 @@ api_router.include_router(
 api_router.include_router(
     ai_classification.router,
     tags=["AI 계정분류"]
+)
+
+# 매출 자동화
+api_router.include_router(
+    sales.router,
+    prefix="/sales",
+    tags=["Sales Automation"]
 )

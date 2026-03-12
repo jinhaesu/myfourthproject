@@ -15,6 +15,7 @@ from app.core.database import async_session_factory, init_db, engine
 from app.core.security import get_password_hash
 from app.models.user import User, Role, Department, RoleType
 from app.models.accounting import Account, AccountCategory
+from app.models.sales import SalesChannel, ChannelType, ApiType
 
 
 async def reset_database():
@@ -30,6 +31,7 @@ async def reset_database():
             "reconciliation_matches", "payment_schedules", "payables", "receivables",
             "bank_transactions", "bank_accounts",
             "approval_history", "approval_lines", "approval_steps", "approval_requests",
+            "sales_automation_schedules", "sales_records", "sales_channels",
             "voucher_attachments", "voucher_lines", "vouchers",
             "accounts", "account_categories", "user_sessions", "users", "departments", "roles",
         ]
@@ -506,6 +508,135 @@ async def create_sample_users():
         print("📧 staff@smartfinance.com / staff123!")
 
 
+async def create_sales_channels():
+    """기본 판매 채널 생성"""
+    async with async_session_factory() as db:
+        result = await db.execute(select(SalesChannel).where(SalesChannel.code == "COUPANG"))
+        if result.scalar_one_or_none():
+            print("판매 채널이 이미 존재합니다.")
+            return
+
+        from decimal import Decimal
+
+        channels = [
+            SalesChannel(
+                code="COUPANG", name="쿠팡",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.API,
+                commission_rate=Decimal("10.80"),
+                platform_url="https://wing.coupang.com",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="NAVER_SMART", name="네이버 스마트스토어",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.API,
+                commission_rate=Decimal("5.50"),
+                platform_url="https://sell.smartstore.naver.com",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="GMARKET", name="G마켓",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.API,
+                commission_rate=Decimal("12.00"),
+                platform_url="https://www.gmarket.co.kr",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="AUCTION", name="옥션",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.API,
+                commission_rate=Decimal("12.00"),
+                platform_url="https://www.auction.co.kr",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="11ST", name="11번가",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.API,
+                commission_rate=Decimal("12.00"),
+                platform_url="https://soffice.11st.co.kr",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="WEMAKEPRICE", name="위메프",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.SCRAPING,
+                commission_rate=Decimal("12.00"),
+                platform_url="https://wpartner.wemakeprice.com",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="TMON", name="티몬",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.SCRAPING,
+                commission_rate=Decimal("12.00"),
+                platform_url="https://spc.tmon.co.kr",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="INTERPARK", name="인터파크",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.SCRAPING,
+                commission_rate=Decimal("13.00"),
+                platform_url="https://incomeplus.interpark.com",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="SSG", name="SSG.COM",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.SCRAPING,
+                commission_rate=Decimal("10.00"),
+                platform_url="https://www.ssg.com",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="LOTTE_ON", name="롯데ON",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.SCRAPING,
+                commission_rate=Decimal("10.00"),
+                platform_url="https://www.lotteon.com",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="KAKAO_GIFT", name="카카오 선물하기",
+                channel_type=ChannelType.ONLINE_MARKETPLACE,
+                api_type=ApiType.SCRAPING,
+                commission_rate=Decimal("15.00"),
+                platform_url="https://gift.kakao.com",
+                is_active=True,
+            ),
+            SalesChannel(
+                code="OWN_MALL", name="자사몰",
+                channel_type=ChannelType.OWN_WEBSITE,
+                api_type=ApiType.MANUAL,
+                commission_rate=Decimal("0.00"),
+                is_active=True,
+            ),
+            SalesChannel(
+                code="OFFLINE", name="오프라인 매장",
+                channel_type=ChannelType.OFFLINE,
+                api_type=ApiType.MANUAL,
+                commission_rate=Decimal("0.00"),
+                is_active=True,
+            ),
+            SalesChannel(
+                code="WHOLESALE", name="도매/B2B",
+                channel_type=ChannelType.WHOLESALE,
+                api_type=ApiType.MANUAL,
+                commission_rate=Decimal("0.00"),
+                is_active=True,
+            ),
+        ]
+
+        for channel in channels:
+            db.add(channel)
+
+        await db.commit()
+        print(f"✅ {len(channels)}개 판매 채널 생성 완료")
+
+
 async def main():
     """메인 실행 함수"""
     print("=" * 50)
@@ -524,6 +655,7 @@ async def main():
     await create_accounts()
     await create_admin_user()
     await create_sample_users()
+    await create_sales_channels()
 
     print("=" * 50)
     print("🎉 초기 데이터 생성 완료!")

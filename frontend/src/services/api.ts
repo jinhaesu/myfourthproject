@@ -383,6 +383,47 @@ export const aiClassificationApi = {
     api.get('/ai-classification/training-history', { params: { limit } }),
 }
 
+// Sales Automation API
+export const salesApi = {
+  // Channels
+  getChannels: () => api.get('/sales/channels/'),
+  createChannel: (data: any) => api.post('/sales/channels/', data),
+  updateChannel: (id: number, data: any) => api.put(`/sales/channels/${id}`, data),
+  deleteChannel: (id: number) => api.delete(`/sales/channels/${id}`),
+
+  // Records
+  getRecords: (params: { year: number; month: number; channel_id?: number }) =>
+    api.get('/sales/records/', { params }),
+  createRecord: (data: any) => api.post('/sales/records/', data),
+  confirmRecord: (id: number) => api.put(`/sales/records/${id}/confirm`),
+
+  // Summary
+  getMonthlySummary: (year: number, month: number) =>
+    api.get('/sales/summary/monthly', { params: { year, month } }),
+  getYearlySummary: (year: number) =>
+    api.get('/sales/summary/yearly', { params: { year } }),
+  getChannelTrend: (channelId: number, months?: number) =>
+    api.get(`/sales/trend/${channelId}`, { params: { months: months || 12 } }),
+
+  // Voucher conversion
+  convertToVoucher: (recordIds: number[]) =>
+    api.post('/sales/convert-to-voucher', { record_ids: recordIds }),
+
+  // Excel & Report
+  exportExcel: (year: number, month: number) =>
+    api.get('/sales/export/excel', { params: { year, month }, responseType: 'blob' }),
+  sendReport: (data: { year: number; month: number; recipients: string[] }) =>
+    api.post('/sales/send-report', data),
+  importExcel: (formData: FormData) =>
+    api.post('/sales/import/excel', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+
+  // Schedules
+  getSchedules: () => api.get('/sales/schedules/'),
+  createSchedule: (data: any) => api.post('/sales/schedules/', data),
+  updateSchedule: (id: number, data: any) => api.put(`/sales/schedules/${id}`, data),
+  deleteSchedule: (id: number) => api.delete(`/sales/schedules/${id}`),
+}
+
 // Data Import/Export API
 export const dataApi = {
   uploadVouchers: (file: File) => {

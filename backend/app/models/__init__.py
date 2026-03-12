@@ -33,6 +33,11 @@ from app.models.ai import (
     CustomTag
 )
 from app.models.audit import AuditLog, DataSnapshot
+from app.models.sales import (
+    SalesChannel,
+    SalesRecord,
+    SalesAutomationSchedule,
+)
 
 __all__ = [
     # User
@@ -70,5 +75,9 @@ __all__ = [
     "CustomTag",
     # Audit
     "AuditLog",
-    "DataSnapshot"
+    "DataSnapshot",
+    # Sales
+    "SalesChannel",
+    "SalesRecord",
+    "SalesAutomationSchedule",
 ]

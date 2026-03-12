@@ -12,6 +12,7 @@ from app.api.endpoints import forecast
 from app.api.endpoints import reports
 from app.api.endpoints import admin
 from app.api.endpoints import data_import
+from app.api.endpoints import sales
 
 __all__ = [
     "auth",
@@ -24,5 +25,6 @@ __all__ = [
     "forecast",
     "reports",
     "admin",
-    "data_import"
+    "data_import",
+    "sales"
 ]
