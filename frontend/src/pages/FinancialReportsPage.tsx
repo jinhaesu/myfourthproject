@@ -3,23 +3,22 @@ import { useQuery } from '@tanstack/react-query'
 import { financialApi } from '@/services/api'
 import { MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline'
 import {
-  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Legend,
 } from 'recharts'
 
-function fmt(value: number) {
-  return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW', maximumFractionDigits: 0 }).format(value)
+function fmt(v: number) {
+  return new Intl.NumberFormat('ko-KR', { style: 'currency', currency: 'KRW', maximumFractionDigits: 0 }).format(v)
 }
-function fmtNum(value: number) {
-  return new Intl.NumberFormat('ko-KR').format(value)
+function fmtNum(v: number) {
+  return new Intl.NumberFormat('ko-KR').format(v)
 }
 
-type TabType = 'summary' | 'income' | 'balance' | 'trial'
-const COLORS = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316']
+type TabType = 'statements' | 'trend' | 'trial'
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 export default function FinancialReportsPage() {
-  const [activeTab, setActiveTab] = useState<TabType>('summary')
+  const [activeTab, setActiveTab] = useState<TabType>('statements')
   const [selectedUploadId, setSelectedUploadId] = useState<number | null>(null)
 
   const { data: uploads, isLoading: uploadsLoading } = useQuery({
@@ -29,14 +28,12 @@ export default function FinancialReportsPage() {
 
   const uploadList = useMemo(() => {
     if (!uploads) return []
-    if (Array.isArray(uploads)) return uploads
-    return []
+    return Array.isArray(uploads) ? uploads : []
   }, [uploads])
 
   const tabs: { id: TabType; label: string }[] = [
-    { id: 'summary', label: '재무 요약' },
-    { id: 'income', label: '입출금 분석' },
-    { id: 'balance', label: '잔액 현황' },
+    { id: 'statements', label: '손익계산서 / 재무상태표' },
+    { id: 'trend', label: '월별 추이' },
     { id: 'trial', label: '시산표' },
   ]
 
@@ -44,7 +41,7 @@ export default function FinancialReportsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">재무보고서</h1>
-        <p className="text-gray-500 mt-1">계정별 원장 데이터 기반 재무 분석</p>
+        <p className="text-gray-500 mt-1">계정별 원장 데이터 기반 재무제표</p>
       </div>
 
       <div className="card">
@@ -85,13 +82,12 @@ export default function FinancialReportsPage() {
       {!selectedUploadId ? (
         <div className="card text-center py-12 text-gray-500">
           <p className="text-lg">데이터를 선택하세요</p>
-          <p className="text-sm mt-1">AI 분류에서 업로드한 파일을 선택해주세요.</p>
+          <p className="text-sm mt-1">AI 분류에서 업로드한 계정별 원장 파일을 선택해주세요.</p>
         </div>
       ) : (
         <>
-          {activeTab === 'summary' && <SummaryTab uploadId={selectedUploadId} />}
-          {activeTab === 'income' && <IncomeTab uploadId={selectedUploadId} />}
-          {activeTab === 'balance' && <BalanceTab uploadId={selectedUploadId} />}
+          {activeTab === 'statements' && <StatementsTab uploadId={selectedUploadId} />}
+          {activeTab === 'trend' && <TrendTab uploadId={selectedUploadId} />}
           {activeTab === 'trial' && <TrialBalanceTab uploadId={selectedUploadId} />}
         </>
       )}
@@ -99,117 +95,40 @@ export default function FinancialReportsPage() {
   )
 }
 
-// ============ 재무 요약 ============
-function SummaryTab({ uploadId }: { uploadId: number }) {
-  const { data: summary, isLoading: sumLoading } = useQuery({
-    queryKey: ['financialSummary', uploadId],
-    queryFn: () => financialApi.getBalanceSheet(uploadId).then((r) => r.data),
-  })
-
-  const { data: trend } = useQuery({
-    queryKey: ['financialTrend', uploadId],
-    queryFn: () => financialApi.getMonthlyTrend(uploadId).then((r) => r.data),
-  })
-
-  if (sumLoading) return <Loading />
-
-  const totalIn = summary?.total_debit ?? 0
-  const totalOut = summary?.total_credit ?? 0
-  const netBal = summary?.net_balance ?? 0
-  const trendData = (trend?.data || []).map((m: any) => ({
-    month: m.month?.replace(/^\d{4}-/, '') + '월',
-    입금: m.debit_total,
-    출금: m.credit_total,
-  }))
-
-  const topCounterparts = (summary?.counterparts || []).slice(0, 6).map((c: any) => ({
-    name: c.account_name || c.account_code,
-    value: Math.abs(c.debit_total + c.credit_total),
-  }))
-
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="card">
-          <p className="text-sm text-gray-500">총 입금 (차변)</p>
-          <p className="text-xl font-bold text-blue-600">{fmt(totalIn)}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-500">총 출금 (대변)</p>
-          <p className="text-xl font-bold text-red-600">{fmt(totalOut)}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-500">순잔액</p>
-          <p className={`text-xl font-bold ${netBal >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmt(netBal)}</p>
-        </div>
-        <div className="card">
-          <p className="text-sm text-gray-500">거래 건수</p>
-          <p className="text-xl font-bold text-gray-900">{fmtNum(summary?.counterparts?.reduce((s: number, c: any) => s + (c.tx_count || 0), 0) || 0)}건</p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">월별 입출금 추이</h3>
-          <div className="h-72">
-            {trendData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={trendData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="month" fontSize={12} />
-                  <YAxis fontSize={11} tickFormatter={(v: number) => `${(v / 10000).toFixed(0)}만`} />
-                  <Tooltip formatter={(v: number) => fmt(v)} />
-                  <Legend />
-                  <Bar dataKey="입금" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="출금" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : <Empty />}
-          </div>
-        </div>
-
-        <div className="card">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">상대 계정 비중</h3>
-          <div className="h-72">
-            {topCounterparts.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={topCounterparts} cx="50%" cy="50%" innerRadius={50} outerRadius={90} paddingAngle={2} dataKey="value"
-                    label={({ name, percent }: any) => `${name.substring(0, 8)} ${(percent * 100).toFixed(0)}%`}>
-                    {topCounterparts.map((_: any, i: number) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                  </Pie>
-                  <Tooltip formatter={(v: number) => fmt(v)} />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : <Empty />}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ============ 입출금 분석 (손익) ============
-function IncomeTab({ uploadId }: { uploadId: number }) {
+// ============================================================================
+// Tab 1: 손익계산서 + 재무상태표
+// ============================================================================
+function StatementsTab({ uploadId }: { uploadId: number }) {
   const currentYear = new Date().getFullYear()
   const [year, setYear] = useState(currentYear)
   const [month, setMonth] = useState<number | null>(null)
 
-  const { data, isLoading } = useQuery({
+  // 손익 데이터
+  const { data: incomeData, isLoading: incLoading } = useQuery({
     queryKey: ['financialIncome', uploadId, year, month],
     queryFn: () => financialApi.getIncomeStatement(uploadId, year, month ?? undefined).then((r) => r.data),
   })
 
-  if (isLoading) return <Loading />
+  // 재무상태표 데이터 (전체 기간)
+  const { data: balanceData, isLoading: balLoading } = useQuery({
+    queryKey: ['financialBalance', uploadId],
+    queryFn: () => financialApi.getBalanceSheet(uploadId).then((r) => r.data),
+  })
 
-  const inflows: any[] = data?.inflows || []
-  const outflows: any[] = data?.outflows || []
-  const totalIn = data?.total_inflow ?? 0
-  const totalOut = data?.total_outflow ?? 0
-  const netFlow = data?.net_flow ?? 0
+  if (incLoading || balLoading) return <Loading />
+
+  const inflows: any[] = incomeData?.inflows || []
+  const outflows: any[] = incomeData?.outflows || []
+  const totalIn = incomeData?.total_inflow ?? 0
+  const totalOut = incomeData?.total_outflow ?? 0
+  const netFlow = incomeData?.net_flow ?? 0
+
+  const ledgerAccounts: any[] = balanceData?.accounts || []
+  const counterparts: any[] = balanceData?.counterparts || []
+  const netBalance = balanceData?.net_balance ?? 0
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* 기간 선택 */}
       <div className="card">
         <div className="flex items-center gap-3 flex-wrap">
@@ -219,189 +138,289 @@ function IncomeTab({ uploadId }: { uploadId: number }) {
               <option key={y} value={y}>{y}년</option>
             ))}
           </select>
-          <label className="text-sm font-medium text-gray-700 ml-4">월</label>
+          <label className="text-sm font-medium text-gray-700 ml-2">월</label>
           <div className="flex gap-1 flex-wrap">
             <button onClick={() => setMonth(null)}
-              className={`px-3 py-1.5 text-xs rounded-lg font-medium ${!month ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-              전체
-            </button>
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                !month ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}>전체</button>
             {MONTHS.map((m) => (
               <button key={m} onClick={() => setMonth(m)}
-                className={`px-3 py-1.5 text-xs rounded-lg font-medium ${month === m ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                {m}월
-              </button>
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                  month === m ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}>{m}월</button>
             ))}
           </div>
         </div>
       </div>
 
-      {/* 요약 */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="card bg-blue-50 border-blue-200">
-          <p className="text-sm text-blue-700">총 입금</p>
-          <p className="text-xl font-bold text-blue-700">{fmt(totalIn)}</p>
+      {/* ==================== 손익계산서 ==================== */}
+      <div>
+        <h2 className="text-lg font-bold text-gray-900 mb-4">
+          손익계산서
+          <span className="text-sm font-normal text-gray-500 ml-2">
+            {year}년 {month ? `${month}월` : '전체'}
+          </span>
+        </h2>
+
+        {/* 손익 요약 카드 */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div className="card bg-blue-50 border border-blue-200">
+            <p className="text-sm text-blue-600 font-medium">수입 (입금)</p>
+            <p className="text-2xl font-bold text-blue-700">{fmt(totalIn)}</p>
+          </div>
+          <div className="card bg-red-50 border border-red-200">
+            <p className="text-sm text-red-600 font-medium">지출 (출금)</p>
+            <p className="text-2xl font-bold text-red-700">{fmt(totalOut)}</p>
+          </div>
+          <div className={`card border ${netFlow >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+            <p className="text-sm font-medium text-gray-600">당기순이익</p>
+            <p className={`text-2xl font-bold ${netFlow >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmt(netFlow)}</p>
+          </div>
         </div>
-        <div className="card bg-red-50 border-red-200">
-          <p className="text-sm text-red-700">총 출금</p>
-          <p className="text-xl font-bold text-red-700">{fmt(totalOut)}</p>
-        </div>
-        <div className={`card ${netFlow >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
-          <p className="text-sm text-gray-700">순이동</p>
-          <p className={`text-xl font-bold ${netFlow >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmt(netFlow)}</p>
+
+        {/* 수입/지출 상세 테이블 */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* 수입 */}
+          <div className="card">
+            <h3 className="text-sm font-semibold text-blue-700 mb-3">수입 항목 (차변)</h3>
+            {inflows.length > 0 ? (
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                <table className="table w-full text-sm">
+                  <thead className="table-header sticky top-0">
+                    <tr><th>계정</th><th>계정명</th><th className="text-right">금액</th></tr>
+                  </thead>
+                  <tbody className="table-body">
+                    {inflows.map((i: any) => (
+                      <tr key={i.account_code}>
+                        <td className="text-gray-500 font-mono text-xs">{i.account_code}</td>
+                        <td>{i.account_name}</td>
+                        <td className="amount text-blue-600">{fmt(i.amount)}</td>
+                      </tr>
+                    ))}
+                    <tr className="bg-blue-50 font-bold border-t-2">
+                      <td colSpan={2} className="text-right">합계</td>
+                      <td className="amount text-blue-700">{fmt(totalIn)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            ) : <div className="text-center py-4 text-gray-400 text-sm">데이터 없음</div>}
+          </div>
+
+          {/* 지출 */}
+          <div className="card">
+            <h3 className="text-sm font-semibold text-red-700 mb-3">지출 항목 (대변)</h3>
+            {outflows.length > 0 ? (
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                <table className="table w-full text-sm">
+                  <thead className="table-header sticky top-0">
+                    <tr><th>계정</th><th>계정명</th><th className="text-right">금액</th></tr>
+                  </thead>
+                  <tbody className="table-body">
+                    {outflows.map((o: any) => (
+                      <tr key={o.account_code}>
+                        <td className="text-gray-500 font-mono text-xs">{o.account_code}</td>
+                        <td>{o.account_name}</td>
+                        <td className="amount text-red-600">{fmt(o.amount)}</td>
+                      </tr>
+                    ))}
+                    <tr className="bg-red-50 font-bold border-t-2">
+                      <td colSpan={2} className="text-right">합계</td>
+                      <td className="amount text-red-700">{fmt(totalOut)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            ) : <div className="text-center py-4 text-gray-400 text-sm">데이터 없음</div>}
+          </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* 입금 */}
-        <div className="card">
-          <h3 className="text-sm font-semibold text-blue-700 mb-3">입금 내역 (차변)</h3>
-          {inflows.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="table w-full">
-                <thead className="table-header"><tr><th>코드</th><th>계정명</th><th className="text-right">금액</th><th className="text-right">건수</th></tr></thead>
-                <tbody className="table-body">
-                  {inflows.map((item: any) => (
-                    <tr key={item.account_code}>
-                      <td className="text-gray-500 font-mono text-xs">{item.account_code}</td>
-                      <td className="font-medium text-sm">{item.account_name}</td>
-                      <td className="amount text-blue-600">{fmt(item.amount)}</td>
-                      <td className="text-right text-gray-500 text-sm">{fmtNum(item.tx_count)}</td>
-                    </tr>
-                  ))}
-                  <tr className="bg-blue-50 font-bold"><td colSpan={2} className="text-right">합계</td><td className="amount text-blue-700">{fmt(totalIn)}</td><td></td></tr>
-                </tbody>
-              </table>
-            </div>
-          ) : <div className="text-center py-4 text-gray-400 text-sm">입금 데이터 없음</div>}
-        </div>
+      <hr className="border-gray-200" />
 
-        {/* 출금 */}
-        <div className="card">
-          <h3 className="text-sm font-semibold text-red-700 mb-3">출금 내역 (대변)</h3>
-          {outflows.length > 0 ? (
+      {/* ==================== 재무상태표 ==================== */}
+      <div>
+        <h2 className="text-lg font-bold text-gray-900 mb-4">재무상태표</h2>
+
+        {/* 원장 계정 잔액 */}
+        {ledgerAccounts.length > 0 && (
+          <div className="card mb-4">
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">원장 계정 현황</h3>
             <div className="overflow-x-auto">
-              <table className="table w-full">
-                <thead className="table-header"><tr><th>코드</th><th>계정명</th><th className="text-right">금액</th><th className="text-right">건수</th></tr></thead>
+              <table className="table w-full text-sm">
+                <thead className="table-header">
+                  <tr><th>계정코드</th><th>계정명</th><th className="text-right">차변합계</th><th className="text-right">대변합계</th><th className="text-right">잔액</th><th className="text-right">건수</th></tr>
+                </thead>
                 <tbody className="table-body">
-                  {outflows.map((item: any) => (
-                    <tr key={item.account_code}>
-                      <td className="text-gray-500 font-mono text-xs">{item.account_code}</td>
-                      <td className="font-medium text-sm">{item.account_name}</td>
-                      <td className="amount text-red-600">{fmt(item.amount)}</td>
-                      <td className="text-right text-gray-500 text-sm">{fmtNum(item.tx_count)}</td>
+                  {ledgerAccounts.map((a: any) => (
+                    <tr key={a.account_code}>
+                      <td className="text-gray-500 font-mono">{a.account_code}</td>
+                      <td className="font-medium">{a.account_name}</td>
+                      <td className="amount">{fmt(a.debit_total)}</td>
+                      <td className="amount">{fmt(a.credit_total)}</td>
+                      <td className={`amount font-bold ${a.balance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{fmt(a.balance)}</td>
+                      <td className="text-right text-gray-500">{fmtNum(a.tx_count)}</td>
                     </tr>
                   ))}
-                  <tr className="bg-red-50 font-bold"><td colSpan={2} className="text-right">합계</td><td className="amount text-red-700">{fmt(totalOut)}</td><td></td></tr>
                 </tbody>
               </table>
             </div>
-          ) : <div className="text-center py-4 text-gray-400 text-sm">출금 데이터 없음</div>}
-        </div>
+            <div className="mt-3 p-3 bg-blue-50 rounded-lg flex justify-between items-center">
+              <span className="text-sm font-bold text-blue-700">총 잔액</span>
+              <span className={`text-lg font-bold ${netBalance >= 0 ? 'text-blue-700' : 'text-red-700'}`}>{fmt(netBalance)}</span>
+            </div>
+          </div>
+        )}
+
+        {/* 상대 계정별 잔액 */}
+        {counterparts.length > 0 && (
+          <div className="card">
+            <h3 className="text-sm font-semibold text-gray-700 mb-3">주요 상대 계정 현황</h3>
+            <div className="overflow-x-auto max-h-80 overflow-y-auto">
+              <table className="table w-full text-sm">
+                <thead className="table-header sticky top-0">
+                  <tr><th>코드</th><th>계정명</th><th className="text-right">차변</th><th className="text-right">대변</th><th className="text-right">잔액</th><th className="text-right">건수</th></tr>
+                </thead>
+                <tbody className="table-body">
+                  {counterparts.map((c: any) => (
+                    <tr key={c.account_code}>
+                      <td className="text-gray-500 font-mono text-xs">{c.account_code}</td>
+                      <td>{c.account_name}</td>
+                      <td className="amount">{fmt(c.debit_total)}</td>
+                      <td className="amount">{fmt(c.credit_total)}</td>
+                      <td className={`amount font-bold ${c.balance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{fmt(c.balance)}</td>
+                      <td className="text-right text-gray-500">{fmtNum(c.tx_count)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-// ============ 잔액 현황 (재무상태표) ============
-function BalanceTab({ uploadId }: { uploadId: number }) {
-  const { data, isLoading } = useQuery({
-    queryKey: ['financialBalance', uploadId],
-    queryFn: () => financialApi.getBalanceSheet(uploadId).then((r) => r.data),
-  })
-
-  const { data: trend } = useQuery({
-    queryKey: ['financialTrendBalance', uploadId],
+// ============================================================================
+// Tab 2: 월별 추이
+// ============================================================================
+function TrendTab({ uploadId }: { uploadId: number }) {
+  const { data: trend, isLoading } = useQuery({
+    queryKey: ['financialTrend', uploadId],
     queryFn: () => financialApi.getMonthlyTrend(uploadId).then((r) => r.data),
   })
 
   if (isLoading) return <Loading />
 
-  const accounts: any[] = data?.accounts || []
-  const counterparts: any[] = data?.counterparts || []
   const trendData = (trend?.data || []).map((m: any) => ({
-    month: m.month?.replace(/^\d{4}-/, '') + '월',
-    잔액: m.net,
+    month: m.month?.replace(/^\d{4}-0?/, '') + '월',
+    입금: m.debit_total,
+    출금: m.credit_total,
+    순이동: m.net,
+    건수: m.tx_count,
   }))
+
+  const totalDebit = trendData.reduce((s: number, m: any) => s + m.입금, 0)
+  const totalCredit = trendData.reduce((s: number, m: any) => s + m.출금, 0)
 
   return (
     <div className="space-y-6">
-      {/* 원장 계정 잔액 */}
-      <div className="card">
-        <h3 className="text-sm font-semibold text-gray-700 mb-3">원장 계정 잔액</h3>
-        {accounts.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="table w-full">
-              <thead className="table-header"><tr><th>코드</th><th>계정명</th><th className="text-right">차변합계</th><th className="text-right">대변합계</th><th className="text-right">잔액</th></tr></thead>
-              <tbody className="table-body">
-                {accounts.map((a: any) => (
-                  <tr key={a.account_code}>
-                    <td className="text-gray-500 font-mono">{a.account_code}</td>
-                    <td className="font-medium">{a.account_name}</td>
-                    <td className="amount">{fmt(a.debit_total)}</td>
-                    <td className="amount">{fmt(a.credit_total)}</td>
-                    <td className={`amount font-bold ${a.balance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{fmt(a.balance)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : <div className="text-center py-4 text-gray-400 text-sm">데이터 없음</div>}
-
-        <div className="mt-4 p-4 bg-blue-50 rounded-lg flex justify-between items-center">
-          <span className="font-bold text-blue-700">총 잔액</span>
-          <span className={`text-xl font-bold ${(data?.net_balance ?? 0) >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
-            {fmt(data?.net_balance ?? 0)}
-          </span>
+      {/* 요약 카드 */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="card">
+          <p className="text-sm text-gray-500">연간 총 입금</p>
+          <p className="text-xl font-bold text-blue-600">{fmt(totalDebit)}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-gray-500">연간 총 출금</p>
+          <p className="text-xl font-bold text-red-600">{fmt(totalCredit)}</p>
+        </div>
+        <div className="card">
+          <p className="text-sm text-gray-500">연간 순이동</p>
+          <p className={`text-xl font-bold ${totalDebit - totalCredit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            {fmt(totalDebit - totalCredit)}
+          </p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* 월별 잔액 추이 */}
-        <div className="card">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">월별 순잔액 추이</h3>
-          <div className="h-64">
-            {trendData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trendData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="month" fontSize={12} />
-                  <YAxis fontSize={11} tickFormatter={(v: number) => `${(v / 10000).toFixed(0)}만`} />
-                  <Tooltip formatter={(v: number) => fmt(v)} />
-                  <Line type="monotone" dataKey="잔액" stroke="#3b82f6" strokeWidth={2} dot={{ r: 4 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : <Empty />}
-          </div>
-        </div>
-
-        {/* 상대 계정 Top */}
-        <div className="card">
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">주요 상대 계정</h3>
-          {counterparts.length > 0 ? (
-            <div className="overflow-x-auto max-h-72 overflow-y-auto">
-              <table className="table w-full">
-                <thead className="table-header sticky top-0"><tr><th>코드</th><th>계정명</th><th className="text-right">차변</th><th className="text-right">대변</th><th className="text-right">건수</th></tr></thead>
-                <tbody className="table-body">
-                  {counterparts.map((c: any) => (
-                    <tr key={c.account_code}>
-                      <td className="text-gray-500 font-mono text-xs">{c.account_code}</td>
-                      <td className="font-medium text-sm">{c.account_name}</td>
-                      <td className="amount text-sm">{fmt(c.debit_total)}</td>
-                      <td className="amount text-sm">{fmt(c.credit_total)}</td>
-                      <td className="text-right text-gray-500 text-sm">{fmtNum(c.tx_count)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+      {/* 막대 차트 */}
+      <div className="card">
+        <h3 className="text-sm font-semibold text-gray-700 mb-4">월별 입금 / 출금</h3>
+        <div className="h-80">
+          {trendData.length > 0 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis dataKey="month" fontSize={12} />
+                <YAxis fontSize={11} tickFormatter={(v: number) => `${(v / 10000).toFixed(0)}만`} />
+                <Tooltip formatter={(v: number) => fmt(v)} />
+                <Legend />
+                <Bar dataKey="입금" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="출금" fill="#ef4444" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
           ) : <Empty />}
         </div>
+      </div>
+
+      {/* 순이동 추이 라인 */}
+      <div className="card">
+        <h3 className="text-sm font-semibold text-gray-700 mb-4">월별 순이동 추이</h3>
+        <div className="h-64">
+          {trendData.length > 0 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis dataKey="month" fontSize={12} />
+                <YAxis fontSize={11} tickFormatter={(v: number) => `${(v / 10000).toFixed(0)}만`} />
+                <Tooltip formatter={(v: number) => fmt(v)} />
+                <Line type="monotone" dataKey="순이동" stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : <Empty />}
+        </div>
+      </div>
+
+      {/* 월별 테이블 */}
+      <div className="card">
+        <h3 className="text-sm font-semibold text-gray-700 mb-3">월별 상세</h3>
+        {trendData.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="table w-full text-sm">
+              <thead className="table-header">
+                <tr><th>월</th><th className="text-right">입금</th><th className="text-right">출금</th><th className="text-right">순이동</th><th className="text-right">건수</th></tr>
+              </thead>
+              <tbody className="table-body">
+                {trendData.map((m: any, i: number) => (
+                  <tr key={i}>
+                    <td className="font-medium">{m.month}</td>
+                    <td className="amount text-blue-600">{fmt(m.입금)}</td>
+                    <td className="amount text-red-600">{fmt(m.출금)}</td>
+                    <td className={`amount font-bold ${m.순이동 >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmt(m.순이동)}</td>
+                    <td className="text-right text-gray-500">{fmtNum(m.건수)}</td>
+                  </tr>
+                ))}
+                <tr className="bg-gray-100 font-bold border-t-2">
+                  <td>합계</td>
+                  <td className="amount text-blue-700">{fmt(totalDebit)}</td>
+                  <td className="amount text-red-700">{fmt(totalCredit)}</td>
+                  <td className={`amount ${totalDebit - totalCredit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmt(totalDebit - totalCredit)}</td>
+                  <td className="text-right text-gray-500">{fmtNum(trendData.reduce((s: number, m: any) => s + m.건수, 0))}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ) : <Empty />}
       </div>
     </div>
   )
 }
 
-// ============ 시산표 ============
+// ============================================================================
+// Tab 3: 시산표
+// ============================================================================
 function TrialBalanceTab({ uploadId }: { uploadId: number }) {
   const [search, setSearch] = useState('')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
@@ -451,7 +470,7 @@ function TrialBalanceTab({ uploadId }: { uploadId: number }) {
         <h3 className="text-sm font-semibold text-gray-700 mb-3">시산표 ({fmtNum(filtered.length)}개 계정)</h3>
         {filtered.length > 0 ? (
           <div className="overflow-x-auto">
-            <table className="table w-full">
+            <table className="table w-full text-sm">
               <thead className="table-header">
                 <tr><th>계정코드</th><th>계정명</th><th className="text-right">차변합계</th><th className="text-right">대변합계</th><th className="text-right">잔액</th><th className="text-right">건수</th></tr>
               </thead>
@@ -495,7 +514,9 @@ function TrialBalanceTab({ uploadId }: { uploadId: number }) {
   )
 }
 
-// ============ Detail Modal ============
+// ============================================================================
+// Detail Modal
+// ============================================================================
 function DetailModal({ accountCode, accountName, data, isLoading, page, onPageChange, onClose }: {
   accountCode: string; accountName: string; data: any; isLoading: boolean
   page: number; onPageChange: (p: number) => void; onClose: () => void
@@ -518,21 +539,21 @@ function DetailModal({ accountCode, accountName, data, isLoading, page, onPageCh
         </div>
         <div className="flex-1 overflow-auto p-5">
           {isLoading ? <Loading /> : items.length > 0 ? (
-            <table className="table w-full">
+            <table className="table w-full text-sm">
               <thead className="table-header"><tr><th>날짜</th><th>적요</th><th>거래처</th><th className="text-right">차변</th><th className="text-right">대변</th></tr></thead>
               <tbody className="table-body">
                 {items.map((item: any, i: number) => (
                   <tr key={i}>
-                    <td className="text-gray-500 text-sm">{item.transaction_date || '-'}</td>
-                    <td className="font-medium text-sm">{item.description}</td>
-                    <td className="text-gray-500 text-sm">{item.merchant_name || '-'}</td>
-                    <td className="amount text-sm">{item.debit_amount ? fmt(item.debit_amount) : '-'}</td>
-                    <td className="amount text-sm">{item.credit_amount ? fmt(item.credit_amount) : '-'}</td>
+                    <td className="text-gray-500">{item.transaction_date || '-'}</td>
+                    <td className="font-medium">{item.description}</td>
+                    <td className="text-gray-500">{item.merchant_name || '-'}</td>
+                    <td className="amount">{item.debit_amount ? fmt(item.debit_amount) : '-'}</td>
+                    <td className="amount">{item.credit_amount ? fmt(item.credit_amount) : '-'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          ) : <div className="text-center py-8 text-gray-400">거래 내역이 없습니다.</div>}
+          ) : <div className="text-center py-8 text-gray-400">거래 내역 없음</div>}
         </div>
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-3 p-4 border-t">
@@ -547,14 +568,8 @@ function DetailModal({ accountCode, accountName, data, isLoading, page, onPageCh
 }
 
 function Loading() {
-  return (
-    <div className="text-center py-8">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
-      <p className="text-gray-500 mt-2">로딩 중...</p>
-    </div>
-  )
+  return <div className="text-center py-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" /><p className="text-gray-500 mt-2">로딩 중...</p></div>
 }
-
 function Empty() {
   return <div className="flex items-center justify-center h-full text-gray-400 text-sm">데이터가 없습니다.</div>
 }
