@@ -6,6 +6,7 @@ from app.models.user import User, Role, Department, UserSession
 from app.models.accounting import (
     Account,
     AccountCategory,
+    AccountCodeMapping,
     Voucher,
     VoucherLine,
     VoucherAttachment,
@@ -50,6 +51,7 @@ __all__ = [
     # Accounting
     "Account",
     "AccountCategory",
+    "AccountCodeMapping",
     "Voucher",
     "VoucherLine",
     "VoucherAttachment",

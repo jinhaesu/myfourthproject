@@ -15,6 +15,52 @@ import enum
 from app.core.database import Base
 
 
+class AccountCodeMapping(Base):
+    """ERP 계정코드 매핑 (더존 등 외부 시스템 코드 → 시스템 계정코드)"""
+    __tablename__ = "account_code_mappings"
+    __table_args__ = (
+        Index(
+            "ix_account_code_mappings_source",
+            "source_system", "source_code",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    source_system: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # e.g. "douzone"
+    source_code: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # ERP 코드 (예: 098000)
+    source_name: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )  # 원래 계정명 (있을 경우)
+
+    target_account_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("accounts.id"), nullable=True
+    )
+    target_account_code: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True
+    )
+
+    is_auto_created: Mapped[bool] = mapped_column(
+        Boolean, default=False
+    )  # 자동 생성 여부
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow
+    )
+
+    # Relationships
+    target_account: Mapped[Optional["Account"]] = relationship(
+        "Account", foreign_keys=[target_account_id]
+    )
+
+    def __repr__(self):
+        return f"<AccountCodeMapping {self.source_system}:{self.source_code} -> {self.target_account_code}>"
+
+
 class TransactionType(enum.Enum):
     """거래 유형"""
     CARD = "card"  # 법인카드

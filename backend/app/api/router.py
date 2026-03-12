@@ -17,7 +17,8 @@ from app.api.endpoints import (
     admin,
     data_import,
     ai_classification,
-    sales
+    sales,
+    financial_reports,
 )
 
 api_router = APIRouter()
@@ -110,4 +111,11 @@ api_router.include_router(
     sales.router,
     prefix="/sales",
     tags=["Sales Automation"]
+)
+
+# 재무제표 (Financial Reports from raw transaction data)
+api_router.include_router(
+    financial_reports.router,
+    prefix="/financial",
+    tags=["재무제표"]
 )

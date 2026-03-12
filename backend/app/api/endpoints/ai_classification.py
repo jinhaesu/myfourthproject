@@ -19,7 +19,7 @@ from sqlalchemy import case as sa_case
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
-from app.models.accounting import Account, AccountCategory
+from app.models.accounting import Account, AccountCategory, AccountCodeMapping
 from app.models.ai import AIClassificationLog, AITrainingData, AIModelVersion
 from app.services.ai_classifier import AIClassifierService
 
@@ -416,9 +416,77 @@ async def upload_historical_data(
         classifier = AIClassifierService()
         saved_count = 0
         error_count = 0
+        auto_created_count = 0
 
         # 계정 코드 캐시 (동일 코드 반복 조회 방지)
         account_cache: dict = {}
+        # 매핑 캐시 (source_system + source_code -> Account)
+        mapping_cache: dict = {}
+        # 계정명 패턴 캐시 (code -> list of descriptions for name generation)
+        desc_patterns: dict = {}
+
+        # Pre-load all existing account code mappings for douzone
+        existing_mappings_result = await db.execute(
+            select(AccountCodeMapping).where(
+                AccountCodeMapping.source_system == "douzone"
+            )
+        )
+        for m in existing_mappings_result.scalars().all():
+            mapping_cache[m.source_code] = m
+
+        # Pre-load default category for auto-created accounts
+        default_category_result = await db.execute(
+            select(AccountCategory).order_by(AccountCategory.id).limit(1)
+        )
+        default_category = default_category_result.scalar_one_or_none()
+        # Build category lookup by code prefix for smarter assignment
+        all_categories_result = await db.execute(
+            select(AccountCategory).order_by(AccountCategory.code)
+        )
+        all_categories = {c.code: c for c in all_categories_result.scalars().all()}
+
+        def _guess_category_id(account_code: str) -> int:
+            """Guess the category based on account code first digit."""
+            if not account_code:
+                return default_category.id if default_category else 1
+            first_digit = account_code[0]
+            # Standard Korean accounting: 1=자산, 2=부채, 3=자본, 4=수익, 5+=비용
+            digit_to_category = {
+                '0': '1', '1': '1',  # assets
+                '2': '2',            # liabilities
+                '3': '3',            # equity
+                '4': '4',            # revenue
+                '5': '5', '6': '5', '7': '5', '8': '5', '9': '5',  # expenses
+            }
+            cat_code = digit_to_category.get(first_digit, '5')
+            if cat_code in all_categories:
+                return all_categories[cat_code].id
+            return default_category.id if default_category else 1
+
+        def _generate_account_name(code: str, descriptions: list) -> str:
+            """Generate account name from description patterns."""
+            if not descriptions:
+                return f"더존계정 {code}"
+            # Find most common words across descriptions
+            from collections import Counter
+            word_counter = Counter()
+            for desc in descriptions[:50]:  # sample up to 50
+                for word in str(desc).split():
+                    word = word.strip()
+                    if len(word) >= 2:
+                        word_counter[word] += 1
+            if word_counter:
+                top_word = word_counter.most_common(1)[0][0]
+                return f"{top_word} (더존 {code})"
+            return f"더존계정 {code}"
+
+        # First pass: collect description patterns per code for name generation
+        for _, row in df.iterrows():
+            code = row['account_code']
+            desc = row['description']
+            if code not in desc_patterns:
+                desc_patterns[code] = []
+            desc_patterns[code].append(desc)
 
         for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
             # 원본 데이터 레코드 생성
@@ -440,7 +508,7 @@ async def upload_historical_data(
             try:
                 code = row['account_code']
 
-                # 캐시에서 계정 조회
+                # Step A: 캐시에서 계정 조회
                 if code not in account_cache:
                     account_result = await db.execute(
                         select(Account).where(Account.code == code)
@@ -453,6 +521,58 @@ async def upload_historical_data(
                             select(Account).where(Account.code == code_padded)
                         )
                         account = account_result.scalar_one_or_none()
+
+                    # Step B: 매핑 테이블에서 조회
+                    if not account and code in mapping_cache:
+                        mapping = mapping_cache[code]
+                        if mapping.target_account_id:
+                            account_result = await db.execute(
+                                select(Account).where(
+                                    Account.id == mapping.target_account_id
+                                )
+                            )
+                            account = account_result.scalar_one_or_none()
+
+                    # Step C: 계정이 없으면 자동 생성 + 매핑 기록
+                    if not account:
+                        # 계정명 결정: 엑셀의 account_name 또는 패턴 기반 생성
+                        acct_name = None
+                        if 'account_name' in df.columns and pd.notna(row.get('account_name')):
+                            acct_name = str(row['account_name']).strip()
+                        if not acct_name or acct_name == '':
+                            acct_name = _generate_account_name(
+                                code, desc_patterns.get(code, [])
+                            )
+
+                        category_id = _guess_category_id(code)
+
+                        account = Account(
+                            code=code,
+                            name=acct_name,
+                            category_id=category_id,
+                            level=1,
+                            is_detail=True,
+                            is_vat_applicable=True,
+                            vat_rate=Decimal("10.00"),
+                            is_active=True,
+                        )
+                        db.add(account)
+                        await db.flush()  # get account.id
+
+                        # 매핑 기록
+                        if code not in mapping_cache:
+                            new_mapping = AccountCodeMapping(
+                                source_system="douzone",
+                                source_code=code,
+                                source_name=acct_name,
+                                target_account_id=account.id,
+                                target_account_code=account.code,
+                                is_auto_created=True,
+                            )
+                            db.add(new_mapping)
+                            mapping_cache[code] = new_mapping
+
+                        auto_created_count += 1
 
                     account_cache[code] = account
                 else:
@@ -499,7 +619,8 @@ async def upload_historical_data(
             "total_rows": len(df),
             "saved_count": saved_count,
             "error_count": error_count,
-            "message": f"{saved_count}개의 학습 데이터가 저장되었습니다. (원본 {len(df)}건 보관)"
+            "auto_created_accounts": auto_created_count,
+            "message": f"{saved_count}개의 학습 데이터가 저장되었습니다. (원본 {len(df)}건 보관, 자동생성 계정 {auto_created_count}개)"
         }
 
     except HTTPException:

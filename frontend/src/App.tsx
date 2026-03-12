@@ -14,6 +14,7 @@ import SettingsPage from '@/pages/SettingsPage'
 import AdminPage from '@/pages/AdminPage'
 import AIClassificationPage from '@/pages/AIClassificationPage'
 import SalesAutomationPage from '@/pages/SalesAutomationPage'
+import FinancialReportsPage from '@/pages/FinancialReportsPage'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -46,6 +47,7 @@ function App() {
         <Route path="admin" element={<AdminPage />} />
         <Route path="ai-classification" element={<AIClassificationPage />} />
         <Route path="sales" element={<SalesAutomationPage />} />
+        <Route path="financial" element={<FinancialReportsPage />} />
       </Route>
     </Routes>
   )
