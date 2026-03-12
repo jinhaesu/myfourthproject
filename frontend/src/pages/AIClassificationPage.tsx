@@ -12,6 +12,17 @@ interface AIStatus {
   accuracy_rate: number
   last_trained_at: string | null
   model_accuracy: number | null
+  upload_count: number
+  completed_uploads: number
+  total_raw_transactions: number
+  latest_upload: {
+    id: number
+    filename: string
+    row_count: number
+    saved_count: number
+    status: string
+    created_at: string
+  } | null
 }
 
 interface Account {
@@ -291,22 +302,57 @@ export default function AIClassificationPage() {
           </div>
 
           <div className="bg-white p-6 rounded-lg shadow border">
-            <h3 className="text-lg font-medium mb-4">분류 통계</h3>
+            <h3 className="text-lg font-medium mb-4">업로드 통계</h3>
             <div className="grid grid-cols-3 gap-4 text-center">
               <div>
-                <p className="text-3xl font-bold text-blue-600">{status?.total_classifications || 0}</p>
-                <p className="text-sm text-gray-500">총 분류</p>
+                <p className="text-3xl font-bold text-blue-600">{status?.completed_uploads || 0}</p>
+                <p className="text-sm text-gray-500">완료된 업로드</p>
               </div>
               <div>
-                <p className="text-3xl font-bold text-green-600">{status?.correct_classifications || 0}</p>
-                <p className="text-sm text-gray-500">정확 분류</p>
+                <p className="text-3xl font-bold text-green-600">{(status?.total_raw_transactions || 0).toLocaleString()}</p>
+                <p className="text-sm text-gray-500">보관된 거래 데이터</p>
               </div>
               <div>
-                <p className="text-3xl font-bold text-orange-600">{status?.corrected_classifications || 0}</p>
-                <p className="text-sm text-gray-500">사용자 수정</p>
+                <p className="text-3xl font-bold text-purple-600">{(status?.training_samples || 0).toLocaleString()}</p>
+                <p className="text-sm text-gray-500">학습 데이터</p>
               </div>
             </div>
+            {status?.latest_upload && (
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg text-sm text-gray-600">
+                최근 업로드: <span className="font-medium">{status.latest_upload.filename}</span>
+                {' '}({status.latest_upload.saved_count.toLocaleString()}건 저장,{' '}
+                {status.latest_upload.created_at ? new Date(status.latest_upload.created_at).toLocaleDateString('ko-KR') : '-'})
+                <span className={`ml-2 px-2 py-0.5 rounded text-xs font-medium ${
+                  status.latest_upload.status === 'completed' ? 'bg-green-100 text-green-700' :
+                  status.latest_upload.status === 'processing' ? 'bg-yellow-100 text-yellow-700' :
+                  'bg-red-100 text-red-700'
+                }`}>
+                  {status.latest_upload.status === 'completed' ? '완료' :
+                   status.latest_upload.status === 'processing' ? '처리중' : '실패'}
+                </span>
+              </div>
+            )}
           </div>
+
+          {(status?.total_classifications ?? 0) > 0 && (
+            <div className="bg-white p-6 rounded-lg shadow border">
+              <h3 className="text-lg font-medium mb-4">분류 통계</h3>
+              <div className="grid grid-cols-3 gap-4 text-center">
+                <div>
+                  <p className="text-3xl font-bold text-blue-600">{status?.total_classifications || 0}</p>
+                  <p className="text-sm text-gray-500">총 분류</p>
+                </div>
+                <div>
+                  <p className="text-3xl font-bold text-green-600">{status?.correct_classifications || 0}</p>
+                  <p className="text-sm text-gray-500">정확 분류</p>
+                </div>
+                <div>
+                  <p className="text-3xl font-bold text-orange-600">{status?.corrected_classifications || 0}</p>
+                  <p className="text-sm text-gray-500">사용자 수정</p>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="bg-white p-6 rounded-lg shadow border">
             <h3 className="text-lg font-medium mb-4">모델 관리</h3>

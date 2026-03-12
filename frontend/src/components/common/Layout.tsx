@@ -22,13 +22,13 @@ import {
 
 const baseNavigation = [
   { name: '대시보드', href: '/dashboard', icon: HomeIcon },
-  { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
   { name: 'AI 분류', href: '/ai-classification', icon: CpuChipIcon },
+  { name: '재무보고서', href: '/financial', icon: TableCellsIcon },
+  { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
   { name: '결재함', href: '/approvals', icon: ClipboardDocumentCheckIcon },
   { name: '자금관리', href: '/treasury', icon: BanknotesIcon },
   { name: '예산관리', href: '/budget', icon: CalculatorIcon },
   { name: '매출 자동화', href: '/sales', icon: PresentationChartBarIcon },
-  { name: '재무보고서', href: '/financial', icon: TableCellsIcon },
   { name: '예측/시뮬레이션', href: '/forecast', icon: ChartBarIcon },
   { name: '보고서', href: '/reports', icon: DocumentChartBarIcon },
   { name: '설정', href: '/settings', icon: Cog6ToothIcon },

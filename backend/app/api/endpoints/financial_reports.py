@@ -1,17 +1,16 @@
 """
 Smart Finance Core - Financial Reports API
-더존 계정별 원장 데이터 기반 재무제표 생성
-시산표, 손익계산서, 재무상태표, 월별 추이, 계정별 상세
+업로드된 계정별 원장 데이터 기반 재무보고서
+- 은행 원장(보통예금 등) 기반: 입금(차변)/출금(대변) 분석
 """
 import math
-from datetime import date
+import re
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, case as sa_case, and_, cast, String
+from sqlalchemy import select, func, and_
 
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -22,573 +21,383 @@ from app.models.accounting import Account
 router = APIRouter()
 
 
-# ============ Response Models ============
+# ============ Helpers ============
 
-class TrialBalanceItem(BaseModel):
-    account_code: str
-    account_name: str
-    debit_total: float
-    credit_total: float
-    balance: float
-
-
-class TrialBalanceResponse(BaseModel):
-    upload_id: int
-    as_of_date: Optional[str] = None
-    items: List[TrialBalanceItem]
-    total_debit: float
-    total_credit: float
+async def _validate_upload(db: AsyncSession, upload_id: int) -> AIDataUploadHistory:
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="업로드 이력을 찾을 수 없습니다.")
+    return upload
 
 
-class PnlLineItem(BaseModel):
-    account_code: str
-    account_name: str
-    amount: float
+def _extract_month(date_str: str) -> Optional[str]:
+    """다양한 날짜 형식에서 YYYY-MM 추출"""
+    if not date_str:
+        return None
+    match = re.match(r'(\d{4})[.\-/](\d{1,2})', date_str.strip())
+    if match:
+        return f"{match.group(1)}-{match.group(2).zfill(2)}"
+    return None
 
 
-class IncomeStatementResponse(BaseModel):
-    upload_id: int
-    from_date: Optional[str] = None
-    to_date: Optional[str] = None
-    revenues: List[PnlLineItem]
-    expenses: List[PnlLineItem]
-    total_revenue: float
-    total_expense: float
-    net_income: float
-
-
-class BalanceSheetItem(BaseModel):
-    account_code: str
-    account_name: str
-    amount: float
-
-
-class BalanceSheetResponse(BaseModel):
-    upload_id: int
-    assets: List[BalanceSheetItem]
-    liabilities: List[BalanceSheetItem]
-    equity: List[BalanceSheetItem]
-    total_assets: float
-    total_liabilities: float
-    total_equity: float
-
-
-class MonthlyTrendItem(BaseModel):
-    month: str
-    debit_total: float
-    credit_total: float
-    net: float
-
-
-class MonthlyTrendResponse(BaseModel):
-    upload_id: int
-    account_code: Optional[str] = None
-    data: List[MonthlyTrendItem]
-
-
-class AccountDetailItem(BaseModel):
-    row_number: int
-    transaction_date: Optional[str] = None
-    description: str
-    merchant_name: Optional[str] = None
-    debit_amount: float
-    credit_amount: float
-    account_code: str
-    source_account_code: Optional[str] = None
-
-
-class AccountDetailResponse(BaseModel):
-    upload_id: int
-    account_code: str
-    total: int
-    page: int
-    size: int
-    total_pages: int
-    items: List[AccountDetailItem]
-    summary: dict
-
-
-# ============ Helper functions ============
-
-def _classify_account_type(source_account_code: Optional[str]) -> str:
-    """
-    Classify account type based on source_account_code (원장 계정).
-
-    더존 계정별 원장에서:
-    - source_account_code: 원장 계정 (보통예금 103 등)
-    - account_code: 상대계정 (거래 상대방의 계정코드)
-
-    분류 기준 (한국 표준 계정과목 체계):
-    - 1xx: 자산 (Assets)
-    - 2xx: 부채 (Liabilities)
-    - 3xx: 자본 (Equity)
-    - 4xx: 수익 (Revenue)
-    - 5xx~9xx: 비용 (Expenses)
-
-    더존 코드가 6자리인 경우 (예: 098000) 앞자리 기준:
-    - 0xx: 자산으로 처리
-    """
-    if not source_account_code:
-        return "unknown"
-
-    code = source_account_code.strip()
-    if not code:
-        return "unknown"
-
-    first_char = code[0]
-
-    if first_char in ('0', '1'):
-        return "asset"
-    elif first_char == '2':
-        return "liability"
-    elif first_char == '3':
-        return "equity"
-    elif first_char == '4':
-        return "revenue"
-    elif first_char in ('5', '6', '7', '8', '9'):
-        return "expense"
-    else:
-        return "unknown"
-
-
-async def _get_account_name_map(
-    db: AsyncSession, codes: list
-) -> dict:
-    """Build a map of account_code -> account_name from accounts table."""
+async def _resolve_account_names(db: AsyncSession, upload_id: int, codes: list) -> dict:
+    """계정 코드 → 이름 매핑 (accounts 테이블 → raw data fallback)"""
     if not codes:
         return {}
+    # 1) accounts 테이블
     result = await db.execute(
         select(Account.code, Account.name).where(Account.code.in_(codes))
     )
-    return {row.code: row.name for row in result.all()}
-
-
-async def _get_raw_account_names(
-    db: AsyncSession, upload_id: int, codes: list
-) -> dict:
-    """
-    Fallback: get account names from raw data account_name column.
-    Groups by account_code and picks the first non-empty account_name.
-    """
-    if not codes:
-        return {}
-    result = await db.execute(
-        select(
-            AIRawTransactionData.account_code,
-            func.max(AIRawTransactionData.account_name).label("name")
-        )
-        .where(
-            AIRawTransactionData.upload_id == upload_id,
-            AIRawTransactionData.account_code.in_(codes),
-            AIRawTransactionData.account_name.isnot(None),
-            AIRawTransactionData.account_name != "",
-        )
-        .group_by(AIRawTransactionData.account_code)
-    )
-    return {row.account_code: row.name for row in result.all()}
-
-
-async def _resolve_account_names(
-    db: AsyncSession, upload_id: int, codes: list
-) -> dict:
-    """
-    Resolve account code -> name. First checks accounts table,
-    then falls back to raw data's account_name column,
-    then uses generic label.
-    """
-    names = await _get_account_name_map(db, codes)
+    names = {r.code: r.name for r in result.all()}
+    # 2) raw data fallback
     missing = [c for c in codes if c not in names]
     if missing:
-        raw_names = await _get_raw_account_names(db, upload_id, missing)
-        names.update(raw_names)
-    # Fill any remaining blanks
+        raw_result = await db.execute(
+            select(
+                AIRawTransactionData.account_code,
+                func.max(AIRawTransactionData.account_name).label("name"),
+            )
+            .where(
+                AIRawTransactionData.upload_id == upload_id,
+                AIRawTransactionData.account_code.in_(missing),
+                AIRawTransactionData.account_name.isnot(None),
+                AIRawTransactionData.account_name != "",
+            )
+            .group_by(AIRawTransactionData.account_code)
+        )
+        names.update({r.account_code: r.name for r in raw_result.all()})
     for c in codes:
         if c not in names or not names[c]:
             names[c] = f"계정 {c}"
     return names
 
 
-async def _validate_upload(db: AsyncSession, upload_id: int) -> AIDataUploadHistory:
-    """Validate upload exists."""
-    upload = await db.get(AIDataUploadHistory, upload_id)
-    if not upload:
-        raise HTTPException(
-            status_code=404,
-            detail=f"업로드 ID {upload_id}를 찾을 수 없습니다."
-        )
-    return upload
+# ============ Endpoints ============
 
-
-# ============ API Endpoints ============
-
-@router.get("/trial-balance", response_model=TrialBalanceResponse)
-async def get_trial_balance(
-    upload_id: int = Query(..., description="업로드 ID"),
-    as_of_date: Optional[str] = Query(None, description="기준일 (YYYY-MM-DD 또는 YYYY.MM.DD)"),
+@router.get("/summary")
+async def get_financial_summary(
+    upload_id: int = Query(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    시산표 (Trial Balance)
+    """재무 요약 - 대시보드용 핵심 지표"""
+    upload = await _validate_upload(db, upload_id)
 
-    계정코드별 차변/대변 합계를 집계합니다.
-    source_account_code(원장 계정)와 account_code(상대 계정) 모두를 기준으로
-    통합 시산표를 생성합니다.
-    """
-    await _validate_upload(db, upload_id)
-
-    # Build date filter
-    filters = [AIRawTransactionData.upload_id == upload_id]
-    if as_of_date:
-        # Normalize date format (handle both YYYY-MM-DD and YYYY.MM.DD)
-        normalized_date = as_of_date.replace(".", "-")
-        filters.append(AIRawTransactionData.transaction_date <= normalized_date)
-
-    # Aggregate by source_account_code (원장 계정) - this is the primary ledger
-    source_query = (
+    # 전체 합계
+    totals = await db.execute(
         select(
-            AIRawTransactionData.source_account_code.label("code"),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("total_debit"),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("total_credit"),
+            func.count(AIRawTransactionData.id).label("tx_count"),
+        ).where(AIRawTransactionData.upload_id == upload_id)
+    )
+    t = totals.one()
+
+    # 고유 계정 수
+    acct_count = await db.scalar(
+        select(func.count(func.distinct(AIRawTransactionData.account_code)))
+        .where(AIRawTransactionData.upload_id == upload_id)
+    ) or 0
+
+    # 상위 출금(대변) 계정 Top 5
+    top_outflow_result = await db.execute(
+        select(
+            AIRawTransactionData.account_code,
+            func.sum(AIRawTransactionData.credit_amount).label("total"),
         )
+        .where(AIRawTransactionData.upload_id == upload_id)
+        .group_by(AIRawTransactionData.account_code)
+        .order_by(func.sum(AIRawTransactionData.credit_amount).desc())
+        .limit(5)
+    )
+    top_outflows = top_outflow_result.all()
+    top_codes = [r.account_code for r in top_outflows]
+    top_names = await _resolve_account_names(db, upload_id, top_codes)
+
+    # 상위 입금(차변) 계정 Top 5
+    top_inflow_result = await db.execute(
+        select(
+            AIRawTransactionData.account_code,
+            func.sum(AIRawTransactionData.debit_amount).label("total"),
+        )
+        .where(AIRawTransactionData.upload_id == upload_id)
+        .group_by(AIRawTransactionData.account_code)
+        .order_by(func.sum(AIRawTransactionData.debit_amount).desc())
+        .limit(5)
+    )
+    top_inflows = top_inflow_result.all()
+    in_codes = [r.account_code for r in top_inflows]
+    in_names = await _resolve_account_names(db, upload_id, in_codes)
+
+    # 원장 계정 정보
+    source_result = await db.execute(
+        select(func.distinct(AIRawTransactionData.source_account_code))
         .where(
-            *filters,
+            AIRawTransactionData.upload_id == upload_id,
             AIRawTransactionData.source_account_code.isnot(None),
             AIRawTransactionData.source_account_code != "",
         )
-        .group_by(AIRawTransactionData.source_account_code)
     )
-    source_result = await db.execute(source_query)
-    source_rows = source_result.all()
+    source_codes = [r[0] for r in source_result.all()]
 
-    # Also aggregate by account_code (상대 계정) for counterpart view
-    counter_query = (
+    return {
+        "upload_id": upload_id,
+        "filename": upload.filename,
+        "source_accounts": source_codes,
+        "total_inflow": float(t.total_debit),
+        "total_outflow": float(t.total_credit),
+        "net_balance": float(t.total_debit - t.total_credit),
+        "total_transactions": t.tx_count,
+        "account_count": acct_count,
+        "top_inflows": [
+            {"account_code": r.account_code, "account_name": in_names.get(r.account_code, ""), "amount": float(r.total)}
+            for r in top_inflows if float(r.total) > 0
+        ],
+        "top_outflows": [
+            {"account_code": r.account_code, "account_name": top_names.get(r.account_code, ""), "amount": float(r.total)}
+            for r in top_outflows if float(r.total) > 0
+        ],
+    }
+
+
+@router.get("/trial-balance")
+async def get_trial_balance(
+    upload_id: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """시산표 - 상대 계정별 차변/대변 합계"""
+    await _validate_upload(db, upload_id)
+
+    result = await db.execute(
         select(
-            AIRawTransactionData.account_code.label("code"),
+            AIRawTransactionData.account_code,
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
+            func.count(AIRawTransactionData.id).label("tx_count"),
         )
-        .where(*filters)
+        .where(AIRawTransactionData.upload_id == upload_id)
         .group_by(AIRawTransactionData.account_code)
+        .order_by(AIRawTransactionData.account_code)
     )
-    counter_result = await db.execute(counter_query)
-    counter_rows = counter_result.all()
+    rows = result.all()
 
-    # Merge: source accounts first, then counterpart accounts not already present
-    seen_codes = set()
-    merged = {}
-
-    for row in source_rows:
-        code = row.code
-        seen_codes.add(code)
-        merged[code] = {
-            "debit_total": float(row.debit_total),
-            "credit_total": float(row.credit_total),
-        }
-
-    for row in counter_rows:
-        code = row.code
-        if code not in merged:
-            merged[code] = {
-                "debit_total": float(row.debit_total),
-                "credit_total": float(row.credit_total),
-            }
-        # If the code already exists from source, we keep the source view
-        # as the primary perspective
-
-    all_codes = list(merged.keys())
-    names = await _resolve_account_names(db, upload_id, all_codes)
+    codes = [r.account_code for r in rows]
+    names = await _resolve_account_names(db, upload_id, codes)
 
     items = []
     total_debit = 0.0
     total_credit = 0.0
+    for r in rows:
+        d = float(r.debit_total)
+        c = float(r.credit_total)
+        total_debit += d
+        total_credit += c
+        items.append({
+            "account_code": r.account_code,
+            "account_name": names.get(r.account_code, f"계정 {r.account_code}"),
+            "debit_total": d,
+            "credit_total": c,
+            "balance": d - c,
+            "tx_count": r.tx_count,
+        })
 
-    for code in sorted(merged.keys()):
-        d = merged[code]
-        balance = d["debit_total"] - d["credit_total"]
-        items.append(TrialBalanceItem(
-            account_code=code,
-            account_name=names.get(code, f"계정 {code}"),
-            debit_total=d["debit_total"],
-            credit_total=d["credit_total"],
-            balance=balance,
-        ))
-        total_debit += d["debit_total"]
-        total_credit += d["credit_total"]
-
-    return TrialBalanceResponse(
-        upload_id=upload_id,
-        as_of_date=as_of_date,
-        items=items,
-        total_debit=total_debit,
-        total_credit=total_credit,
-    )
+    return {
+        "upload_id": upload_id,
+        "items": items,
+        "total_debit": total_debit,
+        "total_credit": total_credit,
+    }
 
 
-@router.get("/income-statement", response_model=IncomeStatementResponse)
+@router.get("/income-statement")
 async def get_income_statement(
-    upload_id: int = Query(..., description="업로드 ID"),
-    from_date: Optional[str] = Query(None, description="시작일"),
-    to_date: Optional[str] = Query(None, description="종료일"),
+    upload_id: int = Query(...),
+    year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    손익계산서 (Income Statement / P&L)
-
-    더존 계정별 원장에서:
-    - source_account_code의 첫 자리가 4 -> 수익 계정
-    - source_account_code의 첫 자리가 5~9 -> 비용 계정
-    - account_code(상대계정)도 참고하여 분류
-
-    수익 계정: 대변이 수익 증가, 차변이 수익 감소
-    비용 계정: 차변이 비용 증가, 대변이 비용 감소
+    손익계산서 (입출금 분석)
+    은행 원장 기반: 차변=입금(수입), 대변=출금(지출)
+    월별/연도별 필터 지원
     """
     await _validate_upload(db, upload_id)
 
     filters = [AIRawTransactionData.upload_id == upload_id]
-    if from_date:
-        normalized = from_date.replace(".", "-")
-        filters.append(AIRawTransactionData.transaction_date >= normalized)
-    if to_date:
-        normalized = to_date.replace(".", "-")
-        filters.append(AIRawTransactionData.transaction_date <= normalized)
 
-    # Strategy: aggregate by source_account_code, classify by first digit
-    query = (
+    # 날짜 필터 (transaction_date 문자열 기반)
+    if year and month:
+        prefix = f"{year}-{str(month).zfill(2)}"
+        prefix2 = f"{year}.{str(month).zfill(2)}"
+        filters.append(
+            (AIRawTransactionData.transaction_date.like(f"{prefix}%"))
+            | (AIRawTransactionData.transaction_date.like(f"{prefix2}%"))
+        )
+    elif year:
+        filters.append(
+            (AIRawTransactionData.transaction_date.like(f"{year}-%"))
+            | (AIRawTransactionData.transaction_date.like(f"{year}.%"))
+        )
+
+    result = await db.execute(
         select(
-            AIRawTransactionData.source_account_code.label("code"),
+            AIRawTransactionData.account_code,
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
-        )
-        .where(
-            *filters,
-            AIRawTransactionData.source_account_code.isnot(None),
-            AIRawTransactionData.source_account_code != "",
-        )
-        .group_by(AIRawTransactionData.source_account_code)
-    )
-    result = await db.execute(query)
-    rows = result.all()
-
-    # Also check account_code perspective for codes not in source_account_code
-    counter_query = (
-        select(
-            AIRawTransactionData.account_code.label("code"),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
+            func.count(AIRawTransactionData.id).label("tx_count"),
         )
         .where(*filters)
         .group_by(AIRawTransactionData.account_code)
+        .order_by(func.sum(AIRawTransactionData.debit_amount).desc())
     )
-    counter_result = await db.execute(counter_query)
-    counter_rows = counter_result.all()
+    rows = result.all()
 
-    # Combine source_account and account_code perspectives
-    all_accounts = {}
-    for row in rows:
-        code = row.code
-        acct_type = _classify_account_type(code)
-        if acct_type in ("revenue", "expense"):
-            all_accounts[code] = {
-                "type": acct_type,
-                "debit": float(row.debit_total),
-                "credit": float(row.credit_total),
-            }
+    codes = [r.account_code for r in rows]
+    names = await _resolve_account_names(db, upload_id, codes)
 
-    for row in counter_rows:
-        code = row.code
-        if code in all_accounts:
-            continue  # already from source
-        acct_type = _classify_account_type(code)
-        if acct_type in ("revenue", "expense"):
-            all_accounts[code] = {
-                "type": acct_type,
-                "debit": float(row.debit_total),
-                "credit": float(row.credit_total),
-            }
+    inflows = []  # 입금 (차변)
+    outflows = []  # 출금 (대변)
+    total_inflow = 0.0
+    total_outflow = 0.0
 
-    all_codes = list(all_accounts.keys())
-    names = await _resolve_account_names(db, upload_id, all_codes)
+    for r in rows:
+        d = float(r.debit_total)
+        c = float(r.credit_total)
+        name = names.get(r.account_code, f"계정 {r.account_code}")
 
-    revenues = []
-    expenses = []
-    total_revenue = 0.0
-    total_expense = 0.0
+        if d > 0:
+            inflows.append({
+                "account_code": r.account_code,
+                "account_name": name,
+                "amount": d,
+                "tx_count": r.tx_count,
+            })
+            total_inflow += d
 
-    for code in sorted(all_accounts.keys()):
-        data = all_accounts[code]
-        if data["type"] == "revenue":
-            # Revenue: credit increases, debit decreases -> net = credit - debit
-            amount = data["credit"] - data["debit"]
-            revenues.append(PnlLineItem(
-                account_code=code,
-                account_name=names.get(code, f"계정 {code}"),
-                amount=amount,
-            ))
-            total_revenue += amount
-        elif data["type"] == "expense":
-            # Expense: debit increases, credit decreases -> net = debit - credit
-            amount = data["debit"] - data["credit"]
-            expenses.append(PnlLineItem(
-                account_code=code,
-                account_name=names.get(code, f"계정 {code}"),
-                amount=amount,
-            ))
-            total_expense += amount
+        if c > 0:
+            outflows.append({
+                "account_code": r.account_code,
+                "account_name": name,
+                "amount": c,
+                "tx_count": r.tx_count,
+            })
+            total_outflow += c
 
-    return IncomeStatementResponse(
-        upload_id=upload_id,
-        from_date=from_date,
-        to_date=to_date,
-        revenues=revenues,
-        expenses=expenses,
-        total_revenue=total_revenue,
-        total_expense=total_expense,
-        net_income=total_revenue - total_expense,
-    )
+    # 정렬: 큰 금액순
+    inflows.sort(key=lambda x: -x["amount"])
+    outflows.sort(key=lambda x: -x["amount"])
+
+    return {
+        "upload_id": upload_id,
+        "year": year,
+        "month": month,
+        "inflows": inflows,
+        "outflows": outflows,
+        "total_inflow": total_inflow,
+        "total_outflow": total_outflow,
+        "net_flow": total_inflow - total_outflow,
+    }
 
 
-@router.get("/balance-sheet", response_model=BalanceSheetResponse)
+@router.get("/balance-sheet")
 async def get_balance_sheet(
-    upload_id: int = Query(..., description="업로드 ID"),
+    upload_id: int = Query(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    재무상태표 (Balance Sheet)
+    """재무상태표 - 원장 계정별 잔액 현황"""
+    upload = await _validate_upload(db, upload_id)
 
-    source_account_code 기준:
-    - 0xx/1xx: 자산 (Assets) -> 잔액 = 차변합 - 대변합
-    - 2xx: 부채 (Liabilities) -> 잔액 = 대변합 - 차변합
-    - 3xx: 자본 (Equity) -> 잔액 = 대변합 - 차변합
-    """
-    await _validate_upload(db, upload_id)
-
-    filters = [AIRawTransactionData.upload_id == upload_id]
-
-    # Aggregate by source_account_code
-    query = (
+    # 원장 계정(source_account_code)별 잔액
+    source_result = await db.execute(
         select(
-            AIRawTransactionData.source_account_code.label("code"),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
+            AIRawTransactionData.source_account_code,
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("total_debit"),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("total_credit"),
+            func.count(AIRawTransactionData.id).label("tx_count"),
         )
         .where(
-            *filters,
+            AIRawTransactionData.upload_id == upload_id,
             AIRawTransactionData.source_account_code.isnot(None),
             AIRawTransactionData.source_account_code != "",
         )
         .group_by(AIRawTransactionData.source_account_code)
+        .order_by(AIRawTransactionData.source_account_code)
     )
-    result = await db.execute(query)
-    rows = result.all()
+    source_rows = source_result.all()
 
-    # Also from account_code perspective
-    counter_query = (
+    source_codes = [r.source_account_code for r in source_rows]
+    source_names = await _resolve_account_names(db, upload_id, source_codes)
+
+    # 상대 계정별 잔액 (상위 15개)
+    counter_result = await db.execute(
         select(
-            AIRawTransactionData.account_code.label("code"),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
+            AIRawTransactionData.account_code,
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("total_debit"),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("total_credit"),
+            func.count(AIRawTransactionData.id).label("tx_count"),
         )
-        .where(*filters)
+        .where(AIRawTransactionData.upload_id == upload_id)
         .group_by(AIRawTransactionData.account_code)
+        .order_by(func.sum(AIRawTransactionData.debit_amount + AIRawTransactionData.credit_amount).desc())
+        .limit(20)
     )
-    counter_result = await db.execute(counter_query)
     counter_rows = counter_result.all()
 
-    all_accounts = {}
-    for row in rows:
-        code = row.code
-        acct_type = _classify_account_type(code)
-        if acct_type in ("asset", "liability", "equity"):
-            all_accounts[code] = {
-                "type": acct_type,
-                "debit": float(row.debit_total),
-                "credit": float(row.credit_total),
-            }
+    counter_codes = [r.account_code for r in counter_rows]
+    counter_names = await _resolve_account_names(db, upload_id, counter_codes)
 
-    for row in counter_rows:
-        code = row.code
-        if code in all_accounts:
-            continue
-        acct_type = _classify_account_type(code)
-        if acct_type in ("asset", "liability", "equity"):
-            all_accounts[code] = {
-                "type": acct_type,
-                "debit": float(row.debit_total),
-                "credit": float(row.credit_total),
-            }
+    accounts = []
+    total_debit = 0.0
+    total_credit = 0.0
+    for r in source_rows:
+        d = float(r.total_debit)
+        c = float(r.total_credit)
+        total_debit += d
+        total_credit += c
+        accounts.append({
+            "account_code": r.source_account_code,
+            "account_name": source_names.get(r.source_account_code, f"계정 {r.source_account_code}"),
+            "debit_total": d,
+            "credit_total": c,
+            "balance": d - c,
+            "tx_count": r.tx_count,
+        })
 
-    all_codes = list(all_accounts.keys())
-    names = await _resolve_account_names(db, upload_id, all_codes)
+    counterparts = []
+    for r in counter_rows:
+        d = float(r.total_debit)
+        c = float(r.total_credit)
+        counterparts.append({
+            "account_code": r.account_code,
+            "account_name": counter_names.get(r.account_code, f"계정 {r.account_code}"),
+            "debit_total": d,
+            "credit_total": c,
+            "balance": d - c,
+            "tx_count": r.tx_count,
+        })
 
-    assets = []
-    liabilities = []
-    equity_list = []
-    total_assets = 0.0
-    total_liabilities = 0.0
-    total_equity = 0.0
-
-    for code in sorted(all_accounts.keys()):
-        data = all_accounts[code]
-
-        if data["type"] == "asset":
-            # Asset: normal balance is debit -> amount = debit - credit
-            amount = data["debit"] - data["credit"]
-            assets.append(BalanceSheetItem(
-                account_code=code,
-                account_name=names.get(code, f"계정 {code}"),
-                amount=amount,
-            ))
-            total_assets += amount
-
-        elif data["type"] == "liability":
-            # Liability: normal balance is credit -> amount = credit - debit
-            amount = data["credit"] - data["debit"]
-            liabilities.append(BalanceSheetItem(
-                account_code=code,
-                account_name=names.get(code, f"계정 {code}"),
-                amount=amount,
-            ))
-            total_liabilities += amount
-
-        elif data["type"] == "equity":
-            # Equity: normal balance is credit -> amount = credit - debit
-            amount = data["credit"] - data["debit"]
-            equity_list.append(BalanceSheetItem(
-                account_code=code,
-                account_name=names.get(code, f"계정 {code}"),
-                amount=amount,
-            ))
-            total_equity += amount
-
-    return BalanceSheetResponse(
-        upload_id=upload_id,
-        assets=assets,
-        liabilities=liabilities,
-        equity=equity_list,
-        total_assets=total_assets,
-        total_liabilities=total_liabilities,
-        total_equity=total_equity,
-    )
+    return {
+        "upload_id": upload_id,
+        "filename": upload.filename,
+        "accounts": accounts,
+        "total_debit": total_debit,
+        "total_credit": total_credit,
+        "net_balance": total_debit - total_credit,
+        "counterparts": counterparts,
+    }
 
 
-@router.get("/monthly-trend", response_model=MonthlyTrendResponse)
+@router.get("/monthly-trend")
 async def get_monthly_trend(
-    upload_id: int = Query(..., description="업로드 ID"),
-    account_code: Optional[str] = Query(None, description="계정코드 (생략 시 전체)"),
+    upload_id: int = Query(...),
+    account_code: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    월별 추이 (Monthly Trend)
-
-    월별로 차변/대변 합계와 순액을 집계합니다.
-    account_code를 지정하면 해당 계정만, 생략 시 전체 합산.
-
-    transaction_date 형식: 다양한 형식 지원 (YYYY-MM-DD, YYYY.MM.DD, MM/DD 등)
-    """
+    """월별 추이 - 입금/출금 월별 집계"""
     await _validate_upload(db, upload_id)
 
     filters = [
@@ -597,94 +406,59 @@ async def get_monthly_trend(
         AIRawTransactionData.transaction_date != "",
     ]
     if account_code:
-        # Match either source_account_code or account_code
         filters.append(
             (AIRawTransactionData.source_account_code == account_code)
             | (AIRawTransactionData.account_code == account_code)
         )
 
-    # Since transaction_date is stored as string in various formats,
-    # we extract the month portion. Common formats:
-    # "2025-01-15", "2025.01.15", "01/15", "1/15"
-    # We'll use substr approach: try to extract YYYY-MM
-    # For dates like "2025-01-15" -> substr 1..7 -> "2025-01"
-    # For dates like "2025.01.15" -> we'll need to handle in Python
-
-    # Fetch all data and process in Python for date format flexibility
-    query = (
+    result = await db.execute(
         select(
             AIRawTransactionData.transaction_date,
             AIRawTransactionData.debit_amount,
             AIRawTransactionData.credit_amount,
-        )
-        .where(*filters)
+        ).where(*filters)
     )
-    result = await db.execute(query)
     rows = result.all()
 
-    import re
-
-    monthly_data: dict = {}  # month_key -> {debit, credit}
-
-    for row in rows:
-        date_str = str(row.transaction_date).strip()
-        month_key = None
-
-        # Try to extract YYYY-MM
-        # Format: YYYY-MM-DD or YYYY.MM.DD or YYYY/MM/DD
-        match = re.match(r'(\d{4})[.\-/](\d{1,2})', date_str)
-        if match:
-            year = match.group(1)
-            month = match.group(2).zfill(2)
-            month_key = f"{year}-{month}"
-        else:
-            # Format: MM/DD or M/D (no year)
-            match2 = re.match(r'(\d{1,2})[/\-.](\d{1,2})', date_str)
-            if match2:
-                month = match2.group(1).zfill(2)
-                month_key = f"????-{month}"
-
+    monthly: dict = {}
+    for r in rows:
+        month_key = _extract_month(str(r.transaction_date))
         if not month_key:
             continue
-
-        if month_key not in monthly_data:
-            monthly_data[month_key] = {"debit": 0.0, "credit": 0.0}
-
-        monthly_data[month_key]["debit"] += float(row.debit_amount or 0)
-        monthly_data[month_key]["credit"] += float(row.credit_amount or 0)
+        if month_key not in monthly:
+            monthly[month_key] = {"debit": 0.0, "credit": 0.0, "count": 0}
+        monthly[month_key]["debit"] += float(r.debit_amount or 0)
+        monthly[month_key]["credit"] += float(r.credit_amount or 0)
+        monthly[month_key]["count"] += 1
 
     data = []
-    for month_key in sorted(monthly_data.keys()):
-        d = monthly_data[month_key]
-        data.append(MonthlyTrendItem(
-            month=month_key,
-            debit_total=d["debit"],
-            credit_total=d["credit"],
-            net=d["debit"] - d["credit"],
-        ))
+    for key in sorted(monthly.keys()):
+        m = monthly[key]
+        data.append({
+            "month": key,
+            "debit_total": m["debit"],
+            "credit_total": m["credit"],
+            "net": m["debit"] - m["credit"],
+            "tx_count": m["count"],
+        })
 
-    return MonthlyTrendResponse(
-        upload_id=upload_id,
-        account_code=account_code,
-        data=data,
-    )
+    return {
+        "upload_id": upload_id,
+        "account_code": account_code,
+        "data": data,
+    }
 
 
-@router.get("/account-detail", response_model=AccountDetailResponse)
+@router.get("/account-detail")
 async def get_account_detail(
-    upload_id: int = Query(..., description="업로드 ID"),
-    account_code: str = Query(..., description="계정코드"),
-    page: int = Query(default=1, ge=1, description="페이지"),
-    size: int = Query(default=50, ge=1, le=500, description="페이지 크기"),
+    upload_id: int = Query(...),
+    account_code: str = Query(...),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    계정별 상세 내역
-
-    특정 계정코드의 모든 거래를 페이지네이션하여 조회합니다.
-    source_account_code 또는 account_code가 일치하는 거래를 모두 반환합니다.
-    """
+    """계정별 거래 상세 조회"""
     await _validate_upload(db, upload_id)
 
     base_filter = and_(
@@ -693,64 +467,53 @@ async def get_account_detail(
         | (AIRawTransactionData.account_code == account_code),
     )
 
-    # Total count
     total = await db.scalar(
         select(func.count(AIRawTransactionData.id)).where(base_filter)
-    )
-    if total is None:
-        total = 0
+    ) or 0
 
     total_pages = max(1, math.ceil(total / size))
 
-    # Summary
     summary_result = await db.execute(
         select(
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
-        )
-        .where(base_filter)
+        ).where(base_filter)
     )
-    summary_row = summary_result.one()
+    s = summary_result.one()
 
-    # Paginated data
     offset = (page - 1) * size
     data_result = await db.execute(
         select(AIRawTransactionData)
         .where(base_filter)
-        .order_by(
-            AIRawTransactionData.transaction_date,
-            AIRawTransactionData.row_number,
-        )
+        .order_by(AIRawTransactionData.transaction_date, AIRawTransactionData.row_number)
         .offset(offset)
         .limit(size)
     )
     rows = data_result.scalars().all()
 
-    items = [
-        AccountDetailItem(
-            row_number=r.row_number,
-            transaction_date=r.transaction_date,
-            description=r.original_description,
-            merchant_name=r.merchant_name,
-            debit_amount=float(r.debit_amount),
-            credit_amount=float(r.credit_amount),
-            account_code=r.account_code,
-            source_account_code=r.source_account_code,
-        )
-        for r in rows
-    ]
-
-    return AccountDetailResponse(
-        upload_id=upload_id,
-        account_code=account_code,
-        total=total,
-        page=page,
-        size=size,
-        total_pages=total_pages,
-        items=items,
-        summary={
-            "debit_total": float(summary_row.debit_total),
-            "credit_total": float(summary_row.credit_total),
-            "balance": float(summary_row.debit_total) - float(summary_row.credit_total),
+    return {
+        "upload_id": upload_id,
+        "account_code": account_code,
+        "total": total,
+        "page": page,
+        "size": size,
+        "total_pages": total_pages,
+        "items": [
+            {
+                "row_number": r.row_number,
+                "transaction_date": r.transaction_date,
+                "description": r.original_description,
+                "merchant_name": r.merchant_name,
+                "debit_amount": float(r.debit_amount),
+                "credit_amount": float(r.credit_amount),
+                "account_code": r.account_code,
+                "source_account_code": r.source_account_code,
+            }
+            for r in rows
+        ],
+        "summary": {
+            "debit_total": float(s.debit_total),
+            "credit_total": float(s.credit_total),
+            "balance": float(s.debit_total) - float(s.credit_total),
         },
-    )
+    }

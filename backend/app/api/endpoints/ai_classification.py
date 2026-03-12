@@ -277,6 +277,27 @@ async def get_ai_status(
     if stats.total and stats.total > 0:
         accuracy_rate = (stats.correct or 0) / stats.total * 100
 
+    # 업로드 통계
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
+    upload_count = await db.scalar(
+        select(func.count(AIDataUploadHistory.id))
+    ) or 0
+    completed_uploads = await db.scalar(
+        select(func.count(AIDataUploadHistory.id)).where(
+            AIDataUploadHistory.status == UploadStatus.COMPLETED
+        )
+    ) or 0
+    total_raw_rows = await db.scalar(
+        select(func.count(AIRawTransactionData.id))
+    ) or 0
+    # 최근 업로드
+    latest_upload_result = await db.execute(
+        select(AIDataUploadHistory)
+        .order_by(AIDataUploadHistory.created_at.desc())
+        .limit(1)
+    )
+    latest_upload = latest_upload_result.scalar_one_or_none()
+
     return {
         "model_version": active_model.version if active_model else "default_v1.0",
         "is_trained": active_model is not None,
@@ -286,7 +307,19 @@ async def get_ai_status(
         "corrected_classifications": stats.corrected or 0,
         "accuracy_rate": round(accuracy_rate, 2),
         "last_trained_at": active_model.training_completed_at.isoformat() if active_model and active_model.training_completed_at else None,
-        "model_accuracy": float(active_model.accuracy) if active_model and active_model.accuracy else None
+        "model_accuracy": float(active_model.accuracy) if active_model and active_model.accuracy else None,
+        # 업로드 통계
+        "upload_count": upload_count,
+        "completed_uploads": completed_uploads,
+        "total_raw_transactions": total_raw_rows,
+        "latest_upload": {
+            "id": latest_upload.id,
+            "filename": latest_upload.filename,
+            "row_count": latest_upload.row_count,
+            "saved_count": latest_upload.saved_count,
+            "status": latest_upload.status.value if hasattr(latest_upload.status, 'value') else str(latest_upload.status),
+            "created_at": latest_upload.created_at.isoformat() if latest_upload.created_at else None,
+        } if latest_upload else None,
     }
 
 
