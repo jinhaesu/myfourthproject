@@ -215,3 +215,94 @@ class CustomTag(Base):
 
     def __repr__(self):
         return f"<CustomTag {self.code}: {self.name}>"
+
+
+# ============ 업로드 이력 & 원본 데이터 보관 ============
+
+class UploadStatus(enum.Enum):
+    """업로드 상태"""
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class AIDataUploadHistory(Base):
+    """AI 데이터 업로드 이력"""
+    __tablename__ = "ai_data_upload_history"
+    __table_args__ = (
+        Index("ix_ai_upload_history_uploaded_by", "uploaded_by"),
+        Index("ix_ai_upload_history_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    filename: Mapped[str] = mapped_column(String(500))
+    file_size: Mapped[int] = mapped_column(Integer)  # bytes
+    file_type: Mapped[str] = mapped_column(String(10))  # xls, xlsx, csv
+    upload_type: Mapped[str] = mapped_column(String(20))  # historical, classify
+
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    saved_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    uploaded_by: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"))
+
+    status: Mapped[UploadStatus] = mapped_column(
+        SQLEnum(UploadStatus, native_enum=False), default=UploadStatus.PROCESSING
+    )
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    raw_transactions: Mapped[List["AIRawTransactionData"]] = relationship(
+        "AIRawTransactionData", back_populates="upload", cascade="all, delete-orphan"
+    )
+
+    def __repr__(self):
+        return f"<AIDataUploadHistory {self.id} {self.filename} ({self.status.value})>"
+
+
+class AIRawTransactionData(Base):
+    """업로드된 원본 거래 데이터 보관"""
+    __tablename__ = "ai_raw_transaction_data"
+    __table_args__ = (
+        Index("ix_ai_raw_txn_upload_id", "upload_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    upload_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_data_upload_history.id", ondelete="CASCADE")
+    )
+    row_number: Mapped[int] = mapped_column(Integer)
+
+    # 원본 데이터
+    original_description: Mapped[str] = mapped_column(String(500))
+    merchant_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
+    debit_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
+    credit_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
+    transaction_date: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
+    # 계정 정보
+    account_code: Mapped[str] = mapped_column(String(20))
+    account_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    source_account_code: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, comment="원장 계정코드 (예: 103)"
+    )
+
+    # 학습 데이터 연결
+    training_data_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("ai_training_data.id"), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    upload: Mapped["AIDataUploadHistory"] = relationship(
+        "AIDataUploadHistory", back_populates="raw_transactions"
+    )
+
+    def __repr__(self):
+        return f"<AIRawTransactionData {self.id} row={self.row_number}>"

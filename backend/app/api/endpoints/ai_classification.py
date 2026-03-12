@@ -141,6 +141,13 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
                 except (ValueError, TypeError):
                     credit_val = 0
 
+        # 날짜 추출
+        date_val = None
+        for c_idx, field_name in col_map.items():
+            if field_name == "date" and c_idx < len(row_vals) and pd.notna(row_vals[c_idx]):
+                date_val = str(row_vals[c_idx]).strip()
+                break
+
         # account_code: 코드 열 사용 (상대 계정), 없으면 현재 계정 코드 사용
         account_code = code_val if code_val else current_account_code
         if not account_code:
@@ -153,6 +160,10 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
             "거래처": merchant_val or "",
             "금액": amount,
             "코드": account_code,
+            "차변": debit_val,
+            "대변": credit_val,
+            "날짜": date_val or "",
+            "원장계정코드": current_account_code or "",
         })
 
     if not rows:
@@ -324,21 +335,36 @@ async def upload_historical_data(
     if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
         raise HTTPException(status_code=400, detail="엑셀 또는 CSV 파일만 업로드 가능합니다.")
 
-    try:
-        content = await file.read()
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
 
+    content = await file.read()
+
+    # Step 1: 업로드 이력 생성
+    file_ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else 'unknown'
+    upload_history = AIDataUploadHistory(
+        filename=file.filename,
+        file_size=len(content),
+        file_type=file_ext,
+        upload_type="historical",
+        uploaded_by=current_user.id,
+        status=UploadStatus.PROCESSING,
+    )
+    db.add(upload_history)
+    await db.flush()
+
+    try:
+        # Step 2: 파일 파싱
+        is_ledger_format = False
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
         else:
-            # .xls / .xlsx 모두 지원
             engine = 'xlrd' if file.filename.endswith('.xls') else 'openpyxl'
-            # 먼저 헤더 없이 읽어 "계정별 원장" 양식 감지
             df_raw = pd.read_excel(io.BytesIO(content), header=None, engine=engine)
 
             if _is_account_ledger_format(df_raw):
+                is_ledger_format = True
                 df = _parse_account_ledger(df_raw)
             else:
-                # 일반 양식: 첫 행이 헤더
                 df = pd.read_excel(io.BytesIO(content), engine=engine)
 
         # 컬럼명 정규화
@@ -357,12 +383,15 @@ async def upload_historical_data(
             '계정과목': 'account_code',
             '코드': 'account_code',
             '계정과목명': 'account_name',
-            '계정명': 'account_name'
+            '계정명': 'account_name',
+            '차변': 'debit',
+            '대변': 'credit',
+            '날짜': 'date',
+            '원장계정코드': 'source_account_code',
         }
 
         df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
 
-        # 필수 컬럼 확인
         if 'description' not in df.columns:
             raise HTTPException(status_code=400, detail="'적요' 또는 '거래내역' 컬럼이 필요합니다.")
         if 'account_code' not in df.columns:
@@ -381,26 +410,53 @@ async def upload_historical_data(
         else:
             df['amount'] = 0
 
-        # 학습 데이터 저장
+        upload_history.row_count = len(df)
+
+        # Step 3: 학습 데이터 저장 + 원본 데이터 보관
         classifier = AIClassifierService()
         saved_count = 0
         error_count = 0
 
-        for _, row in df.iterrows():
-            try:
-                # 계정과목 확인
-                account_result = await db.execute(
-                    select(Account).where(Account.code == row['account_code'])
-                )
-                account = account_result.scalar_one_or_none()
+        # 계정 코드 캐시 (동일 코드 반복 조회 방지)
+        account_cache: dict = {}
 
-                if not account:
-                    # 계정과목이 없으면 6자리로 시도
-                    code_padded = str(row['account_code']).zfill(6)
+        for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
+            # 원본 데이터 레코드 생성
+            raw_record = AIRawTransactionData(
+                upload_id=upload_history.id,
+                row_number=row_idx,
+                original_description=row['description'],
+                merchant_name=row.get('merchant_name', ''),
+                amount=Decimal(str(row.get('amount', 0))),
+                debit_amount=Decimal(str(row.get('debit', 0))) if 'debit' in df.columns and pd.notna(row.get('debit')) else Decimal("0"),
+                credit_amount=Decimal(str(row.get('credit', 0))) if 'credit' in df.columns and pd.notna(row.get('credit')) else Decimal("0"),
+                transaction_date=str(row.get('date', '')) if 'date' in df.columns and pd.notna(row.get('date')) else None,
+                account_code=row['account_code'],
+                account_name=row.get('account_name', '') if 'account_name' in df.columns else None,
+                source_account_code=str(row.get('source_account_code', '')) if 'source_account_code' in df.columns and pd.notna(row.get('source_account_code')) else None,
+            )
+            db.add(raw_record)
+
+            try:
+                code = row['account_code']
+
+                # 캐시에서 계정 조회
+                if code not in account_cache:
                     account_result = await db.execute(
-                        select(Account).where(Account.code == code_padded)
+                        select(Account).where(Account.code == code)
                     )
                     account = account_result.scalar_one_or_none()
+
+                    if not account:
+                        code_padded = str(code).zfill(6)
+                        account_result = await db.execute(
+                            select(Account).where(Account.code == code_padded)
+                        )
+                        account = account_result.scalar_one_or_none()
+
+                    account_cache[code] = account
+                else:
+                    account = account_cache[code]
 
                 if account:
                     training_data = AITrainingData(
@@ -418,27 +474,43 @@ async def upload_historical_data(
                         is_active=True
                     )
                     db.add(training_data)
+                    await db.flush()
+
+                    # 원본 데이터에 학습 데이터 ID 연결
+                    raw_record.training_data_id = training_data.id
                     saved_count += 1
                 else:
                     error_count += 1
 
-            except Exception as e:
+            except Exception:
                 error_count += 1
                 continue
+
+        # Step 4: 업로드 이력 완료 처리
+        upload_history.saved_count = saved_count
+        upload_history.error_count = error_count
+        upload_history.status = UploadStatus.COMPLETED
 
         await db.commit()
 
         return {
             "status": "success",
+            "upload_id": upload_history.id,
             "total_rows": len(df),
             "saved_count": saved_count,
             "error_count": error_count,
-            "message": f"{saved_count}개의 학습 데이터가 저장되었습니다."
+            "message": f"{saved_count}개의 학습 데이터가 저장되었습니다. (원본 {len(df)}건 보관)"
         }
 
     except HTTPException:
+        upload_history.status = UploadStatus.FAILED
+        upload_history.error_message = "필수 컬럼 누락"
+        await db.commit()
         raise
     except Exception as e:
+        upload_history.status = UploadStatus.FAILED
+        upload_history.error_message = str(e)[:500]
+        await db.commit()
         raise HTTPException(status_code=500, detail=f"파일 처리 중 오류: {str(e)}")
 
 
@@ -783,3 +855,95 @@ async def get_training_history(
         }
         for v in versions
     ]
+
+
+@router.get("/upload-history")
+async def get_upload_history(
+    limit: int = Query(default=20, description="조회 개수"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """업로드 이력 조회"""
+    from app.models.ai import AIDataUploadHistory
+
+    result = await db.execute(
+        select(AIDataUploadHistory)
+        .order_by(AIDataUploadHistory.created_at.desc())
+        .limit(limit)
+    )
+    uploads = result.scalars().all()
+
+    return [
+        {
+            "id": u.id,
+            "filename": u.filename,
+            "file_size": u.file_size,
+            "file_type": u.file_type,
+            "upload_type": u.upload_type,
+            "row_count": u.row_count,
+            "saved_count": u.saved_count,
+            "error_count": u.error_count,
+            "status": u.status.value if hasattr(u.status, 'value') else str(u.status),
+            "error_message": u.error_message,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in uploads
+    ]
+
+
+@router.get("/upload/{upload_id}/raw-data")
+async def get_upload_raw_data(
+    upload_id: int,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """업로드된 원본 데이터 조회"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData
+
+    # 업로드 이력 확인
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="업로드 이력을 찾을 수 없습니다.")
+
+    # 총 건수
+    total = await db.scalar(
+        select(func.count(AIRawTransactionData.id))
+        .where(AIRawTransactionData.upload_id == upload_id)
+    )
+
+    # 페이지네이션
+    offset = (page - 1) * size
+    result = await db.execute(
+        select(AIRawTransactionData)
+        .where(AIRawTransactionData.upload_id == upload_id)
+        .order_by(AIRawTransactionData.row_number)
+        .offset(offset)
+        .limit(size)
+    )
+    rows = result.scalars().all()
+
+    return {
+        "upload_id": upload_id,
+        "filename": upload.filename,
+        "total_rows": total,
+        "page": page,
+        "size": size,
+        "data": [
+            {
+                "row_number": r.row_number,
+                "description": r.original_description,
+                "merchant_name": r.merchant_name,
+                "amount": float(r.amount),
+                "debit_amount": float(r.debit_amount),
+                "credit_amount": float(r.credit_amount),
+                "transaction_date": r.transaction_date,
+                "account_code": r.account_code,
+                "account_name": r.account_name,
+                "source_account_code": r.source_account_code,
+                "training_data_id": r.training_data_id,
+            }
+            for r in rows
+        ],
+    }

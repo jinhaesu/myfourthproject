@@ -30,7 +30,9 @@ from app.models.ai import (
     AIClassificationLog,
     AITrainingData,
     AIModelVersion,
-    CustomTag
+    CustomTag,
+    AIDataUploadHistory,
+    AIRawTransactionData,
 )
 from app.models.audit import AuditLog, DataSnapshot
 from app.models.sales import (
@@ -73,6 +75,8 @@ __all__ = [
     "AITrainingData",
     "AIModelVersion",
     "CustomTag",
+    "AIDataUploadHistory",
+    "AIRawTransactionData",
     # Audit
     "AuditLog",
     "DataSnapshot",
