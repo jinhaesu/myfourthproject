@@ -13,19 +13,12 @@ function fmt(v: number) {
 function fmtNum(v: number) {
   return new Intl.NumberFormat('ko-KR').format(v)
 }
+function fmtAmount(v: number) {
+  return new Intl.NumberFormat('ko-KR').format(Math.abs(v))
+}
 
 type TabType = 'statements' | 'trend' | 'trial'
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-
-// Category display config
-const CATEGORY_COLORS: Record<string, { bg: string; text: string; border: string }> = {
-  '4': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  '5': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
-  '1': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
-  '2': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-  '3': { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
-  '0': { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' },
-}
 
 export default function FinancialReportsPage() {
   const [activeTab, setActiveTab] = useState<TabType>('statements')
@@ -108,20 +101,18 @@ export default function FinancialReportsPage() {
 }
 
 // ============================================================================
-// Tab 1: 손익계산서 + 재무상태표 (PDF 양식 기반)
+// Tab 1: 손익계산서 + 재무상태표 (한국 회계 기준 PDF 양식)
 // ============================================================================
 function StatementsTab({ uploadId }: { uploadId: number }) {
   const currentYear = new Date().getFullYear()
   const [year, setYear] = useState(currentYear)
   const [month, setMonth] = useState<number | null>(null)
 
-  // 손익 데이터 (카테고리별 분류)
   const { data: incomeData, isLoading: incLoading } = useQuery({
     queryKey: ['financialIncome', uploadId, year, month],
     queryFn: () => financialApi.getIncomeStatement(uploadId, year, month ?? undefined).then((r) => r.data),
   })
 
-  // 재무상태표 데이터 (카테고리별 분류)
   const { data: balanceData, isLoading: balLoading } = useQuery({
     queryKey: ['financialBalance', uploadId],
     queryFn: () => financialApi.getBalanceSheet(uploadId).then((r) => r.data),
@@ -130,14 +121,7 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
   if (incLoading || balLoading) return <Loading />
 
   const sections: any[] = incomeData?.sections || []
-  const totalRevenue = incomeData?.total_revenue ?? 0
-  const netIncome = incomeData?.net_income ?? 0
-  const totalInflow = incomeData?.total_inflow ?? 0
-  const totalOutflow = incomeData?.total_outflow ?? 0
-
   const bsSections: any[] = balanceData?.sections || []
-  const ledgerAccounts: any[] = balanceData?.ledger_accounts || balanceData?.accounts || []
-  const netBalance = balanceData?.net_balance ?? 0
 
   return (
     <div className="space-y-8">
@@ -167,188 +151,168 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
       </div>
 
       {/* ==================== 손익계산서 ==================== */}
-      <div>
-        <h2 className="text-lg font-bold text-gray-900 mb-4">
-          손 익 계 산 서
-          <span className="text-sm font-normal text-gray-500 ml-3">
-            {year}년 {month ? `${month}월` : '1월~12월'}
-          </span>
-        </h2>
-
-        {/* 요약 카드 */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-          <div className="card bg-blue-50 border border-blue-200">
-            <p className="text-xs text-blue-600 font-medium">총 입금 (차변)</p>
-            <p className="text-xl font-bold text-blue-700">{fmt(totalInflow)}</p>
-          </div>
-          <div className="card bg-red-50 border border-red-200">
-            <p className="text-xs text-red-600 font-medium">총 출금 (대변)</p>
-            <p className="text-xl font-bold text-red-700">{fmt(totalOutflow)}</p>
-          </div>
-          <div className="card bg-green-50 border border-green-200">
-            <p className="text-xs text-green-600 font-medium">수익 합계</p>
-            <p className="text-xl font-bold text-green-700">{fmt(totalRevenue)}</p>
-          </div>
-          <div className={`card border ${netIncome >= 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
-            <p className="text-xs font-medium text-gray-600">당기순이익</p>
-            <p className={`text-xl font-bold ${netIncome >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmt(netIncome)}</p>
-          </div>
+      <div className="card">
+        <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
+          <h2 className="text-xl font-bold text-gray-900 tracking-widest">손 익 계 산 서</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            {year}년 {month ? `${month}월 1일 ~ ${month}월 말일` : '1월 1일 ~ 12월 31일'}
+          </p>
         </div>
 
-        {/* 카테고리별 손익 상세 */}
-        {sections.length > 0 ? (
-          <div className="space-y-4">
-            {sections.map((section: any) => {
-              const colors = CATEGORY_COLORS[section.category_code] || CATEGORY_COLORS['0']
-              const items: any[] = section.items || []
-              return (
-                <div key={section.category_code} className={`card border ${colors.border}`}>
-                  <div className={`flex items-center justify-between mb-3 pb-2 border-b ${colors.border}`}>
-                    <h3 className={`text-sm font-bold ${colors.text}`}>
-                      {section.category_name}
-                      <span className="text-xs font-normal text-gray-400 ml-2">({items.length}개 계정)</span>
-                    </h3>
-                    <div className="flex gap-4 text-xs">
-                      <span className="text-blue-600">차변: {fmt(section.debit_total)}</span>
-                      <span className="text-red-600">대변: {fmt(section.credit_total)}</span>
-                    </div>
-                  </div>
-                  <div className="overflow-x-auto max-h-60 overflow-y-auto">
-                    <table className="table w-full text-sm">
-                      <thead className="table-header sticky top-0">
-                        <tr>
-                          <th className="w-24">계정코드</th>
-                          <th>계정명</th>
-                          <th className="text-right w-36">차변 (입금)</th>
-                          <th className="text-right w-36">대변 (출금)</th>
-                          <th className="text-right w-36">순액</th>
-                          <th className="text-right w-16">건수</th>
-                        </tr>
-                      </thead>
-                      <tbody className="table-body">
-                        {items.map((item: any) => (
-                          <tr key={item.account_code}>
-                            <td className="text-gray-500 font-mono text-xs">{item.account_code}</td>
-                            <td className="font-medium">{item.account_name}</td>
-                            <td className="amount text-blue-600">{item.debit_amount > 0 ? fmt(item.debit_amount) : '-'}</td>
-                            <td className="amount text-red-600">{item.credit_amount > 0 ? fmt(item.credit_amount) : '-'}</td>
-                            <td className={`amount font-bold ${item.net_amount >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                              {fmt(item.net_amount)}
-                            </td>
-                            <td className="text-right text-gray-400">{fmtNum(item.tx_count)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        ) : (
-          <div className="card text-center py-8 text-gray-400">
-            해당 기간의 데이터가 없습니다.
-          </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b-2 border-gray-800">
+                <th className="text-left py-2 px-3 w-16">구분</th>
+                <th className="text-left py-2 px-3">과  목</th>
+                <th className="text-right py-2 px-3 w-40">금  액</th>
+                <th className="text-right py-2 px-3 w-20">비율(%)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sections.map((section: any) => {
+                const isSubtotal = section.is_subtotal
+                const items: any[] = section.items || []
+                const hasItems = items.length > 0
+
+                return (
+                  <SectionGroup key={section.id}>
+                    {/* 세부 항목 */}
+                    {hasItems && items.map((item: any, idx: number) => (
+                      <tr key={`${section.id}-${idx}`} className="border-b border-gray-100 hover:bg-gray-50">
+                        <td className="py-1.5 px-3"></td>
+                        <td className="py-1.5 px-3 pl-12 text-gray-700">{item.name}</td>
+                        <td className="py-1.5 px-3 text-right font-mono text-gray-700">
+                          {item.amount < 0 ? `(${fmtAmount(item.amount)})` : fmtAmount(item.amount)}
+                        </td>
+                        <td className="py-1.5 px-3"></td>
+                      </tr>
+                    ))}
+                    {/* 섹션 합계 행 */}
+                    <tr className={`border-b ${isSubtotal ? 'border-gray-400 bg-gray-50' : 'border-gray-200'}`}>
+                      <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>
+                        {section.id}.
+                      </td>
+                      <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>
+                        {section.name}
+                      </td>
+                      <td className={`py-2 px-3 text-right font-mono font-bold ${
+                        isSubtotal
+                          ? section.total >= 0 ? 'text-gray-900' : 'text-red-600'
+                          : 'text-gray-800'
+                      }`}>
+                        {section.total < 0
+                          ? `(${fmtAmount(section.total)})`
+                          : fmtAmount(section.total)
+                        }
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono text-gray-500">
+                        {section.pct !== undefined ? section.pct.toFixed(2) : ''}
+                      </td>
+                    </tr>
+                  </SectionGroup>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {sections.length === 0 && (
+          <div className="text-center py-8 text-gray-400">해당 기간의 데이터가 없습니다.</div>
         )}
       </div>
 
-      <hr className="border-gray-200" />
+      <hr className="border-gray-300" />
 
       {/* ==================== 재무상태표 ==================== */}
-      <div>
-        <h2 className="text-lg font-bold text-gray-900 mb-4">재 무 상 태 표</h2>
+      <div className="card">
+        <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
+          <h2 className="text-xl font-bold text-gray-900 tracking-widest">재 무 상 태 표</h2>
+          <p className="text-sm text-gray-500 mt-1">현재 기준</p>
+        </div>
 
-        {/* 원장 계정 잔액 */}
-        {ledgerAccounts.length > 0 && (
-          <div className="card mb-4 border border-indigo-200">
-            <h3 className="text-sm font-bold text-indigo-700 mb-3">원장 계정 현황 (보통예금 등)</h3>
-            <div className="overflow-x-auto">
-              <table className="table w-full text-sm">
-                <thead className="table-header">
-                  <tr>
-                    <th>계정코드</th>
-                    <th>계정명</th>
-                    <th className="text-right">차변합계 (입금)</th>
-                    <th className="text-right">대변합계 (출금)</th>
-                    <th className="text-right">잔액</th>
-                    <th className="text-right">건수</th>
-                  </tr>
-                </thead>
-                <tbody className="table-body">
-                  {ledgerAccounts.map((a: any) => (
-                    <tr key={a.account_code}>
-                      <td className="text-gray-500 font-mono">{a.account_code}</td>
-                      <td className="font-medium">{a.account_name}</td>
-                      <td className="amount text-blue-600">{fmt(a.debit_total)}</td>
-                      <td className="amount text-red-600">{fmt(a.credit_total)}</td>
-                      <td className={`amount font-bold ${a.balance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{fmt(a.balance)}</td>
-                      <td className="text-right text-gray-500">{fmtNum(a.tx_count)}</td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b-2 border-gray-800">
+                <th className="text-left py-2 px-3">과  목</th>
+                <th className="text-right py-2 px-3 w-44">금  액</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bsSections.map((section: any) => {
+                const subsections: any[] = section.subsections || []
+                return (
+                  <SectionGroup key={section.id}>
+                    {/* 대분류 헤더 */}
+                    <tr className="bg-gray-100 border-b border-gray-300">
+                      <td colSpan={2} className="py-2 px-3 font-bold text-gray-900 text-base">
+                        {section.name}
+                      </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="mt-3 p-3 bg-indigo-50 rounded-lg flex justify-between items-center">
-              <span className="text-sm font-bold text-indigo-700">총 잔액</span>
-              <span className={`text-lg font-bold ${netBalance >= 0 ? 'text-indigo-700' : 'text-red-700'}`}>{fmt(netBalance)}</span>
-            </div>
-          </div>
-        )}
 
-        {/* 카테고리별 재무상태 */}
-        {bsSections.length > 0 && (
-          <div className="space-y-4">
-            {bsSections.map((section: any) => {
-              const colors = CATEGORY_COLORS[section.category_code] || CATEGORY_COLORS['0']
-              const items: any[] = section.items || []
-              const sectionBalance = section.debit_total - section.credit_total
-              return (
-                <div key={section.category_code} className={`card border ${colors.border}`}>
-                  <div className={`flex items-center justify-between mb-3 pb-2 border-b ${colors.border}`}>
-                    <h3 className={`text-sm font-bold ${colors.text}`}>
-                      {section.category_name}
-                      <span className="text-xs font-normal text-gray-400 ml-2">({items.length}개 계정)</span>
-                    </h3>
-                    <span className={`text-sm font-bold ${sectionBalance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                      {fmt(sectionBalance)}
-                    </span>
-                  </div>
-                  <div className="overflow-x-auto max-h-60 overflow-y-auto">
-                    <table className="table w-full text-sm">
-                      <thead className="table-header sticky top-0">
-                        <tr>
-                          <th className="w-24">코드</th>
-                          <th>계정명</th>
-                          <th className="text-right w-36">차변</th>
-                          <th className="text-right w-36">대변</th>
-                          <th className="text-right w-36">잔액</th>
-                          <th className="text-right w-16">건수</th>
-                        </tr>
-                      </thead>
-                      <tbody className="table-body">
-                        {items.map((item: any) => (
-                          <tr key={item.account_code}>
-                            <td className="text-gray-500 font-mono text-xs">{item.account_code}</td>
-                            <td>{item.account_name}</td>
-                            <td className="amount">{item.debit_total > 0 ? fmt(item.debit_total) : '-'}</td>
-                            <td className="amount">{item.credit_total > 0 ? fmt(item.credit_total) : '-'}</td>
-                            <td className={`amount font-bold ${item.balance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>
-                              {fmt(item.balance)}
+                    {subsections.map((sub: any, si: number) => {
+                      const subItems: any[] = sub.items || []
+                      return (
+                        <SectionGroup key={si}>
+                          {/* 중분류 헤더 */}
+                          <tr className="border-b border-gray-200">
+                            <td className="py-1.5 px-3 pl-6 font-semibold text-gray-800">{sub.name}</td>
+                            <td className="py-1.5 px-3 text-right font-mono font-semibold text-gray-800">
+                              {fmtAmount(sub.total)}
                             </td>
-                            <td className="text-right text-gray-400">{fmtNum(item.tx_count)}</td>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+                          {/* 세부 항목 */}
+                          {subItems.map((item: any, idx: number) => (
+                            <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50">
+                              <td className="py-1 px-3 pl-12 text-gray-600">{item.name}</td>
+                              <td className="py-1 px-3 text-right font-mono text-gray-600">
+                                {item.amount < 0 ? `(${fmtAmount(item.amount)})` : fmtAmount(item.amount)}
+                              </td>
+                            </tr>
+                          ))}
+                        </SectionGroup>
+                      )
+                    })}
+
+                    {/* 대분류 합계 */}
+                    <tr className="border-b-2 border-gray-400 bg-gray-50">
+                      <td className="py-2 px-3 font-bold text-gray-900">
+                        {section.name} 총계
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono font-bold text-gray-900">
+                        {fmtAmount(section.total)}
+                      </td>
+                    </tr>
+                  </SectionGroup>
+                )
+              })}
+
+              {/* 부채+자본 총계 = 자산 총계 검증 */}
+              {bsSections.length > 0 && (
+                <tr className="border-t-2 border-gray-800 bg-blue-50">
+                  <td className="py-2 px-3 font-bold text-blue-800">부채 및 자본 총계</td>
+                  <td className="py-2 px-3 text-right font-mono font-bold text-blue-800">
+                    {fmtAmount(
+                      (balanceData?.total_liabilities ?? 0) + (balanceData?.total_equity ?? 0)
+                    )}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {bsSections.length === 0 && (
+          <div className="text-center py-8 text-gray-400">데이터가 없습니다.</div>
         )}
       </div>
     </div>
   )
+}
+
+function SectionGroup({ children }: { children: React.ReactNode }) {
+  return <>{children}</>
 }
 
 // ============================================================================
@@ -364,28 +328,28 @@ function TrendTab({ uploadId }: { uploadId: number }) {
 
   const trendData = (trend?.data || []).map((m: any) => ({
     month: m.month?.replace(/^\d{4}-0?/, '') + '월',
-    입금: m.debit_total,
-    출금: m.credit_total,
-    순이동: m.net,
+    차변: m.debit_total,
+    대변: m.credit_total,
+    순액: m.net,
     건수: m.tx_count,
   }))
 
-  const totalDebit = trendData.reduce((s: number, m: any) => s + m.입금, 0)
-  const totalCredit = trendData.reduce((s: number, m: any) => s + m.출금, 0)
+  const totalDebit = trendData.reduce((s: number, m: any) => s + m.차변, 0)
+  const totalCredit = trendData.reduce((s: number, m: any) => s + m.대변, 0)
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="card">
-          <p className="text-sm text-gray-500">연간 총 입금</p>
+          <p className="text-sm text-gray-500">연간 총 차변</p>
           <p className="text-xl font-bold text-blue-600">{fmt(totalDebit)}</p>
         </div>
         <div className="card">
-          <p className="text-sm text-gray-500">연간 총 출금</p>
+          <p className="text-sm text-gray-500">연간 총 대변</p>
           <p className="text-xl font-bold text-red-600">{fmt(totalCredit)}</p>
         </div>
         <div className="card">
-          <p className="text-sm text-gray-500">연간 순이동</p>
+          <p className="text-sm text-gray-500">연간 순액</p>
           <p className={`text-xl font-bold ${totalDebit - totalCredit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
             {fmt(totalDebit - totalCredit)}
           </p>
@@ -393,7 +357,7 @@ function TrendTab({ uploadId }: { uploadId: number }) {
       </div>
 
       <div className="card">
-        <h3 className="text-sm font-semibold text-gray-700 mb-4">월별 입금 / 출금</h3>
+        <h3 className="text-sm font-semibold text-gray-700 mb-4">월별 차변 / 대변</h3>
         <div className="h-80">
           {trendData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
@@ -403,8 +367,8 @@ function TrendTab({ uploadId }: { uploadId: number }) {
                 <YAxis fontSize={11} tickFormatter={(v: number) => `${(v / 10000).toFixed(0)}만`} />
                 <Tooltip formatter={(v: number) => fmt(v)} />
                 <Legend />
-                <Bar dataKey="입금" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="출금" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="차변" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="대변" fill="#ef4444" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : <Empty />}
@@ -412,7 +376,7 @@ function TrendTab({ uploadId }: { uploadId: number }) {
       </div>
 
       <div className="card">
-        <h3 className="text-sm font-semibold text-gray-700 mb-4">월별 순이동 추이</h3>
+        <h3 className="text-sm font-semibold text-gray-700 mb-4">월별 순액 추이</h3>
         <div className="h-64">
           {trendData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
@@ -421,7 +385,7 @@ function TrendTab({ uploadId }: { uploadId: number }) {
                 <XAxis dataKey="month" fontSize={12} />
                 <YAxis fontSize={11} tickFormatter={(v: number) => `${(v / 10000).toFixed(0)}만`} />
                 <Tooltip formatter={(v: number) => fmt(v)} />
-                <Line type="monotone" dataKey="순이동" stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="순액" stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} />
               </LineChart>
             </ResponsiveContainer>
           ) : <Empty />}
@@ -434,15 +398,15 @@ function TrendTab({ uploadId }: { uploadId: number }) {
           <div className="overflow-x-auto">
             <table className="table w-full text-sm">
               <thead className="table-header">
-                <tr><th>월</th><th className="text-right">입금</th><th className="text-right">출금</th><th className="text-right">순이동</th><th className="text-right">건수</th></tr>
+                <tr><th>월</th><th className="text-right">차변</th><th className="text-right">대변</th><th className="text-right">순액</th><th className="text-right">건수</th></tr>
               </thead>
               <tbody className="table-body">
                 {trendData.map((m: any, i: number) => (
                   <tr key={i}>
                     <td className="font-medium">{m.month}</td>
-                    <td className="amount text-blue-600">{fmt(m.입금)}</td>
-                    <td className="amount text-red-600">{fmt(m.출금)}</td>
-                    <td className={`amount font-bold ${m.순이동 >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmt(m.순이동)}</td>
+                    <td className="amount text-blue-600">{fmt(m.차변)}</td>
+                    <td className="amount text-red-600">{fmt(m.대변)}</td>
+                    <td className={`amount font-bold ${m.순액 >= 0 ? 'text-green-600' : 'text-red-600'}`}>{fmt(m.순액)}</td>
                     <td className="text-right text-gray-500">{fmtNum(m.건수)}</td>
                   </tr>
                 ))}
@@ -463,7 +427,7 @@ function TrendTab({ uploadId }: { uploadId: number }) {
 }
 
 // ============================================================================
-// Tab 3: 시산표 (카테고리 포함)
+// Tab 3: 시산표 (원장 계정 기준)
 // ============================================================================
 function TrialBalanceTab({ uploadId }: { uploadId: number }) {
   const [search, setSearch] = useState('')
@@ -493,16 +457,31 @@ function TrialBalanceTab({ uploadId }: { uploadId: number }) {
     )
   }, [items, search])
 
+  const CATEGORY_COLORS: Record<string, string> = {
+    '자산': 'bg-green-50 text-green-700',
+    '부채': 'bg-orange-50 text-orange-700',
+    '자본': 'bg-purple-50 text-purple-700',
+    '수익': 'bg-blue-50 text-blue-700',
+    '매출원가': 'bg-red-50 text-red-700',
+    '판관비': 'bg-red-50 text-red-700',
+    '비용': 'bg-red-50 text-red-700',
+    '영업외': 'bg-yellow-50 text-yellow-700',
+  }
+
   // Group by category
   const grouped = useMemo(() => {
     const groups: Record<string, { name: string; items: any[] }> = {}
     for (const item of filtered) {
-      const catCode = item.category_code || '0'
       const catName = item.category_name || '미분류'
-      if (!groups[catCode]) groups[catCode] = { name: catName, items: [] }
-      groups[catCode].items.push(item)
+      if (!groups[catName]) groups[catName] = { name: catName, items: [] }
+      groups[catName].items.push(item)
     }
-    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b))
+    const order = ['자산', '부채', '자본', '수익', '매출원가', '판관비', '비용', '영업외', '미분류']
+    return Object.entries(groups).sort(([a], [b]) => {
+      const ai = order.indexOf(a) === -1 ? 99 : order.indexOf(a)
+      const bi = order.indexOf(b) === -1 ? 99 : order.indexOf(b)
+      return ai - bi
+    })
   }, [filtered])
 
   const totals = useMemo(() =>
@@ -541,11 +520,11 @@ function TrialBalanceTab({ uploadId }: { uploadId: number }) {
                 </tr>
               </thead>
               <tbody className="table-body">
-                {grouped.map(([catCode, group]) => (
-                  <>
-                    <tr key={`cat-${catCode}`} className={`${(CATEGORY_COLORS[catCode] || CATEGORY_COLORS['0']).bg}`}>
-                      <td colSpan={7} className={`font-bold text-xs py-1 ${(CATEGORY_COLORS[catCode] || CATEGORY_COLORS['0']).text}`}>
-                        {group.name}
+                {grouped.map(([catName, group]) => (
+                  <SectionGroup key={catName}>
+                    <tr className={`${CATEGORY_COLORS[catName] || 'bg-gray-50 text-gray-700'}`}>
+                      <td colSpan={7} className="font-bold text-xs py-1">
+                        {group.name} ({group.items.length}개)
                       </td>
                     </tr>
                     {group.items.map((a: any) => (
@@ -560,7 +539,7 @@ function TrialBalanceTab({ uploadId }: { uploadId: number }) {
                         <td className="text-right text-gray-500">{fmtNum(a.tx_count)}</td>
                       </tr>
                     ))}
-                  </>
+                  </SectionGroup>
                 ))}
                 <tr className="bg-gray-100 font-bold border-t-2 border-gray-300">
                   <td colSpan={3} className="text-right">합계</td>

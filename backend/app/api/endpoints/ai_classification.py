@@ -59,6 +59,7 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     rows = []
     current_account_code = None
+    current_account_name = None
     header_row_idx = None
     col_map = {}  # column index -> field name
 
@@ -72,6 +73,7 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
                 match = re.search(r'\[(\d+)\]\s*(.+)', cell_str)
                 if match:
                     current_account_code = match.group(1).strip()
+                    current_account_name = match.group(2).strip()
                     break
 
         # 헤더 행 감지: "날짜" 컬럼 (공백 제거 후 비교)
@@ -164,6 +166,7 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
             "대변": credit_val,
             "날짜": date_val or "",
             "원장계정코드": current_account_code or "",
+            "원장계정명": current_account_name or "",
         })
 
     if not rows:
@@ -421,6 +424,7 @@ async def upload_historical_data(
             '대변': 'credit',
             '날짜': 'date',
             '원장계정코드': 'source_account_code',
+            '원장계정명': 'source_account_name',
         }
 
         df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
@@ -453,7 +457,25 @@ async def upload_historical_data(
         auto_created_count = 0
 
         # ---- Phase A: 모든 고유 계정코드 수집 & 계정 사전 준비 ----
+        # 상대 계정코드 + 원장 계정코드 모두 수집
         unique_codes = df['account_code'].unique().tolist()
+        has_source_code = 'source_account_code' in df.columns
+        has_source_name = 'source_account_name' in df.columns
+        source_name_map = {}
+        if has_source_code:
+            source_codes_unique = df['source_account_code'].dropna().unique().tolist()
+            # 원장 계정명 매핑 (source_account_code → source_account_name)
+            if has_source_name:
+                for _, row in df.drop_duplicates('source_account_code').iterrows():
+                    sc = str(row.get('source_account_code', '')).strip()
+                    sn = str(row.get('source_account_name', '')).strip()
+                    if sc and sn:
+                        source_name_map[sc] = sn
+            # 원장 계정코드도 unique_codes에 합치기
+            for sc in source_codes_unique:
+                sc = str(sc).strip()
+                if sc and sc not in unique_codes:
+                    unique_codes.append(sc)
 
         # 기존 계정 전체 로드 (캐시)
         existing_accounts_result = await db.execute(
@@ -511,18 +533,22 @@ async def upload_historical_data(
                 if code in account_cache:
                     continue
 
-            # 자동 생성
-            descs = desc_patterns.get(code, [])
-            acct_name = f"더존계정 {code}"
-            if descs:
-                word_counter = Counter()
-                for d in descs[:50]:
-                    for w in str(d).split():
-                        w = w.strip()
-                        if len(w) >= 2:
-                            word_counter[w] += 1
-                if word_counter:
-                    acct_name = f"{word_counter.most_common(1)[0][0]} (더존 {code})"
+            # 자동 생성 - 원장 계정명이 있으면 우선 사용
+            acct_name = None
+            if has_source_code and has_source_name and code in source_name_map:
+                acct_name = source_name_map[code]
+            if not acct_name:
+                descs = desc_patterns.get(code, [])
+                acct_name = f"더존계정 {code}"
+                if descs:
+                    word_counter = Counter()
+                    for d in descs[:50]:
+                        for w in str(d).split():
+                            w = w.strip()
+                            if len(w) >= 2:
+                                word_counter[w] += 1
+                    if word_counter:
+                        acct_name = f"{word_counter.most_common(1)[0][0]} (더존 {code})"
 
             account = Account(
                 code=code, name=acct_name,
@@ -557,7 +583,6 @@ async def upload_historical_data(
         has_credit = 'credit' in df.columns
         has_date = 'date' in df.columns
         has_account_name = 'account_name' in df.columns
-        has_source_code = 'source_account_code' in df.columns
 
         for batch_start in range(0, len(rows_list), BATCH_SIZE):
             batch = rows_list[batch_start:batch_start + BATCH_SIZE]
