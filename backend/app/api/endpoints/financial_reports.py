@@ -29,6 +29,102 @@ from app.models.accounting import Account, AccountCategory
 router = APIRouter()
 
 
+# ============ DEBUG (임시 - 데이터 확인 후 삭제) ============
+
+@router.get("/debug-data")
+async def debug_data(
+    upload_id: int = Query(default=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """임시 디버그 - 데이터 상태 확인 (인증 불필요)"""
+    from app.models.ai import AIDataUploadHistory
+
+    # 업로드 이력
+    uploads_result = await db.execute(
+        select(AIDataUploadHistory).order_by(AIDataUploadHistory.id).limit(10)
+    )
+    uploads = [
+        {"id": u.id, "filename": u.filename, "row_count": u.row_count,
+         "saved_count": u.saved_count, "status": str(u.status)}
+        for u in uploads_result.scalars().all()
+    ]
+
+    # 총 행 수
+    total_rows = await db.scalar(
+        select(func.count(AIRawTransactionData.id))
+        .where(AIRawTransactionData.upload_id == upload_id)
+    ) or 0
+
+    # source_account_code 분포
+    source_dist = await db.execute(
+        select(
+            AIRawTransactionData.source_account_code,
+            func.count(AIRawTransactionData.id).label("cnt"),
+        )
+        .where(AIRawTransactionData.upload_id == upload_id)
+        .group_by(AIRawTransactionData.source_account_code)
+        .limit(20)
+    )
+    source_codes = [
+        {"source_account_code": r.source_account_code, "count": r.cnt}
+        for r in source_dist.all()
+    ]
+
+    # account_code 분포
+    acct_dist = await db.execute(
+        select(
+            AIRawTransactionData.account_code,
+            func.count(AIRawTransactionData.id).label("cnt"),
+            func.sum(AIRawTransactionData.debit_amount).label("debit"),
+            func.sum(AIRawTransactionData.credit_amount).label("credit"),
+        )
+        .where(AIRawTransactionData.upload_id == upload_id)
+        .group_by(AIRawTransactionData.account_code)
+        .order_by(AIRawTransactionData.account_code)
+        .limit(30)
+    )
+    account_codes = [
+        {"account_code": r.account_code, "count": r.cnt,
+         "debit": float(r.debit or 0), "credit": float(r.credit or 0)}
+        for r in acct_dist.all()
+    ]
+
+    # 샘플 행
+    sample_result = await db.execute(
+        select(AIRawTransactionData)
+        .where(AIRawTransactionData.upload_id == upload_id)
+        .limit(5)
+    )
+    samples = [
+        {"row": r.row_number, "desc": r.original_description,
+         "account_code": r.account_code, "source_account_code": r.source_account_code,
+         "debit": float(r.debit_amount), "credit": float(r.credit_amount),
+         "date": r.transaction_date, "account_name": r.account_name}
+        for r in sample_result.scalars().all()
+    ]
+
+    # 날짜 샘플
+    date_result = await db.execute(
+        select(func.distinct(AIRawTransactionData.transaction_date))
+        .where(
+            AIRawTransactionData.upload_id == upload_id,
+            AIRawTransactionData.transaction_date.isnot(None),
+        )
+        .limit(10)
+    )
+    dates = [r[0] for r in date_result.all()]
+
+    return {
+        "uploads": uploads,
+        "upload_id_checked": upload_id,
+        "total_rows": total_rows,
+        "source_account_codes": source_codes,
+        "account_codes": account_codes,
+        "sample_rows": samples,
+        "sample_dates": dates,
+    }
+
+
 # ============ Helpers ============
 
 async def _validate_upload(db: AsyncSession, upload_id: int) -> AIDataUploadHistory:
