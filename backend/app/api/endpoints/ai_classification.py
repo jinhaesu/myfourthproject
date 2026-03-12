@@ -412,199 +412,165 @@ async def upload_historical_data(
 
         upload_history.row_count = len(df)
 
-        # Step 3: 학습 데이터 저장 + 원본 데이터 보관
+        # Step 3: 배치 처리로 학습 데이터 저장 + 원본 데이터 보관
+        from collections import Counter
         classifier = AIClassifierService()
         saved_count = 0
         error_count = 0
         auto_created_count = 0
 
-        # 계정 코드 캐시 (동일 코드 반복 조회 방지)
-        account_cache: dict = {}
-        # 매핑 캐시 (source_system + source_code -> Account)
-        mapping_cache: dict = {}
-        # 계정명 패턴 캐시 (code -> list of descriptions for name generation)
-        desc_patterns: dict = {}
+        # ---- Phase A: 모든 고유 계정코드 수집 & 계정 사전 준비 ----
+        unique_codes = df['account_code'].unique().tolist()
 
-        # Pre-load all existing account code mappings for douzone
+        # 기존 계정 전체 로드 (캐시)
+        existing_accounts_result = await db.execute(
+            select(Account).where(Account.is_active == True)
+        )
+        account_cache = {a.code: a for a in existing_accounts_result.scalars().all()}
+
+        # 기존 매핑 로드
         existing_mappings_result = await db.execute(
             select(AccountCodeMapping).where(
                 AccountCodeMapping.source_system == "douzone"
             )
         )
-        for m in existing_mappings_result.scalars().all():
-            mapping_cache[m.source_code] = m
+        mapping_cache = {m.source_code: m for m in existing_mappings_result.scalars().all()}
 
-        # Pre-load default category for auto-created accounts
-        default_category_result = await db.execute(
-            select(AccountCategory).order_by(AccountCategory.id).limit(1)
-        )
-        default_category = default_category_result.scalar_one_or_none()
-        # Build category lookup by code prefix for smarter assignment
+        # 카테고리 로드
         all_categories_result = await db.execute(
             select(AccountCategory).order_by(AccountCategory.code)
         )
         all_categories = {c.code: c for c in all_categories_result.scalars().all()}
+        default_category_id = next(iter(all_categories.values())).id if all_categories else 1
 
-        def _guess_category_id(account_code: str) -> int:
-            """Guess the category based on account code first digit."""
-            if not account_code:
-                return default_category.id if default_category else 1
-            first_digit = account_code[0]
-            # Standard Korean accounting: 1=자산, 2=부채, 3=자본, 4=수익, 5+=비용
-            digit_to_category = {
-                '0': '1', '1': '1',  # assets
-                '2': '2',            # liabilities
-                '3': '3',            # equity
-                '4': '4',            # revenue
-                '5': '5', '6': '5', '7': '5', '8': '5', '9': '5',  # expenses
-            }
-            cat_code = digit_to_category.get(first_digit, '5')
-            if cat_code in all_categories:
-                return all_categories[cat_code].id
-            return default_category.id if default_category else 1
+        def _guess_category_id(code: str) -> int:
+            if not code:
+                return default_category_id
+            digit_map = {'0': '1', '1': '1', '2': '2', '3': '3', '4': '4',
+                         '5': '5', '6': '5', '7': '5', '8': '5', '9': '5'}
+            cat_code = digit_map.get(code[0], '5')
+            return all_categories[cat_code].id if cat_code in all_categories else default_category_id
 
-        def _generate_account_name(code: str, descriptions: list) -> str:
-            """Generate account name from description patterns."""
-            if not descriptions:
-                return f"더존계정 {code}"
-            # Find most common words across descriptions
-            from collections import Counter
-            word_counter = Counter()
-            for desc in descriptions[:50]:  # sample up to 50
-                for word in str(desc).split():
-                    word = word.strip()
-                    if len(word) >= 2:
-                        word_counter[word] += 1
-            if word_counter:
-                top_word = word_counter.most_common(1)[0][0]
-                return f"{top_word} (더존 {code})"
-            return f"더존계정 {code}"
-
-        # First pass: collect description patterns per code for name generation
+        # 누락 계정 코드 일괄 자동 생성
+        desc_patterns: dict = {}
         for _, row in df.iterrows():
             code = row['account_code']
-            desc = row['description']
             if code not in desc_patterns:
                 desc_patterns[code] = []
-            desc_patterns[code].append(desc)
+            desc_patterns[code].append(row['description'])
 
-        for row_idx, (_, row) in enumerate(df.iterrows(), start=1):
-            # 원본 데이터 레코드 생성
-            raw_record = AIRawTransactionData(
-                upload_id=upload_history.id,
-                row_number=row_idx,
-                original_description=row['description'],
-                merchant_name=row.get('merchant_name', ''),
-                amount=Decimal(str(row.get('amount', 0))),
-                debit_amount=Decimal(str(row.get('debit', 0))) if 'debit' in df.columns and pd.notna(row.get('debit')) else Decimal("0"),
-                credit_amount=Decimal(str(row.get('credit', 0))) if 'credit' in df.columns and pd.notna(row.get('credit')) else Decimal("0"),
-                transaction_date=str(row.get('date', '')) if 'date' in df.columns and pd.notna(row.get('date')) else None,
-                account_code=row['account_code'],
-                account_name=row.get('account_name', '') if 'account_name' in df.columns else None,
-                source_account_code=str(row.get('source_account_code', '')) if 'source_account_code' in df.columns and pd.notna(row.get('source_account_code')) else None,
+        for code in unique_codes:
+            code = str(code).strip()
+            if code in account_cache:
+                continue
+            # zero-padded 체크
+            code_padded = code.zfill(6)
+            if code_padded in account_cache:
+                account_cache[code] = account_cache[code_padded]
+                continue
+            # 매핑 체크
+            if code in mapping_cache and mapping_cache[code].target_account_id:
+                mapped_id = mapping_cache[code].target_account_id
+                for a in account_cache.values():
+                    if a.id == mapped_id:
+                        account_cache[code] = a
+                        break
+                if code in account_cache:
+                    continue
+
+            # 자동 생성
+            descs = desc_patterns.get(code, [])
+            acct_name = f"더존계정 {code}"
+            if descs:
+                word_counter = Counter()
+                for d in descs[:50]:
+                    for w in str(d).split():
+                        w = w.strip()
+                        if len(w) >= 2:
+                            word_counter[w] += 1
+                if word_counter:
+                    acct_name = f"{word_counter.most_common(1)[0][0]} (더존 {code})"
+
+            account = Account(
+                code=code, name=acct_name,
+                category_id=_guess_category_id(code),
+                level=1, is_detail=True,
+                is_vat_applicable=True, vat_rate=Decimal("10.00"), is_active=True,
             )
-            db.add(raw_record)
+            db.add(account)
+            await db.flush()
+            account_cache[code] = account
 
-            try:
-                code = row['account_code']
+            if code not in mapping_cache:
+                new_mapping = AccountCodeMapping(
+                    source_system="douzone", source_code=code,
+                    source_name=acct_name,
+                    target_account_id=account.id,
+                    target_account_code=account.code,
+                    is_auto_created=True,
+                )
+                db.add(new_mapping)
+                mapping_cache[code] = new_mapping
 
-                # Step A: 캐시에서 계정 조회
-                if code not in account_cache:
-                    account_result = await db.execute(
-                        select(Account).where(Account.code == code)
-                    )
-                    account = account_result.scalar_one_or_none()
+            auto_created_count += 1
 
-                    if not account:
-                        code_padded = str(code).zfill(6)
-                        account_result = await db.execute(
-                            select(Account).where(Account.code == code_padded)
-                        )
-                        account = account_result.scalar_one_or_none()
+        # 계정 생성 커밋
+        await db.flush()
 
-                    # Step B: 매핑 테이블에서 조회
-                    if not account and code in mapping_cache:
-                        mapping = mapping_cache[code]
-                        if mapping.target_account_id:
-                            account_result = await db.execute(
-                                select(Account).where(
-                                    Account.id == mapping.target_account_id
-                                )
-                            )
-                            account = account_result.scalar_one_or_none()
+        # ---- Phase B: 원본 데이터 + 학습 데이터 배치 삽입 ----
+        BATCH_SIZE = 500
+        rows_list = df.to_dict('records')
+        has_debit = 'debit' in df.columns
+        has_credit = 'credit' in df.columns
+        has_date = 'date' in df.columns
+        has_account_name = 'account_name' in df.columns
+        has_source_code = 'source_account_code' in df.columns
 
-                    # Step C: 계정이 없으면 자동 생성 + 매핑 기록
-                    if not account:
-                        # 계정명 결정: 엑셀의 account_name 또는 패턴 기반 생성
-                        acct_name = None
-                        if 'account_name' in df.columns and pd.notna(row.get('account_name')):
-                            acct_name = str(row['account_name']).strip()
-                        if not acct_name or acct_name == '':
-                            acct_name = _generate_account_name(
-                                code, desc_patterns.get(code, [])
-                            )
+        for batch_start in range(0, len(rows_list), BATCH_SIZE):
+            batch = rows_list[batch_start:batch_start + BATCH_SIZE]
 
-                        category_id = _guess_category_id(code)
+            for i, row in enumerate(batch):
+                row_idx = batch_start + i + 1
+                code = str(row['account_code']).strip()
 
-                        account = Account(
-                            code=code,
-                            name=acct_name,
-                            category_id=category_id,
-                            level=1,
-                            is_detail=True,
-                            is_vat_applicable=True,
-                            vat_rate=Decimal("10.00"),
-                            is_active=True,
-                        )
-                        db.add(account)
-                        await db.flush()  # get account.id
+                # 원본 데이터
+                raw_record = AIRawTransactionData(
+                    upload_id=upload_history.id,
+                    row_number=row_idx,
+                    original_description=row['description'],
+                    merchant_name=row.get('merchant_name', '') or '',
+                    amount=Decimal(str(row.get('amount', 0))),
+                    debit_amount=Decimal(str(row['debit'])) if has_debit and pd.notna(row.get('debit')) else Decimal("0"),
+                    credit_amount=Decimal(str(row['credit'])) if has_credit and pd.notna(row.get('credit')) else Decimal("0"),
+                    transaction_date=str(row['date']) if has_date and pd.notna(row.get('date')) else None,
+                    account_code=code,
+                    account_name=str(row['account_name']).strip() if has_account_name and pd.notna(row.get('account_name')) else None,
+                    source_account_code=str(row['source_account_code']) if has_source_code and pd.notna(row.get('source_account_code')) else None,
+                )
+                db.add(raw_record)
 
-                        # 매핑 기록
-                        if code not in mapping_cache:
-                            new_mapping = AccountCodeMapping(
-                                source_system="douzone",
-                                source_code=code,
-                                source_name=acct_name,
-                                target_account_id=account.id,
-                                target_account_code=account.code,
-                                is_auto_created=True,
-                            )
-                            db.add(new_mapping)
-                            mapping_cache[code] = new_mapping
-
-                        auto_created_count += 1
-
-                    account_cache[code] = account
-                else:
-                    account = account_cache[code]
-
+                account = account_cache.get(code)
                 if account:
                     training_data = AITrainingData(
                         description_tokens=classifier._preprocess_text(
-                            row['description'],
-                            row.get('merchant_name', '')
+                            row['description'], row.get('merchant_name', '') or ''
                         ),
-                        merchant_name=row.get('merchant_name', ''),
-                        amount_range=classifier._get_amount_range(Decimal(str(row['amount']))),
+                        merchant_name=row.get('merchant_name', '') or '',
+                        amount_range=classifier._get_amount_range(Decimal(str(row.get('amount', 0)))),
                         account_id=account.id,
                         account_code=account.code,
                         source_type="historical",
                         dataset_version="douzone_import",
                         sample_weight=Decimal("1.0"),
-                        is_active=True
+                        is_active=True,
                     )
                     db.add(training_data)
-                    await db.flush()
-
-                    # 원본 데이터에 학습 데이터 ID 연결
-                    raw_record.training_data_id = training_data.id
                     saved_count += 1
                 else:
                     error_count += 1
 
-            except Exception:
-                error_count += 1
-                continue
+            # 배치 단위로 flush
+            await db.flush()
 
         # Step 4: 업로드 이력 완료 처리
         upload_history.saved_count = saved_count
