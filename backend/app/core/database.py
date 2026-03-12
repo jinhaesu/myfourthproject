@@ -38,7 +38,13 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-logger.info(f"Database URL scheme: {DATABASE_URL.split('://')[0] if '://' in DATABASE_URL else 'unknown'}")
+# 디버그: DB URL 정보 출력 (비밀번호 마스킹)
+try:
+    _parts = DATABASE_URL.split("@")
+    _host_info = _parts[-1] if len(_parts) > 1 else "unknown"
+    logger.info(f"Database URL scheme: {DATABASE_URL.split('://')[0]}, host: {_host_info}")
+except Exception:
+    logger.info(f"Database URL scheme: {DATABASE_URL.split('://')[0] if '://' in DATABASE_URL else 'unknown'}")
 
 # Create async engine
 engine: Optional[any] = None
