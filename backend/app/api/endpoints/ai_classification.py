@@ -30,16 +30,32 @@ router = APIRouter(prefix="/ai-classification", tags=["AI 분류"])
 
 def _is_account_ledger_format(df_raw: pd.DataFrame) -> bool:
     """더존/ERP '계정별 원장' 양식인지 감지"""
-    if df_raw.shape[0] < 8:
+    import re
+    if df_raw.shape[0] < 3:
         return False
-    # 첫 몇 행의 모든 셀에서 "계정별 원장" 패턴 검색 (공백 제거 후)
-    for r in range(min(3, df_raw.shape[0])):
+    # 1차: 첫 8행에서 "계정별 원장" 텍스트 검색 (공백 제거 후)
+    for r in range(min(8, df_raw.shape[0])):
         for c in range(df_raw.shape[1]):
             cell = df_raw.iloc[r, c]
             if pd.notna(cell):
                 normalized = str(cell).replace(" ", "").strip()
                 if "계정별" in normalized and "원장" in normalized:
                     return True
+    # 2차: [코드] 계정명 패턴 + 날짜/차변/대변 헤더가 있으면 원장으로 판단
+    has_account_header = False
+    has_table_header = False
+    for r in range(min(15, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                cell_str = str(cell).strip()
+                if re.search(r'\[\d{1,6}\]\s*.+', cell_str):
+                    has_account_header = True
+                normalized = cell_str.replace(" ", "")
+                if normalized == "날짜":
+                    has_table_header = True
+        if has_account_header and has_table_header:
+            return True
     return False
 
 
@@ -418,12 +434,17 @@ async def upload_historical_data(
 
             ledger_dfs = []
             normal_dfs = []
+            sheet_errors = []
             for sheet_name, df_raw in all_sheets.items():
                 if df_raw.shape[0] < 2:
                     continue
                 if _is_account_ledger_format(df_raw):
                     is_ledger_format = True
-                    ledger_dfs.append(_parse_account_ledger(df_raw))
+                    try:
+                        parsed = _parse_account_ledger(df_raw)
+                        ledger_dfs.append(parsed)
+                    except Exception as e:
+                        sheet_errors.append(f"시트 '{sheet_name}': {str(e)[:100]}")
                 else:
                     normal_dfs.append(pd.read_excel(
                         io.BytesIO(content), engine=engine, sheet_name=sheet_name
@@ -434,7 +455,10 @@ async def upload_historical_data(
             elif normal_dfs:
                 df = pd.concat(normal_dfs, ignore_index=True)
             else:
-                raise HTTPException(status_code=400, detail="유효한 데이터가 있는 시트를 찾을 수 없습니다.")
+                error_detail = "유효한 데이터가 있는 시트를 찾을 수 없습니다."
+                if sheet_errors:
+                    error_detail += " 오류: " + "; ".join(sheet_errors)
+                raise HTTPException(status_code=400, detail=error_detail)
 
         # 컬럼명 정규화
         column_mapping = {
@@ -670,15 +694,33 @@ async def upload_historical_data(
 
         await db.commit()
 
-        return {
+        is_csv = file.filename.endswith('.csv')
+        if is_csv:
+            total_sheets = 1
+            sheets_processed = 1
+        else:
+            total_sheets = len(all_sheets)
+            sheets_processed = len(ledger_dfs) if is_ledger_format else len(normal_dfs)
+
+        result_msg = f"{saved_count}개의 학습 데이터가 저장되었습니다. (원본 {len(df)}건 보관, 자동생성 계정 {auto_created_count}개"
+        if total_sheets > 1:
+            result_msg += f", {total_sheets}개 시트 중 {sheets_processed}개 처리"
+        result_msg += ")"
+
+        response = {
             "status": "success",
             "upload_id": upload_history.id,
             "total_rows": len(df),
             "saved_count": saved_count,
             "error_count": error_count,
             "auto_created_accounts": auto_created_count,
-            "message": f"{saved_count}개의 학습 데이터가 저장되었습니다. (원본 {len(df)}건 보관, 자동생성 계정 {auto_created_count}개)"
+            "sheets_total": total_sheets,
+            "sheets_processed": sheets_processed,
+            "message": result_msg,
         }
+        if not is_csv and sheet_errors:
+            response["sheet_errors"] = sheet_errors
+        return response
 
     except HTTPException:
         upload_history.status = UploadStatus.FAILED
