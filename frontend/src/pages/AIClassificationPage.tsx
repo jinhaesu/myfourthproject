@@ -129,7 +129,7 @@ export default function AIClassificationPage() {
   // Upload progress state
   const [uploadProgress, setUploadProgress] = useState<string | null>(null)
 
-  // Handle historical data upload - 3단계: 파싱 → 계정준비 → 배치전송
+  // Handle historical data upload - 파싱 → 배치전송 (계정 생성 없이 raw INSERT만)
   const handleUploadHistorical = async () => {
     if (!uploadFile) {
       showMessage('error', '파일을 선택해주세요.')
@@ -139,7 +139,6 @@ export default function AIClassificationPage() {
     setUploadProgress('파일 파싱 중...')
 
     try {
-      // Step 1: 브라우저에서 엑셀 파싱
       const { rows, sheetCount, sheetsProcessed } = await parseExcelForUpload(uploadFile)
 
       if (rows.length === 0) {
@@ -149,51 +148,26 @@ export default function AIClassificationPage() {
         return
       }
 
-      // 고유 계정코드 + 소스명 수집
-      const allCodes = new Set<string>()
-      const sourceNames: Record<string, string> = {}
-      for (const r of rows) {
-        allCodes.add(r.account_code)
-        if (r.source_account_code) {
-          allCodes.add(r.source_account_code)
-          if (r.source_account_name) sourceNames[r.source_account_code] = r.source_account_name
-        }
-      }
-
       const BATCH_SIZE = 500
       const totalBatches = Math.ceil(rows.length / BATCH_SIZE)
-
-      // Step 2: 서버에 업로드 준비 (계정 생성 - 가벼운 요청)
-      setUploadProgress(`${rows.length.toLocaleString()}행 파싱 완료. 계정 준비 중...`)
-      console.log(`[Upload] 준비 요청: ${allCodes.size}개 계정코드`)
-
-      const prepareRes = await aiClassificationApi.prepareUpload({
-        filename: uploadFile.name,
-        file_size: uploadFile.size,
-        total_rows: rows.length,
-        total_batches: totalBatches,
-        account_codes: Array.from(allCodes),
-        source_names: sourceNames,
-      })
-
-      const uploadId = prepareRes.data.upload_id
-      console.log(`[Upload] 준비 완료: upload_id=${uploadId}, 계정 ${prepareRes.data.auto_created_accounts}개 생성`)
-
-      // Step 3: 500행씩 배치 전송 (순수 INSERT만)
+      let uploadId: number | null = null
       let totalSaved = 0
+
+      setUploadProgress(`${rows.length.toLocaleString()}행 파싱 완료. 전송 시작...`)
+      console.log(`[Upload] ${rows.length}행, ${totalBatches}배치`)
 
       for (let i = 0; i < totalBatches; i++) {
         const batch = rows.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE)
         let success = false
 
-        // 실패 시 최대 3회 재시도
         for (let retry = 0; retry < 3 && !success; retry++) {
           try {
             if (retry > 0) {
               console.log(`[Upload] 배치 ${i+1} 재시도 ${retry}/3`)
-              await new Promise(r => setTimeout(r, 1000 * retry))
+              await new Promise(r => setTimeout(r, 2000 * retry))
             }
 
+            const t0 = Date.now()
             const response = await aiClassificationApi.uploadHistoricalBatch({
               upload_id: uploadId,
               filename: uploadFile.name,
@@ -203,12 +177,14 @@ export default function AIClassificationPage() {
               total_rows: rows.length,
               rows: batch,
             })
+            console.log(`[Upload] 배치 ${i+1}/${totalBatches} OK (${((Date.now()-t0)/1000).toFixed(1)}s)`)
 
+            if (i === 0) uploadId = response.data.upload_id
             totalSaved += response.data.saved_count || 0
             success = true
-          } catch (batchErr: any) {
-            console.error(`[Upload] 배치 ${i+1} 실패 (시도 ${retry+1}/3):`, batchErr.message)
-            if (retry === 2) throw batchErr  // 3번 다 실패하면 에러
+          } catch (err: any) {
+            console.error(`[Upload] 배치 ${i+1} 실패 (${retry+1}/3):`, err.message)
+            if (retry === 2) throw err
           }
         }
 
@@ -223,9 +199,8 @@ export default function AIClassificationPage() {
       refreshData()
 
     } catch (error: any) {
-      console.error('[Upload] 오류:', error)
+      console.error('[Upload] 최종 오류:', error)
       const detail = error.response?.data?.detail || error.message || '알 수 없는 오류'
-      // 에러는 progress 영역에 유지 (사라지지 않음)
       setUploadProgress(`업로드 실패: ${detail}`)
       showMessage('error', `업로드 오류: ${detail}`)
     } finally {

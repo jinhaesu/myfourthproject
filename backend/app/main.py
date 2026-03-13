@@ -146,7 +146,7 @@ async def health_check():
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "deploy": "batch-fast-v4"
+        "deploy": "ultra-light-v5"
     }
 
 
@@ -157,7 +157,7 @@ async def api_health_check():
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "deploy": "batch-fast-v4"
+        "deploy": "ultra-light-v5"
     }
 
 

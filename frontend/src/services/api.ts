@@ -423,15 +423,6 @@ export const aiClassificationApi = {
     }>
   }) => api.post('/ai-classification/upload-historical-batch', data, { timeout: 120000 }),
 
-  // 업로드 준비 (계정 사전 생성)
-  prepareUpload: (data: {
-    filename: string
-    file_size: number
-    total_rows: number
-    total_batches: number
-    account_codes: string[]
-    source_names?: Record<string, string>
-  }) => api.post('/ai-classification/prepare-upload', data, { timeout: 120000 }),
 }
 
 // Sales Automation API

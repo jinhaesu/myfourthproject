@@ -60,8 +60,10 @@ try:
     else:
         engine = create_async_engine(
             DATABASE_URL,
-            pool_size=5,
-            max_overflow=10,
+            pool_size=3,
+            max_overflow=5,
+            pool_pre_ping=True,
+            pool_recycle=300,
             echo=False,
             future=True
         )
