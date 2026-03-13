@@ -30,8 +30,9 @@ from app.services.ai_classifier import AIClassifierService
 
 router = APIRouter(prefix="/ai-classification", tags=["AI 분류"])
 
-# 백그라운드 태스크 참조 보관 (GC 방지)
+# 백그라운드 태스크 참조 보관 (GC 방지) + 동시 업로드 제한
 _background_tasks: set = set()
+_MAX_CONCURRENT_UPLOADS = 1
 
 
 # ============ 계정별 원장 파싱 헬퍼 ============
@@ -756,6 +757,29 @@ async def upload_historical_data(
     from app.models.ai import AIDataUploadHistory, UploadStatus
 
     try:
+        # 동시 업로드 제한
+        active_tasks = len(_background_tasks)
+        if active_tasks >= _MAX_CONCURRENT_UPLOADS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"현재 {active_tasks}개 업로드가 처리 중입니다. 완료 후 다시 시도해주세요."
+            )
+
+        # 이전 PROCESSING 상태 업로드 정리 (10분 이상 지난 것)
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(minutes=10)
+        stale_result = await db.execute(
+            select(AIDataUploadHistory).where(
+                AIDataUploadHistory.status == UploadStatus.PROCESSING,
+                AIDataUploadHistory.created_at < cutoff
+            )
+        )
+        for stale in stale_result.scalars().all():
+            stale.status = UploadStatus.FAILED
+            stale.error_message = "시간 초과로 자동 정리됨"
+            logger.info(f"[Upload] 오래된 PROCESSING 업로드 정리: ID={stale.id}")
+        await db.flush()
+
         content = await file.read()
         logger.info(f"[Upload] 파일 읽기 완료: {file.filename} ({len(content)} bytes)")
 
