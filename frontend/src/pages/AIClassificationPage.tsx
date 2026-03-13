@@ -124,6 +124,43 @@ export default function AIClassificationPage() {
     queryClient.invalidateQueries({ queryKey: ['financialUploadHistory'] })
   }
 
+  // Upload progress state
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null)
+
+  // Poll upload status until complete
+  const pollUploadStatus = async (uploadId: number) => {
+    const maxAttempts = 300 // 10분 (2초 간격)
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      try {
+        const res = await aiClassificationApi.getUploadStatus(uploadId)
+        const data = res.data
+        if (data.status === 'completed') {
+          setUploadResult(data)
+          setUploadProgress(null)
+          showMessage('success', `업로드 완료! ${data.saved_count?.toLocaleString()}건 저장됨`)
+          setUploadFile(null)
+          setLoading(false)
+          refreshData()
+          return
+        } else if (data.status === 'failed') {
+          setUploadProgress(null)
+          showMessage('error', data.error_message || '업로드 처리 실패')
+          setLoading(false)
+          refreshData()
+          return
+        }
+        // still processing
+        setUploadProgress(`처리 중... (${data.row_count ? data.row_count.toLocaleString() + '행' : '파싱 중'})`)
+      } catch {
+        // network error during poll - keep trying
+      }
+    }
+    setUploadProgress(null)
+    showMessage('error', '업로드 처리 시간 초과')
+    setLoading(false)
+  }
+
   // Handle historical data upload
   const handleUploadHistorical = async () => {
     if (!uploadFile) {
@@ -131,15 +168,24 @@ export default function AIClassificationPage() {
       return
     }
     setLoading(true)
+    setUploadProgress('파일 전송 중...')
     try {
       const response = await aiClassificationApi.uploadHistorical(uploadFile)
-      setUploadResult(response.data)
-      showMessage('success', response.data.message)
-      setUploadFile(null)
-      refreshData()
+      if (response.data.status === 'processing' && response.data.upload_id) {
+        setUploadProgress('서버에서 처리 중...')
+        pollUploadStatus(response.data.upload_id)
+      } else {
+        // 즉시 완료 (소규모 파일)
+        setUploadResult(response.data)
+        showMessage('success', response.data.message)
+        setUploadFile(null)
+        setUploadProgress(null)
+        setLoading(false)
+        refreshData()
+      }
     } catch (error: any) {
       showMessage('error', error.response?.data?.detail || '업로드 실패')
-    } finally {
+      setUploadProgress(null)
       setLoading(false)
     }
   }
@@ -495,6 +541,15 @@ export default function AIClassificationPage() {
               >
                 {loading ? '업로드 중...' : '데이터 업로드'}
               </button>
+              {uploadProgress && (
+                <div className="mt-3 flex items-center gap-2 text-sm text-blue-700">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>{uploadProgress}</span>
+                </div>
+              )}
             </div>
 
             {uploadResult && (

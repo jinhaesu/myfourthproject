@@ -2,9 +2,11 @@
 Smart Finance Core - AI 계정 분류 API
 더존 과거 데이터 학습 및 자동 분류 기능
 """
+import asyncio
 import json
 import io
 import logging
+import traceback
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
@@ -19,7 +21,7 @@ from sqlalchemy import case as sa_case
 
 logger = logging.getLogger(__name__)
 
-from app.core.database import get_db
+from app.core.database import get_db, async_session_factory
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.accounting import Account, AccountCategory, AccountCodeMapping
@@ -389,6 +391,322 @@ async def get_account_list(
     ]
 
 
+async def _process_upload_background(upload_id: int, content: bytes, filename: str, user_id: int):
+    """백그라운드에서 대용량 파일 처리 (자체 DB 세션 사용)"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
+    from sqlalchemy import insert as sa_insert
+    from collections import Counter
+
+    logger.info(f"[BG Upload {upload_id}] 백그라운드 처리 시작: {filename} ({len(content)} bytes)")
+
+    async with async_session_factory() as db:
+        try:
+            # 업로드 이력 로드
+            upload_history = await db.get(AIDataUploadHistory, upload_id)
+            if not upload_history:
+                logger.error(f"[BG Upload {upload_id}] 업로드 이력을 찾을 수 없음")
+                return
+
+            # 파일 파싱 (멀티 시트 지원)
+            is_ledger_format = False
+            all_sheets = None
+            ledger_dfs = []
+            normal_dfs = []
+            sheet_errors = []
+
+            if filename.endswith('.csv'):
+                df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
+            else:
+                engine = 'xlrd' if filename.endswith('.xls') else 'openpyxl'
+                all_sheets = pd.read_excel(io.BytesIO(content), header=None, engine=engine, sheet_name=None)
+                logger.info(f"[BG Upload {upload_id}] 시트 수: {len(all_sheets)}")
+
+                for sheet_name, df_raw in all_sheets.items():
+                    if df_raw.shape[0] < 2:
+                        continue
+                    if _is_account_ledger_format(df_raw):
+                        is_ledger_format = True
+                        try:
+                            parsed = _parse_account_ledger(df_raw)
+                            ledger_dfs.append(parsed)
+                        except Exception as e:
+                            sheet_errors.append(f"시트 '{sheet_name}': {str(e)[:100]}")
+                    else:
+                        normal_dfs.append(pd.read_excel(
+                            io.BytesIO(content), engine=engine, sheet_name=sheet_name
+                        ))
+
+                if ledger_dfs:
+                    df = pd.concat(ledger_dfs, ignore_index=True)
+                elif normal_dfs:
+                    df = pd.concat(normal_dfs, ignore_index=True)
+                else:
+                    error_detail = "유효한 데이터가 있는 시트를 찾을 수 없습니다."
+                    if sheet_errors:
+                        error_detail += " 오류: " + "; ".join(sheet_errors)
+                    upload_history.status = UploadStatus.FAILED
+                    upload_history.error_message = error_detail[:500]
+                    await db.commit()
+                    return
+
+            # 컬럼명 정규화
+            column_mapping = {
+                '적요': 'description', '적요란': 'description',
+                '거래내역': 'description', '내역': 'description',
+                '거래처명': 'merchant_name', '거래처': 'merchant_name',
+                '가맹점': 'merchant_name',
+                '금액': 'amount', '거래금액': 'amount',
+                '계정과목코드': 'account_code', '계정코드': 'account_code',
+                '계정과목': 'account_code', '코드': 'account_code',
+                '계정과목명': 'account_name', '계정명': 'account_name',
+                '차변': 'debit', '대변': 'credit', '날짜': 'date',
+                '원장계정코드': 'source_account_code', '원장계정명': 'source_account_name',
+            }
+
+            original_columns = list(df.columns)
+            df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
+            logger.info(f"[BG Upload {upload_id}] 컬럼: {original_columns} → {list(df.columns)}, 행수(정제전): {len(df)}")
+
+            if 'description' not in df.columns:
+                upload_history.status = UploadStatus.FAILED
+                upload_history.error_message = f"'적요' 컬럼 없음. 현재 컬럼: {original_columns}"
+                await db.commit()
+                return
+            if 'account_code' not in df.columns:
+                upload_history.status = UploadStatus.FAILED
+                upload_history.error_message = f"'계정과목코드' 컬럼 없음. 현재 컬럼: {original_columns}"
+                await db.commit()
+                return
+
+            # 데이터 정제
+            pre_drop = len(df)
+            df = df.dropna(subset=['description', 'account_code'])
+            logger.info(f"[BG Upload {upload_id}] dropna: {pre_drop} → {len(df)} 행")
+            df['description'] = df['description'].astype(str).str.strip()
+            df['account_code'] = df['account_code'].astype(str).str.strip()
+
+            if 'merchant_name' in df.columns:
+                df['merchant_name'] = df['merchant_name'].fillna('').astype(str).str.strip()
+            if 'amount' in df.columns:
+                df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+            else:
+                df['amount'] = 0
+
+            upload_history.row_count = len(df)
+            await db.flush()
+
+            # Phase A: 계정코드 준비
+            classifier = AIClassifierService()
+            saved_count = 0
+            error_count = 0
+            auto_created_count = 0
+
+            unique_codes = df['account_code'].unique().tolist()
+            has_source_code = 'source_account_code' in df.columns
+            has_source_name = 'source_account_name' in df.columns
+            source_name_map = {}
+            if has_source_code:
+                source_codes_unique = df['source_account_code'].dropna().unique().tolist()
+                if has_source_name:
+                    for _, row in df.drop_duplicates('source_account_code').iterrows():
+                        sc = str(row.get('source_account_code', '')).strip()
+                        sn = str(row.get('source_account_name', '')).strip()
+                        if sc and sn:
+                            source_name_map[sc] = sn
+                for sc in source_codes_unique:
+                    sc = str(sc).strip()
+                    if sc and sc not in unique_codes:
+                        unique_codes.append(sc)
+
+            existing_accounts_result = await db.execute(
+                select(Account).where(Account.is_active == True)
+            )
+            account_cache = {a.code: a for a in existing_accounts_result.scalars().all()}
+
+            existing_mappings_result = await db.execute(
+                select(AccountCodeMapping).where(AccountCodeMapping.source_system == "douzone")
+            )
+            mapping_cache = {m.source_code: m for m in existing_mappings_result.scalars().all()}
+
+            all_categories_result = await db.execute(
+                select(AccountCategory).order_by(AccountCategory.code)
+            )
+            all_categories = {c.code: c for c in all_categories_result.scalars().all()}
+            default_category_id = next(iter(all_categories.values())).id if all_categories else 1
+
+            def _guess_category_id(code: str) -> int:
+                if not code:
+                    return default_category_id
+                digit_map = {'0': '1', '1': '1', '2': '2', '3': '3', '4': '4',
+                             '5': '5', '6': '5', '7': '5', '8': '5', '9': '5'}
+                cat_code = digit_map.get(code[0], '5')
+                return all_categories[cat_code].id if cat_code in all_categories else default_category_id
+
+            desc_patterns: dict = {}
+            for _, row in df.iterrows():
+                code = row['account_code']
+                if code not in desc_patterns:
+                    desc_patterns[code] = []
+                desc_patterns[code].append(row['description'])
+
+            for code in unique_codes:
+                code = str(code).strip()
+                if code in account_cache:
+                    continue
+                code_padded = code.zfill(6)
+                if code_padded in account_cache:
+                    account_cache[code] = account_cache[code_padded]
+                    continue
+                if code in mapping_cache and mapping_cache[code].target_account_id:
+                    mapped_id = mapping_cache[code].target_account_id
+                    for a in account_cache.values():
+                        if a.id == mapped_id:
+                            account_cache[code] = a
+                            break
+                    if code in account_cache:
+                        continue
+
+                acct_name = None
+                if has_source_code and has_source_name and code in source_name_map:
+                    acct_name = source_name_map[code]
+                if not acct_name:
+                    descs = desc_patterns.get(code, [])
+                    acct_name = f"더존계정 {code}"
+                    if descs:
+                        word_counter = Counter()
+                        for d in descs[:50]:
+                            for w in str(d).split():
+                                w = w.strip()
+                                if len(w) >= 2:
+                                    word_counter[w] += 1
+                        if word_counter:
+                            acct_name = f"{word_counter.most_common(1)[0][0]} (더존 {code})"
+
+                account = Account(
+                    code=code, name=acct_name,
+                    category_id=_guess_category_id(code),
+                    level=1, is_detail=True,
+                    is_vat_applicable=True, vat_rate=Decimal("10.00"), is_active=True,
+                )
+                db.add(account)
+                await db.flush()
+                account_cache[code] = account
+
+                if code not in mapping_cache:
+                    new_mapping = AccountCodeMapping(
+                        source_system="douzone", source_code=code,
+                        source_name=acct_name,
+                        target_account_id=account.id,
+                        target_account_code=account.code,
+                        is_auto_created=True,
+                    )
+                    db.add(new_mapping)
+                    mapping_cache[code] = new_mapping
+
+                auto_created_count += 1
+
+            await db.flush()
+
+            # Phase B: Bulk Insert
+            BATCH_SIZE = 2000
+            rows_list = df.to_dict('records')
+            has_debit = 'debit' in df.columns
+            has_credit = 'credit' in df.columns
+            has_date = 'date' in df.columns
+            has_account_name = 'account_name' in df.columns
+
+            logger.info(f"[BG Upload {upload_id}] Phase B: {len(rows_list)}행, batch={BATCH_SIZE}")
+
+            for batch_start in range(0, len(rows_list), BATCH_SIZE):
+                batch = rows_list[batch_start:batch_start + BATCH_SIZE]
+                raw_bulk = []
+                training_bulk = []
+
+                for i, row in enumerate(batch):
+                    row_idx = batch_start + i + 1
+                    code = str(row['account_code']).strip()[:20]
+                    desc_val = str(row['description'])[:500]
+                    merchant_val = str(row.get('merchant_name', '') or '')[:200]
+
+                    raw_bulk.append({
+                        "upload_id": upload_id,
+                        "row_number": row_idx,
+                        "original_description": desc_val,
+                        "merchant_name": merchant_val,
+                        "amount": float(row.get('amount', 0)),
+                        "debit_amount": float(row['debit']) if has_debit and pd.notna(row.get('debit')) else 0.0,
+                        "credit_amount": float(row['credit']) if has_credit and pd.notna(row.get('credit')) else 0.0,
+                        "transaction_date": str(row['date']) if has_date and pd.notna(row.get('date')) else None,
+                        "account_code": code,
+                        "account_name": str(row['account_name']).strip()[:100] if has_account_name and pd.notna(row.get('account_name')) else None,
+                        "source_account_code": str(row['source_account_code'])[:20] if has_source_code and pd.notna(row.get('source_account_code')) else None,
+                    })
+
+                    account = account_cache.get(code)
+                    if account:
+                        training_bulk.append({
+                            "description_tokens": classifier._preprocess_text(
+                                row['description'], row.get('merchant_name', '') or ''
+                            ),
+                            "merchant_name": merchant_val,
+                            "amount_range": classifier._get_amount_range(Decimal(str(row.get('amount', 0)))),
+                            "account_id": account.id,
+                            "account_code": account.code,
+                            "source_type": "historical",
+                            "dataset_version": "douzone_import",
+                            "sample_weight": 1.0,
+                            "is_active": True,
+                        })
+                        saved_count += 1
+                    else:
+                        error_count += 1
+
+                if raw_bulk:
+                    await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
+                if training_bulk:
+                    await db.execute(sa_insert(AITrainingData), training_bulk)
+                await db.flush()
+
+                if batch_start % 10000 == 0:
+                    logger.info(f"[BG Upload {upload_id}] 진행: {batch_start + len(batch)}/{len(rows_list)}")
+
+            # 완료 처리
+            upload_history.saved_count = saved_count
+            upload_history.error_count = error_count
+            upload_history.status = UploadStatus.COMPLETED
+
+            is_csv = filename.endswith('.csv')
+            if is_csv:
+                total_sheets = 1
+                sheets_processed = 1
+            else:
+                total_sheets = len(all_sheets) if all_sheets else 1
+                sheets_processed = len(ledger_dfs) if is_ledger_format else len(normal_dfs)
+
+            result_msg = f"{saved_count}개 학습 데이터 저장 (원본 {len(df)}건, 자동생성 계정 {auto_created_count}개"
+            if total_sheets > 1:
+                result_msg += f", {total_sheets}개 시트 중 {sheets_processed}개 처리"
+            result_msg += ")"
+            upload_history.error_message = None  # clear any previous error
+
+            logger.info(f"[BG Upload {upload_id}] 커밋: saved={saved_count}, error={error_count}, raw={len(rows_list)}")
+            await db.commit()
+            logger.info(f"[BG Upload {upload_id}] 완료!")
+
+        except Exception as e:
+            error_detail = f"{str(e)[:300]}\n{traceback.format_exc()[-200:]}"
+            logger.error(f"[BG Upload {upload_id}] 오류: {error_detail}")
+            try:
+                await db.rollback()
+                upload_history = await db.get(AIDataUploadHistory, upload_id)
+                if upload_history:
+                    upload_history.status = UploadStatus.FAILED
+                    upload_history.error_message = error_detail[:500]
+                    await db.commit()
+            except Exception:
+                logger.error(f"[BG Upload {upload_id}] 오류 상태 저장 실패")
+
+
 @router.post("/upload-historical")
 async def upload_historical_data(
     file: UploadFile = File(...),
@@ -396,23 +714,17 @@ async def upload_historical_data(
     current_user: User = Depends(get_current_user)
 ):
     """
-    더존 과거 데이터 업로드 (학습용)
-
-    엑셀 파일 형식:
-    - 적요 (필수): 거래 내역
-    - 거래처명 (선택)
-    - 금액 (선택)
-    - 계정과목코드 (필수): 더존에서 분류된 계정코드
-    - 계정과목명 (선택)
+    더존 과거 데이터 업로드 (학습용) - 백그라운드 처리
+    파일을 수신하고 즉시 응답, 처리는 백그라운드에서 진행
     """
     if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
         raise HTTPException(status_code=400, detail="엑셀 또는 CSV 파일만 업로드 가능합니다.")
 
-    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
+    from app.models.ai import AIDataUploadHistory, UploadStatus
 
     content = await file.read()
 
-    # Step 1: 업로드 이력 생성
+    # 업로드 이력 생성 (PROCESSING 상태로 즉시 커밋)
     file_ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else 'unknown'
     upload_history = AIDataUploadHistory(
         filename=file.filename,
@@ -424,350 +736,45 @@ async def upload_historical_data(
     )
     db.add(upload_history)
     await db.flush()
+    upload_id = upload_history.id
+    await db.commit()
 
-    try:
-        # Step 2: 파일 파싱 (멀티 시트 지원)
-        logger.info(f"[Upload {upload_history.id}] 파일 파싱 시작: {file.filename} ({len(content)} bytes)")
-        is_ledger_format = False
-        if file.filename.endswith('.csv'):
-            df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
-        else:
-            engine = 'xlrd' if file.filename.endswith('.xls') else 'openpyxl'
-            # 모든 시트 읽기
-            all_sheets = pd.read_excel(io.BytesIO(content), header=None, engine=engine, sheet_name=None)
-            logger.info(f"[Upload {upload_history.id}] 시트 수: {len(all_sheets)}")
+    logger.info(f"[Upload {upload_id}] 업로드 접수 완료, 백그라운드 처리 시작: {file.filename}")
 
-            ledger_dfs = []
-            normal_dfs = []
-            sheet_errors = []
-            for sheet_name, df_raw in all_sheets.items():
-                if df_raw.shape[0] < 2:
-                    continue
-                if _is_account_ledger_format(df_raw):
-                    is_ledger_format = True
-                    try:
-                        parsed = _parse_account_ledger(df_raw)
-                        ledger_dfs.append(parsed)
-                    except Exception as e:
-                        sheet_errors.append(f"시트 '{sheet_name}': {str(e)[:100]}")
-                else:
-                    normal_dfs.append(pd.read_excel(
-                        io.BytesIO(content), engine=engine, sheet_name=sheet_name
-                    ))
+    # 백그라운드 태스크 시작 (별도 DB 세션 사용)
+    asyncio.create_task(
+        _process_upload_background(upload_id, content, file.filename, current_user.id)
+    )
 
-            if ledger_dfs:
-                df = pd.concat(ledger_dfs, ignore_index=True)
-            elif normal_dfs:
-                df = pd.concat(normal_dfs, ignore_index=True)
-            else:
-                error_detail = "유효한 데이터가 있는 시트를 찾을 수 없습니다."
-                if sheet_errors:
-                    error_detail += " 오류: " + "; ".join(sheet_errors)
-                raise HTTPException(status_code=400, detail=error_detail)
+    return {
+        "status": "processing",
+        "upload_id": upload_id,
+        "message": f"파일 '{file.filename}'이 접수되었습니다. 백그라운드에서 처리 중입니다.",
+    }
 
-        # 컬럼명 정규화
-        column_mapping = {
-            '적요': 'description',
-            '적요란': 'description',
-            '거래내역': 'description',
-            '내역': 'description',
-            '거래처명': 'merchant_name',
-            '거래처': 'merchant_name',
-            '가맹점': 'merchant_name',
-            '금액': 'amount',
-            '거래금액': 'amount',
-            '계정과목코드': 'account_code',
-            '계정코드': 'account_code',
-            '계정과목': 'account_code',
-            '코드': 'account_code',
-            '계정과목명': 'account_name',
-            '계정명': 'account_name',
-            '차변': 'debit',
-            '대변': 'credit',
-            '날짜': 'date',
-            '원장계정코드': 'source_account_code',
-            '원장계정명': 'source_account_name',
-        }
 
-        original_columns = list(df.columns)
-        df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
-        mapped_columns = list(df.columns)
-        logger.info(f"[Upload {upload_history.id}] 컬럼: {original_columns} → {mapped_columns}, 행수(정제전): {len(df)}")
+@router.get("/upload-status/{upload_id}")
+async def get_upload_status(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """업로드 처리 상태 조회 (폴링용)"""
+    from app.models.ai import AIDataUploadHistory
 
-        if 'description' not in df.columns:
-            raise HTTPException(status_code=400, detail=f"'적요' 컬럼 없음. 현재 컬럼: {original_columns}")
-        if 'account_code' not in df.columns:
-            raise HTTPException(status_code=400, detail=f"'계정과목코드' 컬럼 없음. 현재 컬럼: {original_columns}")
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="업로드를 찾을 수 없습니다.")
 
-        # 데이터 정제
-        pre_drop = len(df)
-        df = df.dropna(subset=['description', 'account_code'])
-        logger.info(f"[Upload {upload_history.id}] dropna: {pre_drop} → {len(df)} 행 ({pre_drop - len(df)} 삭제)")
-        df['description'] = df['description'].astype(str).str.strip()
-        df['account_code'] = df['account_code'].astype(str).str.strip()
-
-        if 'merchant_name' in df.columns:
-            df['merchant_name'] = df['merchant_name'].fillna('').astype(str).str.strip()
-
-        if 'amount' in df.columns:
-            df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
-        else:
-            df['amount'] = 0
-
-        upload_history.row_count = len(df)
-
-        # Step 3: 배치 처리로 학습 데이터 저장 + 원본 데이터 보관
-        from collections import Counter
-        classifier = AIClassifierService()
-        saved_count = 0
-        error_count = 0
-        auto_created_count = 0
-
-        # ---- Phase A: 모든 고유 계정코드 수집 & 계정 사전 준비 ----
-        # 상대 계정코드 + 원장 계정코드 모두 수집
-        unique_codes = df['account_code'].unique().tolist()
-        has_source_code = 'source_account_code' in df.columns
-        has_source_name = 'source_account_name' in df.columns
-        source_name_map = {}
-        if has_source_code:
-            source_codes_unique = df['source_account_code'].dropna().unique().tolist()
-            # 원장 계정명 매핑 (source_account_code → source_account_name)
-            if has_source_name:
-                for _, row in df.drop_duplicates('source_account_code').iterrows():
-                    sc = str(row.get('source_account_code', '')).strip()
-                    sn = str(row.get('source_account_name', '')).strip()
-                    if sc and sn:
-                        source_name_map[sc] = sn
-            # 원장 계정코드도 unique_codes에 합치기
-            for sc in source_codes_unique:
-                sc = str(sc).strip()
-                if sc and sc not in unique_codes:
-                    unique_codes.append(sc)
-
-        # 기존 계정 전체 로드 (캐시)
-        existing_accounts_result = await db.execute(
-            select(Account).where(Account.is_active == True)
-        )
-        account_cache = {a.code: a for a in existing_accounts_result.scalars().all()}
-
-        # 기존 매핑 로드
-        existing_mappings_result = await db.execute(
-            select(AccountCodeMapping).where(
-                AccountCodeMapping.source_system == "douzone"
-            )
-        )
-        mapping_cache = {m.source_code: m for m in existing_mappings_result.scalars().all()}
-
-        # 카테고리 로드
-        all_categories_result = await db.execute(
-            select(AccountCategory).order_by(AccountCategory.code)
-        )
-        all_categories = {c.code: c for c in all_categories_result.scalars().all()}
-        default_category_id = next(iter(all_categories.values())).id if all_categories else 1
-
-        def _guess_category_id(code: str) -> int:
-            if not code:
-                return default_category_id
-            digit_map = {'0': '1', '1': '1', '2': '2', '3': '3', '4': '4',
-                         '5': '5', '6': '5', '7': '5', '8': '5', '9': '5'}
-            cat_code = digit_map.get(code[0], '5')
-            return all_categories[cat_code].id if cat_code in all_categories else default_category_id
-
-        # 누락 계정 코드 일괄 자동 생성
-        desc_patterns: dict = {}
-        for _, row in df.iterrows():
-            code = row['account_code']
-            if code not in desc_patterns:
-                desc_patterns[code] = []
-            desc_patterns[code].append(row['description'])
-
-        for code in unique_codes:
-            code = str(code).strip()
-            if code in account_cache:
-                continue
-            # zero-padded 체크
-            code_padded = code.zfill(6)
-            if code_padded in account_cache:
-                account_cache[code] = account_cache[code_padded]
-                continue
-            # 매핑 체크
-            if code in mapping_cache and mapping_cache[code].target_account_id:
-                mapped_id = mapping_cache[code].target_account_id
-                for a in account_cache.values():
-                    if a.id == mapped_id:
-                        account_cache[code] = a
-                        break
-                if code in account_cache:
-                    continue
-
-            # 자동 생성 - 원장 계정명이 있으면 우선 사용
-            acct_name = None
-            if has_source_code and has_source_name and code in source_name_map:
-                acct_name = source_name_map[code]
-            if not acct_name:
-                descs = desc_patterns.get(code, [])
-                acct_name = f"더존계정 {code}"
-                if descs:
-                    word_counter = Counter()
-                    for d in descs[:50]:
-                        for w in str(d).split():
-                            w = w.strip()
-                            if len(w) >= 2:
-                                word_counter[w] += 1
-                    if word_counter:
-                        acct_name = f"{word_counter.most_common(1)[0][0]} (더존 {code})"
-
-            account = Account(
-                code=code, name=acct_name,
-                category_id=_guess_category_id(code),
-                level=1, is_detail=True,
-                is_vat_applicable=True, vat_rate=Decimal("10.00"), is_active=True,
-            )
-            db.add(account)
-            await db.flush()
-            account_cache[code] = account
-
-            if code not in mapping_cache:
-                new_mapping = AccountCodeMapping(
-                    source_system="douzone", source_code=code,
-                    source_name=acct_name,
-                    target_account_id=account.id,
-                    target_account_code=account.code,
-                    is_auto_created=True,
-                )
-                db.add(new_mapping)
-                mapping_cache[code] = new_mapping
-
-            auto_created_count += 1
-
-        # 계정 생성 커밋
-        await db.flush()
-
-        # ---- Phase B: 원본 데이터 + 학습 데이터 Bulk Insert ----
-        from sqlalchemy import insert as sa_insert
-
-        BATCH_SIZE = 2000
-        rows_list = df.to_dict('records')
-        has_debit = 'debit' in df.columns
-        has_credit = 'credit' in df.columns
-        has_date = 'date' in df.columns
-        has_account_name = 'account_name' in df.columns
-
-        logger.info(f"[Upload {upload_history.id}] Phase B 시작: {len(rows_list)}행, batch={BATCH_SIZE}")
-
-        for batch_start in range(0, len(rows_list), BATCH_SIZE):
-            batch = rows_list[batch_start:batch_start + BATCH_SIZE]
-            raw_bulk = []
-            training_bulk = []
-
-            for i, row in enumerate(batch):
-                row_idx = batch_start + i + 1
-                code = str(row['account_code']).strip()[:20]
-                desc_val = str(row['description'])[:500]
-                merchant_val = str(row.get('merchant_name', '') or '')[:200]
-
-                raw_bulk.append({
-                    "upload_id": upload_history.id,
-                    "row_number": row_idx,
-                    "original_description": desc_val,
-                    "merchant_name": merchant_val,
-                    "amount": float(row.get('amount', 0)),
-                    "debit_amount": float(row['debit']) if has_debit and pd.notna(row.get('debit')) else 0.0,
-                    "credit_amount": float(row['credit']) if has_credit and pd.notna(row.get('credit')) else 0.0,
-                    "transaction_date": str(row['date']) if has_date and pd.notna(row.get('date')) else None,
-                    "account_code": code,
-                    "account_name": str(row['account_name']).strip()[:100] if has_account_name and pd.notna(row.get('account_name')) else None,
-                    "source_account_code": str(row['source_account_code'])[:20] if has_source_code and pd.notna(row.get('source_account_code')) else None,
-                })
-
-                account = account_cache.get(code)
-                if account:
-                    training_bulk.append({
-                        "description_tokens": classifier._preprocess_text(
-                            row['description'], row.get('merchant_name', '') or ''
-                        ),
-                        "merchant_name": merchant_val,
-                        "amount_range": classifier._get_amount_range(Decimal(str(row.get('amount', 0)))),
-                        "account_id": account.id,
-                        "account_code": account.code,
-                        "source_type": "historical",
-                        "dataset_version": "douzone_import",
-                        "sample_weight": 1.0,
-                        "is_active": True,
-                    })
-                    saved_count += 1
-                else:
-                    error_count += 1
-
-            # Bulk insert
-            if raw_bulk:
-                await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
-            if training_bulk:
-                await db.execute(sa_insert(AITrainingData), training_bulk)
-            await db.flush()
-
-            if batch_start % 10000 == 0:
-                logger.info(f"[Upload {upload_history.id}] 진행: {batch_start + len(batch)}/{len(rows_list)}")
-
-        # Step 4: 업로드 이력 완료 처리
-        upload_history.saved_count = saved_count
-        upload_history.error_count = error_count
-        upload_history.status = UploadStatus.COMPLETED
-
-        logger.info(f"[Upload {upload_history.id}] 커밋 직전: saved={saved_count}, error={error_count}, raw_rows={len(rows_list)}, auto_created={auto_created_count}")
-        await db.commit()
-        logger.info(f"[Upload {upload_history.id}] 커밋 완료")
-
-        is_csv = file.filename.endswith('.csv')
-        if is_csv:
-            total_sheets = 1
-            sheets_processed = 1
-        else:
-            total_sheets = len(all_sheets)
-            sheets_processed = len(ledger_dfs) if is_ledger_format else len(normal_dfs)
-
-        result_msg = f"{saved_count}개의 학습 데이터가 저장되었습니다. (원본 {len(df)}건 보관, 자동생성 계정 {auto_created_count}개"
-        if total_sheets > 1:
-            result_msg += f", {total_sheets}개 시트 중 {sheets_processed}개 처리"
-        result_msg += ")"
-
-        response = {
-            "status": "success",
-            "upload_id": upload_history.id,
-            "total_rows": len(df),
-            "saved_count": saved_count,
-            "error_count": error_count,
-            "auto_created_accounts": auto_created_count,
-            "sheets_total": total_sheets,
-            "sheets_processed": sheets_processed,
-            "message": result_msg,
-        }
-        if not is_csv and sheet_errors:
-            response["sheet_errors"] = sheet_errors
-        return response
-
-    except HTTPException as he:
-        try:
-            await db.rollback()
-            upload_history.status = UploadStatus.FAILED
-            upload_history.error_message = f"필수 컬럼 누락: {he.detail}"
-            db.add(upload_history)
-            await db.commit()
-        except Exception:
-            pass
-        raise
-    except Exception as e:
-        import traceback
-        error_detail = f"{str(e)[:300]}\n{traceback.format_exc()[-200:]}"
-        try:
-            await db.rollback()
-            upload_history.status = UploadStatus.FAILED
-            upload_history.error_message = error_detail[:500]
-            db.add(upload_history)
-            await db.commit()
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"파일 처리 중 오류: {str(e)}")
+    return {
+        "upload_id": upload.id,
+        "status": upload.status.value if hasattr(upload.status, 'value') else str(upload.status),
+        "filename": upload.filename,
+        "row_count": upload.row_count or 0,
+        "saved_count": upload.saved_count or 0,
+        "error_count": upload.error_count or 0,
+        "error_message": upload.error_message,
+    }
 
 
 @router.post("/train")
