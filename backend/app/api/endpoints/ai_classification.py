@@ -862,134 +862,138 @@ class BatchUploadRequest(BaseModel):
     rows: List[BatchUploadRow]
 
 
+class PrepareAccountsRequest(BaseModel):
+    filename: str
+    file_size: int = 0
+    total_rows: int = 0
+    total_batches: int = 0
+    account_codes: List[str]
+    source_names: Optional[dict] = None  # {code: name}
+
+
+@router.post("/prepare-upload")
+async def prepare_upload(
+    data: PrepareAccountsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """1단계: 업로드 이력 생성 + 계정 사전 생성 (가벼운 요청)"""
+    from app.models.ai import AIDataUploadHistory, UploadStatus
+
+    try:
+        file_ext = data.filename.rsplit('.', 1)[-1].lower() if '.' in data.filename else 'unknown'
+        upload_history = AIDataUploadHistory(
+            filename=data.filename,
+            file_size=data.file_size,
+            file_type=file_ext,
+            upload_type="historical",
+            uploaded_by=current_user.id,
+            status=UploadStatus.PROCESSING,
+            row_count=data.total_rows,
+        )
+        db.add(upload_history)
+        await db.flush()
+        upload_id = upload_history.id
+        logger.info(f"[Prepare {upload_id}] 시작: {data.filename}, {data.total_rows}행, 코드 {len(data.account_codes)}개")
+
+        # 계정 사전 생성
+        all_codes = {c.strip()[:20] for c in data.account_codes if c.strip()}
+
+        existing_accounts = await db.execute(select(Account).where(Account.is_active == True))
+        acct_cache = {a.code: a for a in existing_accounts.scalars().all()}
+
+        existing_mappings = await db.execute(
+            select(AccountCodeMapping).where(AccountCodeMapping.source_system == "douzone")
+        )
+        map_cache = {m.source_code: m for m in existing_mappings.scalars().all()}
+
+        all_cats = await db.execute(select(AccountCategory).order_by(AccountCategory.code))
+        categories = {c.code: c for c in all_cats.scalars().all()}
+        def_cat_id = next(iter(categories.values())).id if categories else 1
+
+        src_names = data.source_names or {}
+
+        new_accounts = []
+        auto_created = 0
+        for code in all_codes:
+            if not code or code in acct_cache:
+                continue
+            if code.zfill(6) in acct_cache:
+                acct_cache[code] = acct_cache[code.zfill(6)]
+                continue
+            if code in map_cache and map_cache[code].target_account_id:
+                mid = map_cache[code].target_account_id
+                found = next((a for a in acct_cache.values() if a.id == mid), None)
+                if found:
+                    acct_cache[code] = found
+                    continue
+
+            dm = {'0':'1','1':'1','2':'2','3':'3','4':'4','5':'5','6':'5','7':'5','8':'5','9':'5'}
+            cat_code = dm.get(code[0], '5')
+            cat_id = categories[cat_code].id if cat_code in categories else def_cat_id
+
+            acct_name = src_names.get(code, f"더존계정 {code}")
+            account = Account(
+                code=code, name=acct_name, category_id=cat_id,
+                level=1, is_detail=True, is_vat_applicable=True,
+                vat_rate=Decimal("10.00"), is_active=True,
+            )
+            db.add(account)
+            new_accounts.append((code, account))
+            auto_created += 1
+
+        if new_accounts:
+            await db.flush()
+            for code, account in new_accounts:
+                acct_cache[code] = account
+                if code not in map_cache:
+                    db.add(AccountCodeMapping(
+                        source_system="douzone", source_code=code, source_name=account.name,
+                        target_account_id=account.id, target_account_code=account.code,
+                        is_auto_created=True,
+                    ))
+            await db.flush()
+
+        await db.commit()
+        logger.info(f"[Prepare {upload_id}] 완료: {auto_created}개 계정 생성")
+
+        return {
+            "upload_id": upload_id,
+            "auto_created_accounts": auto_created,
+            "status": "ready",
+        }
+
+    except Exception as e:
+        logger.error(f"[Prepare] 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"준비 오류: {str(e)[:200]}")
+
+
 @router.post("/upload-historical-batch")
 async def upload_historical_batch(
     data: BatchUploadRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """클라이언트에서 파싱된 데이터를 배치 단위로 수신 (대용량 파일 지원)"""
+    """2단계: 파싱된 데이터를 배치 단위로 수신 (순수 INSERT만)"""
     from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
     from sqlalchemy import insert as sa_insert
-    from collections import Counter
 
     try:
-        # 첫 배치: 업로드 이력 생성 + 계정 사전 준비
-        if data.batch_index == 0:
-            file_ext = data.filename.rsplit('.', 1)[-1].lower() if '.' in data.filename else 'unknown'
-            upload_history = AIDataUploadHistory(
-                filename=data.filename,
-                file_size=data.file_size,
-                file_type=file_ext,
-                upload_type="historical",
-                uploaded_by=current_user.id,
-                status=UploadStatus.PROCESSING,
-                row_count=data.total_rows,
-            )
-            db.add(upload_history)
-            await db.flush()
-            upload_id = upload_history.id
-            logger.info(f"[Batch {upload_id}] 새 업로드: {data.filename}, {data.total_rows}행, {data.total_batches}배치")
+        upload_id = data.upload_id
+        if not upload_id:
+            raise HTTPException(status_code=400, detail="upload_id가 필요합니다. prepare-upload를 먼저 호출하세요.")
 
-            # 첫 배치에서 모든 계정 사전 생성 (all_account_codes 사용)
-            all_codes = set()
-            if data.all_account_codes:
-                all_codes = {c.strip()[:20] for c in data.all_account_codes if c.strip()}
-            for row in data.rows:
-                all_codes.add(row.account_code.strip()[:20])
-                if row.source_account_code:
-                    all_codes.add(row.source_account_code.strip()[:20])
+        upload_history = await db.get(AIDataUploadHistory, upload_id)
+        if not upload_history:
+            raise HTTPException(status_code=404, detail="업로드를 찾을 수 없습니다.")
 
-            existing_accounts = await db.execute(select(Account).where(Account.is_active == True))
-            acct_cache = {a.code: a for a in existing_accounts.scalars().all()}
-
-            existing_mappings = await db.execute(
-                select(AccountCodeMapping).where(AccountCodeMapping.source_system == "douzone")
-            )
-            map_cache = {m.source_code: m for m in existing_mappings.scalars().all()}
-
-            all_cats = await db.execute(select(AccountCategory).order_by(AccountCategory.code))
-            categories = {c.code: c for c in all_cats.scalars().all()}
-            def_cat_id = next(iter(categories.values())).id if categories else 1
-
-            # 소스 계정명 매핑 (rows에서 추출)
-            src_names = {}
-            for row in data.rows:
-                if row.source_account_code and row.source_account_name:
-                    src_names[row.source_account_code.strip()] = row.source_account_name
-
-            # 매핑 캐시를 id 기반으로도 구성
-            mapped_by_id = {}
-            for m in map_cache.values():
-                if m.target_account_id:
-                    mapped_by_id[m.target_account_id] = m
-
-            # 누락 계정 수집
-            new_accounts = []
-            auto_created = 0
-            for code in all_codes:
-                if not code or code in acct_cache:
-                    continue
-                if code.zfill(6) in acct_cache:
-                    acct_cache[code] = acct_cache[code.zfill(6)]
-                    continue
-                if code in map_cache and map_cache[code].target_account_id:
-                    mid = map_cache[code].target_account_id
-                    found = next((a for a in acct_cache.values() if a.id == mid), None)
-                    if found:
-                        acct_cache[code] = found
-                        continue
-
-                dm = {'0':'1','1':'1','2':'2','3':'3','4':'4','5':'5','6':'5','7':'5','8':'5','9':'5'}
-                cat_code = dm.get(code[0], '5')
-                cat_id = categories[cat_code].id if cat_code in categories else def_cat_id
-
-                acct_name = src_names.get(code, f"더존계정 {code}")
-                account = Account(
-                    code=code, name=acct_name, category_id=cat_id,
-                    level=1, is_detail=True, is_vat_applicable=True,
-                    vat_rate=Decimal("10.00"), is_active=True,
-                )
-                db.add(account)
-                new_accounts.append((code, account))
-                auto_created += 1
-
-            # 한 번에 flush (2000개 → DB 왕복 1회)
-            if new_accounts:
-                await db.flush()
-                for code, account in new_accounts:
-                    acct_cache[code] = account
-                    if code not in map_cache:
-                        db.add(AccountCodeMapping(
-                            source_system="douzone", source_code=code, source_name=account.name,
-                            target_account_id=account.id, target_account_code=account.code,
-                            is_auto_created=True,
-                        ))
-                await db.flush()
-
-            logger.info(f"[Batch {upload_id}] 계정 준비 완료: {auto_created}개 생성")
-        else:
-            upload_id = data.upload_id
-            if not upload_id:
-                raise HTTPException(status_code=400, detail="upload_id가 필요합니다.")
-            upload_history = await db.get(AIDataUploadHistory, upload_id)
-            if not upload_history:
-                raise HTTPException(status_code=404, detail="업로드를 찾을 수 없습니다.")
-            auto_created = 0
-
-            # 이후 배치: 계정 캐시만 빠르게 로드 (생성 X)
-            existing_accounts = await db.execute(select(Account).where(Account.is_active == True))
-            acct_cache = {a.code: a for a in existing_accounts.scalars().all()}
-
-        # 원본 데이터만 INSERT (학습 데이터는 모델 학습 시 자동 생성)
+        # 순수 raw INSERT만 (계정 생성 없음, 캐시 조회 없음)
         raw_bulk = []
-        saved_count = 0
-
         for i, row in enumerate(data.rows):
             code = row.account_code.strip()[:20]
             raw_bulk.append({
                 "upload_id": upload_id,
-                "row_number": data.batch_index * 3000 + i + 1,
+                "row_number": data.batch_index * data.total_batches + i + 1,
                 "original_description": row.description[:500],
                 "merchant_name": (row.merchant_name or '')[:200],
                 "amount": row.amount or 0,
@@ -1000,21 +1004,18 @@ async def upload_historical_batch(
                 "account_name": (row.account_name or '')[:100] if row.account_name else None,
                 "source_account_code": row.source_account_code[:20] if row.source_account_code else None,
             })
-            if acct_cache.get(code):
-                saved_count += 1
 
         if raw_bulk:
             await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
 
-        error_count = len(data.rows) - saved_count
+        saved_count = len(raw_bulk)
         upload_history.saved_count = (upload_history.saved_count or 0) + saved_count
-        upload_history.error_count = (upload_history.error_count or 0) + error_count
 
         is_last = data.batch_index >= data.total_batches - 1
         if is_last:
             upload_history.status = UploadStatus.COMPLETED
             upload_history.error_message = None
-            logger.info(f"[Batch {upload_id}] 완료! saved={upload_history.saved_count}, error={upload_history.error_count}")
+            logger.info(f"[Batch {upload_id}] 전체 완료! saved={upload_history.saved_count}")
 
         await db.commit()
 
@@ -1022,8 +1023,6 @@ async def upload_historical_batch(
             "upload_id": upload_id,
             "batch_index": data.batch_index,
             "saved_count": saved_count,
-            "error_count": error_count,
-            "auto_created_accounts": auto_created,
             "status": "completed" if is_last else "processing",
         }
 

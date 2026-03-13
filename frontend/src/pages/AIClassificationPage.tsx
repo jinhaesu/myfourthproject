@@ -129,14 +129,14 @@ export default function AIClassificationPage() {
   // Upload progress state
   const [uploadProgress, setUploadProgress] = useState<string | null>(null)
 
-  // Handle historical data upload - 클라이언트 사이드 파싱 + 배치 전송
+  // Handle historical data upload - 3단계: 파싱 → 계정준비 → 배치전송
   const handleUploadHistorical = async () => {
     if (!uploadFile) {
       showMessage('error', '파일을 선택해주세요.')
       return
     }
     setLoading(true)
-    setUploadProgress('파일 파싱 중... (브라우저에서 처리)')
+    setUploadProgress('파일 파싱 중...')
 
     try {
       // Step 1: 브라우저에서 엑셀 파싱
@@ -149,50 +149,74 @@ export default function AIClassificationPage() {
         return
       }
 
-      // 모든 고유 계정코드 수집 (첫 배치에서 일괄 생성용)
+      // 고유 계정코드 + 소스명 수집
       const allCodes = new Set<string>()
+      const sourceNames: Record<string, string> = {}
       for (const r of rows) {
         allCodes.add(r.account_code)
-        if (r.source_account_code) allCodes.add(r.source_account_code)
+        if (r.source_account_code) {
+          allCodes.add(r.source_account_code)
+          if (r.source_account_name) sourceNames[r.source_account_code] = r.source_account_name
+        }
       }
 
-      // Step 2: 500행씩 배치로 서버 전송
       const BATCH_SIZE = 500
       const totalBatches = Math.ceil(rows.length / BATCH_SIZE)
-      let uploadId: number | null = null
-      let totalSaved = 0
 
-      setUploadProgress(`${rows.length.toLocaleString()}행 파싱 완료. 서버 전송 중... (0/${totalBatches} 배치)`)
-      console.log(`[Upload] 전송 시작: ${rows.length}행, ${totalBatches}배치, 계정코드 ${allCodes.size}개`)
+      // Step 2: 서버에 업로드 준비 (계정 생성 - 가벼운 요청)
+      setUploadProgress(`${rows.length.toLocaleString()}행 파싱 완료. 계정 준비 중...`)
+      console.log(`[Upload] 준비 요청: ${allCodes.size}개 계정코드`)
+
+      const prepareRes = await aiClassificationApi.prepareUpload({
+        filename: uploadFile.name,
+        file_size: uploadFile.size,
+        total_rows: rows.length,
+        total_batches: totalBatches,
+        account_codes: Array.from(allCodes),
+        source_names: sourceNames,
+      })
+
+      const uploadId = prepareRes.data.upload_id
+      console.log(`[Upload] 준비 완료: upload_id=${uploadId}, 계정 ${prepareRes.data.auto_created_accounts}개 생성`)
+
+      // Step 3: 500행씩 배치 전송 (순수 INSERT만)
+      let totalSaved = 0
 
       for (let i = 0; i < totalBatches; i++) {
         const batch = rows.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE)
-        const startTime = Date.now()
+        let success = false
 
-        const response = await aiClassificationApi.uploadHistoricalBatch({
-          upload_id: uploadId,
-          filename: uploadFile.name,
-          file_size: uploadFile.size,
-          batch_index: i,
-          total_batches: totalBatches,
-          total_rows: rows.length,
-          rows: batch,
-          ...(i === 0 ? { all_account_codes: Array.from(allCodes) } : {}),
-        })
+        // 실패 시 최대 3회 재시도
+        for (let retry = 0; retry < 3 && !success; retry++) {
+          try {
+            if (retry > 0) {
+              console.log(`[Upload] 배치 ${i+1} 재시도 ${retry}/3`)
+              await new Promise(r => setTimeout(r, 1000 * retry))
+            }
 
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-        console.log(`[Upload] 배치 ${i+1}/${totalBatches} 완료 (${elapsed}s)`)
+            const response = await aiClassificationApi.uploadHistoricalBatch({
+              upload_id: uploadId,
+              filename: uploadFile.name,
+              file_size: uploadFile.size,
+              batch_index: i,
+              total_batches: totalBatches,
+              total_rows: rows.length,
+              rows: batch,
+            })
 
-        if (i === 0) {
-          uploadId = response.data.upload_id
+            totalSaved += response.data.saved_count || 0
+            success = true
+          } catch (batchErr: any) {
+            console.error(`[Upload] 배치 ${i+1} 실패 (시도 ${retry+1}/3):`, batchErr.message)
+            if (retry === 2) throw batchErr  // 3번 다 실패하면 에러
+          }
         }
-        totalSaved += response.data.saved_count || 0
 
         const pct = Math.round(((i + 1) / totalBatches) * 100)
-        setUploadProgress(`서버 저장 중... ${pct}% (${(i + 1)}/${totalBatches} 배치)`)
+        setUploadProgress(`저장 중... ${pct}% (${i + 1}/${totalBatches})`)
       }
 
-      showMessage('success', `${totalSaved.toLocaleString()}건 업로드 완료! (${sheetCount}개 시트 중 ${sheetsProcessed}개 처리)`)
+      showMessage('success', `${totalSaved.toLocaleString()}건 업로드 완료! (${sheetCount}시트 중 ${sheetsProcessed}개 처리)`)
       setUploadFile(null)
       setUploadProgress(null)
       setUploadResult({ total_rows: rows.length, saved_count: totalSaved })
@@ -201,8 +225,9 @@ export default function AIClassificationPage() {
     } catch (error: any) {
       console.error('[Upload] 오류:', error)
       const detail = error.response?.data?.detail || error.message || '알 수 없는 오류'
+      // 에러는 progress 영역에 유지 (사라지지 않음)
+      setUploadProgress(`업로드 실패: ${detail}`)
       showMessage('error', `업로드 오류: ${detail}`)
-      setUploadProgress(null)
     } finally {
       setLoading(false)
     }
