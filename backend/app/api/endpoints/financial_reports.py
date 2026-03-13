@@ -29,6 +29,95 @@ from app.models.accounting import Account, AccountCategory
 router = APIRouter()
 
 
+# ============ 진단 엔드포인트 (임시) ============
+@router.get("/debug-db")
+async def debug_db(
+    db: AsyncSession = Depends(get_db),
+):
+    """DB 상태 진단 - 테이블별 row count 및 업로드 상세"""
+    from app.models.ai import AITrainingData, AIDataUploadHistory as UH
+    import traceback
+
+    result = {}
+    try:
+        # 1) 각 테이블 row count
+        upload_count = await db.scalar(select(func.count(UH.id))) or 0
+        raw_count = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
+        training_count = await db.scalar(select(func.count(AITrainingData.id))) or 0
+        account_count = await db.scalar(select(func.count(Account.id))) or 0
+
+        result["table_counts"] = {
+            "ai_data_upload_history": upload_count,
+            "ai_raw_transaction_data": raw_count,
+            "ai_training_data": training_count,
+            "accounts": account_count,
+        }
+
+        # 2) 업로드 이력 상세 (최근 10개)
+        uploads_result = await db.execute(
+            select(UH).order_by(UH.id.desc()).limit(10)
+        )
+        uploads = []
+        for u in uploads_result.scalars().all():
+            # 해당 upload의 raw_transaction count
+            raw_for_upload = await db.scalar(
+                select(func.count(AIRawTransactionData.id))
+                .where(AIRawTransactionData.upload_id == u.id)
+            ) or 0
+            uploads.append({
+                "id": u.id,
+                "filename": u.filename,
+                "status": u.status.value if hasattr(u.status, 'value') else str(u.status),
+                "row_count": u.row_count,
+                "saved_count": u.saved_count,
+                "error_count": u.error_count,
+                "error_message": u.error_message,
+                "actual_raw_rows": raw_for_upload,
+                "created_at": str(u.created_at) if u.created_at else None,
+            })
+        result["uploads"] = uploads
+
+        # 3) raw data 샘플 (최근 5건)
+        samples = await db.execute(
+            select(AIRawTransactionData).order_by(AIRawTransactionData.id.desc()).limit(5)
+        )
+        result["raw_samples"] = [
+            {
+                "id": r.id,
+                "upload_id": r.upload_id,
+                "row": r.row_number,
+                "desc": r.original_description[:80] if r.original_description else None,
+                "acct": r.account_code,
+                "src": r.source_account_code,
+                "debit": float(r.debit_amount),
+                "credit": float(r.credit_amount),
+                "date": r.transaction_date,
+            }
+            for r in samples.scalars().all()
+        ]
+
+        # 4) training data 샘플
+        training_samples = await db.execute(
+            select(AITrainingData).order_by(AITrainingData.id.desc()).limit(5)
+        )
+        result["training_samples"] = [
+            {
+                "id": t.id,
+                "tokens": t.description_tokens[:80] if t.description_tokens else None,
+                "account_code": t.account_code,
+                "source_type": t.source_type,
+                "is_active": t.is_active,
+            }
+            for t in training_samples.scalars().all()
+        ]
+
+    except Exception as e:
+        result["error"] = str(e)
+        result["traceback"] = traceback.format_exc()
+
+    return result
+
+
 # ============ Helpers ============
 
 async def _validate_upload(db: AsyncSession, upload_id: int) -> AIDataUploadHistory:

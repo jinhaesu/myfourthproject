@@ -4,6 +4,7 @@ Smart Finance Core - AI 계정 분류 API
 """
 import json
 import io
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
@@ -15,6 +16,8 @@ from sqlalchemy import select, func
 import pandas as pd
 
 from sqlalchemy import case as sa_case
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -424,6 +427,7 @@ async def upload_historical_data(
 
     try:
         # Step 2: 파일 파싱 (멀티 시트 지원)
+        logger.info(f"[Upload {upload_history.id}] 파일 파싱 시작: {file.filename} ({len(content)} bytes)")
         is_ledger_format = False
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
@@ -431,6 +435,7 @@ async def upload_historical_data(
             engine = 'xlrd' if file.filename.endswith('.xls') else 'openpyxl'
             # 모든 시트 읽기
             all_sheets = pd.read_excel(io.BytesIO(content), header=None, engine=engine, sheet_name=None)
+            logger.info(f"[Upload {upload_history.id}] 시트 수: {len(all_sheets)}")
 
             ledger_dfs = []
             normal_dfs = []
@@ -484,15 +489,20 @@ async def upload_historical_data(
             '원장계정명': 'source_account_name',
         }
 
+        original_columns = list(df.columns)
         df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
+        mapped_columns = list(df.columns)
+        logger.info(f"[Upload {upload_history.id}] 컬럼: {original_columns} → {mapped_columns}, 행수(정제전): {len(df)}")
 
         if 'description' not in df.columns:
-            raise HTTPException(status_code=400, detail="'적요' 또는 '거래내역' 컬럼이 필요합니다.")
+            raise HTTPException(status_code=400, detail=f"'적요' 컬럼 없음. 현재 컬럼: {original_columns}")
         if 'account_code' not in df.columns:
-            raise HTTPException(status_code=400, detail="'계정과목코드' 컬럼이 필요합니다.")
+            raise HTTPException(status_code=400, detail=f"'계정과목코드' 컬럼 없음. 현재 컬럼: {original_columns}")
 
         # 데이터 정제
+        pre_drop = len(df)
         df = df.dropna(subset=['description', 'account_code'])
+        logger.info(f"[Upload {upload_history.id}] dropna: {pre_drop} → {len(df)} 행 ({pre_drop - len(df)} 삭제)")
         df['description'] = df['description'].astype(str).str.strip()
         df['account_code'] = df['account_code'].astype(str).str.strip()
 
@@ -648,19 +658,22 @@ async def upload_historical_data(
                 row_idx = batch_start + i + 1
                 code = str(row['account_code']).strip()
 
-                # 원본 데이터
+                # 원본 데이터 (필드 길이 안전 처리)
+                desc_val = str(row['description'])[:500]
+                merchant_val = str(row.get('merchant_name', '') or '')[:200]
+                acct_name_val = str(row['account_name']).strip()[:100] if has_account_name and pd.notna(row.get('account_name')) else None
                 raw_record = AIRawTransactionData(
                     upload_id=upload_history.id,
                     row_number=row_idx,
-                    original_description=row['description'],
-                    merchant_name=row.get('merchant_name', '') or '',
+                    original_description=desc_val,
+                    merchant_name=merchant_val,
                     amount=Decimal(str(row.get('amount', 0))),
                     debit_amount=Decimal(str(row['debit'])) if has_debit and pd.notna(row.get('debit')) else Decimal("0"),
                     credit_amount=Decimal(str(row['credit'])) if has_credit and pd.notna(row.get('credit')) else Decimal("0"),
                     transaction_date=str(row['date']) if has_date and pd.notna(row.get('date')) else None,
-                    account_code=code,
-                    account_name=str(row['account_name']).strip() if has_account_name and pd.notna(row.get('account_name')) else None,
-                    source_account_code=str(row['source_account_code']) if has_source_code and pd.notna(row.get('source_account_code')) else None,
+                    account_code=code[:20],
+                    account_name=acct_name_val,
+                    source_account_code=str(row['source_account_code'])[:20] if has_source_code and pd.notna(row.get('source_account_code')) else None,
                 )
                 db.add(raw_record)
 
@@ -692,7 +705,9 @@ async def upload_historical_data(
         upload_history.error_count = error_count
         upload_history.status = UploadStatus.COMPLETED
 
+        logger.info(f"[Upload {upload_history.id}] 커밋 직전: saved={saved_count}, error={error_count}, raw_rows={len(rows_list)}, auto_created={auto_created_count}")
         await db.commit()
+        logger.info(f"[Upload {upload_history.id}] 커밋 완료")
 
         is_csv = file.filename.endswith('.csv')
         if is_csv:
@@ -722,15 +737,27 @@ async def upload_historical_data(
             response["sheet_errors"] = sheet_errors
         return response
 
-    except HTTPException:
-        upload_history.status = UploadStatus.FAILED
-        upload_history.error_message = "필수 컬럼 누락"
-        await db.commit()
+    except HTTPException as he:
+        try:
+            await db.rollback()
+            upload_history.status = UploadStatus.FAILED
+            upload_history.error_message = f"필수 컬럼 누락: {he.detail}"
+            db.add(upload_history)
+            await db.commit()
+        except Exception:
+            pass
         raise
     except Exception as e:
-        upload_history.status = UploadStatus.FAILED
-        upload_history.error_message = str(e)[:500]
-        await db.commit()
+        import traceback
+        error_detail = f"{str(e)[:300]}\n{traceback.format_exc()[-200:]}"
+        try:
+            await db.rollback()
+            upload_history.status = UploadStatus.FAILED
+            upload_history.error_message = error_detail[:500]
+            db.add(upload_history)
+            await db.commit()
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"파일 처리 중 오류: {str(e)}")
 
 
