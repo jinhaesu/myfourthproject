@@ -22,19 +22,19 @@ const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 export default function FinancialReportsPage() {
   const [activeTab, setActiveTab] = useState<TabType>('statements')
-  const [selectedUploadId, setSelectedUploadId] = useState<number | null>(null)
+  const [selectedYear, setSelectedYear] = useState<number | null>(null)
 
-  const { data: uploads, isLoading: uploadsLoading } = useQuery({
-    queryKey: ['financialUploadHistory'],
-    queryFn: () => financialApi.getUploadHistory().then((r) => r.data),
-    retry: 3,
-    retryDelay: 1000,
+  const { data: yearsData, isLoading: yearsLoading } = useQuery({
+    queryKey: ['financialYears'],
+    queryFn: () => financialApi.getAvailableYears().then((r) => r.data),
   })
 
-  const uploadList = useMemo(() => {
-    if (!uploads) return []
-    return Array.isArray(uploads) ? uploads : []
-  }, [uploads])
+  const years: number[] = yearsData?.years || []
+  const uploads: any[] = yearsData?.uploads || []
+  const totalRows = yearsData?.total_raw_rows || 0
+
+  // 연도 자동 선택 (최신 연도)
+  const activeYear = selectedYear ?? (years.length > 0 ? years[0] : null)
 
   const tabs: { id: TabType; label: string }[] = [
     { id: 'statements', label: '손익계산서 / 재무상태표' },
@@ -46,26 +46,46 @@ export default function FinancialReportsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">재무보고서</h1>
-        <p className="text-gray-500 mt-1">계정별 원장 데이터 기반 재무제표</p>
+        <p className="text-gray-500 mt-1">업로드된 전체 데이터 기반 재무제표</p>
       </div>
 
+      {/* 기간 선택 + 데이터 현황 */}
       <div className="card">
         <div className="flex items-center gap-4 flex-wrap">
-          <label className="text-sm font-medium text-gray-700">데이터 선택</label>
-          <select
-            value={selectedUploadId ?? ''}
-            onChange={(e) => setSelectedUploadId(e.target.value ? Number(e.target.value) : null)}
-            className="input w-96"
-            disabled={uploadsLoading}
-          >
-            <option value="">-- 업로드 파일을 선택하세요 --</option>
-            {uploadList.map((u: any) => (
-              <option key={u.id} value={u.id}>
-                {u.filename} ({fmtNum(u.saved_count || u.row_count || 0)}건, {u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : ''})
-              </option>
-            ))}
-          </select>
+          <label className="text-sm font-medium text-gray-700">연도 선택</label>
+          {yearsLoading ? (
+            <span className="text-sm text-gray-400">로딩 중...</span>
+          ) : years.length === 0 ? (
+            <span className="text-sm text-gray-400">데이터 없음 - AI 분류에서 먼저 데이터를 업로드하세요</span>
+          ) : (
+            <div className="flex gap-2">
+              {years.map((y) => (
+                <button
+                  key={y}
+                  onClick={() => setSelectedYear(y)}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    activeYear === y
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {y}년
+                </button>
+              ))}
+            </div>
+          )}
+          {totalRows > 0 && (
+            <span className="text-xs text-gray-400 ml-auto">
+              총 {fmtNum(totalRows)}건 | {uploads.length}개 파일 반영
+            </span>
+          )}
         </div>
+        {uploads.length > 0 && (
+          <div className="mt-3 text-xs text-gray-400">
+            반영된 파일: {uploads.slice(0, 5).map((u: any) => u.filename).join(', ')}
+            {uploads.length > 5 && ` 외 ${uploads.length - 5}개`}
+          </div>
+        )}
       </div>
 
       <div className="border-b border-gray-200">
@@ -84,16 +104,16 @@ export default function FinancialReportsPage() {
         </nav>
       </div>
 
-      {!selectedUploadId ? (
+      {!activeYear ? (
         <div className="card text-center py-12 text-gray-500">
-          <p className="text-lg">데이터를 선택하세요</p>
-          <p className="text-sm mt-1">AI 분류에서 업로드한 계정별 원장 파일을 선택해주세요.</p>
+          <p className="text-lg">데이터를 업로드하세요</p>
+          <p className="text-sm mt-1">AI 분류 페이지에서 계정별 원장 파일을 업로드하면 여기에 자동 반영됩니다.</p>
         </div>
       ) : (
         <>
-          {activeTab === 'statements' && <StatementsTab uploadId={selectedUploadId} />}
-          {activeTab === 'trend' && <TrendTab uploadId={selectedUploadId} />}
-          {activeTab === 'trial' && <TrialBalanceTab uploadId={selectedUploadId} />}
+          {activeTab === 'statements' && <StatementsTab year={activeYear} />}
+          {activeTab === 'trend' && <TrendTab year={activeYear} />}
+          {activeTab === 'trial' && <TrialBalanceTab year={activeYear} />}
         </>
       )}
     </div>
@@ -101,29 +121,19 @@ export default function FinancialReportsPage() {
 }
 
 // ============================================================================
-// Tab 1: 손익계산서 + 재무상태표 (한국 회계 기준 PDF 양식)
+// Tab 1: 손익계산서 + 재무상태표
 // ============================================================================
-function StatementsTab({ uploadId }: { uploadId: number }) {
-  const currentYear = new Date().getFullYear()
-  const [yearOverride, setYearOverride] = useState<number | null>(null)
+function StatementsTab({ year }: { year: number }) {
   const [month, setMonth] = useState<number | null>(null)
 
-  // summary에서 데이터 연도 자동 감지
-  const { data: summaryData } = useQuery({
-    queryKey: ['financialSummary', uploadId],
-    queryFn: () => financialApi.getSummary(uploadId).then((r) => r.data),
-  })
-  const dataYear = summaryData?.data_year || currentYear
-  const year = yearOverride ?? dataYear
-
   const { data: incomeData, isLoading: incLoading } = useQuery({
-    queryKey: ['financialIncome', uploadId, year, month],
-    queryFn: () => financialApi.getIncomeStatement(uploadId, year, month ?? undefined).then((r) => r.data),
+    queryKey: ['financialIncome', year, month],
+    queryFn: () => financialApi.getIncomeStatement(year, month ?? undefined).then((r) => r.data),
   })
 
   const { data: balanceData, isLoading: balLoading } = useQuery({
-    queryKey: ['financialBalance', uploadId],
-    queryFn: () => financialApi.getBalanceSheet(uploadId).then((r) => r.data),
+    queryKey: ['financialBalance', year],
+    queryFn: () => financialApi.getBalanceSheet(year).then((r) => r.data),
   })
 
   if (incLoading || balLoading) return <Loading />
@@ -133,16 +143,9 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
 
   return (
     <div className="space-y-8">
-      {/* 기간 선택 */}
       <div className="card">
         <div className="flex items-center gap-3 flex-wrap">
-          <label className="text-sm font-medium text-gray-700">연도</label>
-          <select value={year} onChange={(e) => setYearOverride(Number(e.target.value))} className="input w-28">
-            {[dataYear - 1, dataYear, dataYear + 1, currentYear].filter((v, i, a) => a.indexOf(v) === i).sort().map((y) => (
-              <option key={y} value={y}>{y}년</option>
-            ))}
-          </select>
-          <label className="text-sm font-medium text-gray-700 ml-2">월</label>
+          <label className="text-sm font-medium text-gray-700">월 필터</label>
           <div className="flex gap-1 flex-wrap">
             <button onClick={() => setMonth(null)}
               className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
@@ -158,7 +161,7 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
         </div>
       </div>
 
-      {/* ==================== 손익계산서 ==================== */}
+      {/* 손익계산서 */}
       <div className="card">
         <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
           <h2 className="text-xl font-bold text-gray-900 tracking-widest">손 익 계 산 서</h2>
@@ -166,7 +169,6 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
             {year}년 {month ? `${month}월 1일 ~ ${month}월 말일` : '1월 1일 ~ 12월 31일'}
           </p>
         </div>
-
         <div className="overflow-x-auto">
           <table className="w-full text-sm border-collapse">
             <thead>
@@ -181,12 +183,9 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
               {sections.map((section: any) => {
                 const isSubtotal = section.is_subtotal
                 const items: any[] = section.items || []
-                const hasItems = items.length > 0
-
                 return (
                   <SectionGroup key={section.id}>
-                    {/* 세부 항목 */}
-                    {hasItems && items.map((item: any, idx: number) => (
+                    {items.map((item: any, idx: number) => (
                       <tr key={`${section.id}-${idx}`} className="border-b border-gray-100 hover:bg-gray-50">
                         <td className="py-1.5 px-3"></td>
                         <td className="py-1.5 px-3 pl-12 text-gray-700">{item.name}</td>
@@ -196,23 +195,11 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
                         <td className="py-1.5 px-3"></td>
                       </tr>
                     ))}
-                    {/* 섹션 합계 행 */}
                     <tr className={`border-b ${isSubtotal ? 'border-gray-400 bg-gray-50' : 'border-gray-200'}`}>
-                      <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>
-                        {section.id}.
-                      </td>
-                      <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>
-                        {section.name}
-                      </td>
-                      <td className={`py-2 px-3 text-right font-mono font-bold ${
-                        isSubtotal
-                          ? section.total >= 0 ? 'text-gray-900' : 'text-red-600'
-                          : 'text-gray-800'
-                      }`}>
-                        {section.total < 0
-                          ? `(${fmtAmount(section.total)})`
-                          : fmtAmount(section.total)
-                        }
+                      <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>{section.id}.</td>
+                      <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>{section.name}</td>
+                      <td className={`py-2 px-3 text-right font-mono font-bold ${isSubtotal ? (section.total >= 0 ? 'text-gray-900' : 'text-red-600') : 'text-gray-800'}`}>
+                        {section.total < 0 ? `(${fmtAmount(section.total)})` : fmtAmount(section.total)}
                       </td>
                       <td className="py-2 px-3 text-right font-mono text-gray-500">
                         {section.pct !== undefined ? section.pct.toFixed(2) : ''}
@@ -224,21 +211,17 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
             </tbody>
           </table>
         </div>
-
-        {sections.length === 0 && (
-          <div className="text-center py-8 text-gray-400">해당 기간의 데이터가 없습니다.</div>
-        )}
+        {sections.length === 0 && <div className="text-center py-8 text-gray-400">해당 기간의 데이터가 없습니다.</div>}
       </div>
 
       <hr className="border-gray-300" />
 
-      {/* ==================== 재무상태표 ==================== */}
+      {/* 재무상태표 */}
       <div className="card">
         <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
           <h2 className="text-xl font-bold text-gray-900 tracking-widest">재 무 상 태 표</h2>
-          <p className="text-sm text-gray-500 mt-1">현재 기준</p>
+          <p className="text-sm text-gray-500 mt-1">{year}년 기준</p>
         </div>
-
         <div className="overflow-x-auto">
           <table className="w-full text-sm border-collapse">
             <thead>
@@ -248,72 +231,45 @@ function StatementsTab({ uploadId }: { uploadId: number }) {
               </tr>
             </thead>
             <tbody>
-              {bsSections.map((section: any) => {
-                const subsections: any[] = section.subsections || []
-                return (
-                  <SectionGroup key={section.id}>
-                    {/* 대분류 헤더 */}
-                    <tr className="bg-gray-100 border-b border-gray-300">
-                      <td colSpan={2} className="py-2 px-3 font-bold text-gray-900 text-base">
-                        {section.name}
-                      </td>
-                    </tr>
-
-                    {subsections.map((sub: any, si: number) => {
-                      const subItems: any[] = sub.items || []
-                      return (
-                        <SectionGroup key={si}>
-                          {/* 중분류 헤더 */}
-                          <tr className="border-b border-gray-200">
-                            <td className="py-1.5 px-3 pl-6 font-semibold text-gray-800">{sub.name}</td>
-                            <td className="py-1.5 px-3 text-right font-mono font-semibold text-gray-800">
-                              {fmtAmount(sub.total)}
-                            </td>
-                          </tr>
-                          {/* 세부 항목 */}
-                          {subItems.map((item: any, idx: number) => (
-                            <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50">
-                              <td className="py-1 px-3 pl-12 text-gray-600">{item.name}</td>
-                              <td className="py-1 px-3 text-right font-mono text-gray-600">
-                                {item.amount < 0 ? `(${fmtAmount(item.amount)})` : fmtAmount(item.amount)}
-                              </td>
-                            </tr>
-                          ))}
-                        </SectionGroup>
-                      )
-                    })}
-
-                    {/* 대분류 합계 */}
-                    <tr className="border-b-2 border-gray-400 bg-gray-50">
-                      <td className="py-2 px-3 font-bold text-gray-900">
-                        {section.name} 총계
-                      </td>
-                      <td className="py-2 px-3 text-right font-mono font-bold text-gray-900">
-                        {fmtAmount(section.total)}
-                      </td>
-                    </tr>
-                  </SectionGroup>
-                )
-              })}
-
-              {/* 부채+자본 총계 = 자산 총계 검증 */}
+              {bsSections.map((section: any) => (
+                <SectionGroup key={section.id}>
+                  <tr className="bg-gray-100 border-b border-gray-300">
+                    <td colSpan={2} className="py-2 px-3 font-bold text-gray-900 text-base">{section.name}</td>
+                  </tr>
+                  {(section.subsections || []).map((sub: any, si: number) => (
+                    <SectionGroup key={si}>
+                      <tr className="border-b border-gray-200">
+                        <td className="py-1.5 px-3 pl-6 font-semibold text-gray-800">{sub.name}</td>
+                        <td className="py-1.5 px-3 text-right font-mono font-semibold text-gray-800">{fmtAmount(sub.total)}</td>
+                      </tr>
+                      {(sub.items || []).map((item: any, idx: number) => (
+                        <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50">
+                          <td className="py-1 px-3 pl-12 text-gray-600">{item.name}</td>
+                          <td className="py-1 px-3 text-right font-mono text-gray-600">
+                            {item.amount < 0 ? `(${fmtAmount(item.amount)})` : fmtAmount(item.amount)}
+                          </td>
+                        </tr>
+                      ))}
+                    </SectionGroup>
+                  ))}
+                  <tr className="border-b-2 border-gray-400 bg-gray-50">
+                    <td className="py-2 px-3 font-bold text-gray-900">{section.name} 총계</td>
+                    <td className="py-2 px-3 text-right font-mono font-bold text-gray-900">{fmtAmount(section.total)}</td>
+                  </tr>
+                </SectionGroup>
+              ))}
               {bsSections.length > 0 && (
                 <tr className="border-t-2 border-gray-800 bg-blue-50">
                   <td className="py-2 px-3 font-bold text-blue-800">부채 및 자본 총계</td>
                   <td className="py-2 px-3 text-right font-mono font-bold text-blue-800">
-                    {fmtAmount(
-                      (balanceData?.total_liabilities ?? 0) + (balanceData?.total_equity ?? 0)
-                    )}
+                    {fmtAmount((balanceData?.total_liabilities ?? 0) + (balanceData?.total_equity ?? 0))}
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-
-        {bsSections.length === 0 && (
-          <div className="text-center py-8 text-gray-400">데이터가 없습니다.</div>
-        )}
+        {bsSections.length === 0 && <div className="text-center py-8 text-gray-400">데이터가 없습니다.</div>}
       </div>
     </div>
   )
@@ -326,10 +282,10 @@ function SectionGroup({ children }: { children: React.ReactNode }) {
 // ============================================================================
 // Tab 2: 월별 추이
 // ============================================================================
-function TrendTab({ uploadId }: { uploadId: number }) {
+function TrendTab({ year }: { year: number }) {
   const { data: trend, isLoading } = useQuery({
-    queryKey: ['financialTrend', uploadId],
-    queryFn: () => financialApi.getMonthlyTrend(uploadId).then((r) => r.data),
+    queryKey: ['financialTrend', year],
+    queryFn: () => financialApi.getMonthlyTrend(year).then((r) => r.data),
   })
 
   if (isLoading) return <Loading />
@@ -435,21 +391,21 @@ function TrendTab({ uploadId }: { uploadId: number }) {
 }
 
 // ============================================================================
-// Tab 3: 시산표 (원장 계정 기준)
+// Tab 3: 시산표
 // ============================================================================
-function TrialBalanceTab({ uploadId }: { uploadId: number }) {
+function TrialBalanceTab({ year }: { year: number }) {
   const [search, setSearch] = useState('')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [detailPage, setDetailPage] = useState(1)
 
   const { data: trialData, isLoading } = useQuery({
-    queryKey: ['financialTrialBalance', uploadId],
-    queryFn: () => financialApi.getTrialBalance(uploadId).then((r) => r.data),
+    queryKey: ['financialTrialBalance', year],
+    queryFn: () => financialApi.getTrialBalance(year).then((r) => r.data),
   })
 
   const { data: detailData, isLoading: detailLoading } = useQuery({
-    queryKey: ['financialAccountDetail', uploadId, selectedAccount, detailPage],
-    queryFn: () => financialApi.getAccountDetail(uploadId, selectedAccount!, detailPage, 30).then((r) => r.data),
+    queryKey: ['financialAccountDetail', year, selectedAccount, detailPage],
+    queryFn: () => financialApi.getAccountDetail(selectedAccount!, year, detailPage, 30).then((r) => r.data),
     enabled: !!selectedAccount,
   })
 
@@ -476,7 +432,6 @@ function TrialBalanceTab({ uploadId }: { uploadId: number }) {
     '영업외': 'bg-yellow-50 text-yellow-700',
   }
 
-  // Group by category
   const grouped = useMemo(() => {
     const groups: Record<string, { name: string; items: any[] }> = {}
     for (const item of filtered) {
@@ -518,22 +473,16 @@ function TrialBalanceTab({ uploadId }: { uploadId: number }) {
             <table className="table w-full text-sm">
               <thead className="table-header">
                 <tr>
-                  <th>계정코드</th>
-                  <th>계정명</th>
-                  <th>카테고리</th>
-                  <th className="text-right">차변합계</th>
-                  <th className="text-right">대변합계</th>
-                  <th className="text-right">잔액</th>
-                  <th className="text-right">건수</th>
+                  <th>계정코드</th><th>계정명</th><th>카테고리</th>
+                  <th className="text-right">차변합계</th><th className="text-right">대변합계</th>
+                  <th className="text-right">잔액</th><th className="text-right">건수</th>
                 </tr>
               </thead>
               <tbody className="table-body">
                 {grouped.map(([catName, group]) => (
                   <SectionGroup key={catName}>
-                    <tr className={`${CATEGORY_COLORS[catName] || 'bg-gray-50 text-gray-700'}`}>
-                      <td colSpan={7} className="font-bold text-xs py-1">
-                        {group.name} ({group.items.length}개)
-                      </td>
+                    <tr className={CATEGORY_COLORS[catName] || 'bg-gray-50 text-gray-700'}>
+                      <td colSpan={7} className="font-bold text-xs py-1">{group.name} ({group.items.length}개)</td>
                     </tr>
                     {group.items.map((a: any) => (
                       <tr key={a.account_code} className="cursor-pointer hover:bg-blue-50"

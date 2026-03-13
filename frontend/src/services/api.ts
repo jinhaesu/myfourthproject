@@ -495,21 +495,21 @@ export const dataApi = {
   },
 }
 
-// Financial Reports API (계정별 원장 기반 재무보고서)
+// Financial Reports API (기간 기반 재무보고서)
 export const financialApi = {
-  getUploadHistory: () => api.get('/ai-classification/upload-history'),
-  getSummary: (uploadId: number) =>
-    api.get('/financial/summary', { params: { upload_id: uploadId } }),
-  getTrialBalance: (uploadId: number) =>
-    api.get('/financial/trial-balance', { params: { upload_id: uploadId } }),
-  getIncomeStatement: (uploadId: number, year?: number, month?: number) =>
-    api.get('/financial/income-statement', { params: { upload_id: uploadId, year, month } }),
-  getBalanceSheet: (uploadId: number) =>
-    api.get('/financial/balance-sheet', { params: { upload_id: uploadId } }),
-  getMonthlyTrend: (uploadId: number, accountCode?: string) =>
-    api.get('/financial/monthly-trend', { params: { upload_id: uploadId, account_code: accountCode } }),
-  getAccountDetail: (uploadId: number, accountCode: string, page?: number, size?: number) =>
-    api.get('/financial/account-detail', { params: { upload_id: uploadId, account_code: accountCode, page, size } }),
+  getAvailableYears: () => api.get('/financial/available-years'),
+  getSummary: (year?: number) =>
+    api.get('/financial/summary', { params: { year } }),
+  getTrialBalance: (year?: number) =>
+    api.get('/financial/trial-balance', { params: { year } }),
+  getIncomeStatement: (year?: number, month?: number) =>
+    api.get('/financial/income-statement', { params: { year, month } }),
+  getBalanceSheet: (year?: number) =>
+    api.get('/financial/balance-sheet', { params: { year } }),
+  getMonthlyTrend: (year?: number, accountCode?: string) =>
+    api.get('/financial/monthly-trend', { params: { year, account_code: accountCode } }),
+  getAccountDetail: (accountCode: string, year?: number, page?: number, size?: number) =>
+    api.get('/financial/account-detail', { params: { account_code: accountCode, year, page, size } }),
 }
 
 export default api
