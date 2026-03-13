@@ -531,7 +531,6 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
             logger.info(f"[BG Upload {upload_id}] row_count 업데이트: {len(df)}")
 
             # Phase A: 계정코드 준비
-            classifier = AIClassifierService()
             saved_count = 0
             error_count = 0
             auto_created_count = 0
@@ -645,7 +644,7 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
             await db.flush()
             logger.info(f"[BG Upload {upload_id}] Phase A 완료: {auto_created_count}개 계정 자동생성")
 
-            # Phase B: Bulk Insert
+            # Phase B: Bulk Insert (원본 데이터만 - 학습 데이터는 모델 학습 시 자동 생성)
             BATCH_SIZE = 2000
             rows_list = df.to_dict('records')
             has_debit = 'debit' in df.columns
@@ -658,7 +657,6 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
             for batch_start in range(0, len(rows_list), BATCH_SIZE):
                 batch = rows_list[batch_start:batch_start + BATCH_SIZE]
                 raw_bulk = []
-                training_bulk = []
 
                 for i, row in enumerate(batch):
                     row_idx = batch_start + i + 1
@@ -680,29 +678,13 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
                         "source_account_code": str(row['source_account_code'])[:20] if has_source_code and pd.notna(row.get('source_account_code')) else None,
                     })
 
-                    account = account_cache.get(code)
-                    if account:
-                        training_bulk.append({
-                            "description_tokens": classifier._preprocess_text(
-                                row['description'], row.get('merchant_name', '') or ''
-                            ),
-                            "merchant_name": merchant_val,
-                            "amount_range": classifier._get_amount_range(Decimal(str(row.get('amount', 0)))),
-                            "account_id": account.id,
-                            "account_code": account.code,
-                            "source_type": "historical",
-                            "dataset_version": "douzone_import",
-                            "sample_weight": 1.0,
-                            "is_active": True,
-                        })
+                    if account_cache.get(code):
                         saved_count += 1
                     else:
                         error_count += 1
 
                 if raw_bulk:
                     await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
-                if training_bulk:
-                    await db.execute(sa_insert(AITrainingData), training_bulk)
                 await db.flush()
 
                 if batch_start % 10000 == 0:
@@ -999,23 +981,17 @@ async def upload_historical_batch(
             existing_accounts = await db.execute(select(Account).where(Account.is_active == True))
             acct_cache = {a.code: a for a in existing_accounts.scalars().all()}
 
-        # Bulk Insert (계정 생성 없이 순수 INSERT만)
-        classifier = AIClassifierService()
+        # 원본 데이터만 INSERT (학습 데이터는 모델 학습 시 자동 생성)
         raw_bulk = []
-        training_bulk = []
         saved_count = 0
-        error_count = 0
 
         for i, row in enumerate(data.rows):
             code = row.account_code.strip()[:20]
-            desc_val = row.description[:500]
-            merchant_val = (row.merchant_name or '')[:200]
-
             raw_bulk.append({
                 "upload_id": upload_id,
                 "row_number": data.batch_index * 3000 + i + 1,
-                "original_description": desc_val,
-                "merchant_name": merchant_val,
+                "original_description": row.description[:500],
+                "merchant_name": (row.merchant_name or '')[:200],
                 "amount": row.amount or 0,
                 "debit_amount": row.debit or 0,
                 "credit_amount": row.credit or 0,
@@ -1024,29 +1000,13 @@ async def upload_historical_batch(
                 "account_name": (row.account_name or '')[:100] if row.account_name else None,
                 "source_account_code": row.source_account_code[:20] if row.source_account_code else None,
             })
-
-            account = acct_cache.get(code)
-            if account:
-                training_bulk.append({
-                    "description_tokens": classifier._preprocess_text(desc_val, merchant_val),
-                    "merchant_name": merchant_val,
-                    "amount_range": classifier._get_amount_range(Decimal(str(row.amount or 0))),
-                    "account_id": account.id,
-                    "account_code": account.code,
-                    "source_type": "historical",
-                    "dataset_version": "douzone_import",
-                    "sample_weight": 1.0,
-                    "is_active": True,
-                })
+            if acct_cache.get(code):
                 saved_count += 1
-            else:
-                error_count += 1
 
         if raw_bulk:
             await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
-        if training_bulk:
-            await db.execute(sa_insert(AITrainingData), training_bulk)
 
+        error_count = len(data.rows) - saved_count
         upload_history.saved_count = (upload_history.saved_count or 0) + saved_count
         upload_history.error_count = (upload_history.error_count or 0) + error_count
 

@@ -70,6 +70,9 @@ class AIClassifierService:
 
         # 2) 모델 파일 없으면 학습 데이터로 자동 재학습 시도
         if not model_loaded:
+            # Raw 데이터에서 학습 데이터 자동 생성 시도
+            await self._generate_training_from_raw(db)
+
             training_count = await db.scalar(
                 select(sa_func.count(AITrainingData.id)).where(
                     AITrainingData.is_active == True
@@ -485,6 +488,74 @@ class AIClassifierService:
 
         return log.id
 
+    async def _generate_training_from_raw(self, db: AsyncSession) -> int:
+        """AIRawTransactionData에서 AITrainingData 자동 생성 (아직 변환 안 된 것만)"""
+        from app.models.ai import AIRawTransactionData
+        from sqlalchemy import insert as sa_insert, func as sa_func
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # 이미 학습 데이터가 있는 raw 데이터 ID 조회
+        existing_raw_ids_q = select(AITrainingData.source_id).where(
+            AITrainingData.source_type == "historical",
+            AITrainingData.source_id.isnot(None),
+        )
+
+        # 아직 학습 데이터로 변환 안 된 raw 데이터 조회
+        result = await db.execute(
+            select(AIRawTransactionData).where(
+                AIRawTransactionData.id.notin_(existing_raw_ids_q)
+            )
+        )
+        raw_rows = result.scalars().all()
+
+        if not raw_rows:
+            return 0
+
+        # 계정 캐시
+        acct_result = await db.execute(
+            select(Account).where(Account.is_active == True)
+        )
+        acct_cache = {a.code: a for a in acct_result.scalars().all()}
+
+        # 배치로 학습 데이터 생성
+        BATCH = 5000
+        total_created = 0
+
+        for start in range(0, len(raw_rows), BATCH):
+            batch = raw_rows[start:start + BATCH]
+            training_bulk = []
+
+            for raw in batch:
+                account = acct_cache.get(raw.account_code)
+                if not account:
+                    continue
+
+                training_bulk.append({
+                    "description_tokens": self._preprocess_text(
+                        raw.original_description, raw.merchant_name or ''
+                    ),
+                    "merchant_name": (raw.merchant_name or '')[:200],
+                    "amount_range": self._get_amount_range(raw.amount or Decimal("0")),
+                    "account_id": account.id,
+                    "account_code": account.code,
+                    "source_type": "historical",
+                    "source_id": raw.id,
+                    "dataset_version": "douzone_import",
+                    "sample_weight": 1.0,
+                    "is_active": True,
+                })
+
+            if training_bulk:
+                await db.execute(sa_insert(AITrainingData), training_bulk)
+                total_created += len(training_bulk)
+
+        if total_created > 0:
+            await db.flush()
+            logger.info(f"[Train] Raw → Training 변환: {total_created}건 생성")
+
+        return total_created
+
     async def retrain_model(
         self,
         db: AsyncSession,
@@ -497,6 +568,9 @@ class AIClassifierService:
         Returns:
             (success, message)
         """
+        # Raw 데이터에서 학습 데이터 자동 생성
+        generated = await self._generate_training_from_raw(db)
+
         # 학습 데이터 조회
         result = await db.execute(
             select(AITrainingData).where(AITrainingData.is_active == True)
