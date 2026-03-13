@@ -39,9 +39,11 @@ class AIClassifierService:
         self._loaded = False
 
     async def load_model(self, db: AsyncSession):
-        """모델 로드"""
+        """모델 로드 (학습 데이터 있으면 자동 학습)"""
         if self._loaded:
             return
+
+        from sqlalchemy import func as sa_func
 
         model_path = Path(settings.AI_MODEL_PATH)
 
@@ -53,13 +55,34 @@ class AIClassifierService:
         )
         model_version = result.scalar_one_or_none()
 
+        model_loaded = False
+
+        # 1) DB에 모델 버전 있고 파일도 있으면 로드
         if model_version and Path(model_version.model_path).exists():
-            self.model = joblib.load(f"{model_version.model_path}/classifier.joblib")
-            self.vectorizer = joblib.load(f"{model_version.model_path}/vectorizer.joblib")
-            self.label_encoder = joblib.load(f"{model_version.model_path}/label_encoder.joblib")
-            self.model_version = model_version.version
-        else:
-            # 기본 모델 생성
+            try:
+                self.model = joblib.load(f"{model_version.model_path}/classifier.joblib")
+                self.vectorizer = joblib.load(f"{model_version.model_path}/vectorizer.joblib")
+                self.label_encoder = joblib.load(f"{model_version.model_path}/label_encoder.joblib")
+                self.model_version = model_version.version
+                model_loaded = True
+            except Exception:
+                pass
+
+        # 2) 모델 파일 없으면 학습 데이터로 자동 재학습 시도
+        if not model_loaded:
+            training_count = await db.scalar(
+                select(sa_func.count(AITrainingData.id)).where(
+                    AITrainingData.is_active == True
+                )
+            ) or 0
+
+            if training_count >= 50:
+                success, _ = await self.retrain_model(db, user_id=None, min_samples=50)
+                if success:
+                    model_loaded = True
+
+        # 3) 학습 데이터도 부족하면 기본 모델
+        if not model_loaded:
             await self._create_default_model(db)
 
         # 계정과목 매핑 로드
@@ -214,6 +237,22 @@ class AIClassifierService:
         else:
             return "very_high"
 
+    async def load_known_merchants(self, db: AsyncSession):
+        """학습 데이터에서 기존 거래처명 목록 로드"""
+        if hasattr(self, '_known_merchants') and self._known_merchants:
+            return
+        from sqlalchemy import func as sa_func
+        result = await db.execute(
+            select(sa_func.distinct(AITrainingData.merchant_name)).where(
+                AITrainingData.is_active == True,
+                AITrainingData.merchant_name.isnot(None),
+                AITrainingData.merchant_name != "",
+            )
+        )
+        self._known_merchants = {
+            r[0].lower().strip() for r in result.all() if r[0]
+        }
+
     async def classify(
         self,
         db: AsyncSession,
@@ -275,6 +314,33 @@ class AIClassifierService:
         auto_confirm = primary_confidence >= settings.AI_AUTO_CONFIRM_THRESHOLD
         needs_review = primary_confidence < settings.AI_REVIEW_REQUIRED_THRESHOLD
 
+        # 검토 사유 생성
+        review_reasons = []
+        if primary_confidence < 0.4:
+            review_reasons.append("신뢰도 매우 낮음")
+        elif primary_confidence < settings.AI_REVIEW_REQUIRED_THRESHOLD:
+            review_reasons.append("신뢰도 낮음")
+
+        # 1,2순위 예측이 비슷하면 분류 불확실
+        if len(predictions) >= 2:
+            second_confidence = float(predictions[1]["confidence_score"])
+            if primary_confidence - second_confidence < 0.1:
+                review_reasons.append("분류 불확실")
+                needs_review = True
+
+        # 미확인 거래처 (known_merchants가 설정되어 있으면 확인)
+        if merchant_name and hasattr(self, '_known_merchants') and self._known_merchants:
+            merchant_lower = merchant_name.lower().strip()
+            if merchant_lower and not any(
+                known in merchant_lower or merchant_lower in known
+                for known in self._known_merchants
+            ):
+                review_reasons.append("미확인 거래처")
+                needs_review = True
+
+        if needs_review and not review_reasons:
+            review_reasons.append("검토 권장")
+
         # 추론 근거 생성
         reasoning = self._generate_reasoning(
             description, merchant_name, amount, transaction_time,
@@ -289,6 +355,7 @@ class AIClassifierService:
             "alternative_predictions": predictions[1:],
             "auto_confirm": auto_confirm,
             "needs_review": needs_review,
+            "review_reasons": review_reasons,
             "reasoning": reasoning,
             "suggested_tags": suggested_tags,
             "model_version": self.model_version
@@ -421,7 +488,7 @@ class AIClassifierService:
     async def retrain_model(
         self,
         db: AsyncSession,
-        user_id: int,
+        user_id: Optional[int] = None,
         min_samples: int = 100
     ) -> Tuple[bool, str]:
         """

@@ -58,6 +58,8 @@ interface ClassificationResult {
   confidence: number
   auto_confirm: boolean
   needs_review: boolean
+  review_reasons: string[]
+  reasoning: string
   actual_account_code?: string
   alternatives: Array<{
     account_code: string
@@ -81,6 +83,10 @@ export default function AIClassificationPage() {
   const [classifyFile, setClassifyFile] = useState<File | null>(null)
   const [classificationResults, setClassificationResults] = useState<ClassificationResult[]>([])
   const [classifyStats, setClassifyStats] = useState<any>(null)
+
+  // Results filter/sort states
+  const [resultFilter, setResultFilter] = useState<'all' | 'review' | 'confirmed'>('all')
+  const [resultSort, setResultSort] = useState<'default' | 'confidence_asc' | 'confidence_desc'>('default')
 
   const queryClient = useQueryClient()
 
@@ -186,6 +192,7 @@ export default function AIClassificationPage() {
         autoConfirmed: response.data.auto_confirmed,
         needsReview: response.data.needs_review,
         avgConfidence: response.data.average_confidence,
+        reviewReasonCounts: response.data.review_reason_counts || {},
       })
       setActiveTab('results')
       showMessage('success', `${response.data.total_rows}개 항목 분류 완료`)
@@ -514,9 +521,21 @@ export default function AIClassificationPage() {
 
             {!status?.is_trained && (
               <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <p className="text-sm text-yellow-800">
-                  AI 모델이 아직 학습되지 않았습니다. 먼저 과거 데이터를 업로드하고 모델을 학습시켜주세요.
+                <p className="text-sm text-yellow-800 mb-2">
+                  AI 모델이 아직 학습되지 않았습니다.
+                  {(status?.training_samples || 0) >= 50
+                    ? ' 학습 데이터가 충분합니다. 아래 버튼으로 모델을 학습시켜주세요.'
+                    : ' 먼저 과거 데이터를 업로드하고 모델을 학습시켜주세요.'}
                 </p>
+                {(status?.training_samples || 0) >= 50 && (
+                  <button
+                    onClick={handleTrainModel}
+                    disabled={loading}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 text-sm"
+                  >
+                    {loading ? '학습 중...' : `모델 학습 시작 (${fmtNum(status?.training_samples || 0)}개 데이터)`}
+                  </button>
+                )}
               </div>
             )}
 
@@ -568,30 +587,81 @@ export default function AIClassificationPage() {
       {activeTab === 'results' && (
         <div className="space-y-6">
           {classifyStats && (
-            <div className="grid grid-cols-4 gap-4">
-              <div className="bg-white p-4 rounded-lg shadow border text-center">
-                <p className="text-2xl font-bold">{classifyStats.total}</p>
-                <p className="text-sm text-gray-500">총 항목</p>
+            <>
+              <div className="grid grid-cols-4 gap-4">
+                <div className="bg-white p-4 rounded-lg shadow border text-center">
+                  <p className="text-2xl font-bold">{classifyStats.total}</p>
+                  <p className="text-sm text-gray-500">총 항목</p>
+                </div>
+                <div className="bg-white p-4 rounded-lg shadow border text-center">
+                  <p className="text-2xl font-bold text-green-600">{classifyStats.autoConfirmed}</p>
+                  <p className="text-sm text-gray-500">자동 확정</p>
+                </div>
+                <div className="bg-white p-4 rounded-lg shadow border text-center cursor-pointer hover:ring-2 hover:ring-orange-300"
+                  onClick={() => setResultFilter(resultFilter === 'review' ? 'all' : 'review')}
+                >
+                  <p className="text-2xl font-bold text-orange-600">{classifyStats.needsReview}</p>
+                  <p className="text-sm text-gray-500">검토 필요</p>
+                </div>
+                <div className="bg-white p-4 rounded-lg shadow border text-center">
+                  <p className="text-2xl font-bold">{(classifyStats.avgConfidence * 100).toFixed(1)}%</p>
+                  <p className="text-sm text-gray-500">평균 신뢰도</p>
+                </div>
               </div>
-              <div className="bg-white p-4 rounded-lg shadow border text-center">
-                <p className="text-2xl font-bold text-green-600">{classifyStats.autoConfirmed}</p>
-                <p className="text-sm text-gray-500">자동 확정</p>
-              </div>
-              <div className="bg-white p-4 rounded-lg shadow border text-center">
-                <p className="text-2xl font-bold text-orange-600">{classifyStats.needsReview}</p>
-                <p className="text-sm text-gray-500">검토 필요</p>
-              </div>
-              <div className="bg-white p-4 rounded-lg shadow border text-center">
-                <p className="text-2xl font-bold">{(classifyStats.avgConfidence * 100).toFixed(1)}%</p>
-                <p className="text-sm text-gray-500">평균 신뢰도</p>
-              </div>
-            </div>
+
+              {/* 검토 사유별 요약 */}
+              {classifyStats.reviewReasonCounts && Object.keys(classifyStats.reviewReasonCounts).length > 0 && (
+                <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                  <h4 className="text-sm font-medium text-orange-800 mb-2">검토 필요 사유 요약</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(classifyStats.reviewReasonCounts as Record<string, number>).map(([reason, count]) => (
+                      <span key={reason} className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-orange-100 text-orange-800 border border-orange-300">
+                        {reason}: <span className="font-bold ml-1">{count}건</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {classificationResults.length > 0 ? (
             <div className="bg-white rounded-lg shadow border overflow-hidden">
-              <div className="p-4 border-b flex justify-between items-center">
-                <h3 className="text-lg font-medium">분류 결과</h3>
+              <div className="p-4 border-b flex flex-wrap justify-between items-center gap-3">
+                <div className="flex items-center gap-3">
+                  <h3 className="text-lg font-medium">분류 결과</h3>
+                  {/* 필터 */}
+                  <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm">
+                    <button
+                      onClick={() => setResultFilter('all')}
+                      className={`px-3 py-1 ${resultFilter === 'all' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                    >
+                      전체 ({classificationResults.length})
+                    </button>
+                    <button
+                      onClick={() => setResultFilter('review')}
+                      className={`px-3 py-1 border-l ${resultFilter === 'review' ? 'bg-orange-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                    >
+                      검토 필요 ({classificationResults.filter(r => r.needs_review).length})
+                    </button>
+                    <button
+                      onClick={() => setResultFilter('confirmed')}
+                      className={`px-3 py-1 border-l ${resultFilter === 'confirmed' ? 'bg-green-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                    >
+                      확정 ({classificationResults.filter(r => r.auto_confirm).length})
+                    </button>
+                  </div>
+                  {/* 정렬 */}
+                  <select
+                    value={resultSort}
+                    onChange={(e) => setResultSort(e.target.value as typeof resultSort)}
+                    className="text-sm border border-gray-300 rounded-lg px-2 py-1"
+                  >
+                    <option value="default">기본순</option>
+                    <option value="confidence_asc">신뢰도 낮은순</option>
+                    <option value="confidence_desc">신뢰도 높은순</option>
+                  </select>
+                </div>
                 <button
                   onClick={handleSubmitFeedback}
                   disabled={loading}
@@ -605,26 +675,52 @@ export default function AIClassificationPage() {
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">적요</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">거래처</th>
-                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase">금액</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">AI 분류</th>
-                      <th className="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">신뢰도</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">수정</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase w-8">#</th>
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">적요</th>
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">거래처</th>
+                      <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">금액</th>
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">AI 분류</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">신뢰도</th>
+                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">검토사유</th>
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">수정</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {classificationResults.map((result, index) => (
-                      <tr key={index} className={result.needs_review ? 'bg-yellow-50' : ''}>
-                        <td className="px-4 py-3 text-sm">{result.description}</td>
-                        <td className="px-4 py-3 text-sm text-gray-500">{result.merchant_name || '-'}</td>
-                        <td className="px-4 py-3 text-sm text-right">{result.amount?.toLocaleString() || 0}</td>
-                        <td className="px-4 py-3 text-sm">
+                    {classificationResults
+                      .map((result, originalIndex) => ({ result, originalIndex }))
+                      .filter(({ result }) => {
+                        if (resultFilter === 'review') return result.needs_review
+                        if (resultFilter === 'confirmed') return result.auto_confirm
+                        return true
+                      })
+                      .sort((a, b) => {
+                        if (resultSort === 'confidence_asc') return a.result.confidence - b.result.confidence
+                        if (resultSort === 'confidence_desc') return b.result.confidence - a.result.confidence
+                        return 0
+                      })
+                      .map(({ result, originalIndex }) => (
+                      <tr
+                        key={originalIndex}
+                        className={
+                          result.actual_account_code && result.actual_account_code !== result.predicted_account_code
+                            ? 'bg-blue-50'
+                            : result.needs_review
+                            ? 'bg-yellow-50'
+                            : ''
+                        }
+                      >
+                        <td className="px-3 py-3 text-xs text-gray-400 text-center">{result.row_index + 1}</td>
+                        <td className="px-3 py-3 text-sm max-w-[200px] truncate" title={result.description}>
+                          {result.description}
+                        </td>
+                        <td className="px-3 py-3 text-sm text-gray-500">{result.merchant_name || '-'}</td>
+                        <td className="px-3 py-3 text-sm text-right">{result.amount?.toLocaleString() || 0}</td>
+                        <td className="px-3 py-3 text-sm">
                           <span className="font-medium">{result.predicted_account_code}</span>
-                          <br />
+                          {' '}
                           <span className="text-gray-500">{result.predicted_account_name}</span>
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="px-3 py-3 text-center">
                           <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
                             result.confidence >= 0.85 ? 'bg-green-100 text-green-800' :
                             result.confidence >= 0.6 ? 'bg-yellow-100 text-yellow-800' :
@@ -633,11 +729,34 @@ export default function AIClassificationPage() {
                             {(result.confidence * 100).toFixed(0)}%
                           </span>
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-3 py-3 text-center">
+                          {result.review_reasons && result.review_reasons.length > 0 ? (
+                            <div className="flex flex-wrap gap-1 justify-center">
+                              {result.review_reasons.map((reason, ri) => (
+                                <span key={ri} className={`inline-flex px-2 py-0.5 text-xs rounded-full font-medium ${
+                                  reason.includes('매우 낮음') ? 'bg-red-100 text-red-700 border border-red-300' :
+                                  reason.includes('낮음') ? 'bg-orange-100 text-orange-700 border border-orange-300' :
+                                  reason.includes('불확실') ? 'bg-purple-100 text-purple-700 border border-purple-300' :
+                                  reason.includes('거래처') ? 'bg-blue-100 text-blue-700 border border-blue-300' :
+                                  'bg-gray-100 text-gray-700 border border-gray-300'
+                                }`}>
+                                  {reason}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-green-500 text-xs">OK</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
                           <select
                             value={result.actual_account_code || result.predicted_account_code}
-                            onChange={(e) => updateClassificationResult(index, e.target.value)}
-                            className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 text-sm"
+                            onChange={(e) => updateClassificationResult(originalIndex, e.target.value)}
+                            className={`block w-full rounded-md shadow-sm text-sm ${
+                              result.actual_account_code && result.actual_account_code !== result.predicted_account_code
+                                ? 'border-blue-400 ring-1 ring-blue-300'
+                                : 'border-gray-300'
+                            } focus:border-blue-500 focus:ring-blue-500`}
                           >
                             <option value={result.predicted_account_code}>
                               {result.predicted_account_code} - {result.predicted_account_name}
@@ -660,6 +779,22 @@ export default function AIClassificationPage() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+
+              {/* 하단 요약 */}
+              <div className="p-4 border-t bg-gray-50 flex justify-between items-center text-sm text-gray-600">
+                <span>
+                  수정된 항목: <span className="font-bold text-blue-600">
+                    {classificationResults.filter(r => r.actual_account_code && r.actual_account_code !== r.predicted_account_code).length}
+                  </span>건
+                </span>
+                <span>
+                  현재 표시: {
+                    resultFilter === 'all' ? classificationResults.length :
+                    resultFilter === 'review' ? classificationResults.filter(r => r.needs_review).length :
+                    classificationResults.filter(r => r.auto_confirm).length
+                  }건
+                </span>
               </div>
             </div>
           ) : (

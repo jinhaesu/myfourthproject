@@ -860,6 +860,7 @@ async def classify_file(
         # AI 분류 수행
         classifier = AIClassifierService()
         await classifier.load_model(db)
+        await classifier.load_known_merchants(db)
 
         results = []
         for idx, row in df.iterrows():
@@ -871,6 +872,7 @@ async def classify_file(
             )
 
             primary = classification.get('primary_prediction', {})
+            review_reasons = classification.get('review_reasons', [])
             results.append({
                 "row_index": int(idx),
                 "description": row['description'],
@@ -881,6 +883,8 @@ async def classify_file(
                 "confidence": float(primary.get('confidence_score', 0)),
                 "auto_confirm": classification.get('auto_confirm', False),
                 "needs_review": classification.get('needs_review', True),
+                "review_reasons": review_reasons,
+                "reasoning": classification.get('reasoning', ''),
                 "alternatives": [
                     {
                         "account_code": alt.get('account_code', ''),
@@ -896,12 +900,19 @@ async def classify_file(
         needs_review_count = sum(1 for r in results if r['needs_review'])
         avg_confidence = sum(r['confidence'] for r in results) / len(results) if results else 0
 
+        # 검토 사유별 통계
+        reason_counts: dict = {}
+        for r in results:
+            for reason in r.get('review_reasons', []):
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
         return {
             "status": "success",
             "total_rows": len(results),
             "auto_confirmed": auto_confirm_count,
             "needs_review": needs_review_count,
             "average_confidence": round(avg_confidence, 4),
+            "review_reason_counts": reason_counts,
             "results": results
         }
 
