@@ -145,7 +145,8 @@ async def health_check():
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
-        "version": settings.APP_VERSION
+        "version": settings.APP_VERSION,
+        "deploy": "bg-upload-v3"
     }
 
 
@@ -155,7 +156,8 @@ async def api_health_check():
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
-        "version": settings.APP_VERSION
+        "version": settings.APP_VERSION,
+        "deploy": "bg-upload-v3"
     }
 
 

@@ -115,7 +115,8 @@ export default function AIClassificationPage() {
 
   const showMessage = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text })
-    setTimeout(() => setMessage(null), 5000)
+    // 에러는 15초, 성공은 5초
+    setTimeout(() => setMessage(null), type === 'error' ? 15000 : 5000)
   }
 
   const refreshData = () => {
@@ -170,21 +171,29 @@ export default function AIClassificationPage() {
     setLoading(true)
     setUploadProgress('파일 전송 중...')
     try {
+      console.log('[Upload] 요청 시작:', uploadFile.name, uploadFile.size)
       const response = await aiClassificationApi.uploadHistorical(uploadFile)
+      console.log('[Upload] 응답:', JSON.stringify(response.data))
       if (response.data.status === 'processing' && response.data.upload_id) {
         setUploadProgress('서버에서 처리 중...')
+        showMessage('success', `파일 접수 완료 (ID: ${response.data.upload_id}). 백그라운드 처리 중...`)
         pollUploadStatus(response.data.upload_id)
       } else {
         // 즉시 완료 (소규모 파일)
         setUploadResult(response.data)
-        showMessage('success', response.data.message)
+        showMessage('success', response.data.message || '업로드 완료')
         setUploadFile(null)
         setUploadProgress(null)
         setLoading(false)
         refreshData()
       }
     } catch (error: any) {
-      showMessage('error', error.response?.data?.detail || '업로드 실패')
+      console.error('[Upload] 오류:', error.response?.status, error.response?.data, error.message)
+      const detail = error.response?.data?.detail
+        || error.response?.data?.message
+        || error.message
+        || '업로드 실패 (서버 응답 없음)'
+      showMessage('error', `업로드 오류: ${detail}`)
       setUploadProgress(null)
       setLoading(false)
     }

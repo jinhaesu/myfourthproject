@@ -755,45 +755,53 @@ async def upload_historical_data(
 
     from app.models.ai import AIDataUploadHistory, UploadStatus
 
-    content = await file.read()
+    try:
+        content = await file.read()
+        logger.info(f"[Upload] 파일 읽기 완료: {file.filename} ({len(content)} bytes)")
 
-    # 업로드 이력 생성 (PROCESSING 상태로 즉시 커밋)
-    file_ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else 'unknown'
-    upload_history = AIDataUploadHistory(
-        filename=file.filename,
-        file_size=len(content),
-        file_type=file_ext,
-        upload_type="historical",
-        uploaded_by=current_user.id,
-        status=UploadStatus.PROCESSING,
-    )
-    db.add(upload_history)
-    await db.flush()
-    upload_id = upload_history.id
-    await db.commit()
+        # 업로드 이력 생성 (PROCESSING 상태로 즉시 커밋)
+        file_ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else 'unknown'
+        upload_history = AIDataUploadHistory(
+            filename=file.filename,
+            file_size=len(content),
+            file_type=file_ext,
+            upload_type="historical",
+            uploaded_by=current_user.id,
+            status=UploadStatus.PROCESSING,
+        )
+        db.add(upload_history)
+        await db.flush()
+        upload_id = upload_history.id
+        await db.commit()
 
-    logger.info(f"[Upload {upload_id}] 업로드 접수 완료, 백그라운드 처리 시작: {file.filename}")
+        logger.info(f"[Upload {upload_id}] 업로드 접수 완료, 백그라운드 처리 시작: {file.filename}")
 
-    # 백그라운드 태스크 시작 (별도 DB 세션 사용, 참조 보관으로 GC 방지)
-    task = asyncio.create_task(
-        _process_upload_background(upload_id, content, file.filename, current_user.id)
-    )
-    _background_tasks.add(task)
+        # 백그라운드 태스크 시작 (별도 DB 세션 사용, 참조 보관으로 GC 방지)
+        task = asyncio.create_task(
+            _process_upload_background(upload_id, content, file.filename, current_user.id)
+        )
+        _background_tasks.add(task)
 
-    def _task_done(t):
-        _background_tasks.discard(t)
-        if t.exception():
-            logger.error(f"[Upload {upload_id}] 백그라운드 태스크 예외: {t.exception()}")
-        else:
-            logger.info(f"[Upload {upload_id}] 백그라운드 태스크 정상 종료")
+        def _task_done(t):
+            _background_tasks.discard(t)
+            if t.exception():
+                logger.error(f"[Upload {upload_id}] 백그라운드 태스크 예외: {t.exception()}")
+            else:
+                logger.info(f"[Upload {upload_id}] 백그라운드 태스크 정상 종료")
 
-    task.add_done_callback(_task_done)
+        task.add_done_callback(_task_done)
 
-    return {
-        "status": "processing",
-        "upload_id": upload_id,
-        "message": f"파일 '{file.filename}'이 접수되었습니다. 백그라운드에서 처리 중입니다.",
-    }
+        return {
+            "status": "processing",
+            "upload_id": upload_id,
+            "message": f"파일 '{file.filename}'이 접수되었습니다. 백그라운드에서 처리 중입니다.",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Upload] 엔드포인트 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"업로드 접수 실패: {str(e)[:200]}")
 
 
 @router.get("/upload-status/{upload_id}")
