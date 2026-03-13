@@ -421,7 +421,7 @@ export const aiClassificationApi = {
       source_account_code?: string
       source_account_name?: string
     }>
-  }) => api.post('/ai-classification/upload-historical-batch', data),
+  }) => api.post('/ai-classification/upload-historical-batch', data, { timeout: 60000 }),
 }
 
 // Sales Automation API

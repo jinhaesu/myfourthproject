@@ -149,8 +149,6 @@ export default function AIClassificationPage() {
         return
       }
 
-      setUploadProgress(`${rows.length.toLocaleString()}행 파싱 완료. 서버로 전송 시작...`)
-
       // 모든 고유 계정코드 수집 (첫 배치에서 일괄 생성용)
       const allCodes = new Set<string>()
       for (const r of rows) {
@@ -158,14 +156,19 @@ export default function AIClassificationPage() {
         if (r.source_account_code) allCodes.add(r.source_account_code)
       }
 
-      // Step 2: 3000행씩 배치로 서버 전송
-      const BATCH_SIZE = 3000
+      // Step 2: 500행씩 배치로 서버 전송
+      const BATCH_SIZE = 500
       const totalBatches = Math.ceil(rows.length / BATCH_SIZE)
       let uploadId: number | null = null
       let totalSaved = 0
 
+      setUploadProgress(`${rows.length.toLocaleString()}행 파싱 완료. 서버 전송 중... (0/${totalBatches} 배치)`)
+      console.log(`[Upload] 전송 시작: ${rows.length}행, ${totalBatches}배치, 계정코드 ${allCodes.size}개`)
+
       for (let i = 0; i < totalBatches; i++) {
         const batch = rows.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE)
+        const startTime = Date.now()
+
         const response = await aiClassificationApi.uploadHistoricalBatch({
           upload_id: uploadId,
           filename: uploadFile.name,
@@ -176,6 +179,9 @@ export default function AIClassificationPage() {
           rows: batch,
           ...(i === 0 ? { all_account_codes: Array.from(allCodes) } : {}),
         })
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+        console.log(`[Upload] 배치 ${i+1}/${totalBatches} 완료 (${elapsed}s)`)
 
         if (i === 0) {
           uploadId = response.data.upload_id
