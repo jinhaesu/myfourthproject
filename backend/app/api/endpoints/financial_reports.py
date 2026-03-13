@@ -52,15 +52,38 @@ def _extract_month(date_str: str) -> Optional[str]:
     return None
 
 
-async def _resolve_names(db: AsyncSession, codes: list) -> dict:
+async def _resolve_names(db: AsyncSession, codes: list, mode: str = "multi") -> dict:
     """계정 코드 → 이름 매핑"""
     if not codes:
         return {}
-    result = await db.execute(
-        select(Account.code, Account.name).where(Account.code.in_(codes))
-    )
-    names = {r.code: r.name for r in result.all()}
-    # Account 테이블에 없는 코드는 raw data에서 찾기
+
+    names = {}
+
+    # 1) source_account_name에서 원장 계정명 조회 (multi 모드)
+    if mode == "multi":
+        raw_result = await db.execute(
+            select(
+                AIRawTransactionData.source_account_code,
+                func.max(AIRawTransactionData.source_account_name).label("name"),
+            )
+            .where(
+                AIRawTransactionData.source_account_code.in_(codes),
+                AIRawTransactionData.source_account_name.isnot(None),
+                AIRawTransactionData.source_account_name != "",
+            )
+            .group_by(AIRawTransactionData.source_account_code)
+        )
+        names.update({r.source_account_code: r.name for r in raw_result.all()})
+
+    # 2) Account 테이블에서 보충
+    missing = [c for c in codes if c not in names]
+    if missing:
+        result = await db.execute(
+            select(Account.code, Account.name).where(Account.code.in_(missing))
+        )
+        names.update({r.code: r.name for r in result.all()})
+
+    # 3) raw data의 account_code/account_name에서 보충
     missing = [c for c in codes if c not in names]
     if missing:
         raw_result = await db.execute(
@@ -76,6 +99,8 @@ async def _resolve_names(db: AsyncSession, codes: list) -> dict:
             .group_by(AIRawTransactionData.account_code)
         )
         names.update({r.account_code: r.name for r in raw_result.all()})
+
+    # 4) 최종 fallback
     for c in codes:
         if c not in names or not names[c]:
             names[c] = f"계정 {c}"
@@ -237,7 +262,7 @@ async def get_trial_balance(
     rows = await _get_account_balances(db, mode, filters)
 
     codes = [r.code for r in rows]
-    names = await _resolve_names(db, codes)
+    names = await _resolve_names(db, codes, mode)
 
     DIGIT_CATEGORY = {
         '1': '자산', '2': '부채', '3': '자본',
@@ -294,7 +319,7 @@ async def get_income_statement(
     rows = await _get_account_balances(db, mode, extra_filters)
 
     codes = [r.code for r in rows]
-    names = await _resolve_names(db, codes)
+    names = await _resolve_names(db, codes, mode)
 
     revenue_items = []
     cogs_items = []
@@ -318,7 +343,8 @@ async def get_income_statement(
             elif first_digit == '5':
                 item["amount"] = d - c
                 cogs_items.append(item)
-            elif first_digit == '8':
+            elif first_digit in ('6', '7', '8'):
+                # 6xx, 7xx, 8xx 모두 판관비/비용으로 처리
                 item["amount"] = d - c
                 sga_items.append(item)
             elif first_digit == '9':
@@ -336,7 +362,7 @@ async def get_income_statement(
             elif first_digit == '5':
                 item["amount"] = c
                 cogs_items.append(item)
-            elif first_digit == '8':
+            elif first_digit in ('6', '7', '8'):
                 item["amount"] = c
                 sga_items.append(item)
             elif first_digit == '9':
@@ -403,7 +429,7 @@ async def get_balance_sheet(
     rows = await _get_account_balances(db, mode, filters)
 
     codes = [r.code for r in rows]
-    names = await _resolve_names(db, codes)
+    names = await _resolve_names(db, codes, mode)
 
     current_asset_items = []
     noncurrent_asset_items = []

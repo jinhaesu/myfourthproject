@@ -291,6 +291,9 @@ class AIRawTransactionData(Base):
     source_account_code: Mapped[Optional[str]] = mapped_column(
         String(20), nullable=True, comment="원장 계정코드 (예: 103)"
     )
+    source_account_name: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, comment="원장 계정명 (예: 보통예금)"
+    )
 
     # 학습 데이터 연결
     training_data_id: Mapped[Optional[int]] = mapped_column(

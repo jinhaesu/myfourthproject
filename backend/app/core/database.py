@@ -124,6 +124,16 @@ async def init_db():
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                # 기존 테이블에 source_account_name 컬럼 추가 (없으면)
+                try:
+                    from sqlalchemy import text
+                    await conn.execute(text(
+                        "ALTER TABLE ai_raw_transaction_data "
+                        "ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(100)"
+                    ))
+                    logger.info("source_account_name column ensured")
+                except Exception as col_err:
+                    logger.warning(f"Column migration skipped: {col_err}")
             logger.info("Database tables created successfully")
             return
         except Exception as e:

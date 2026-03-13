@@ -920,6 +920,7 @@ async def upload_historical_batch(
                 "account_code": row.account_code.strip()[:20],
                 "account_name": (row.account_name or '')[:100] if row.account_name else None,
                 "source_account_code": row.source_account_code[:20] if row.source_account_code else None,
+                "source_account_name": (row.source_account_name or '')[:100] if row.source_account_name else None,
             })
 
         if raw_bulk:
