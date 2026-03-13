@@ -936,6 +936,14 @@ async def upload_historical_batch(
                 if row.source_account_code and row.source_account_name:
                     src_names[row.source_account_code.strip()] = row.source_account_name
 
+            # 매핑 캐시를 id 기반으로도 구성
+            mapped_by_id = {}
+            for m in map_cache.values():
+                if m.target_account_id:
+                    mapped_by_id[m.target_account_id] = m
+
+            # 누락 계정 수집
+            new_accounts = []
             auto_created = 0
             for code in all_codes:
                 if not code or code in acct_cache:
@@ -944,11 +952,10 @@ async def upload_historical_batch(
                     acct_cache[code] = acct_cache[code.zfill(6)]
                     continue
                 if code in map_cache and map_cache[code].target_account_id:
-                    for a in acct_cache.values():
-                        if a.id == map_cache[code].target_account_id:
-                            acct_cache[code] = a
-                            break
-                    if code in acct_cache:
+                    mid = map_cache[code].target_account_id
+                    found = next((a for a in acct_cache.values() if a.id == mid), None)
+                    if found:
+                        acct_cache[code] = found
                         continue
 
                 dm = {'0':'1','1':'1','2':'2','3':'3','4':'4','5':'5','6':'5','7':'5','8':'5','9':'5'}
@@ -962,18 +969,22 @@ async def upload_historical_batch(
                     vat_rate=Decimal("10.00"), is_active=True,
                 )
                 db.add(account)
-                await db.flush()
-                acct_cache[code] = account
-
-                if code not in map_cache:
-                    db.add(AccountCodeMapping(
-                        source_system="douzone", source_code=code, source_name=acct_name,
-                        target_account_id=account.id, target_account_code=account.code,
-                        is_auto_created=True,
-                    ))
+                new_accounts.append((code, account))
                 auto_created += 1
 
-            await db.flush()
+            # 한 번에 flush (2000개 → DB 왕복 1회)
+            if new_accounts:
+                await db.flush()
+                for code, account in new_accounts:
+                    acct_cache[code] = account
+                    if code not in map_cache:
+                        db.add(AccountCodeMapping(
+                            source_system="douzone", source_code=code, source_name=account.name,
+                            target_account_id=account.id, target_account_code=account.code,
+                            is_auto_created=True,
+                        ))
+                await db.flush()
+
             logger.info(f"[Batch {upload_id}] 계정 준비 완료: {auto_created}개 생성")
         else:
             upload_id = data.upload_id
