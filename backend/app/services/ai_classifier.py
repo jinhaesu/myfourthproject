@@ -68,23 +68,7 @@ class AIClassifierService:
             except Exception:
                 pass
 
-        # 2) 모델 파일 없으면 학습 데이터로 자동 재학습 시도
-        if not model_loaded:
-            # Raw 데이터에서 학습 데이터 자동 생성 시도
-            await self._generate_training_from_raw(db)
-
-            training_count = await db.scalar(
-                select(sa_func.count(AITrainingData.id)).where(
-                    AITrainingData.is_active == True
-                )
-            ) or 0
-
-            if training_count >= 50:
-                success, _ = await self.retrain_model(db, user_id=None, min_samples=50)
-                if success:
-                    model_loaded = True
-
-        # 3) 학습 데이터도 부족하면 기본 모델
+        # 2) 모델 파일 없으면 기본 모델 생성 (블로킹 방지 - 재학습은 /train에서 수동으로)
         if not model_loaded:
             await self._create_default_model(db)
 
