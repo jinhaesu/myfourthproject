@@ -643,62 +643,71 @@ async def upload_historical_data(
         # 계정 생성 커밋
         await db.flush()
 
-        # ---- Phase B: 원본 데이터 + 학습 데이터 배치 삽입 ----
-        BATCH_SIZE = 500
+        # ---- Phase B: 원본 데이터 + 학습 데이터 Bulk Insert ----
+        from sqlalchemy import insert as sa_insert
+
+        BATCH_SIZE = 2000
         rows_list = df.to_dict('records')
         has_debit = 'debit' in df.columns
         has_credit = 'credit' in df.columns
         has_date = 'date' in df.columns
         has_account_name = 'account_name' in df.columns
 
+        logger.info(f"[Upload {upload_history.id}] Phase B 시작: {len(rows_list)}행, batch={BATCH_SIZE}")
+
         for batch_start in range(0, len(rows_list), BATCH_SIZE):
             batch = rows_list[batch_start:batch_start + BATCH_SIZE]
+            raw_bulk = []
+            training_bulk = []
 
             for i, row in enumerate(batch):
                 row_idx = batch_start + i + 1
-                code = str(row['account_code']).strip()
-
-                # 원본 데이터 (필드 길이 안전 처리)
+                code = str(row['account_code']).strip()[:20]
                 desc_val = str(row['description'])[:500]
                 merchant_val = str(row.get('merchant_name', '') or '')[:200]
-                acct_name_val = str(row['account_name']).strip()[:100] if has_account_name and pd.notna(row.get('account_name')) else None
-                raw_record = AIRawTransactionData(
-                    upload_id=upload_history.id,
-                    row_number=row_idx,
-                    original_description=desc_val,
-                    merchant_name=merchant_val,
-                    amount=Decimal(str(row.get('amount', 0))),
-                    debit_amount=Decimal(str(row['debit'])) if has_debit and pd.notna(row.get('debit')) else Decimal("0"),
-                    credit_amount=Decimal(str(row['credit'])) if has_credit and pd.notna(row.get('credit')) else Decimal("0"),
-                    transaction_date=str(row['date']) if has_date and pd.notna(row.get('date')) else None,
-                    account_code=code[:20],
-                    account_name=acct_name_val,
-                    source_account_code=str(row['source_account_code'])[:20] if has_source_code and pd.notna(row.get('source_account_code')) else None,
-                )
-                db.add(raw_record)
+
+                raw_bulk.append({
+                    "upload_id": upload_history.id,
+                    "row_number": row_idx,
+                    "original_description": desc_val,
+                    "merchant_name": merchant_val,
+                    "amount": float(row.get('amount', 0)),
+                    "debit_amount": float(row['debit']) if has_debit and pd.notna(row.get('debit')) else 0.0,
+                    "credit_amount": float(row['credit']) if has_credit and pd.notna(row.get('credit')) else 0.0,
+                    "transaction_date": str(row['date']) if has_date and pd.notna(row.get('date')) else None,
+                    "account_code": code,
+                    "account_name": str(row['account_name']).strip()[:100] if has_account_name and pd.notna(row.get('account_name')) else None,
+                    "source_account_code": str(row['source_account_code'])[:20] if has_source_code and pd.notna(row.get('source_account_code')) else None,
+                })
 
                 account = account_cache.get(code)
                 if account:
-                    training_data = AITrainingData(
-                        description_tokens=classifier._preprocess_text(
+                    training_bulk.append({
+                        "description_tokens": classifier._preprocess_text(
                             row['description'], row.get('merchant_name', '') or ''
                         ),
-                        merchant_name=row.get('merchant_name', '') or '',
-                        amount_range=classifier._get_amount_range(Decimal(str(row.get('amount', 0)))),
-                        account_id=account.id,
-                        account_code=account.code,
-                        source_type="historical",
-                        dataset_version="douzone_import",
-                        sample_weight=Decimal("1.0"),
-                        is_active=True,
-                    )
-                    db.add(training_data)
+                        "merchant_name": merchant_val,
+                        "amount_range": classifier._get_amount_range(Decimal(str(row.get('amount', 0)))),
+                        "account_id": account.id,
+                        "account_code": account.code,
+                        "source_type": "historical",
+                        "dataset_version": "douzone_import",
+                        "sample_weight": 1.0,
+                        "is_active": True,
+                    })
                     saved_count += 1
                 else:
                     error_count += 1
 
-            # 배치 단위로 flush
+            # Bulk insert
+            if raw_bulk:
+                await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
+            if training_bulk:
+                await db.execute(sa_insert(AITrainingData), training_bulk)
             await db.flush()
+
+            if batch_start % 10000 == 0:
+                logger.info(f"[Upload {upload_history.id}] 진행: {batch_start + len(batch)}/{len(rows_list)}")
 
         # Step 4: 업로드 이력 완료 처리
         upload_history.saved_count = saved_count
