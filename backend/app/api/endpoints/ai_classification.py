@@ -876,6 +876,7 @@ class BatchUploadRequest(BaseModel):
     batch_index: int
     total_batches: int
     total_rows: int = 0
+    all_account_codes: Optional[List[str]] = None  # 첫 배치에서만 전송
     rows: List[BatchUploadRow]
 
 
@@ -891,7 +892,7 @@ async def upload_historical_batch(
     from collections import Counter
 
     try:
-        # 첫 배치: 업로드 이력 생성
+        # 첫 배치: 업로드 이력 생성 + 계정 사전 준비
         if data.batch_index == 0:
             file_ext = data.filename.rsplit('.', 1)[-1].lower() if '.' in data.filename else 'unknown'
             upload_history = AIDataUploadHistory(
@@ -906,7 +907,74 @@ async def upload_historical_batch(
             db.add(upload_history)
             await db.flush()
             upload_id = upload_history.id
-            logger.info(f"[Batch {upload_id}] 새 업로드 생성: {data.filename}, {data.total_rows}행, {data.total_batches}배치")
+            logger.info(f"[Batch {upload_id}] 새 업로드: {data.filename}, {data.total_rows}행, {data.total_batches}배치")
+
+            # 첫 배치에서 모든 계정 사전 생성 (all_account_codes 사용)
+            all_codes = set()
+            if data.all_account_codes:
+                all_codes = {c.strip()[:20] for c in data.all_account_codes if c.strip()}
+            for row in data.rows:
+                all_codes.add(row.account_code.strip()[:20])
+                if row.source_account_code:
+                    all_codes.add(row.source_account_code.strip()[:20])
+
+            existing_accounts = await db.execute(select(Account).where(Account.is_active == True))
+            acct_cache = {a.code: a for a in existing_accounts.scalars().all()}
+
+            existing_mappings = await db.execute(
+                select(AccountCodeMapping).where(AccountCodeMapping.source_system == "douzone")
+            )
+            map_cache = {m.source_code: m for m in existing_mappings.scalars().all()}
+
+            all_cats = await db.execute(select(AccountCategory).order_by(AccountCategory.code))
+            categories = {c.code: c for c in all_cats.scalars().all()}
+            def_cat_id = next(iter(categories.values())).id if categories else 1
+
+            # 소스 계정명 매핑 (rows에서 추출)
+            src_names = {}
+            for row in data.rows:
+                if row.source_account_code and row.source_account_name:
+                    src_names[row.source_account_code.strip()] = row.source_account_name
+
+            auto_created = 0
+            for code in all_codes:
+                if not code or code in acct_cache:
+                    continue
+                if code.zfill(6) in acct_cache:
+                    acct_cache[code] = acct_cache[code.zfill(6)]
+                    continue
+                if code in map_cache and map_cache[code].target_account_id:
+                    for a in acct_cache.values():
+                        if a.id == map_cache[code].target_account_id:
+                            acct_cache[code] = a
+                            break
+                    if code in acct_cache:
+                        continue
+
+                dm = {'0':'1','1':'1','2':'2','3':'3','4':'4','5':'5','6':'5','7':'5','8':'5','9':'5'}
+                cat_code = dm.get(code[0], '5')
+                cat_id = categories[cat_code].id if cat_code in categories else def_cat_id
+
+                acct_name = src_names.get(code, f"더존계정 {code}")
+                account = Account(
+                    code=code, name=acct_name, category_id=cat_id,
+                    level=1, is_detail=True, is_vat_applicable=True,
+                    vat_rate=Decimal("10.00"), is_active=True,
+                )
+                db.add(account)
+                await db.flush()
+                acct_cache[code] = account
+
+                if code not in map_cache:
+                    db.add(AccountCodeMapping(
+                        source_system="douzone", source_code=code, source_name=acct_name,
+                        target_account_id=account.id, target_account_code=account.code,
+                        is_auto_created=True,
+                    ))
+                auto_created += 1
+
+            await db.flush()
+            logger.info(f"[Batch {upload_id}] 계정 준비 완료: {auto_created}개 생성")
         else:
             upload_id = data.upload_id
             if not upload_id:
@@ -914,75 +982,13 @@ async def upload_historical_batch(
             upload_history = await db.get(AIDataUploadHistory, upload_id)
             if not upload_history:
                 raise HTTPException(status_code=404, detail="업로드를 찾을 수 없습니다.")
+            auto_created = 0
 
-        # 계정 캐시 로드
-        existing_accounts = await db.execute(select(Account).where(Account.is_active == True))
-        account_cache = {a.code: a for a in existing_accounts.scalars().all()}
+            # 이후 배치: 계정 캐시만 빠르게 로드 (생성 X)
+            existing_accounts = await db.execute(select(Account).where(Account.is_active == True))
+            acct_cache = {a.code: a for a in existing_accounts.scalars().all()}
 
-        existing_mappings = await db.execute(
-            select(AccountCodeMapping).where(AccountCodeMapping.source_system == "douzone")
-        )
-        mapping_cache = {m.source_code: m for m in existing_mappings.scalars().all()}
-
-        all_cats = await db.execute(select(AccountCategory).order_by(AccountCategory.code))
-        all_categories = {c.code: c for c in all_cats.scalars().all()}
-        default_cat_id = next(iter(all_categories.values())).id if all_categories else 1
-
-        def _guess_cat(code: str) -> int:
-            if not code: return default_cat_id
-            dm = {'0':'1','1':'1','2':'2','3':'3','4':'4','5':'5','6':'5','7':'5','8':'5','9':'5'}
-            cc = dm.get(code[0], '5')
-            return all_categories[cc].id if cc in all_categories else default_cat_id
-
-        # 누락 계정 자동 생성
-        unique_codes = set()
-        for row in data.rows:
-            unique_codes.add(row.account_code.strip())
-            if row.source_account_code:
-                unique_codes.add(row.source_account_code.strip())
-
-        auto_created = 0
-        for code in unique_codes:
-            code = code[:20]
-            if not code or code in account_cache:
-                continue
-            if code.zfill(6) in account_cache:
-                account_cache[code] = account_cache[code.zfill(6)]
-                continue
-            if code in mapping_cache and mapping_cache[code].target_account_id:
-                for a in account_cache.values():
-                    if a.id == mapping_cache[code].target_account_id:
-                        account_cache[code] = a
-                        break
-                if code in account_cache:
-                    continue
-
-            acct_name = f"더존계정 {code}"
-            for row in data.rows:
-                if row.source_account_code and row.source_account_code.strip() == code and row.source_account_name:
-                    acct_name = row.source_account_name
-                    break
-
-            account = Account(
-                code=code, name=acct_name, category_id=_guess_cat(code),
-                level=1, is_detail=True, is_vat_applicable=True,
-                vat_rate=Decimal("10.00"), is_active=True,
-            )
-            db.add(account)
-            await db.flush()
-            account_cache[code] = account
-
-            if code not in mapping_cache:
-                db.add(AccountCodeMapping(
-                    source_system="douzone", source_code=code, source_name=acct_name,
-                    target_account_id=account.id, target_account_code=account.code,
-                    is_auto_created=True,
-                ))
-            auto_created += 1
-
-        await db.flush()
-
-        # Bulk Insert
+        # Bulk Insert (계정 생성 없이 순수 INSERT만)
         classifier = AIClassifierService()
         raw_bulk = []
         training_bulk = []
@@ -996,7 +1002,7 @@ async def upload_historical_batch(
 
             raw_bulk.append({
                 "upload_id": upload_id,
-                "row_number": data.batch_index * 500 + i + 1,
+                "row_number": data.batch_index * 3000 + i + 1,
                 "original_description": desc_val,
                 "merchant_name": merchant_val,
                 "amount": row.amount or 0,
@@ -1008,7 +1014,7 @@ async def upload_historical_batch(
                 "source_account_code": row.source_account_code[:20] if row.source_account_code else None,
             })
 
-            account = account_cache.get(code)
+            account = acct_cache.get(code)
             if account:
                 training_bulk.append({
                     "description_tokens": classifier._preprocess_text(desc_val, merchant_val),
@@ -1030,7 +1036,6 @@ async def upload_historical_batch(
         if training_bulk:
             await db.execute(sa_insert(AITrainingData), training_bulk)
 
-        # 업로드 이력 업데이트
         upload_history.saved_count = (upload_history.saved_count or 0) + saved_count
         upload_history.error_count = (upload_history.error_count or 0) + error_count
 

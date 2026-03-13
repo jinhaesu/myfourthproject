@@ -151,8 +151,15 @@ export default function AIClassificationPage() {
 
       setUploadProgress(`${rows.length.toLocaleString()}행 파싱 완료. 서버로 전송 시작...`)
 
-      // Step 2: 500행씩 배치로 서버 전송
-      const BATCH_SIZE = 500
+      // 모든 고유 계정코드 수집 (첫 배치에서 일괄 생성용)
+      const allCodes = new Set<string>()
+      for (const r of rows) {
+        allCodes.add(r.account_code)
+        if (r.source_account_code) allCodes.add(r.source_account_code)
+      }
+
+      // Step 2: 3000행씩 배치로 서버 전송
+      const BATCH_SIZE = 3000
       const totalBatches = Math.ceil(rows.length / BATCH_SIZE)
       let uploadId: number | null = null
       let totalSaved = 0
@@ -167,6 +174,7 @@ export default function AIClassificationPage() {
           total_batches: totalBatches,
           total_rows: rows.length,
           rows: batch,
+          ...(i === 0 ? { all_account_codes: Array.from(allCodes) } : {}),
         })
 
         if (i === 0) {

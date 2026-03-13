@@ -408,6 +408,7 @@ export const aiClassificationApi = {
     batch_index: number
     total_batches: number
     total_rows: number
+    all_account_codes?: string[]
     rows: Array<{
       description: string
       account_code: string
