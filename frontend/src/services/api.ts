@@ -330,13 +330,18 @@ export const aiClassificationApi = {
   // 계정과목 목록
   getAccounts: () => api.get('/ai-classification/accounts'),
 
-  // 과거 데이터 업로드 (학습용) - 대량 데이터 처리를 위해 5분 타임아웃
-  uploadHistorical: (file: File) => {
+  // 과거 데이터 업로드 (학습용) - 백그라운드 처리, 10분 타임아웃
+  uploadHistorical: (file: File, onUploadProgress?: (pct: number) => void) => {
     const formData = new FormData()
     formData.append('file', file)
     return api.post('/ai-classification/upload-historical', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 300000,
+      timeout: 600000,
+      onUploadProgress: (e) => {
+        if (onUploadProgress && e.total) {
+          onUploadProgress(Math.round((e.loaded / e.total) * 100))
+        }
+      },
     })
   },
 

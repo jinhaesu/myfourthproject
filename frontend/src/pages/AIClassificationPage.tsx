@@ -172,7 +172,9 @@ export default function AIClassificationPage() {
     setUploadProgress('파일 전송 중...')
     try {
       console.log('[Upload] 요청 시작:', uploadFile.name, uploadFile.size)
-      const response = await aiClassificationApi.uploadHistorical(uploadFile)
+      const response = await aiClassificationApi.uploadHistorical(uploadFile, (pct) => {
+        setUploadProgress(`파일 전송 중... ${pct}%`)
+      })
       console.log('[Upload] 응답:', JSON.stringify(response.data))
       if (response.data.status === 'processing' && response.data.upload_id) {
         setUploadProgress('서버에서 처리 중...')
