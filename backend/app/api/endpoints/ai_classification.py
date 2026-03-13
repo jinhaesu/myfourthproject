@@ -394,6 +394,92 @@ async def get_account_list(
     ]
 
 
+def _parse_file_sync(content: bytes, filename: str, upload_id: int):
+    """동기 함수: 엑셀/CSV 파싱 (별도 스레드에서 실행)"""
+    is_ledger_format = False
+    all_sheets = None
+    ledger_dfs = []
+    normal_dfs = []
+    sheet_errors = []
+
+    if filename.endswith('.csv'):
+        df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
+    else:
+        engine = 'xlrd' if filename.endswith('.xls') else 'openpyxl'
+        all_sheets = pd.read_excel(io.BytesIO(content), header=None, engine=engine, sheet_name=None)
+        logger.info(f"[BG Upload {upload_id}] 시트 수: {len(all_sheets)}")
+
+        for sheet_name, df_raw in all_sheets.items():
+            if df_raw.shape[0] < 2:
+                continue
+            if _is_account_ledger_format(df_raw):
+                is_ledger_format = True
+                try:
+                    parsed = _parse_account_ledger(df_raw)
+                    ledger_dfs.append(parsed)
+                except Exception as e:
+                    sheet_errors.append(f"시트 '{sheet_name}': {str(e)[:100]}")
+            else:
+                normal_dfs.append(pd.read_excel(
+                    io.BytesIO(content), engine=engine, sheet_name=sheet_name
+                ))
+
+        if ledger_dfs:
+            df = pd.concat(ledger_dfs, ignore_index=True)
+        elif normal_dfs:
+            df = pd.concat(normal_dfs, ignore_index=True)
+        else:
+            error_detail = "유효한 데이터가 있는 시트를 찾을 수 없습니다."
+            if sheet_errors:
+                error_detail += " 오류: " + "; ".join(sheet_errors)
+            return {"error": error_detail}
+
+    # 컬럼명 정규화
+    column_mapping = {
+        '적요': 'description', '적요란': 'description',
+        '거래내역': 'description', '내역': 'description',
+        '거래처명': 'merchant_name', '거래처': 'merchant_name',
+        '가맹점': 'merchant_name',
+        '금액': 'amount', '거래금액': 'amount',
+        '계정과목코드': 'account_code', '계정코드': 'account_code',
+        '계정과목': 'account_code', '코드': 'account_code',
+        '계정과목명': 'account_name', '계정명': 'account_name',
+        '차변': 'debit', '대변': 'credit', '날짜': 'date',
+        '원장계정코드': 'source_account_code', '원장계정명': 'source_account_name',
+    }
+
+    original_columns = list(df.columns)
+    df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
+    logger.info(f"[BG Upload {upload_id}] 컬럼: {original_columns} → {list(df.columns)}, 행수(정제전): {len(df)}")
+
+    if 'description' not in df.columns:
+        return {"error": f"'적요' 컬럼 없음. 현재 컬럼: {original_columns}"}
+    if 'account_code' not in df.columns:
+        return {"error": f"'계정과목코드' 컬럼 없음. 현재 컬럼: {original_columns}"}
+
+    # 데이터 정제
+    df = df.dropna(subset=['description', 'account_code'])
+    df['description'] = df['description'].astype(str).str.strip()
+    df['account_code'] = df['account_code'].astype(str).str.strip()
+    if 'merchant_name' in df.columns:
+        df['merchant_name'] = df['merchant_name'].fillna('').astype(str).str.strip()
+    if 'amount' in df.columns:
+        df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+    else:
+        df['amount'] = 0
+
+    logger.info(f"[BG Upload {upload_id}] 파싱 완료: {len(df)}행")
+
+    return {
+        "df": df,
+        "is_ledger_format": is_ledger_format,
+        "all_sheets": all_sheets,
+        "ledger_dfs": ledger_dfs,
+        "normal_dfs": normal_dfs,
+        "sheet_errors": sheet_errors,
+    }
+
+
 async def _process_upload_background(upload_id: int, content: bytes, filename: str, user_id: int):
     """백그라운드에서 대용량 파일 처리 (자체 DB 세션 사용)"""
     from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
@@ -402,101 +488,46 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
 
     logger.info(f"[BG Upload {upload_id}] 백그라운드 처리 시작: {filename} ({len(content)} bytes)")
 
+    # Step 1: 파일 파싱 (별도 스레드 - 이벤트루프 블로킹 방지)
+    try:
+        parse_result = await asyncio.to_thread(_parse_file_sync, content, filename, upload_id)
+    except Exception as e:
+        logger.error(f"[BG Upload {upload_id}] 파싱 스레드 오류: {e}")
+        async with async_session_factory() as db:
+            upload_history = await db.get(AIDataUploadHistory, upload_id)
+            if upload_history:
+                upload_history.status = UploadStatus.FAILED
+                upload_history.error_message = f"파일 파싱 실패: {str(e)[:400]}"
+                await db.commit()
+        return
+
+    if "error" in parse_result:
+        async with async_session_factory() as db:
+            upload_history = await db.get(AIDataUploadHistory, upload_id)
+            if upload_history:
+                upload_history.status = UploadStatus.FAILED
+                upload_history.error_message = parse_result["error"][:500]
+                await db.commit()
+        return
+
+    df = parse_result["df"]
+    is_ledger_format = parse_result["is_ledger_format"]
+    all_sheets = parse_result["all_sheets"]
+    ledger_dfs = parse_result["ledger_dfs"]
+    normal_dfs = parse_result["normal_dfs"]
+    sheet_errors = parse_result["sheet_errors"]
+
+    # Step 2: DB 작업 (파싱 완료 후 세션 열기)
     async with async_session_factory() as db:
         try:
-            # 업로드 이력 로드
             upload_history = await db.get(AIDataUploadHistory, upload_id)
             if not upload_history:
                 logger.error(f"[BG Upload {upload_id}] 업로드 이력을 찾을 수 없음")
                 return
 
-            # 파일 파싱 (멀티 시트 지원)
-            is_ledger_format = False
-            all_sheets = None
-            ledger_dfs = []
-            normal_dfs = []
-            sheet_errors = []
-
-            if filename.endswith('.csv'):
-                df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
-            else:
-                engine = 'xlrd' if filename.endswith('.xls') else 'openpyxl'
-                all_sheets = pd.read_excel(io.BytesIO(content), header=None, engine=engine, sheet_name=None)
-                logger.info(f"[BG Upload {upload_id}] 시트 수: {len(all_sheets)}")
-
-                for sheet_name, df_raw in all_sheets.items():
-                    if df_raw.shape[0] < 2:
-                        continue
-                    if _is_account_ledger_format(df_raw):
-                        is_ledger_format = True
-                        try:
-                            parsed = _parse_account_ledger(df_raw)
-                            ledger_dfs.append(parsed)
-                        except Exception as e:
-                            sheet_errors.append(f"시트 '{sheet_name}': {str(e)[:100]}")
-                    else:
-                        normal_dfs.append(pd.read_excel(
-                            io.BytesIO(content), engine=engine, sheet_name=sheet_name
-                        ))
-
-                if ledger_dfs:
-                    df = pd.concat(ledger_dfs, ignore_index=True)
-                elif normal_dfs:
-                    df = pd.concat(normal_dfs, ignore_index=True)
-                else:
-                    error_detail = "유효한 데이터가 있는 시트를 찾을 수 없습니다."
-                    if sheet_errors:
-                        error_detail += " 오류: " + "; ".join(sheet_errors)
-                    upload_history.status = UploadStatus.FAILED
-                    upload_history.error_message = error_detail[:500]
-                    await db.commit()
-                    return
-
-            # 컬럼명 정규화
-            column_mapping = {
-                '적요': 'description', '적요란': 'description',
-                '거래내역': 'description', '내역': 'description',
-                '거래처명': 'merchant_name', '거래처': 'merchant_name',
-                '가맹점': 'merchant_name',
-                '금액': 'amount', '거래금액': 'amount',
-                '계정과목코드': 'account_code', '계정코드': 'account_code',
-                '계정과목': 'account_code', '코드': 'account_code',
-                '계정과목명': 'account_name', '계정명': 'account_name',
-                '차변': 'debit', '대변': 'credit', '날짜': 'date',
-                '원장계정코드': 'source_account_code', '원장계정명': 'source_account_name',
-            }
-
-            original_columns = list(df.columns)
-            df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
-            logger.info(f"[BG Upload {upload_id}] 컬럼: {original_columns} → {list(df.columns)}, 행수(정제전): {len(df)}")
-
-            if 'description' not in df.columns:
-                upload_history.status = UploadStatus.FAILED
-                upload_history.error_message = f"'적요' 컬럼 없음. 현재 컬럼: {original_columns}"
-                await db.commit()
-                return
-            if 'account_code' not in df.columns:
-                upload_history.status = UploadStatus.FAILED
-                upload_history.error_message = f"'계정과목코드' 컬럼 없음. 현재 컬럼: {original_columns}"
-                await db.commit()
-                return
-
-            # 데이터 정제
-            pre_drop = len(df)
-            df = df.dropna(subset=['description', 'account_code'])
-            logger.info(f"[BG Upload {upload_id}] dropna: {pre_drop} → {len(df)} 행")
-            df['description'] = df['description'].astype(str).str.strip()
-            df['account_code'] = df['account_code'].astype(str).str.strip()
-
-            if 'merchant_name' in df.columns:
-                df['merchant_name'] = df['merchant_name'].fillna('').astype(str).str.strip()
-            if 'amount' in df.columns:
-                df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
-            else:
-                df['amount'] = 0
-
             upload_history.row_count = len(df)
             await db.flush()
+            logger.info(f"[BG Upload {upload_id}] row_count 업데이트: {len(df)}")
 
             # Phase A: 계정코드 준비
             classifier = AIClassifierService()
@@ -551,6 +582,8 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
                 if code not in desc_patterns:
                     desc_patterns[code] = []
                 desc_patterns[code].append(row['description'])
+
+            logger.info(f"[BG Upload {upload_id}] Phase A: {len(unique_codes)}개 고유 계정코드")
 
             for code in unique_codes:
                 code = str(code).strip()
@@ -609,6 +642,7 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
                 auto_created_count += 1
 
             await db.flush()
+            logger.info(f"[BG Upload {upload_id}] Phase A 완료: {auto_created_count}개 계정 자동생성")
 
             # Phase B: Bulk Insert
             BATCH_SIZE = 2000
@@ -686,11 +720,7 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
                 total_sheets = len(all_sheets) if all_sheets else 1
                 sheets_processed = len(ledger_dfs) if is_ledger_format else len(normal_dfs)
 
-            result_msg = f"{saved_count}개 학습 데이터 저장 (원본 {len(df)}건, 자동생성 계정 {auto_created_count}개"
-            if total_sheets > 1:
-                result_msg += f", {total_sheets}개 시트 중 {sheets_processed}개 처리"
-            result_msg += ")"
-            upload_history.error_message = None  # clear any previous error
+            upload_history.error_message = None
 
             logger.info(f"[BG Upload {upload_id}] 커밋: saved={saved_count}, error={error_count}, raw={len(rows_list)}")
             await db.commit()
@@ -698,7 +728,7 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
 
         except Exception as e:
             error_detail = f"{str(e)[:300]}\n{traceback.format_exc()[-200:]}"
-            logger.error(f"[BG Upload {upload_id}] 오류: {error_detail}")
+            logger.error(f"[BG Upload {upload_id}] DB 처리 오류: {error_detail}")
             try:
                 await db.rollback()
                 upload_history = await db.get(AIDataUploadHistory, upload_id)
@@ -706,8 +736,8 @@ async def _process_upload_background(upload_id: int, content: bytes, filename: s
                     upload_history.status = UploadStatus.FAILED
                     upload_history.error_message = error_detail[:500]
                     await db.commit()
-            except Exception:
-                logger.error(f"[BG Upload {upload_id}] 오류 상태 저장 실패")
+            except Exception as e2:
+                logger.error(f"[BG Upload {upload_id}] 오류 상태 저장 실패: {e2}")
 
 
 @router.post("/upload-historical")
