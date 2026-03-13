@@ -399,6 +399,28 @@ export const aiClassificationApi = {
   // 업로드 상태 폴링
   getUploadStatus: (uploadId: number) =>
     api.get(`/ai-classification/upload-status/${uploadId}`),
+
+  // 배치 업로드 (클라이언트 사이드 파싱 후)
+  uploadHistoricalBatch: (data: {
+    upload_id: number | null
+    filename: string
+    file_size: number
+    batch_index: number
+    total_batches: number
+    total_rows: number
+    rows: Array<{
+      description: string
+      account_code: string
+      merchant_name?: string
+      amount?: number
+      debit?: number
+      credit?: number
+      date?: string
+      account_name?: string
+      source_account_code?: string
+      source_account_name?: string
+    }>
+  }) => api.post('/ai-classification/upload-historical-batch', data),
 }
 
 // Sales Automation API

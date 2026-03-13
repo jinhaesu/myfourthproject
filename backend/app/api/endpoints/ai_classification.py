@@ -856,6 +856,208 @@ async def get_upload_status(
     }
 
 
+class BatchUploadRow(BaseModel):
+    description: str
+    account_code: str
+    merchant_name: str = ""
+    amount: float = 0
+    debit: float = 0
+    credit: float = 0
+    date: Optional[str] = None
+    account_name: Optional[str] = None
+    source_account_code: Optional[str] = None
+    source_account_name: Optional[str] = None
+
+
+class BatchUploadRequest(BaseModel):
+    upload_id: Optional[int] = None
+    filename: str
+    file_size: int = 0
+    batch_index: int
+    total_batches: int
+    total_rows: int = 0
+    rows: List[BatchUploadRow]
+
+
+@router.post("/upload-historical-batch")
+async def upload_historical_batch(
+    data: BatchUploadRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """클라이언트에서 파싱된 데이터를 배치 단위로 수신 (대용량 파일 지원)"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
+    from sqlalchemy import insert as sa_insert
+    from collections import Counter
+
+    try:
+        # 첫 배치: 업로드 이력 생성
+        if data.batch_index == 0:
+            file_ext = data.filename.rsplit('.', 1)[-1].lower() if '.' in data.filename else 'unknown'
+            upload_history = AIDataUploadHistory(
+                filename=data.filename,
+                file_size=data.file_size,
+                file_type=file_ext,
+                upload_type="historical",
+                uploaded_by=current_user.id,
+                status=UploadStatus.PROCESSING,
+                row_count=data.total_rows,
+            )
+            db.add(upload_history)
+            await db.flush()
+            upload_id = upload_history.id
+            logger.info(f"[Batch {upload_id}] 새 업로드 생성: {data.filename}, {data.total_rows}행, {data.total_batches}배치")
+        else:
+            upload_id = data.upload_id
+            if not upload_id:
+                raise HTTPException(status_code=400, detail="upload_id가 필요합니다.")
+            upload_history = await db.get(AIDataUploadHistory, upload_id)
+            if not upload_history:
+                raise HTTPException(status_code=404, detail="업로드를 찾을 수 없습니다.")
+
+        # 계정 캐시 로드
+        existing_accounts = await db.execute(select(Account).where(Account.is_active == True))
+        account_cache = {a.code: a for a in existing_accounts.scalars().all()}
+
+        existing_mappings = await db.execute(
+            select(AccountCodeMapping).where(AccountCodeMapping.source_system == "douzone")
+        )
+        mapping_cache = {m.source_code: m for m in existing_mappings.scalars().all()}
+
+        all_cats = await db.execute(select(AccountCategory).order_by(AccountCategory.code))
+        all_categories = {c.code: c for c in all_cats.scalars().all()}
+        default_cat_id = next(iter(all_categories.values())).id if all_categories else 1
+
+        def _guess_cat(code: str) -> int:
+            if not code: return default_cat_id
+            dm = {'0':'1','1':'1','2':'2','3':'3','4':'4','5':'5','6':'5','7':'5','8':'5','9':'5'}
+            cc = dm.get(code[0], '5')
+            return all_categories[cc].id if cc in all_categories else default_cat_id
+
+        # 누락 계정 자동 생성
+        unique_codes = set()
+        for row in data.rows:
+            unique_codes.add(row.account_code.strip())
+            if row.source_account_code:
+                unique_codes.add(row.source_account_code.strip())
+
+        auto_created = 0
+        for code in unique_codes:
+            code = code[:20]
+            if not code or code in account_cache:
+                continue
+            if code.zfill(6) in account_cache:
+                account_cache[code] = account_cache[code.zfill(6)]
+                continue
+            if code in mapping_cache and mapping_cache[code].target_account_id:
+                for a in account_cache.values():
+                    if a.id == mapping_cache[code].target_account_id:
+                        account_cache[code] = a
+                        break
+                if code in account_cache:
+                    continue
+
+            acct_name = f"더존계정 {code}"
+            for row in data.rows:
+                if row.source_account_code and row.source_account_code.strip() == code and row.source_account_name:
+                    acct_name = row.source_account_name
+                    break
+
+            account = Account(
+                code=code, name=acct_name, category_id=_guess_cat(code),
+                level=1, is_detail=True, is_vat_applicable=True,
+                vat_rate=Decimal("10.00"), is_active=True,
+            )
+            db.add(account)
+            await db.flush()
+            account_cache[code] = account
+
+            if code not in mapping_cache:
+                db.add(AccountCodeMapping(
+                    source_system="douzone", source_code=code, source_name=acct_name,
+                    target_account_id=account.id, target_account_code=account.code,
+                    is_auto_created=True,
+                ))
+            auto_created += 1
+
+        await db.flush()
+
+        # Bulk Insert
+        classifier = AIClassifierService()
+        raw_bulk = []
+        training_bulk = []
+        saved_count = 0
+        error_count = 0
+
+        for i, row in enumerate(data.rows):
+            code = row.account_code.strip()[:20]
+            desc_val = row.description[:500]
+            merchant_val = (row.merchant_name or '')[:200]
+
+            raw_bulk.append({
+                "upload_id": upload_id,
+                "row_number": data.batch_index * 500 + i + 1,
+                "original_description": desc_val,
+                "merchant_name": merchant_val,
+                "amount": row.amount or 0,
+                "debit_amount": row.debit or 0,
+                "credit_amount": row.credit or 0,
+                "transaction_date": row.date if row.date else None,
+                "account_code": code,
+                "account_name": (row.account_name or '')[:100] if row.account_name else None,
+                "source_account_code": row.source_account_code[:20] if row.source_account_code else None,
+            })
+
+            account = account_cache.get(code)
+            if account:
+                training_bulk.append({
+                    "description_tokens": classifier._preprocess_text(desc_val, merchant_val),
+                    "merchant_name": merchant_val,
+                    "amount_range": classifier._get_amount_range(Decimal(str(row.amount or 0))),
+                    "account_id": account.id,
+                    "account_code": account.code,
+                    "source_type": "historical",
+                    "dataset_version": "douzone_import",
+                    "sample_weight": 1.0,
+                    "is_active": True,
+                })
+                saved_count += 1
+            else:
+                error_count += 1
+
+        if raw_bulk:
+            await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
+        if training_bulk:
+            await db.execute(sa_insert(AITrainingData), training_bulk)
+
+        # 업로드 이력 업데이트
+        upload_history.saved_count = (upload_history.saved_count or 0) + saved_count
+        upload_history.error_count = (upload_history.error_count or 0) + error_count
+
+        is_last = data.batch_index >= data.total_batches - 1
+        if is_last:
+            upload_history.status = UploadStatus.COMPLETED
+            upload_history.error_message = None
+            logger.info(f"[Batch {upload_id}] 완료! saved={upload_history.saved_count}, error={upload_history.error_count}")
+
+        await db.commit()
+
+        return {
+            "upload_id": upload_id,
+            "batch_index": data.batch_index,
+            "saved_count": saved_count,
+            "error_count": error_count,
+            "auto_created_accounts": auto_created,
+            "status": "completed" if is_last else "processing",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Batch] 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"배치 처리 오류: {str(e)[:200]}")
+
+
 @router.post("/train")
 async def train_model(
     min_samples: int = Query(default=50, description="최소 학습 샘플 수"),

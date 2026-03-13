@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { aiClassificationApi } from '@/services/api'
 import { TrashIcon } from '@heroicons/react/24/outline'
+import { parseExcelForUpload } from '@/utils/excelParser'
 
 // Types
 interface AIStatus {
@@ -128,75 +129,67 @@ export default function AIClassificationPage() {
   // Upload progress state
   const [uploadProgress, setUploadProgress] = useState<string | null>(null)
 
-  // Poll upload status until complete
-  const pollUploadStatus = async (uploadId: number) => {
-    const maxAttempts = 300 // 10분 (2초 간격)
-    for (let i = 0; i < maxAttempts; i++) {
-      await new Promise((r) => setTimeout(r, 2000))
-      try {
-        const res = await aiClassificationApi.getUploadStatus(uploadId)
-        const data = res.data
-        if (data.status === 'completed') {
-          setUploadResult(data)
-          setUploadProgress(null)
-          showMessage('success', `업로드 완료! ${data.saved_count?.toLocaleString()}건 저장됨`)
-          setUploadFile(null)
-          setLoading(false)
-          refreshData()
-          return
-        } else if (data.status === 'failed') {
-          setUploadProgress(null)
-          showMessage('error', data.error_message || '업로드 처리 실패')
-          setLoading(false)
-          refreshData()
-          return
-        }
-        // still processing
-        setUploadProgress(`처리 중... (${data.row_count ? data.row_count.toLocaleString() + '행' : '파싱 중'})`)
-      } catch {
-        // network error during poll - keep trying
-      }
-    }
-    setUploadProgress(null)
-    showMessage('error', '업로드 처리 시간 초과')
-    setLoading(false)
-  }
-
-  // Handle historical data upload
+  // Handle historical data upload - 클라이언트 사이드 파싱 + 배치 전송
   const handleUploadHistorical = async () => {
     if (!uploadFile) {
       showMessage('error', '파일을 선택해주세요.')
       return
     }
     setLoading(true)
-    setUploadProgress('파일 전송 중...')
+    setUploadProgress('파일 파싱 중... (브라우저에서 처리)')
+
     try {
-      console.log('[Upload] 요청 시작:', uploadFile.name, uploadFile.size)
-      const response = await aiClassificationApi.uploadHistorical(uploadFile, (pct) => {
-        setUploadProgress(`파일 전송 중... ${pct}%`)
-      })
-      console.log('[Upload] 응답:', JSON.stringify(response.data))
-      if (response.data.status === 'processing' && response.data.upload_id) {
-        setUploadProgress('서버에서 처리 중...')
-        showMessage('success', `파일 접수 완료 (ID: ${response.data.upload_id}). 백그라운드 처리 중...`)
-        pollUploadStatus(response.data.upload_id)
-      } else {
-        // 즉시 완료 (소규모 파일)
-        setUploadResult(response.data)
-        showMessage('success', response.data.message || '업로드 완료')
-        setUploadFile(null)
-        setUploadProgress(null)
+      // Step 1: 브라우저에서 엑셀 파싱
+      const { rows, sheetCount, sheetsProcessed } = await parseExcelForUpload(uploadFile)
+
+      if (rows.length === 0) {
+        showMessage('error', '파싱된 데이터가 없습니다. 파일 형식을 확인해주세요.')
         setLoading(false)
-        refreshData()
+        setUploadProgress(null)
+        return
       }
+
+      setUploadProgress(`${rows.length.toLocaleString()}행 파싱 완료. 서버로 전송 시작...`)
+
+      // Step 2: 500행씩 배치로 서버 전송
+      const BATCH_SIZE = 500
+      const totalBatches = Math.ceil(rows.length / BATCH_SIZE)
+      let uploadId: number | null = null
+      let totalSaved = 0
+
+      for (let i = 0; i < totalBatches; i++) {
+        const batch = rows.slice(i * BATCH_SIZE, (i + 1) * BATCH_SIZE)
+        const response = await aiClassificationApi.uploadHistoricalBatch({
+          upload_id: uploadId,
+          filename: uploadFile.name,
+          file_size: uploadFile.size,
+          batch_index: i,
+          total_batches: totalBatches,
+          total_rows: rows.length,
+          rows: batch,
+        })
+
+        if (i === 0) {
+          uploadId = response.data.upload_id
+        }
+        totalSaved += response.data.saved_count || 0
+
+        const pct = Math.round(((i + 1) / totalBatches) * 100)
+        setUploadProgress(`서버 저장 중... ${pct}% (${(i + 1)}/${totalBatches} 배치)`)
+      }
+
+      showMessage('success', `${totalSaved.toLocaleString()}건 업로드 완료! (${sheetCount}개 시트 중 ${sheetsProcessed}개 처리)`)
+      setUploadFile(null)
+      setUploadProgress(null)
+      setUploadResult({ total_rows: rows.length, saved_count: totalSaved })
+      refreshData()
+
     } catch (error: any) {
-      console.error('[Upload] 오류:', error.response?.status, error.response?.data, error.message)
-      const detail = error.response?.data?.detail
-        || error.response?.data?.message
-        || error.message
-        || '업로드 실패 (서버 응답 없음)'
+      console.error('[Upload] 오류:', error)
+      const detail = error.response?.data?.detail || error.message || '알 수 없는 오류'
       showMessage('error', `업로드 오류: ${detail}`)
       setUploadProgress(null)
+    } finally {
       setLoading(false)
     }
   }
