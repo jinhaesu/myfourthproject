@@ -30,6 +30,9 @@ from app.services.ai_classifier import AIClassifierService
 
 router = APIRouter(prefix="/ai-classification", tags=["AI 분류"])
 
+# 백그라운드 태스크 참조 보관 (GC 방지)
+_background_tasks: set = set()
+
 
 # ============ 계정별 원장 파싱 헬퍼 ============
 
@@ -741,10 +744,20 @@ async def upload_historical_data(
 
     logger.info(f"[Upload {upload_id}] 업로드 접수 완료, 백그라운드 처리 시작: {file.filename}")
 
-    # 백그라운드 태스크 시작 (별도 DB 세션 사용)
-    asyncio.create_task(
+    # 백그라운드 태스크 시작 (별도 DB 세션 사용, 참조 보관으로 GC 방지)
+    task = asyncio.create_task(
         _process_upload_background(upload_id, content, file.filename, current_user.id)
     )
+    _background_tasks.add(task)
+
+    def _task_done(t):
+        _background_tasks.discard(t)
+        if t.exception():
+            logger.error(f"[Upload {upload_id}] 백그라운드 태스크 예외: {t.exception()}")
+        else:
+            logger.info(f"[Upload {upload_id}] 백그라운드 태스크 정상 종료")
+
+    task.add_done_callback(_task_done)
 
     return {
         "status": "processing",
@@ -762,7 +775,11 @@ async def get_upload_status(
     """업로드 처리 상태 조회 (폴링용)"""
     from app.models.ai import AIDataUploadHistory
 
-    upload = await db.get(AIDataUploadHistory, upload_id)
+    # 캐시된 결과 방지 - 최신 상태를 DB에서 직접 읽기
+    result = await db.execute(
+        select(AIDataUploadHistory).where(AIDataUploadHistory.id == upload_id)
+    )
+    upload = result.scalar_one_or_none()
     if not upload:
         raise HTTPException(status_code=404, detail="업로드를 찾을 수 없습니다.")
 
