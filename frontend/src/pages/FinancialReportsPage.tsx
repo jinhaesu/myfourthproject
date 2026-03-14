@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { financialApi, aiApi } from '@/services/api'
+import { financialApi, aiClassificationApi } from '@/services/api'
 import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
 import * as XLSX from 'xlsx'
 import {
@@ -177,7 +177,7 @@ export default function FinancialReportsPage() {
                     if (!confirm(`${activeYear}년 데이터 ${fmtNum(totalRows)}건을 모두 삭제하시겠습니까?\n삭제 후 다시 업로드해야 합니다.`)) return
                     setDeleting(true)
                     try {
-                      const res = await aiApi.deleteDataByYear(activeYear)
+                      const res = await aiClassificationApi.deleteDataByYear(activeYear)
                       setSyncMsg(res.data.message)
                       queryClient.invalidateQueries()
                     } catch (err: any) {
