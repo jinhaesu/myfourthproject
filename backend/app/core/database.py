@@ -79,18 +79,22 @@ try:
             "future": True,
         }
 
-        # Supabase는 SSL 필수
+        # Supabase / 외부 PostgreSQL: SSL + prepared statement 비활성화
+        connect_args = {}
+
         if _is_supabase or "sslmode" in DATABASE_URL:
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
-            engine_kwargs["connect_args"] = {"ssl": ssl_ctx}
+            connect_args["ssl"] = ssl_ctx
 
-        # Supabase pooler(transaction mode)에서는 prepared statements 비활성화
-        if "pooler.supabase" in DATABASE_URL or "pgbouncer" in DATABASE_URL:
-            if "connect_args" not in engine_kwargs:
-                engine_kwargs["connect_args"] = {}
-            engine_kwargs["connect_args"]["prepared_statement_cache_size"] = 0
+        # Supabase는 모든 연결(direct/pooler)에서 prepared statements 비활성화 필요
+        if _is_supabase or "pgbouncer" in DATABASE_URL:
+            connect_args["statement_cache_size"] = 0
+            connect_args["prepared_statement_cache_size"] = 0
+
+        if connect_args:
+            engine_kwargs["connect_args"] = connect_args
 
         engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 

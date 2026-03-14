@@ -237,9 +237,12 @@ async def get_current_user_info(
 
 
 async def _auto_create_user(db: AsyncSession, email: str) -> User:
-    """화이트리스트 이메일로 사용자 자동 생성 (역할/부서 없어도 동작)"""
+    """이메일 OTP 로그인 시 사용자 자동 생성 (역할 없으면 함께 생성)"""
     import uuid
-    from app.core.security import get_password_hash
+    import hashlib
+
+    # 비밀번호 미사용 (OTP 전용) - bcrypt 우회하여 더미 해시 직접 생성
+    dummy_hash = "$2b$12$" + hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:53]
 
     # 기본 역할 조회 (없으면 자동 생성)
     role_result = await db.execute(
@@ -248,7 +251,6 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
     role = role_result.scalar_one_or_none()
 
     if not role:
-        # 역할 테이블이 비어있으면 기본 역할 자동 생성
         admin_role = Role(
             name="관리자", role_type=RoleType.ADMIN, description="시스템 전체 관리 권한",
             can_create_voucher=True, can_approve_voucher=True, can_finalize_voucher=True,
@@ -263,9 +265,8 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
         db.add(admin_role)
         db.add(employee_role)
         await db.flush()
-        role = admin_role  # 첫 번째 사용자는 관리자로
+        role = admin_role  # 첫 번째 사용자는 관리자
 
-    # 이메일에서 이름 추출
     local_part = email.split("@")[0]
     display_name = local_part.replace(".", " ").replace("_", " ").title()
 
@@ -273,7 +274,7 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
         employee_id=f"AUTO-{uuid.uuid4().hex[:8].upper()}",
         email=email,
         username=local_part,
-        hashed_password=get_password_hash(uuid.uuid4().hex[:16]),
+        hashed_password=dummy_hash,
         full_name=display_name,
         role_id=role.id,
         is_active=True,
@@ -286,7 +287,6 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
     db.add(user)
     await db.commit()
 
-    # refresh에서 relationship 로드 실패 방지
     result = await db.execute(
         select(User)
         .options(selectinload(User.department), selectinload(User.role))
