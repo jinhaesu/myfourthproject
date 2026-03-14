@@ -21,7 +21,7 @@ function fmtAmount(v: number) {
 type TabType = 'statements' | 'trend' | 'trial'
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
-/** 엑셀 파일에서 [CODE] NAME 매핑만 추출 */
+/** 엑셀 파일에서 [CODE] NAME 또는 (CODE) NAME 매핑 추출 */
 function extractAccountMappings(file: File): Promise<Array<{ code: string; name: string }>> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -32,6 +32,13 @@ function extractAccountMappings(file: File): Promise<Array<{ code: string; name:
         const mappings: Array<{ code: string; name: string }> = []
         const seen = new Set<string>()
 
+        // 다양한 더존 계정 헤더 패턴
+        const patterns = [
+          /\[(\d{1,6})\]\s*(.+)/,        // [000101] 보통예금
+          /\((\d{1,6})\)\s*(.+)/,        // (000101) 보통예금
+          /^(\d{4,6})\s+([가-힣].+)/,    // 000101 보통예금
+        ]
+
         for (const sheetName of workbook.SheetNames) {
           const sheet = workbook.Sheets[sheetName]
           const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
@@ -39,10 +46,17 @@ function extractAccountMappings(file: File): Promise<Array<{ code: string; name:
             for (const cell of row) {
               if (cell != null && cell !== '') {
                 const s = String(cell).trim()
-                const match = s.match(/^\[(\d{1,6})\]\s*(.+)/)
-                if (match && !seen.has(match[1])) {
-                  seen.add(match[1])
-                  mappings.push({ code: match[1], name: match[2].trim() })
+                for (const pat of patterns) {
+                  const match = s.match(pat)
+                  if (match && match[1] && match[2] && !seen.has(match[1])) {
+                    const name = match[2].trim()
+                    // 이름이 실제 계정명인지 확인 (숫자만 있는 건 제외)
+                    if (name && !/^\d+$/.test(name)) {
+                      seen.add(match[1])
+                      mappings.push({ code: match[1], name })
+                    }
+                    break
+                  }
                 }
               }
             }

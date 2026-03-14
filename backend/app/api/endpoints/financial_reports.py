@@ -691,3 +691,83 @@ async def backfill_account_names(
 
     await db.commit()
     return {"updated_rows": updated, "codes_processed": len(data.mappings)}
+
+
+@router.get("/debug-data")
+async def debug_raw_data(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """DB에 저장된 원본 데이터 구조 확인용"""
+    # 총 행 수
+    total = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
+
+    # source_account_code 분포
+    src_codes = await db.execute(
+        select(
+            AIRawTransactionData.source_account_code,
+            func.count(AIRawTransactionData.id).label("cnt"),
+        )
+        .group_by(AIRawTransactionData.source_account_code)
+        .order_by(func.count(AIRawTransactionData.id).desc())
+        .limit(20)
+    )
+    source_code_dist = [{"code": r.source_account_code, "count": r.cnt} for r in src_codes.all()]
+
+    # account_code 분포
+    acct_codes = await db.execute(
+        select(
+            AIRawTransactionData.account_code,
+            func.count(AIRawTransactionData.id).label("cnt"),
+        )
+        .group_by(AIRawTransactionData.account_code)
+        .order_by(func.count(AIRawTransactionData.id).desc())
+        .limit(20)
+    )
+    account_code_dist = [{"code": r.account_code, "count": r.cnt} for r in acct_codes.all()]
+
+    # 샘플 행 5개
+    sample = await db.execute(
+        select(AIRawTransactionData).order_by(AIRawTransactionData.id).limit(5)
+    )
+    sample_rows = [
+        {
+            "id": r.id,
+            "source_account_code": r.source_account_code,
+            "source_account_name": getattr(r, 'source_account_name', None),
+            "account_code": r.account_code,
+            "account_name": r.account_name,
+            "original_description": r.original_description[:80] if r.original_description else None,
+            "debit_amount": float(r.debit_amount),
+            "credit_amount": float(r.credit_amount),
+            "transaction_date": r.transaction_date,
+        }
+        for r in sample.scalars().all()
+    ]
+
+    # 모드 감지
+    mode = await _detect_ledger_mode(db)
+
+    # distinct source_account_code 수
+    distinct_src = await db.scalar(
+        select(func.count(func.distinct(AIRawTransactionData.source_account_code)))
+        .where(
+            AIRawTransactionData.source_account_code.isnot(None),
+            AIRawTransactionData.source_account_code != "",
+        )
+    ) or 0
+
+    # distinct account_code 수
+    distinct_acct = await db.scalar(
+        select(func.count(func.distinct(AIRawTransactionData.account_code)))
+    ) or 0
+
+    return {
+        "total_rows": total,
+        "detected_mode": mode,
+        "distinct_source_account_codes": distinct_src,
+        "distinct_account_codes": distinct_acct,
+        "top_source_codes": source_code_dist,
+        "top_account_codes": account_code_dist,
+        "sample_rows": sample_rows,
+    }
