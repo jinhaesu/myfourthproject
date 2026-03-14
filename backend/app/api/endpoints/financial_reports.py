@@ -39,6 +39,7 @@ router = APIRouter()
 DOUZONE_CATEGORY = {
     '1': '자산', '2': '부채', '3': '자본',
     '4': '수익', '5': '매출원가',
+    '6': '제조원가', '7': '제조원가',
     '8': '판관비', '9': '영업외',
 }
 
@@ -370,7 +371,7 @@ async def get_income_statement(
             if first == '4':
                 item["amount"] = c - d
                 revenue_items.append(item)
-            elif first == '5':
+            elif first in ('5', '6', '7'):
                 item["amount"] = d - c
                 cogs_items.append(item)
             elif first == '8':
@@ -388,7 +389,7 @@ async def get_income_statement(
             if first == '4':
                 item["amount"] = d
                 revenue_items.append(item)
-            elif first == '5':
+            elif first in ('5', '6', '7'):
                 item["amount"] = c
                 cogs_items.append(item)
             elif first == '8':

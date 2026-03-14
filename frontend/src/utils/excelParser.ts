@@ -216,6 +216,8 @@ function parseAccountLedger(rows: any[][]): ParsedRow[] {
   }
 
   // 전체 데이터 행 파싱
+  // 핵심: 금액(차변/대변)이 있는 행 = 데이터 행, 금액이 없는 행 = 헤더/요약 행
+  // 데이터 행에서는 절대 계정 헤더 매칭을 하지 않음 (코드+거래처 오인 방지)
   for (let r = firstHeaderRow + 1; r < rows.length; r++) {
     const row = rows[r]
     if (!row || row.length === 0) continue
@@ -230,20 +232,26 @@ function parseAccountLedger(rows: any[][]): ParsedRow[] {
     }
     if (isHeaderRow) continue
 
-    // 계정 섹션 헤더 감지 (모든 셀 검사)
-    let foundHeader = false
-    for (let c = 0; c < row.length; c++) {
-      const cell = row[c]
-      if (cell == null || cell === '') continue
-      const header = tryMatchAccountHeader(String(cell).trim(), row, c)
-      if (header) {
-        currentCode = header.code
-        currentName = header.name
-        foundHeader = true
-        break
+    // 차변/대변 금액을 먼저 파싱
+    const debit = colMap['debit'] !== undefined ? (parseFloat(String(row[colMap['debit']] || 0).replace(/,/g, '')) || 0) : 0
+    const credit = colMap['credit'] !== undefined ? (parseFloat(String(row[colMap['credit']] || 0).replace(/,/g, '')) || 0) : 0
+
+    // 금액이 없는 행 → 계정 섹션 헤더 또는 요약행 (전기이월, 합계 등)
+    if (debit === 0 && credit === 0) {
+      for (let c = 0; c < row.length; c++) {
+        const cell = row[c]
+        if (cell == null || cell === '') continue
+        const header = tryMatchAccountHeader(String(cell).trim(), row, c)
+        if (header) {
+          currentCode = header.code
+          currentName = header.name
+          break
+        }
       }
+      continue  // 금액 없는 행은 항상 스킵
     }
-    if (foundHeader) continue
+
+    // ── 여기부터 금액이 있는 데이터 행만 처리 ──
 
     // 현재 계정코드 없으면 스킵
     if (!currentCode) continue
@@ -254,12 +262,7 @@ function parseAccountLedger(rows: any[][]): ParsedRow[] {
 
     // 상대계정 코드
     const relCode = colMap['code'] !== undefined ? String(row[colMap['code']] || '').trim() : ''
-    // relCode가 숫자가 아니면 무시 (헤더 텍스트 "코드" 등)
     const cleanRelCode = /^\d+$/.test(relCode) ? relCode : ''
-
-    const debit = colMap['debit'] !== undefined ? (parseFloat(String(row[colMap['debit']] || 0).replace(/,/g, '')) || 0) : 0
-    const credit = colMap['credit'] !== undefined ? (parseFloat(String(row[colMap['credit']] || 0).replace(/,/g, '')) || 0) : 0
-    if (debit === 0 && credit === 0) continue
 
     const merchant = colMap['merchant'] !== undefined ? String(row[colMap['merchant']] || '').trim() : ''
 
