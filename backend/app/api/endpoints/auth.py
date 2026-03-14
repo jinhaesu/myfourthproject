@@ -273,7 +273,7 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
         employee_id=f"AUTO-{uuid.uuid4().hex[:8].upper()}",
         email=email,
         username=local_part,
-        hashed_password=get_password_hash(uuid.uuid4().hex),
+        hashed_password=get_password_hash(uuid.uuid4().hex[:16]),
         full_name=display_name,
         role_id=role.id,
         is_active=True,
