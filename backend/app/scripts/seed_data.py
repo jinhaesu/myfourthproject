@@ -19,14 +19,26 @@ from app.models.sales import SalesChannel, ChannelType, ApiType
 
 
 async def reset_database():
-    """데이터베이스 초기화 - 모든 테이블과 enum 타입 삭제"""
+    """데이터베이스 초기화 - 시스템 테이블만 리셋 (업로드 데이터 보존!)"""
     print("🔧 데이터베이스 초기화 중...")
+    print("⚠️  주의: ai_raw_transaction_data, ai_data_upload_history는 보존됩니다!")
 
     async with engine.begin() as conn:
-        # 모든 테이블 삭제
+        # 업로드 데이터 보존 확인
+        try:
+            result = await conn.execute(text("SELECT COUNT(*) FROM ai_raw_transaction_data"))
+            raw_count = result.scalar() or 0
+            if raw_count > 0:
+                print(f"📊 보존할 업로드 데이터: {raw_count:,}건")
+        except Exception:
+            raw_count = 0
+
+        # 시스템 테이블만 삭제 (업로드 데이터 관련 테이블 제외!)
         tables = [
             "login_attempts", "data_snapshots", "audit_logs", "custom_tags",
             "ai_model_versions", "ai_training_data", "ai_classification_logs",
+            # "ai_raw_transaction_data" - 절대 삭제 금지!
+            # "ai_data_upload_history" - 절대 삭제 금지!
             "budget_usage", "budget_lines", "budgets",
             "reconciliation_matches", "payment_schedules", "payables", "receivables",
             "bank_transactions", "bank_accounts",

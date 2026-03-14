@@ -22,12 +22,13 @@ class Settings(BaseSettings):
     PORT: int = 8000
     WORKERS: int = 4
 
-    # Database (SQLite를 기본값으로 사용, 프로덕션에서는 PostgreSQL 설정 필요)
+    # Database (Supabase PostgreSQL 권장, SQLite는 로컬 개발용)
+    # Supabase: postgresql://user:pass@db.xxx.supabase.co:5432/postgres
     DATABASE_URL: str = Field(
         default="sqlite+aiosqlite:///./smartfinance.db",
-        description="Database connection string"
+        description="Database connection string (Supabase PostgreSQL recommended)"
     )
-    DATABASE_POOL_SIZE: int = 20
+    DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
 
     # Redis

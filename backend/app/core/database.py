@@ -1,6 +1,9 @@
 """
 Smart Finance Core - Database Configuration
-PostgreSQL 데이터베이스 연결 및 세션 관리
+Supabase PostgreSQL 데이터베이스 연결 및 세션 관리
+- 영구 데이터 보존 (배포/재시작 무관)
+- Supavisor connection pooler 지원
+- SSL 연결 지원
 """
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
@@ -9,6 +12,7 @@ from typing import AsyncGenerator, Optional
 from contextlib import asynccontextmanager
 import logging
 import os
+import ssl
 
 logger = logging.getLogger(__name__)
 
@@ -32,17 +36,23 @@ class Base(DeclarativeBase):
 # 데이터베이스 URL 가져오기 (환경변수 우선)
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///./smartfinance.db")
 
-# Railway PostgreSQL URL 변환 (postgres:// -> postgresql+asyncpg://)
+# Supabase / Railway PostgreSQL URL 변환
+# Supabase: postgresql://user:pass@host:port/db → postgresql+asyncpg://user:pass@host:port/db
+# Railway: postgres://user:pass@host:port/db → postgresql+asyncpg://user:pass@host:port/db
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
-elif DATABASE_URL.startswith("postgresql://"):
+elif DATABASE_URL.startswith("postgresql://") and "+asyncpg" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+# Supabase pooler URL 처리 (?pgbouncer=true 파라미터 처리)
+_is_supabase = "supabase" in DATABASE_URL or "pooler.supabase" in DATABASE_URL
 
 # 디버그: DB URL 정보 출력 (비밀번호 마스킹)
 try:
     _parts = DATABASE_URL.split("@")
     _host_info = _parts[-1] if len(_parts) > 1 else "unknown"
-    logger.info(f"Database URL scheme: {DATABASE_URL.split('://')[0]}, host: {_host_info}")
+    _db_type = "Supabase" if _is_supabase else ("PostgreSQL" if "postgresql" in DATABASE_URL else "SQLite")
+    logger.info(f"Database: {_db_type}, host: {_host_info.split('?')[0]}")
 except Exception:
     logger.info(f"Database URL scheme: {DATABASE_URL.split('://')[0] if '://' in DATABASE_URL else 'unknown'}")
 
@@ -58,15 +68,31 @@ try:
             future=True
         )
     else:
-        engine = create_async_engine(
-            DATABASE_URL,
-            pool_size=3,
-            max_overflow=5,
-            pool_pre_ping=True,
-            pool_recycle=300,
-            echo=False,
-            future=True
-        )
+        # PostgreSQL (Supabase / Railway / 기타)
+        engine_kwargs = {
+            "pool_size": 5,
+            "max_overflow": 10,
+            "pool_pre_ping": True,
+            "pool_recycle": 300,
+            "pool_timeout": 30,
+            "echo": False,
+            "future": True,
+        }
+
+        # Supabase는 SSL 필수
+        if _is_supabase or "sslmode" in DATABASE_URL:
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            engine_kwargs["connect_args"] = {"ssl": ssl_ctx}
+
+        # Supabase pooler(transaction mode)에서는 prepared statements 비활성화
+        if "pooler.supabase" in DATABASE_URL or "pgbouncer" in DATABASE_URL:
+            if "connect_args" not in engine_kwargs:
+                engine_kwargs["connect_args"] = {}
+            engine_kwargs["connect_args"]["prepared_statement_cache_size"] = 0
+
+        engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 
     async_session_factory = async_sessionmaker(
         engine,
@@ -84,7 +110,7 @@ except Exception as e:
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for getting database session"""
     if async_session_factory is None:
-        raise RuntimeError("Database not configured")
+        raise RuntimeError("Database not configured. Set DATABASE_URL environment variable.")
     async with async_session_factory() as session:
         try:
             yield session
@@ -100,7 +126,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
     """Context manager for database session"""
     if async_session_factory is None:
-        raise RuntimeError("Database not configured")
+        raise RuntimeError("Database not configured. Set DATABASE_URL environment variable.")
     async with async_session_factory() as session:
         try:
             yield session
@@ -113,34 +139,50 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db():
-    """Initialize database tables (with retry for cold-start connections)"""
+    """Initialize database tables (with retry for cold-start connections)
+
+    중요: create_all은 기존 테이블이 있으면 건드리지 않습니다.
+    새 테이블만 생성하고 기존 데이터는 절대 삭제하지 않습니다.
+    """
     import asyncio
 
     if engine is None:
         logger.warning("Database engine not available, skipping init")
         return
 
-    for attempt in range(3):
+    for attempt in range(5):  # Supabase cold start 대비 5회 재시도
         try:
             async with engine.begin() as conn:
+                # 기존 테이블 유지, 없는 테이블만 생성 (데이터 보존)
                 await conn.run_sync(Base.metadata.create_all)
-                # 기존 테이블에 source_account_name 컬럼 추가 (없으면)
-                try:
-                    from sqlalchemy import text
-                    await conn.execute(text(
-                        "ALTER TABLE ai_raw_transaction_data "
-                        "ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(100)"
-                    ))
-                    logger.info("source_account_name column ensured")
-                except Exception as col_err:
-                    logger.warning(f"Column migration skipped: {col_err}")
-            logger.info("Database tables created successfully")
+
+                # 스키마 마이그레이션 (기존 테이블에 컬럼 추가)
+                from sqlalchemy import text
+                migrations = [
+                    "ALTER TABLE ai_raw_transaction_data ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(100)",
+                ]
+                for sql in migrations:
+                    try:
+                        await conn.execute(text(sql))
+                    except Exception as col_err:
+                        # SQLite는 IF NOT EXISTS 미지원 → 무시
+                        if "duplicate" not in str(col_err).lower() and "already exists" not in str(col_err).lower():
+                            logger.warning(f"Migration skipped: {col_err}")
+
+            # 연결 테스트 - 데이터 존재 확인
+            async with async_session_factory() as session:
+                from sqlalchemy import text
+                result = await session.execute(text("SELECT COUNT(*) FROM ai_raw_transaction_data"))
+                count = result.scalar() or 0
+                logger.info(f"Database initialized. ai_raw_transaction_data: {count:,} rows preserved.")
+
+            logger.info("Database tables ready (existing data preserved)")
             return
         except Exception as e:
-            logger.warning(f"DB init attempt {attempt + 1}/3 failed: {e}")
-            if attempt < 2:
-                await asyncio.sleep(2)
-    raise RuntimeError("Failed to initialize database after 3 attempts")
+            logger.warning(f"DB init attempt {attempt + 1}/5 failed: {e}")
+            if attempt < 4:
+                await asyncio.sleep(3)
+    raise RuntimeError("Failed to initialize database after 5 attempts")
 
 
 async def close_db():
