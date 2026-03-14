@@ -790,10 +790,10 @@ async def get_ai_analysis(
     """AI 재무 분석 - 4대 카테고리 (OpenAI GPT-4o 사용)"""
     from app.core.config import settings
 
-    if not settings.OPENAI_API_KEY:
+    if not settings.ANTHROPIC_API_KEY:
         raise HTTPException(
             status_code=400,
-            detail="AI 분석을 위해 OPENAI_API_KEY 환경변수를 설정해주세요."
+            detail="AI 분석을 위해 ANTHROPIC_API_KEY 환경변수를 설정해주세요. (Railway Variables에서 설정)"
         )
 
     # 1) 재무 데이터 수집
@@ -964,21 +964,26 @@ async def get_ai_analysis(
   ]
 }}"""
 
-    # 6) OpenAI API 호출
+    # 6) Claude API 호출
     try:
-        import openai
-        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+        import anthropic
+        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=4000,
+            temperature=0.3,
+            system="당신은 한국 중소기업 전문 공인회계사입니다. 반드시 요청된 JSON 형식으로만 응답하세요. JSON 외 다른 텍스트는 절대 포함하지 마세요.",
             messages=[
-                {"role": "system", "content": "당신은 한국 중소기업 전문 공인회계사입니다. 반드시 요청된 JSON 형식으로만 응답하세요."},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.3,
-            max_tokens=4000,
-            response_format={"type": "json_object"},
         )
-        content = response.choices[0].message.content or "{}"
+        content = message.content[0].text if message.content else "{}"
+        # JSON 블록 추출 (```json ... ``` 감싸진 경우 처리)
+        if "```" in content:
+            import re as _re
+            json_match = _re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            if json_match:
+                content = json_match.group(1).strip()
         analysis = json.loads(content)
     except json.JSONDecodeError:
         logger.error(f"AI 응답 JSON 파싱 실패: {content[:500]}")

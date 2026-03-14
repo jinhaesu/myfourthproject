@@ -70,16 +70,69 @@ function GuideBox({ title, children, defaultOpen }: { title: string; children: R
 function InfoTip({ text }: { text: string }) {
   const [show, setShow] = useState(false)
   return (
-    <span className="relative inline-flex ml-1.5 align-middle">
+    <span className="relative inline-flex ml-1.5 align-middle print:hidden">
       <button onClick={(e) => { e.stopPropagation(); setShow(!show) }}
         className="text-blue-400 hover:text-blue-600 focus:outline-none">
-        <InformationCircleIcon className="h-3.5 w-3.5" />
+        <InformationCircleIcon className="h-4 w-4" />
       </button>
       {show && (
-        <div className="absolute z-20 left-5 -top-1 w-64 bg-white border border-blue-200 rounded-lg p-2.5 text-xs text-gray-600 shadow-lg leading-relaxed"
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setShow(false)} />
+          <div className="absolute z-40 left-0 top-6 w-80 bg-white border border-blue-100 rounded-xl p-4 text-[13px] text-gray-700 shadow-xl leading-[1.7] whitespace-normal break-keep"
+            onClick={(e) => e.stopPropagation()}>
+            {text}
+          </div>
+        </>
+      )}
+    </span>
+  )
+}
+
+/** 금액 호버 시 +/- 항목 구성 보기 */
+function AmountBreakdown({ items, total, isSubtotal }: { items: any[]; total: number; isSubtotal?: boolean }) {
+  const [show, setShow] = useState(false)
+  const plusItems = items.filter((i: any) => i.amount >= 0)
+  const minusItems = items.filter((i: any) => i.amount < 0)
+  const plusTotal = plusItems.reduce((s: number, i: any) => s + i.amount, 0)
+  const minusTotal = minusItems.reduce((s: number, i: any) => s + i.amount, 0)
+
+  return (
+    <span className="relative cursor-help"
+      onMouseEnter={() => items.length > 0 && setShow(true)}
+      onMouseLeave={() => setShow(false)}>
+      <span className={`${isSubtotal ? (total >= 0 ? 'text-gray-900' : 'text-red-600') : 'text-gray-800'}`}>
+        {total < 0 ? `(${fmtAmount(total)})` : fmtAmount(total)}
+      </span>
+      {show && (
+        <div className="absolute z-30 right-0 top-full mt-1 w-80 bg-white border border-gray-200 rounded-xl shadow-xl p-4 text-xs print:hidden"
           onClick={(e) => e.stopPropagation()}>
-          {text}
-          <button onClick={() => setShow(false)} className="block mt-1 text-blue-500 hover:underline text-[10px]">닫기</button>
+          <div className="font-bold text-gray-800 mb-3 text-[13px] border-b pb-2">{items.length}개 계정으로 구성</div>
+          <div className="space-y-1.5">
+            <div className="flex justify-between">
+              <span className="text-blue-700">+ 항목 ({plusItems.length}개)</span>
+              <span className="font-mono font-semibold text-blue-700">{fmtNum(plusTotal)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-red-600">- 항목 ({minusItems.length}개)</span>
+              <span className="font-mono font-semibold text-red-600">({fmtNum(Math.abs(minusTotal))})</span>
+            </div>
+            <div className="flex justify-between font-bold border-t pt-1.5 mt-1.5 text-[13px]">
+              <span>합계</span>
+              <span className={`font-mono ${total < 0 ? 'text-red-700' : 'text-gray-900'}`}>
+                {total < 0 ? `(${fmtAmount(total)})` : fmtAmount(total)}
+              </span>
+            </div>
+          </div>
+          {items.length <= 8 && (
+            <div className="mt-3 pt-2 border-t space-y-1 max-h-40 overflow-auto">
+              {items.map((i: any, idx: number) => (
+                <div key={idx} className="flex justify-between text-[11px] text-gray-500">
+                  <span className="truncate mr-2">{i.name}</span>
+                  <span className="font-mono whitespace-nowrap">{i.amount < 0 ? `(${fmtAmount(i.amount)})` : fmtNum(i.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </span>
@@ -132,9 +185,94 @@ function downloadStatementsExcel(incomeData: any, balanceData: any, year: number
   XLSX.writeFile(wb, `재무제표_${year}년${month ? `_${month}월` : ''}.xlsx`)
 }
 
-/** 인쇄(PDF) 다운로드 */
-function printStatements() {
-  window.print()
+/** PDF 다운로드 (html2canvas + jsPDF) */
+async function downloadPDF(incomeData: any, balanceData: any, year: number, month: number | null) {
+  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+    import('html2canvas'),
+    import('jspdf'),
+  ])
+
+  const pdf = new jsPDF('p', 'mm', 'a4')
+  const PAGE_W = 190, MARGIN = 10, PAGE_H = 277
+
+  async function renderAndAdd(html: string, isFirst: boolean) {
+    const div = document.createElement('div')
+    div.style.cssText = `position:fixed;left:-9999px;top:0;width:720px;background:#fff;padding:32px;font-family:Pretendard,-apple-system,sans-serif;font-size:12px;color:#222;line-height:1.5;`
+    div.innerHTML = html
+    document.body.appendChild(div)
+    const canvas = await html2canvas(div, { scale: 2, backgroundColor: '#ffffff' })
+    document.body.removeChild(div)
+
+    if (!isFirst) pdf.addPage()
+    const imgH = canvas.height * PAGE_W / canvas.width
+    if (imgH <= PAGE_H) {
+      pdf.addImage(canvas, 'PNG', MARGIN, MARGIN, PAGE_W, imgH)
+    } else {
+      let srcY = 0
+      let first = true
+      while (srcY < canvas.height) {
+        if (!first) pdf.addPage()
+        const sliceH = Math.min(canvas.height - srcY, PAGE_H * canvas.width / PAGE_W)
+        const sc = document.createElement('canvas')
+        sc.width = canvas.width; sc.height = sliceH
+        sc.getContext('2d')!.drawImage(canvas, 0, srcY, canvas.width, sliceH, 0, 0, canvas.width, sliceH)
+        pdf.addImage(sc, 'PNG', MARGIN, MARGIN, PAGE_W, sliceH * PAGE_W / canvas.width)
+        srcY += sliceH; first = false
+      }
+    }
+  }
+
+  // 손익계산서 HTML
+  const fmtV = (v: number) => v < 0 ? `(${Math.abs(v).toLocaleString('ko-KR')})` : Math.abs(v).toLocaleString('ko-KR')
+  let incHTML = `<div style="text-align:center;margin-bottom:24px;">
+    <h1 style="font-size:22px;letter-spacing:10px;margin:0;font-weight:bold;">손 익 계 산 서</h1>
+    <p style="font-size:13px;color:#666;margin-top:6px;">주식회사 조인앤조인 | ${year}년 ${month ? `${month}월` : '1월 1일 ~ 12월 31일'}</p>
+  </div>
+  <table style="width:100%;border-collapse:collapse;">
+    <tr style="border-top:3px solid #222;border-bottom:2px solid #222;">
+      <th style="text-align:left;padding:8px;width:50px;font-size:12px;">구분</th>
+      <th style="text-align:left;padding:8px;font-size:12px;">과 목</th>
+      <th style="text-align:right;padding:8px;width:150px;font-size:12px;">금 액</th>
+      <th style="text-align:right;padding:8px;width:70px;font-size:12px;">비율(%)</th>
+    </tr>`
+  for (const s of (incomeData?.sections || [])) {
+    for (const i of (s.items || [])) {
+      incHTML += `<tr style="border-bottom:1px solid #eee;"><td></td><td style="padding:5px 8px 5px 28px;color:#555;font-size:11px;">${i.name}</td><td style="text-align:right;padding:5px 8px;font-family:monospace;font-size:11px;">${fmtV(i.amount)}</td><td></td></tr>`
+    }
+    const bg = s.is_subtotal ? 'background:#f3f4f6;' : ''
+    const bdr = s.is_subtotal ? 'border-bottom:2px solid #888;' : 'border-bottom:1px solid #ddd;'
+    incHTML += `<tr style="${bdr}${bg}"><td style="padding:7px 8px;font-weight:bold;font-size:12px;">${s.id}.</td><td style="padding:7px 8px;font-weight:bold;font-size:12px;">${s.name}</td><td style="text-align:right;padding:7px 8px;font-family:monospace;font-weight:bold;font-size:12px;${s.total < 0 ? 'color:#dc2626;' : ''}">${fmtV(s.total)}</td><td style="text-align:right;padding:7px 8px;color:#888;font-size:11px;">${s.pct !== undefined ? s.pct.toFixed(2) : ''}</td></tr>`
+  }
+  incHTML += `</table>`
+
+  // 재무상태표 HTML
+  let bsHTML = `<div style="text-align:center;margin-bottom:24px;">
+    <h1 style="font-size:22px;letter-spacing:10px;margin:0;font-weight:bold;">재 무 상 태 표</h1>
+    <p style="font-size:13px;color:#666;margin-top:6px;">주식회사 조인앤조인 | ${year}년 기준</p>
+  </div>
+  <table style="width:100%;border-collapse:collapse;">
+    <tr style="border-top:3px solid #222;border-bottom:2px solid #222;">
+      <th style="text-align:left;padding:8px;font-size:12px;">과 목</th>
+      <th style="text-align:right;padding:8px;width:170px;font-size:12px;">금 액</th>
+    </tr>`
+  for (const s of (balanceData?.sections || [])) {
+    bsHTML += `<tr style="background:#e5e7eb;border-bottom:1px solid #ccc;"><td colspan="2" style="padding:8px;font-weight:bold;font-size:14px;">${s.name}</td></tr>`
+    for (const sub of (s.subsections || [])) {
+      bsHTML += `<tr style="border-bottom:1px solid #ddd;"><td style="padding:6px 8px 6px 16px;font-weight:600;font-size:12px;">${sub.name}</td><td style="text-align:right;padding:6px 8px;font-family:monospace;font-weight:600;font-size:12px;">${fmtV(sub.total)}</td></tr>`
+      for (const i of (sub.items || [])) {
+        bsHTML += `<tr style="border-bottom:1px solid #f0f0f0;"><td style="padding:4px 8px 4px 36px;color:#666;font-size:11px;">${i.name}</td><td style="text-align:right;padding:4px 8px;font-family:monospace;color:#666;font-size:11px;">${fmtV(i.amount)}</td></tr>`
+      }
+    }
+    bsHTML += `<tr style="border-bottom:2px solid #888;background:#f3f4f6;"><td style="padding:8px;font-weight:bold;font-size:12px;">${s.name} 총계</td><td style="text-align:right;padding:8px;font-family:monospace;font-weight:bold;font-size:12px;">${fmtV(s.total)}</td></tr>`
+  }
+  if (balanceData) {
+    bsHTML += `<tr style="border-top:3px solid #222;background:#eff6ff;"><td style="padding:8px;font-weight:bold;font-size:13px;color:#1e40af;">부채 및 자본 총계</td><td style="text-align:right;padding:8px;font-family:monospace;font-weight:bold;font-size:13px;color:#1e40af;">${fmtV((balanceData.total_liabilities ?? 0) + (balanceData.total_equity ?? 0))}</td></tr>`
+  }
+  bsHTML += `</table>`
+
+  await renderAndAdd(incHTML, true)
+  await renderAndAdd(bsHTML, false)
+  pdf.save(`재무제표_${year}년${month ? `_${month}월` : ''}.pdf`)
 }
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
@@ -424,9 +562,9 @@ function StatementsTab({ year }: { year: number }) {
               className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium bg-green-50 text-green-700 hover:bg-green-100">
               <ArrowDownTrayIcon className="h-3.5 w-3.5" /> Excel
             </button>
-            <button onClick={printStatements}
-              className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium bg-gray-100 text-gray-600 hover:bg-gray-200">
-              <ArrowDownTrayIcon className="h-3.5 w-3.5" /> PDF(인쇄)
+            <button onClick={() => downloadPDF(incomeData, balanceData, year, month)}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium bg-red-50 text-red-700 hover:bg-red-100">
+              <ArrowDownTrayIcon className="h-3.5 w-3.5" /> PDF
             </button>
           </div>
         </div>
@@ -476,8 +614,8 @@ function StatementsTab({ year }: { year: number }) {
                         {section.name}
                         {(() => { const tip = INCOME_GUIDE.sections.find((s: any) => s.id === section.id); return tip ? <InfoTip text={tip.tip} /> : null })()}
                       </td>
-                      <td className={`py-2 px-3 text-right font-mono font-bold ${isSubtotal ? (section.total >= 0 ? 'text-gray-900' : 'text-red-600') : 'text-gray-800'}`}>
-                        {section.total < 0 ? `(${fmtAmount(section.total)})` : fmtAmount(section.total)}
+                      <td className="py-2 px-3 text-right font-mono font-bold">
+                        <AmountBreakdown items={items} total={section.total} isSubtotal={isSubtotal} />
                       </td>
                       <td className="py-2 px-3 text-right font-mono text-gray-500">
                         {section.pct !== undefined ? section.pct.toFixed(2) : ''}
@@ -525,7 +663,9 @@ function StatementsTab({ year }: { year: number }) {
                           {sub.name}
                           {(() => { const tip = BALANCE_GUIDE.sections.find((s: any) => s.name === sub.name); return tip ? <InfoTip text={tip.tip} /> : null })()}
                         </td>
-                        <td className="py-1.5 px-3 text-right font-mono font-semibold text-gray-800">{fmtAmount(sub.total)}</td>
+                        <td className="py-1.5 px-3 text-right font-mono font-semibold text-gray-800">
+                          <AmountBreakdown items={sub.items || []} total={sub.total} />
+                        </td>
                       </tr>
                       {(sub.items || []).map((item: any, idx: number) => (
                         <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50">
