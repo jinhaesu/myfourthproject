@@ -972,24 +972,55 @@ async def get_ai_analysis(
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         message = client.messages.create(
             model=settings.ANTHROPIC_MODEL,
-            max_tokens=4000,
+            max_tokens=8000,
             temperature=0.3,
             system="당신은 한국 중소기업 전문 공인회계사입니다. 반드시 요청된 JSON 형식으로만 응답하세요. JSON 외 다른 텍스트는 절대 포함하지 마세요.",
             messages=[
                 {"role": "user", "content": prompt},
             ],
         )
-        content = message.content[0].text if message.content else "{}"
-        # JSON 블록 추출 (```json ... ``` 감싸진 경우 처리)
-        if "```" in content:
-            import re as _re
+        # content 추출 - thinking 블록이 아닌 text 블록 찾기
+        content = ""
+        for block in (message.content or []):
+            if getattr(block, 'type', None) == 'text':
+                content = block.text
+                break
+        if not content:
+            content = message.content[0].text if message.content else "{}"
+
+        # JSON 추출 - 여러 전략 시도
+        import re as _re
+        parsed = None
+
+        # 전략 1: 그대로 파싱
+        try:
+            parsed = json.loads(content.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # 전략 2: ```json ... ``` 코드블록 추출
+        if parsed is None:
             json_match = _re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
             if json_match:
-                content = json_match.group(1).strip()
-        analysis = json.loads(content)
-    except json.JSONDecodeError:
-        logger.error(f"AI 응답 JSON 파싱 실패: {content[:500]}")
-        raise HTTPException(status_code=500, detail="AI 응답 파싱 실패")
+                try:
+                    parsed = json.loads(json_match.group(1).strip())
+                except json.JSONDecodeError:
+                    pass
+
+        # 전략 3: 첫 번째 { ... 마지막 } 사이 추출
+        if parsed is None:
+            brace_match = _re.search(r'\{[\s\S]*\}', content)
+            if brace_match:
+                try:
+                    parsed = json.loads(brace_match.group(0))
+                except json.JSONDecodeError:
+                    pass
+
+        if parsed is None:
+            logger.error(f"AI 응답 JSON 파싱 실패: {content[:1000]}")
+            raise HTTPException(status_code=500, detail="AI 응답 파싱 실패")
+
+        analysis = parsed
     except Exception as e:
         logger.error(f"AI 분석 오류: {e}")
         raise HTTPException(status_code=500, detail=f"AI 분석 오류: {str(e)}")
