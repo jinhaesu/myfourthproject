@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, Integer
 import pandas as pd
 
 from sqlalchemy import case as sa_case
@@ -1297,6 +1297,41 @@ async def delete_upload(
     return {
         "status": "success",
         "message": f"'{filename}' 삭제 완료 ({row_count}건의 거래 데이터 삭제됨)"
+    }
+
+
+@router.delete("/data-by-year/{year}")
+async def delete_data_by_year(
+    year: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """특정 연도의 모든 업로드 데이터 삭제"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData
+
+    # 해당 연도 업로드 이력 조회
+    result = await db.execute(
+        select(AIDataUploadHistory).where(
+            AIDataUploadHistory.user_id == current_user.id,
+            func.extract('year', AIDataUploadHistory.uploaded_at).cast(Integer) == year
+        )
+    )
+    uploads = result.scalars().all()
+
+    if not uploads:
+        raise HTTPException(status_code=404, detail=f"{year}년 데이터가 없습니다.")
+
+    total_deleted = 0
+    file_count = len(uploads)
+    for upload in uploads:
+        total_deleted += upload.saved_count or upload.row_count or 0
+        await db.delete(upload)
+
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"{year}년 데이터 삭제 완료 ({file_count}개 파일, {total_deleted:,}건)"
     }
 
 

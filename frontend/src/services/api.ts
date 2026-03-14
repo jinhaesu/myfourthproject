@@ -396,6 +396,10 @@ export const aiClassificationApi = {
   deleteUpload: (uploadId: number) =>
     api.delete(`/ai-classification/upload/${uploadId}`),
 
+  // 연도별 데이터 삭제
+  deleteDataByYear: (year: number) =>
+    api.delete(`/ai-classification/data-by-year/${year}`),
+
   // 업로드 상태 폴링
   getUploadStatus: (uploadId: number) =>
     api.get(`/ai-classification/upload-status/${uploadId}`),

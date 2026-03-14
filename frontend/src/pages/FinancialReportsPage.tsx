@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { financialApi } from '@/services/api'
+import { financialApi, aiApi } from '@/services/api'
 import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
 import * as XLSX from 'xlsx'
 import {
@@ -76,6 +76,7 @@ export default function FinancialReportsPage() {
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState('')
   const [debugData, setDebugData] = useState<any>(null)
+  const [deleting, setDeleting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
 
@@ -170,6 +171,27 @@ export default function FinancialReportsPage() {
                 <ArrowPathIcon className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
                 계정명 동기화
               </button>
+              {activeYear && (
+                <button
+                  onClick={async () => {
+                    if (!confirm(`${activeYear}년 데이터 ${fmtNum(totalRows)}건을 모두 삭제하시겠습니까?\n삭제 후 다시 업로드해야 합니다.`)) return
+                    setDeleting(true)
+                    try {
+                      const res = await aiApi.deleteDataByYear(activeYear)
+                      setSyncMsg(res.data.message)
+                      queryClient.invalidateQueries()
+                    } catch (err: any) {
+                      setSyncMsg(`삭제 오류: ${err.response?.data?.detail || err.message}`)
+                    } finally {
+                      setDeleting(false)
+                    }
+                  }}
+                  disabled={deleting}
+                  className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50"
+                >
+                  {deleting ? '삭제 중...' : '데이터 삭제'}
+                </button>
+              )}
             </div>
           )}
           {syncMsg && (
