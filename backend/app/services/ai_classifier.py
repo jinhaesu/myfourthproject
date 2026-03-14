@@ -641,3 +641,143 @@ class AIClassifierService:
         self.model_version = new_version
 
         return True, f"모델 재학습 완료. 버전: {new_version}, 정확도: {accuracy:.2%}"
+
+    async def retrain_model_with_progress(
+        self,
+        db: AsyncSession,
+        user_id: Optional[int] = None,
+        min_samples: int = 100,
+        progress: Optional[dict] = None,
+        max_samples: Optional[int] = None,
+        upload_ids: Optional[list] = None,
+    ) -> Tuple[bool, str]:
+        """진행 상태를 업데이트하며 모델 재학습"""
+        def _update(step: str, pct: int, msg: str):
+            if progress:
+                progress["step"] = step
+                progress["progress"] = pct
+                progress["message"] = msg
+
+        _update("데이터 변환", 5, "Raw 데이터에서 학습 데이터를 생성하고 있습니다...")
+
+        # Raw 데이터 → 학습 데이터 변환
+        generated = await self._generate_training_from_raw(db)
+        _update("데이터 변환", 15, f"Raw 데이터 변환 완료 ({generated}건 새로 생성)")
+
+        # 학습 데이터 조회
+        _update("데이터 로드", 20, "학습 데이터를 조회하고 있습니다...")
+        query = select(AITrainingData).where(AITrainingData.is_active == True)
+
+        # 특정 업로드만 선택
+        if upload_ids:
+            from app.models.ai import AIRawTransactionData
+            sub = select(AIRawTransactionData.id).where(
+                AIRawTransactionData.upload_id.in_(upload_ids)
+            )
+            query = query.where(
+                (AITrainingData.source_type == "historical")
+                & (AITrainingData.source_id.in_(sub))
+                | (AITrainingData.source_type != "historical")
+            )
+
+        result = await db.execute(query)
+        training_data = list(result.scalars().all())
+
+        if len(training_data) < min_samples:
+            return False, f"학습 데이터가 부족합니다. (현재: {len(training_data)}, 필요: {min_samples})"
+
+        # 최대 샘플 제한
+        if max_samples and len(training_data) > max_samples:
+            import random
+            random.shuffle(training_data)
+            training_data = training_data[:max_samples]
+
+        total = len(training_data)
+        _update("데이터 준비", 25, f"학습 데이터 {total:,}건 준비 완료. 특성 추출 중...")
+
+        # 데이터 준비
+        texts = []
+        labels = []
+        weights = []
+        for i, data in enumerate(training_data):
+            text = data.description_tokens
+            if data.merchant_name:
+                text += f" {data.merchant_name}"
+            texts.append(text)
+            labels.append(data.account_code)
+            weights.append(float(data.sample_weight))
+            if i % 5000 == 0 and i > 0:
+                pct = 25 + int((i / total) * 15)
+                _update("특성 추출", pct, f"데이터 준비 중... ({i:,}/{total:,})")
+
+        _update("벡터화", 45, f"TF-IDF 벡터화 중... ({total:,}건)")
+
+        # 벡터화
+        new_vectorizer = TfidfVectorizer(
+            analyzer='char_wb',
+            ngram_range=(2, 4),
+            max_features=5000
+        )
+        X = new_vectorizer.fit_transform(texts)
+
+        _update("라벨 인코딩", 55, "라벨 인코딩 중...")
+
+        new_label_encoder = LabelEncoder()
+        y = new_label_encoder.fit_transform(labels)
+
+        _update("모델 학습", 60, f"Random Forest 학습 중... ({total:,}건, 200 trees)")
+
+        # 모델 학습
+        new_model = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=15,
+            random_state=42,
+            class_weight='balanced'
+        )
+        new_model.fit(X, y, sample_weight=np.array(weights))
+
+        _update("교차 검증", 80, "5-fold 교차 검증으로 정확도 평가 중...")
+
+        # 정확도 계산
+        from sklearn.model_selection import cross_val_score
+        scores = cross_val_score(new_model, X, y, cv=min(5, len(set(y))))
+        accuracy = float(np.mean(scores))
+
+        _update("모델 저장", 90, f"정확도: {accuracy:.2%}. 모델 저장 중...")
+
+        # 모델 저장
+        new_version = f"v{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+        model_path = Path(settings.AI_MODEL_PATH) / new_version
+        model_path.mkdir(parents=True, exist_ok=True)
+
+        joblib.dump(new_model, model_path / "classifier.joblib")
+        joblib.dump(new_vectorizer, model_path / "vectorizer.joblib")
+        joblib.dump(new_label_encoder, model_path / "label_encoder.joblib")
+
+        # DB 업데이트
+        await db.execute(
+            text("UPDATE ai_model_versions SET is_active = FALSE WHERE is_active = TRUE")
+        )
+        model_version_record = AIModelVersion(
+            version=new_version,
+            model_type="random_forest",
+            training_samples=total,
+            training_started_at=datetime.utcnow(),
+            training_completed_at=datetime.utcnow(),
+            accuracy=Decimal(str(round(accuracy, 4))),
+            model_path=str(model_path),
+            is_active=True,
+            is_production=True,
+            created_by=user_id
+        )
+        db.add(model_version_record)
+        await db.commit()
+
+        self.model = new_model
+        self.vectorizer = new_vectorizer
+        self.label_encoder = new_label_encoder
+        self.model_version = new_version
+
+        _update("완료", 100, f"학습 완료! 버전: {new_version}, 정확도: {accuracy:.2%}, 학습 데이터: {total:,}건")
+
+        return True, f"모델 재학습 완료. 버전: {new_version}, 정확도: {accuracy:.2%}, 학습 데이터: {total:,}건"

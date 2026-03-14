@@ -786,10 +786,11 @@ async def debug_raw_data(
 @router.get("/ai-analysis")
 async def get_ai_analysis(
     year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None, ge=1, le=12),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """AI 재무 분석 - 4대 카테고리 (OpenAI GPT-4o 사용)"""
+    """AI 재무 분석 - 4대 카테고리 (Claude Opus 4.6)"""
     from app.core.config import settings
 
     if not settings.ANTHROPIC_API_KEY:
@@ -804,7 +805,8 @@ async def get_ai_analysis(
         if years:
             year = years[0]
 
-    extra_filters = _date_filters(year, None) if year else []
+    extra_filters = _date_filters(year, month) if year else []
+    period_label = f"{year}년 {month}월" if month else f"{year}년"
     mode = await _detect_ledger_mode(db, extra_filters)
     rows = await _get_account_balances(db, mode, extra_filters)
     codes = [r.code for r in rows]
@@ -900,8 +902,9 @@ async def get_ai_analysis(
             large_balance.append(f"  {acct_name}({code}): 잔액={balance:,.0f}")
 
     # 5) 프롬프트 구성
-    prompt = f"""당신은 한국 중소기업 전문 공인회계사입니다. 아래 {year}년 재무 데이터를 분석해주세요.
+    prompt = f"""당신은 한국 중소기업 전문 공인회계사입니다. 아래 {period_label} 재무 데이터를 분석해주세요.
 회사명: 주식회사 조인앤조인 (식품/유통업)
+분석 기간: {period_label}
 
 === 손익계산서 ===
 매출액: {revenue_total:,.0f}원
@@ -1027,6 +1030,8 @@ async def get_ai_analysis(
 
     return {
         "year": year,
+        "month": month,
+        "period": period_label,
         "analysis": analysis,
         "generated_at": datetime.now().isoformat(),
         "summary": {

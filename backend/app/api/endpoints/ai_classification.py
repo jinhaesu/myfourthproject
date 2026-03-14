@@ -21,6 +21,16 @@ from sqlalchemy import case as sa_case
 
 logger = logging.getLogger(__name__)
 
+# 학습 진행 상태 추적 (in-memory)
+_training_progress: dict = {
+    "status": "idle",  # idle, running, completed, failed
+    "step": "",
+    "progress": 0,      # 0~100
+    "message": "",
+    "started_at": None,
+    "completed_at": None,
+}
+
 from app.core.database import get_db, async_session_factory
 from app.core.security import get_current_user
 from app.models.user import User
@@ -954,21 +964,73 @@ async def upload_historical_batch(
 @router.post("/train")
 async def train_model(
     min_samples: int = Query(default=50, description="최소 학습 샘플 수"),
+    max_samples: Optional[int] = Query(default=None, description="최대 학습 샘플 수 (None=전체)"),
+    upload_ids: Optional[str] = Query(default=None, description="특정 업로드 ID들 (쉼표 구분)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """AI 모델 학습/재학습"""
+    """AI 모델 학습/재학습 (백그라운드)"""
+    global _training_progress
 
-    classifier = AIClassifierService()
-    success, message = await classifier.retrain_model(db, current_user.id, min_samples)
+    if _training_progress["status"] == "running":
+        raise HTTPException(status_code=409, detail="이미 학습이 진행 중입니다.")
 
-    if not success:
-        raise HTTPException(status_code=400, detail=message)
+    # 즉시 상태 설정
+    _training_progress = {
+        "status": "running",
+        "step": "초기화",
+        "progress": 0,
+        "message": "학습을 시작합니다...",
+        "started_at": datetime.utcnow().isoformat(),
+        "completed_at": None,
+    }
+
+    parsed_upload_ids = None
+    if upload_ids:
+        try:
+            parsed_upload_ids = [int(x.strip()) for x in upload_ids.split(",") if x.strip()]
+        except ValueError:
+            pass
+
+    user_id = current_user.id
+
+    async def _run_training():
+        global _training_progress
+        try:
+            async with async_session_factory() as session:
+                classifier = AIClassifierService()
+                success, message = await classifier.retrain_model_with_progress(
+                    session, user_id, min_samples, _training_progress,
+                    max_samples=max_samples, upload_ids=parsed_upload_ids,
+                )
+                if success:
+                    _training_progress["status"] = "completed"
+                    _training_progress["progress"] = 100
+                    _training_progress["message"] = message
+                else:
+                    _training_progress["status"] = "failed"
+                    _training_progress["message"] = message
+                _training_progress["completed_at"] = datetime.utcnow().isoformat()
+        except Exception as e:
+            logger.error(f"[Train] 백그라운드 학습 오류: {e}", exc_info=True)
+            _training_progress["status"] = "failed"
+            _training_progress["message"] = f"학습 오류: {str(e)[:200]}"
+            _training_progress["completed_at"] = datetime.utcnow().isoformat()
+
+    asyncio.create_task(_run_training())
 
     return {
-        "status": "success",
-        "message": message
+        "status": "started",
+        "message": "학습이 백그라운드에서 시작되었습니다. 진행 상태를 확인해주세요."
     }
+
+
+@router.get("/train-progress")
+async def get_training_progress(
+    current_user: User = Depends(get_current_user)
+):
+    """학습 진행 상태 조회"""
+    return _training_progress
 
 
 @router.post("/classify")

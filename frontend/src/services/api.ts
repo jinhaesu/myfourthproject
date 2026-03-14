@@ -345,9 +345,20 @@ export const aiClassificationApi = {
     })
   },
 
-  // 모델 학습
-  trainModel: (minSamples = 50) =>
-    api.post('/ai-classification/train', null, { params: { min_samples: minSamples } }),
+  // 모델 학습 (백그라운드)
+  trainModel: (minSamples = 50, maxSamples?: number, uploadIds?: number[]) =>
+    api.post('/ai-classification/train', null, {
+      params: {
+        min_samples: minSamples,
+        max_samples: maxSamples,
+        upload_ids: uploadIds?.join(','),
+      },
+      timeout: 10000,
+    }),
+
+  // 학습 진행 상태
+  getTrainProgress: () =>
+    api.get('/ai-classification/train-progress'),
 
   // 단일 항목 분류
   classifyItems: (items: Array<{
@@ -517,8 +528,8 @@ export const financialApi = {
   backfillNames: (mappings: Array<{ code: string; name: string }>) =>
     api.post('/financial/backfill-names', { mappings }),
   getDebugData: () => api.get('/financial/debug-data'),
-  getAIAnalysis: (year?: number) =>
-    api.get('/financial/ai-analysis', { params: { year }, timeout: 300000 }),
+  getAIAnalysis: (year?: number, month?: number) =>
+    api.get('/financial/ai-analysis', { params: { year, month }, timeout: 300000 }),
 }
 
 export default api

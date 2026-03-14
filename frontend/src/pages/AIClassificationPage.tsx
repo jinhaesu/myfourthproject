@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { aiClassificationApi } from '@/services/api'
 import { TrashIcon } from '@heroicons/react/24/outline'
@@ -223,21 +223,54 @@ export default function AIClassificationPage() {
     }
   }
 
+  // Training progress state
+  const [trainProgress, setTrainProgress] = useState<any>(null)
+  const [training, setTraining] = useState(false)
+  const [selectedUploadIds, setSelectedUploadIds] = useState<number[]>([])
+  const [maxSamples, setMaxSamples] = useState<string>('')
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // 학습 진행 폴링
+  const startPolling = useCallback(() => {
+    if (pollRef.current) return
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await aiClassificationApi.getTrainProgress()
+        setTrainProgress(res.data)
+        if (res.data.status === 'completed' || res.data.status === 'failed') {
+          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+          setTraining(false)
+          if (res.data.status === 'completed') {
+            showMessage('success', res.data.message)
+            refreshData()
+          } else {
+            showMessage('error', res.data.message)
+          }
+        }
+      } catch { /* ignore */ }
+    }, 2000)
+  }, [])
+
+  useEffect(() => {
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
+
   // Handle model training
   const handleTrainModel = async () => {
     if (!status?.training_samples || status.training_samples < 50) {
       showMessage('error', '학습 데이터가 최소 50개 이상 필요합니다.')
       return
     }
-    setLoading(true)
+    setTraining(true)
+    setTrainProgress(null)
     try {
-      const response = await aiClassificationApi.trainModel(50)
-      showMessage('success', response.data.message)
-      refreshData()
+      const maxS = maxSamples ? parseInt(maxSamples) : undefined
+      const upIds = selectedUploadIds.length > 0 ? selectedUploadIds : undefined
+      await aiClassificationApi.trainModel(50, maxS, upIds)
+      startPolling()
     } catch (error: any) {
-      showMessage('error', error.response?.data?.detail || '학습 실패')
-    } finally {
-      setLoading(false)
+      showMessage('error', error.response?.data?.detail || '학습 시작 실패')
+      setTraining(false)
     }
   }
 
@@ -489,18 +522,89 @@ export default function AIClassificationPage() {
 
           <div className="bg-white p-6 rounded-lg shadow border">
             <h3 className="text-lg font-medium mb-4">모델 관리</h3>
-            <div className="flex gap-4">
+
+            {/* 학습 데이터 소스 선택 */}
+            {uploadHistory && uploadHistory.length > 0 && (
+              <div className="mb-4">
+                <label className="text-sm font-medium text-gray-700 block mb-2">
+                  학습 데이터 선택 (미선택 시 전체 사용)
+                </label>
+                <div className="max-h-36 overflow-auto border rounded-lg p-2 space-y-1">
+                  {uploadHistory.filter(u => u.status === 'completed').map((u) => (
+                    <label key={u.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 p-1 rounded">
+                      <input
+                        type="checkbox"
+                        checked={selectedUploadIds.includes(u.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) setSelectedUploadIds(prev => [...prev, u.id])
+                          else setSelectedUploadIds(prev => prev.filter(id => id !== u.id))
+                        }}
+                        className="rounded border-gray-300"
+                      />
+                      <span className="truncate">{u.filename}</span>
+                      <span className="text-gray-400 text-xs whitespace-nowrap">({fmtNum(u.saved_count || 0)}건)</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 최대 샘플 수 */}
+            <div className="mb-4 flex items-center gap-3">
+              <label className="text-sm font-medium text-gray-700 whitespace-nowrap">최대 샘플 수</label>
+              <input
+                type="number"
+                value={maxSamples}
+                onChange={(e) => setMaxSamples(e.target.value)}
+                placeholder="전체 (제한 없음)"
+                className="w-40 px-3 py-1.5 text-sm border rounded-lg"
+              />
+              <span className="text-xs text-gray-400">데이터가 많으면 10,000~20,000으로 제한하면 빠릅니다</span>
+            </div>
+
+            <div className="flex gap-4 items-center">
               <button
                 onClick={handleTrainModel}
-                disabled={loading || !status?.training_samples || status.training_samples < 50}
+                disabled={training || loading || !status?.training_samples || status.training_samples < 50}
                 className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
               >
-                {loading ? '학습 중...' : '모델 재학습'}
+                {training ? '학습 진행 중...' : '모델 재학습'}
               </button>
-              <p className="text-sm text-gray-500 self-center">
-                최소 50개 이상의 학습 데이터 필요 (현재: {fmtNum(status?.training_samples || 0)}개)
+              <p className="text-sm text-gray-500">
+                최소 50개 이상 필요 (현재: {fmtNum(status?.training_samples || 0)}개)
+                {selectedUploadIds.length > 0 && ` | ${selectedUploadIds.length}개 업로드 선택됨`}
               </p>
             </div>
+
+            {/* 학습 진행 상태 표시 */}
+            {(training || (trainProgress && trainProgress.status === 'running')) && (
+              <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-blue-800">{trainProgress?.step || '시작 중...'}</span>
+                  <span className="text-sm font-bold text-blue-800">{trainProgress?.progress || 0}%</span>
+                </div>
+                <div className="w-full bg-blue-200 rounded-full h-3">
+                  <div
+                    className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                    style={{ width: `${trainProgress?.progress || 0}%` }}
+                  />
+                </div>
+                <p className="text-xs text-blue-600 mt-2">{trainProgress?.message || '학습을 준비하고 있습니다...'}</p>
+              </div>
+            )}
+
+            {trainProgress?.status === 'completed' && (
+              <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+                {trainProgress.message}
+              </div>
+            )}
+
+            {trainProgress?.status === 'failed' && (
+              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                {trainProgress.message}
+              </div>
+            )}
+
             {status?.last_trained_at && (
               <p className="mt-2 text-sm text-gray-400">
                 마지막 학습: {new Date(status.last_trained_at).toLocaleString('ko-KR')}
@@ -603,11 +707,16 @@ export default function AIClassificationPage() {
                 {(status?.training_samples || 0) >= 50 && (
                   <button
                     onClick={handleTrainModel}
-                    disabled={loading}
+                    disabled={training || loading}
                     className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 text-sm"
                   >
-                    {loading ? '학습 중...' : `모델 학습 시작 (${fmtNum(status?.training_samples || 0)}개 데이터)`}
+                    {training ? '학습 진행 중...' : `모델 학습 시작 (${fmtNum(status?.training_samples || 0)}개 데이터)`}
                   </button>
+                )}
+                {training && trainProgress && (
+                  <div className="mt-2 text-xs text-blue-600">
+                    {trainProgress.step}: {trainProgress.progress}% - {trainProgress.message}
+                  </div>
                 )}
               </div>
             )}

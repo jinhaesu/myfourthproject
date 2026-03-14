@@ -379,6 +379,7 @@ export default function FinancialReportsPage() {
   const { data: yearsData, isLoading: yearsLoading } = useQuery({
     queryKey: ['financialYears'],
     queryFn: () => financialApi.getAvailableYears().then((r) => r.data),
+    staleTime: 3 * 60 * 60 * 1000,  // 3시간 캐시
   })
 
   /** 엑셀에서 계정명 추출 → DB 보정 */
@@ -569,11 +570,13 @@ function StatementsTab({ year }: { year: number }) {
   const { data: incomeData, isLoading: incLoading } = useQuery({
     queryKey: ['financialIncome', year, month],
     queryFn: () => financialApi.getIncomeStatement(year, month ?? undefined).then((r) => r.data),
+    staleTime: 3 * 60 * 60 * 1000,
   })
 
   const { data: balanceData, isLoading: balLoading } = useQuery({
     queryKey: ['financialBalance', year],
     queryFn: () => financialApi.getBalanceSheet(year).then((r) => r.data),
+    staleTime: 3 * 60 * 60 * 1000,
   })
 
   if (incLoading || balLoading) return <Loading />
@@ -752,6 +755,7 @@ function TrendTab({ year }: { year: number }) {
   const { data: trend, isLoading } = useQuery({
     queryKey: ['financialTrend', year],
     queryFn: () => financialApi.getMonthlyTrend(year).then((r) => r.data),
+    staleTime: 3 * 60 * 60 * 1000,
   })
 
   if (isLoading) return <Loading />
@@ -867,12 +871,14 @@ function TrialBalanceTab({ year }: { year: number }) {
   const { data: trialData, isLoading } = useQuery({
     queryKey: ['financialTrialBalance', year],
     queryFn: () => financialApi.getTrialBalance(year).then((r) => r.data),
+    staleTime: 3 * 60 * 60 * 1000,
   })
 
   const { data: detailData, isLoading: detailLoading } = useQuery({
     queryKey: ['financialAccountDetail', year, selectedAccount, detailPage],
     queryFn: () => financialApi.getAccountDetail(selectedAccount!, year, detailPage, 30).then((r) => r.data),
     enabled: !!selectedAccount,
+    staleTime: 3 * 60 * 60 * 1000,
   })
 
   const items: any[] = trialData?.items || []
@@ -1055,24 +1061,70 @@ const AI_CATEGORIES = [
   { key: 'accounting_concerns', title: '회계적 우려 및 확인 사항', color: 'red', icon: '⚠️' },
 ] as const
 
+const AI_CACHE_TTL = 3 * 60 * 60 * 1000  // 3시간
+function getAICache(year: number, month: number | null) {
+  try {
+    const key = `ai_analysis_${year}_${month ?? 'all'}`
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const { data, ts } = JSON.parse(raw)
+    if (Date.now() - ts > AI_CACHE_TTL) { localStorage.removeItem(key); return null }
+    return data
+  } catch { return null }
+}
+function setAICache(year: number, month: number | null, data: any) {
+  try {
+    const key = `ai_analysis_${year}_${month ?? 'all'}`
+    localStorage.setItem(key, JSON.stringify({ data, ts: Date.now() }))
+  } catch { /* quota exceeded 무시 */ }
+}
+
 function AIAnalysisTab({ year }: { year: number }) {
   const [analysisData, setAnalysisData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [expandedCat, setExpandedCat] = useState<string | null>(null)
+  const [selectedMonth, setSelectedMonth] = useState<number | null>(null)
+  const [cachedAt, setCachedAt] = useState<string | null>(null)
+  const [elapsed, setElapsed] = useState(0)
 
-  const runAnalysis = async () => {
+  // 캐시 자동 로드
+  useMemo(() => {
+    const cached = getAICache(year, selectedMonth)
+    if (cached) {
+      setAnalysisData(cached)
+      setExpandedCat(AI_CATEGORIES[0].key)
+      setCachedAt(cached.generated_at)
+    } else {
+      setAnalysisData(null)
+      setCachedAt(null)
+    }
+    setError('')
+  }, [year, selectedMonth])
+
+  const runAnalysis = async (force = false) => {
+    if (!force) {
+      const cached = getAICache(year, selectedMonth)
+      if (cached) { setAnalysisData(cached); setExpandedCat(AI_CATEGORIES[0].key); setCachedAt(cached.generated_at); return }
+    }
     setLoading(true)
     setError('')
     setAnalysisData(null)
+    setCachedAt(null)
+    setElapsed(0)
+    const t0 = Date.now()
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000)
     try {
-      const res = await financialApi.getAIAnalysis(year)
+      const res = await financialApi.getAIAnalysis(year, selectedMonth ?? undefined)
       setAnalysisData(res.data)
       setExpandedCat(AI_CATEGORIES[0].key)
+      setAICache(year, selectedMonth, res.data)
+      setCachedAt(null)
     } catch (err: any) {
       const detail = err.response?.data?.detail || err.message
       setError(detail)
     } finally {
+      clearInterval(timer)
       setLoading(false)
     }
   }
@@ -1095,28 +1147,63 @@ function AIAnalysisTab({ year }: { year: number }) {
   return (
     <div className="space-y-6">
       <div className="card">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
             <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
               <SparklesIcon className="h-5 w-5 text-purple-500" />
               AI 재무 분석
             </h3>
             <p className="text-sm text-gray-500 mt-1">
-              {year}년 재무 데이터를 AI가 분석하여 4가지 관점에서 인사이트를 제공합니다.
+              {year}년{selectedMonth ? ` ${selectedMonth}월` : ''} 재무 데이터를 AI(Claude Opus)가 분석합니다.
             </p>
           </div>
-          <button
-            onClick={runAnalysis}
-            disabled={loading}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 transition-colors"
-          >
-            {loading ? (
-              <><ArrowPathIcon className="h-4 w-4 animate-spin" /> 분석 중...</>
-            ) : (
-              <><SparklesIcon className="h-4 w-4" /> {analysis ? '다시 분석' : '분석 시작'}</>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => runAnalysis(false)}
+              disabled={loading}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 transition-colors"
+            >
+              {loading ? (
+                <><ArrowPathIcon className="h-4 w-4 animate-spin" /> 분석 중... ({elapsed}초)</>
+              ) : (
+                <><SparklesIcon className="h-4 w-4" /> {analysis ? '분석 시작' : '분석 시작'}</>
+              )}
+            </button>
+            {analysis && (
+              <button
+                onClick={() => runAnalysis(true)}
+                disabled={loading}
+                className="flex items-center gap-2 px-3 py-2.5 rounded-lg font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 transition-colors text-sm"
+              >
+                <ArrowPathIcon className="h-4 w-4" /> 다시 분석
+              </button>
             )}
-          </button>
+          </div>
         </div>
+
+        {/* 기간 선택 */}
+        <div className="mt-4 flex items-center gap-3 flex-wrap">
+          <label className="text-sm font-medium text-gray-700">분석 기간</label>
+          <div className="flex gap-1 flex-wrap">
+            <button onClick={() => setSelectedMonth(null)}
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                !selectedMonth ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}>연간 전체</button>
+            {MONTHS.map((m) => (
+              <button key={m} onClick={() => setSelectedMonth(m)}
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                  selectedMonth === m ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}>{m}월</button>
+            ))}
+          </div>
+        </div>
+
+        {cachedAt && (
+          <p className="mt-2 text-xs text-purple-500">
+            캐시된 결과 표시 중 (분석 시각: {new Date(cachedAt).toLocaleString('ko-KR')}) - "다시 분석"으로 새로 분석 가능
+          </p>
+        )}
+
         {error && (
           <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
             {error}
@@ -1127,8 +1214,8 @@ function AIAnalysisTab({ year }: { year: number }) {
       {loading && (
         <div className="card text-center py-16">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto" />
-          <p className="text-gray-500 mt-4">AI가 재무 데이터를 분석하고 있습니다...</p>
-          <p className="text-xs text-gray-400 mt-1">약 10~20초 소요될 수 있습니다.</p>
+          <p className="text-gray-500 mt-4">AI(Claude Opus 4.6)가 재무 데이터를 분석하고 있습니다...</p>
+          <p className="text-xs text-gray-400 mt-1">Opus 모델은 정밀 분석을 위해 1~3분 정도 소요될 수 있습니다. ({elapsed}초 경과)</p>
         </div>
       )}
 
@@ -1180,7 +1267,7 @@ function AIAnalysisTab({ year }: { year: number }) {
               </div>
             )
           })}
-          {analysisData?.generated_at && (
+          {analysisData?.generated_at && !cachedAt && (
             <p className="text-xs text-gray-400 text-right">분석 시각: {new Date(analysisData.generated_at).toLocaleString('ko-KR')}</p>
           )}
         </div>
@@ -1190,7 +1277,7 @@ function AIAnalysisTab({ year }: { year: number }) {
         <div className="card text-center py-16 text-gray-400">
           <SparklesIcon className="h-12 w-12 mx-auto mb-3 text-gray-300" />
           <p className="text-lg">"분석 시작" 버튼을 눌러주세요</p>
-          <p className="text-sm mt-1">손익계산서, 재무상태표, 시산표 데이터를 종합 분석합니다.</p>
+          <p className="text-sm mt-1">{year}년{selectedMonth ? ` ${selectedMonth}월` : ''} 손익계산서, 재무상태표, 시산표 데이터를 종합 분석합니다.</p>
         </div>
       )}
     </div>
