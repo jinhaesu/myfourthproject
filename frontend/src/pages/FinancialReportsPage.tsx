@@ -1,7 +1,8 @@
-import { useState, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState, useMemo, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { financialApi } from '@/services/api'
-import { MagnifyingGlassIcon, XMarkIcon } from '@heroicons/react/24/outline'
+import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
+import * as XLSX from 'xlsx'
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
@@ -20,14 +21,79 @@ function fmtAmount(v: number) {
 type TabType = 'statements' | 'trend' | 'trial'
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
+/** 엑셀 파일에서 [CODE] NAME 매핑만 추출 */
+function extractAccountMappings(file: File): Promise<Array<{ code: string; name: string }>> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target!.result as ArrayBuffer)
+        const workbook = XLSX.read(data, { type: 'array' })
+        const mappings: Array<{ code: string; name: string }> = []
+        const seen = new Set<string>()
+
+        for (const sheetName of workbook.SheetNames) {
+          const sheet = workbook.Sheets[sheetName]
+          const rows: any[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+          for (const row of rows) {
+            for (const cell of row) {
+              if (cell != null && cell !== '') {
+                const s = String(cell).trim()
+                const match = s.match(/^\[(\d{1,6})\]\s*(.+)/)
+                if (match && !seen.has(match[1])) {
+                  seen.add(match[1])
+                  mappings.push({ code: match[1], name: match[2].trim() })
+                }
+              }
+            }
+          }
+        }
+        resolve(mappings)
+      } catch (err) { reject(err) }
+    }
+    reader.onerror = () => reject(new Error('파일 읽기 실패'))
+    reader.readAsArrayBuffer(file)
+  })
+}
+
 export default function FinancialReportsPage() {
   const [activeTab, setActiveTab] = useState<TabType>('statements')
   const [selectedYear, setSelectedYear] = useState<number | null>(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState('')
+  const fileRef = useRef<HTMLInputElement>(null)
+  const queryClient = useQueryClient()
 
   const { data: yearsData, isLoading: yearsLoading } = useQuery({
     queryKey: ['financialYears'],
     queryFn: () => financialApi.getAvailableYears().then((r) => r.data),
   })
+
+  /** 엑셀에서 계정명 추출 → DB 보정 */
+  const handleSyncNames = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setSyncing(true)
+    setSyncMsg('엑셀에서 계정명 추출 중...')
+    try {
+      const mappings = await extractAccountMappings(file)
+      if (mappings.length === 0) {
+        setSyncMsg('계정 헤더를 찾을 수 없습니다.')
+        return
+      }
+      setSyncMsg(`${mappings.length}개 계정명 전송 중...`)
+      const res = await financialApi.backfillNames(mappings)
+      setSyncMsg(`완료! ${res.data.updated_rows}건 보정됨`)
+      queryClient.invalidateQueries({ queryKey: ['financialTrialBalance'] })
+      queryClient.invalidateQueries({ queryKey: ['financialIncome'] })
+      queryClient.invalidateQueries({ queryKey: ['financialBalance'] })
+    } catch (err: any) {
+      setSyncMsg(`오류: ${err.message}`)
+    } finally {
+      setSyncing(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
 
   const years: number[] = yearsData?.years || []
   const uploads: any[] = yearsData?.uploads || []
@@ -75,9 +141,24 @@ export default function FinancialReportsPage() {
             </div>
           )}
           {totalRows > 0 && (
-            <span className="text-xs text-gray-400 ml-auto">
-              총 {fmtNum(totalRows)}건 | {uploads.length}개 파일 반영
-            </span>
+            <div className="flex items-center gap-3 ml-auto">
+              <span className="text-xs text-gray-400">
+                총 {fmtNum(totalRows)}건 | {uploads.length}개 파일 반영
+              </span>
+              <input ref={fileRef} type="file" accept=".xls,.xlsx" className="hidden"
+                onChange={handleSyncNames} />
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={syncing}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50"
+              >
+                <ArrowPathIcon className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                계정명 동기화
+              </button>
+            </div>
+          )}
+          {syncMsg && (
+            <span className="text-xs text-blue-600 w-full">{syncMsg}</span>
           )}
         </div>
         {uploads.length > 0 && (

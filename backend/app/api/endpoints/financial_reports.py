@@ -2,7 +2,7 @@
 Smart Finance Core - Financial Reports API
 업로드된 계정별 원장 데이터 기반 재무보고서 (기간 기반)
 
-변경: upload_id 단건 필터 → 기간(year) 기반 전체 데이터 조회
+- 더존 6자리 계정코드 지원 (000101 → 101 → 자산)
 - 여러 파일을 나눠 업로드해도 같은 기간이면 합산
 - 계정별 원장에서 source_account_code(원장계정)와 account_code(상대계정) 구분
 """
@@ -12,8 +12,9 @@ from decimal import Decimal
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, update
 
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -22,6 +23,43 @@ from app.models.ai import AIRawTransactionData, AIDataUploadHistory
 from app.models.accounting import Account, AccountCategory
 
 router = APIRouter()
+
+
+# ============ 더존 계정코드 분류 ============
+
+# 더존 표준 계정과목 코드 체계 (앞자리 0 제거 후)
+# 1xx: 자산 (10x~14x 유동, 15x~19x 비유동)
+# 2xx: 부채 (20x~26x 유동, 27x~29x 비유동)
+# 3xx: 자본
+# 4xx: 매출/수익
+# 5xx: 매출원가
+# 8xx: 판매비와관리비
+# 9xx: 영업외손익
+
+DOUZONE_CATEGORY = {
+    '1': '자산', '2': '부채', '3': '자본',
+    '4': '수익', '5': '매출원가',
+    '8': '판관비', '9': '영업외',
+}
+
+
+def _strip_code(code: str) -> str:
+    """더존 6자리 코드에서 앞의 0 제거: '000101' → '101'"""
+    if not code:
+        return '0'
+    return code.lstrip('0') or '0'
+
+
+def _classify_code(code: str) -> tuple:
+    """
+    더존 계정코드 분류.
+    Returns: (first_digit, second_digit, stripped_code, category_name)
+    """
+    stripped = _strip_code(code)
+    first = stripped[0] if stripped else '0'
+    second = int(stripped[1]) if len(stripped) > 1 and stripped[1].isdigit() else 0
+    cat = DOUZONE_CATEGORY.get(first, '미분류')
+    return first, second, stripped, cat
 
 
 # ============ Helpers ============
@@ -53,7 +91,7 @@ def _extract_month(date_str: str) -> Optional[str]:
 
 
 async def _resolve_names(db: AsyncSession, codes: list, mode: str = "multi") -> dict:
-    """계정 코드 → 이름 매핑"""
+    """계정 코드 → 이름 매핑 (source_account_name 우선)"""
     if not codes:
         return {}
 
@@ -103,7 +141,7 @@ async def _resolve_names(db: AsyncSession, codes: list, mode: str = "multi") -> 
     # 4) 최종 fallback
     for c in codes:
         if c not in names or not names[c]:
-            names[c] = f"계정 {c}"
+            names[c] = f"계정 {_strip_code(c)}"
     return names
 
 
@@ -184,7 +222,6 @@ async def get_available_years(
     """조회 가능한 연도 목록"""
     years = await _detect_years(db)
 
-    # 업로드 이력도 함께 반환
     from app.models.ai import UploadStatus
     uploads_result = await db.execute(
         select(AIDataUploadHistory)
@@ -216,7 +253,7 @@ async def get_available_years(
 @router.get("/summary")
 async def get_financial_summary(
     year: Optional[int] = Query(None),
-    upload_id: Optional[int] = Query(None),  # 하위호환
+    upload_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -256,19 +293,13 @@ async def get_trial_balance(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """시산표 - 계정별 차변/대변 합계 (기간 기반)"""
+    """시산표 - 계정별 차변/대변 합계 (기간 기반, 더존 코드 분류)"""
     filters = _date_filters(year, None) if year else []
     mode = await _detect_ledger_mode(db, filters)
     rows = await _get_account_balances(db, mode, filters)
 
     codes = [r.code for r in rows]
     names = await _resolve_names(db, codes, mode)
-
-    DIGIT_CATEGORY = {
-        '1': '자산', '2': '부채', '3': '자본',
-        '4': '수익', '5': '매출원가', '6': '비용',
-        '7': '비용', '8': '판관비', '9': '영업외',
-    }
 
     items = []
     total_debit = 0.0
@@ -279,10 +310,10 @@ async def get_trial_balance(
         total_debit += d
         total_credit += c
         code = r.code
-        cat_name = DIGIT_CATEGORY.get(code[0], '미분류') if code else '미분류'
+        first, _, stripped, cat_name = _classify_code(code)
         items.append({
             "account_code": code,
-            "account_name": names.get(code, f"계정 {code}"),
+            "account_name": names.get(code, f"계정 {stripped}"),
             "category_name": cat_name,
             "debit_total": d,
             "credit_total": c,
@@ -307,8 +338,7 @@ async def get_income_statement(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """손익계산서 - 한국 회계 기준 (기간 기반)"""
-    # 연도 미지정시 최신 연도 자동
+    """손익계산서 - 더존 계정코드 기준 (기간 기반)"""
     if year is None:
         years = await _detect_years(db)
         if years:
@@ -331,23 +361,22 @@ async def get_income_statement(
         code = r.code
         d = float(r.debit_total)
         c = float(r.credit_total)
-        first_digit = code[0] if code else '0'
-        acct_name = names.get(code, f"계정 {code}")
+        first, _, stripped, _ = _classify_code(code)
+        acct_name = names.get(code, f"계정 {stripped}")
 
         item = {"code": code, "name": acct_name, "debit": d, "credit": c, "tx_count": r.tx_count}
 
         if mode == "multi":
-            if first_digit == '4':
+            if first == '4':
                 item["amount"] = c - d
                 revenue_items.append(item)
-            elif first_digit == '5':
+            elif first == '5':
                 item["amount"] = d - c
                 cogs_items.append(item)
-            elif first_digit in ('6', '7', '8'):
-                # 6xx, 7xx, 8xx 모두 판관비/비용으로 처리
+            elif first == '8':
                 item["amount"] = d - c
                 sga_items.append(item)
-            elif first_digit == '9':
+            elif first == '9':
                 net = c - d
                 if net >= 0:
                     item["amount"] = net
@@ -356,16 +385,16 @@ async def get_income_statement(
                     item["amount"] = -net
                     non_op_expense_items.append(item)
         else:
-            if first_digit == '4':
+            if first == '4':
                 item["amount"] = d
                 revenue_items.append(item)
-            elif first_digit == '5':
+            elif first == '5':
                 item["amount"] = c
                 cogs_items.append(item)
-            elif first_digit in ('6', '7', '8'):
+            elif first == '8':
                 item["amount"] = c
                 sga_items.append(item)
-            elif first_digit == '9':
+            elif first == '9':
                 if d > c:
                     item["amount"] = d - c
                     non_op_income_items.append(item)
@@ -423,7 +452,7 @@ async def get_balance_sheet(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """재무상태표 (기간 기반)"""
+    """재무상태표 - 더존 계정코드 기준 (기간 기반)"""
     filters = _date_filters(year, None) if year else []
     mode = await _detect_ledger_mode(db, filters)
     rows = await _get_account_balances(db, mode, filters)
@@ -441,25 +470,26 @@ async def get_balance_sheet(
         code = r.code
         d = float(r.debit_total)
         c = float(r.credit_total)
-        first_digit = code[0] if code else '0'
-        second_digit = int(code[1]) if code and len(code) > 1 and code[1].isdigit() else 0
-        acct_name = names.get(code, f"계정 {code}")
+        first, second, stripped, _ = _classify_code(code)
+        acct_name = names.get(code, f"계정 {stripped}")
 
-        if first_digit == '1':
+        if first == '1':
             amount = d - c if mode == "multi" else c - d
             item = {"code": code, "name": acct_name, "amount": amount}
-            if second_digit <= 5:
+            # 더존: 10x~14x 유동자산, 15x~19x 비유동자산
+            if second <= 4:
                 current_asset_items.append(item)
             else:
                 noncurrent_asset_items.append(item)
-        elif first_digit == '2':
+        elif first == '2':
             amount = c - d if mode == "multi" else d - c
             item = {"code": code, "name": acct_name, "amount": amount}
-            if second_digit <= 4:
+            # 더존: 20x~26x 유동부채, 27x~29x 비유동부채
+            if second <= 6:
                 current_liab_items.append(item)
             else:
                 noncurrent_liab_items.append(item)
-        elif first_digit == '3':
+        elif first == '3':
             amount = c - d if mode == "multi" else d - c
             equity_items.append({"code": code, "name": acct_name, "amount": amount})
 
@@ -623,3 +653,41 @@ async def get_account_detail(
             "balance": float(s.debit_total) - float(s.credit_total),
         },
     }
+
+
+# ============ 계정명 보정 (기존 데이터용) ============
+
+class AccountNameMapping(BaseModel):
+    code: str
+    name: str
+
+class BackfillNamesRequest(BaseModel):
+    mappings: List[AccountNameMapping]
+
+@router.post("/backfill-names")
+async def backfill_account_names(
+    data: BackfillNamesRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    기존 업로드 데이터의 source_account_name 보정.
+    프론트에서 엑셀 파일의 [CODE] NAME 매핑만 추출해서 전송.
+    """
+    updated = 0
+    for m in data.mappings:
+        result = await db.execute(
+            update(AIRawTransactionData)
+            .where(
+                AIRawTransactionData.source_account_code == m.code,
+                or_(
+                    AIRawTransactionData.source_account_name.is_(None),
+                    AIRawTransactionData.source_account_name == "",
+                )
+            )
+            .values(source_account_name=m.name)
+        )
+        updated += result.rowcount
+
+    await db.commit()
+    return {"updated_rows": updated, "codes_processed": len(data.mappings)}

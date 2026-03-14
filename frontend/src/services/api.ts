@@ -510,6 +510,8 @@ export const financialApi = {
     api.get('/financial/monthly-trend', { params: { year, account_code: accountCode } }),
   getAccountDetail: (accountCode: string, year?: number, page?: number, size?: number) =>
     api.get('/financial/account-detail', { params: { account_code: accountCode, year, page, size } }),
+  backfillNames: (mappings: Array<{ code: string; name: string }>) =>
+    api.post('/financial/backfill-names', { mappings }),
 }
 
 export default api
