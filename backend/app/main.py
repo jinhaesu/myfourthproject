@@ -88,22 +88,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware - wildcard 패턴 지원
-def get_cors_origins():
-    """CORS origins 처리 - wildcard 패턴 지원"""
-    origins = []
-    for origin in settings.CORS_ORIGINS:
-        if "*" in origin:
-            # wildcard는 allow_origin_regex로 처리
-            continue
-        origins.append(origin)
-    return origins
-
-# CORS 설정
-cors_origins = get_cors_origins()
+# CORS 설정 - Vercel + localhost 허용
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins if cors_origins else ["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "https://myfourthproject-nine.vercel.app",
+    ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
@@ -115,16 +107,24 @@ if not settings.DEBUG:
     logger.info("Running in production mode")
 
 
-# Global exception handler
+# Global exception handler - CORS 헤더 포함
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    origin = request.headers.get("origin", "")
+    headers = {}
+    if "vercel.app" in origin or "localhost" in origin:
+        headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        }
     return JSONResponse(
         status_code=500,
         content={
-            "detail": "Internal server error",
-            "message": str(exc) if settings.DEBUG else "An unexpected error occurred"
-        }
+            "detail": str(exc) if settings.DEBUG else "Internal server error",
+            "message": str(exc),
+        },
+        headers=headers,
     )
 
 

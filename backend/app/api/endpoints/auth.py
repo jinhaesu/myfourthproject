@@ -109,6 +109,8 @@ async def verify_email_otp(
     - 사용자가 DB에 없으면 자동 생성 (화이트리스트에 있는 이메일)
     """
     email = otp_data.email.lower()
+    import logging as _log
+    _logger = _log.getLogger(__name__)
 
     # OTP 검증
     success, message = verify_otp_code(email, otp_data.otp_code)
@@ -118,38 +120,48 @@ async def verify_email_otp(
             detail=message
         )
 
-    # 사용자 조회 (없으면 자동 생성)
-    result = await db.execute(
-        select(User)
-        .options(selectinload(User.department), selectinload(User.role))
-        .where(User.email == email)
-    )
-    user = result.scalar_one_or_none()
-
-    if not user:
-        user = await _auto_create_user(db, email)
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="비활성화된 계정입니다. 관리자에게 문의하세요."
+    try:
+        # 사용자 조회 (없으면 자동 생성)
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.email == email)
         )
+        user = result.scalar_one_or_none()
 
-    # 마지막 로그인 업데이트
-    user.last_login = datetime.utcnow()
-    await db.commit()
+        if not user:
+            _logger.info(f"Creating new user for {email}")
+            user = await _auto_create_user(db, email)
 
-    # 토큰 발급
-    access_token = create_access_token({"sub": str(user.id)})
-    refresh_token = create_refresh_token({"sub": str(user.id)})
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="비활성화된 계정입니다. 관리자에게 문의하세요."
+            )
 
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        "user": user_to_response(user),
-    }
+        # 마지막 로그인 업데이트
+        user.last_login = datetime.utcnow()
+        await db.commit()
+
+        # 토큰 발급
+        access_token = create_access_token({"sub": str(user.id)})
+        refresh_token = create_refresh_token({"sub": str(user.id)})
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            "user": user_to_response(user),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.error(f"verify-otp DB error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"로그인 처리 오류: {str(e)}"
+        )
 
 
 @router.post("/resend-otp")
