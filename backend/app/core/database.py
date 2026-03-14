@@ -164,6 +164,7 @@ async def init_db():
                 from sqlalchemy import text
                 migrations = [
                     "ALTER TABLE ai_raw_transaction_data ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(100)",
+                    "ALTER TABLE ai_training_data ALTER COLUMN account_id DROP NOT NULL",
                 ]
                 for sql in migrations:
                     try:

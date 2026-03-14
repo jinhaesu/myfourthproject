@@ -107,7 +107,7 @@ class AITrainingData(Base):
     is_weekend: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Label
-    account_id: Mapped[int] = mapped_column(Integer, ForeignKey("accounts.id"))
+    account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("accounts.id"), nullable=True)
     account_code: Mapped[str] = mapped_column(String(20))
 
     # Weight (for class balancing)

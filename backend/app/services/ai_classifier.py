@@ -473,9 +473,9 @@ class AIClassifierService:
         return log.id
 
     async def _generate_training_from_raw(self, db: AsyncSession) -> int:
-        """AIRawTransactionData에서 AITrainingData 자동 생성 (아직 변환 안 된 것만)"""
+        """AIRawTransactionData에서 AITrainingData 자동 생성 (Account 테이블 의존 없음)"""
         from app.models.ai import AIRawTransactionData
-        from sqlalchemy import insert as sa_insert, func as sa_func
+        from sqlalchemy import insert as sa_insert
         import logging
         logger = logging.getLogger(__name__)
 
@@ -496,7 +496,7 @@ class AIClassifierService:
         if not raw_rows:
             return 0
 
-        # 계정 캐시
+        # Account 테이블 캐시 (있으면 account_id 매핑, 없어도 진행)
         acct_result = await db.execute(
             select(Account).where(Account.is_active == True)
         )
@@ -511,9 +511,11 @@ class AIClassifierService:
             training_bulk = []
 
             for raw in batch:
-                account = acct_cache.get(raw.account_code)
-                if not account:
+                # account_code가 없으면 건너뛰기
+                if not raw.account_code:
                     continue
+
+                account = acct_cache.get(raw.account_code)
 
                 training_bulk.append({
                     "description_tokens": self._preprocess_text(
@@ -521,8 +523,8 @@ class AIClassifierService:
                     ),
                     "merchant_name": (raw.merchant_name or '')[:200],
                     "amount_range": self._get_amount_range(raw.amount or Decimal("0")),
-                    "account_id": account.id,
-                    "account_code": account.code,
+                    "account_id": account.id if account else None,
+                    "account_code": raw.account_code,
                     "source_type": "historical",
                     "source_id": raw.id,
                     "dataset_version": "douzone_import",

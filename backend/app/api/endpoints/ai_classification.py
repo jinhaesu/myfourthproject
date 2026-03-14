@@ -357,7 +357,7 @@ async def get_ai_status(
     return {
         "model_version": active_model.version if active_model else "default_v1.0",
         "is_trained": active_model is not None,
-        "training_samples": training_count or 0,
+        "training_samples": max(training_count or 0, total_raw_rows or 0),
         "total_classifications": stats.total or 0,
         "correct_classifications": stats.correct or 0,
         "corrected_classifications": stats.corrected or 0,
