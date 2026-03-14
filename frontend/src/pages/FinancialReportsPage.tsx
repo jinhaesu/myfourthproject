@@ -1,7 +1,7 @@
 import { useState, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { financialApi, aiClassificationApi } from '@/services/api'
-import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
+import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon, ArrowDownTrayIcon, InformationCircleIcon, ChevronDownIcon, ChevronUpIcon, SparklesIcon } from '@heroicons/react/24/outline'
 import * as XLSX from 'xlsx'
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -18,7 +18,124 @@ function fmtAmount(v: number) {
   return new Intl.NumberFormat('ko-KR').format(Math.abs(v))
 }
 
-type TabType = 'statements' | 'trend' | 'trial'
+type TabType = 'statements' | 'trend' | 'trial' | 'ai-analysis'
+
+// ============ 회계 초보자를 위한 설명 ============
+const INCOME_GUIDE = {
+  title: '손익계산서란?',
+  summary: '회사가 일정 기간 동안 얼마를 벌고(매출), 얼마를 쓰고(비용), 최종적으로 얼마의 이익을 냈는지 보여주는 보고서입니다.',
+  sections: [
+    { id: 'I', tip: '회사의 주요 영업활동으로 벌어들인 총 수입입니다. (예: 상품 판매, 제품 판매)' },
+    { id: 'II', tip: '제품을 만들거나 상품을 구입하는 데 직접 들어간 비용입니다. "상품매출원가 대체"는 재고(자산)에서 원가(비용)로 비용을 옮기는 회계 처리입니다.' },
+    { id: 'III', tip: '매출액 - 매출원가. 핵심 수익성 지표로, 이 수치가 마이너스면 팔수록 손해라는 의미입니다.' },
+    { id: 'IV', tip: '물건을 팔고 회사를 운영하는 데 드는 비용입니다. (예: 급여, 임차료, 광고비, 운반비)' },
+    { id: 'V', tip: '본업에서 발생한 순수 이익입니다. 투자자와 은행이 가장 중요하게 보는 지표입니다.' },
+    { id: 'VI', tip: '본업 외에서 발생한 수익입니다. (예: 이자수익, 임대수익, 외화환산이익)' },
+    { id: 'VII', tip: '본업 외에서 발생한 비용입니다. (예: 이자비용, 외화환산손실)' },
+    { id: 'VIII', tip: '세금을 내기 전 최종 이익입니다.' },
+    { id: 'IX', tip: '법인세 등 세금 비용입니다.' },
+    { id: 'X', tip: '모든 수익과 비용을 정리한 최종 이익입니다. 회사의 실질적인 성과를 나타냅니다.' },
+  ],
+}
+
+const BALANCE_GUIDE = {
+  title: '재무상태표란?',
+  summary: '특정 시점에 회사가 무엇을 가지고 있고(자산), 얼마를 빚지고 있으며(부채), 순수하게 얼마가 남는지(자본)를 보여줍니다.',
+  formula: '핵심 공식: 자산 = 부채 + 자본',
+  sections: [
+    { name: 'I. 유동자산', tip: '1년 이내에 현금으로 바꿀 수 있는 자산 (현금, 예금, 매출채권, 재고)' },
+    { name: 'II. 비유동자산', tip: '1년 이상 장기적으로 사용하는 자산 (건물, 기계, 토지, 특허권)' },
+    { name: 'I. 유동부채', tip: '1년 이내에 갚아야 하는 부채 (외상매입금, 단기차입금, 미지급금)' },
+    { name: 'II. 비유동부채', tip: '1년 이후에 갚는 장기 부채 (장기차입금, 사채)' },
+    { name: '자본 항목', tip: '자산에서 부채를 뺀 순수 주주의 몫 (자본금, 이익잉여금)' },
+  ],
+}
+
+function GuideBox({ title, children, defaultOpen }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen ?? false)
+  return (
+    <div className="mb-4 border border-blue-200 rounded-lg bg-blue-50/50">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-4 py-2.5 text-left">
+        <span className="flex items-center gap-2 text-sm font-medium text-blue-700">
+          <InformationCircleIcon className="h-4.5 w-4.5" />
+          {title}
+        </span>
+        {open ? <ChevronUpIcon className="h-4 w-4 text-blue-500" /> : <ChevronDownIcon className="h-4 w-4 text-blue-500" />}
+      </button>
+      {open && <div className="px-4 pb-3 text-sm text-gray-700 leading-relaxed">{children}</div>}
+    </div>
+  )
+}
+
+function InfoTip({ text }: { text: string }) {
+  const [show, setShow] = useState(false)
+  return (
+    <span className="relative inline-flex ml-1.5 align-middle">
+      <button onClick={(e) => { e.stopPropagation(); setShow(!show) }}
+        className="text-blue-400 hover:text-blue-600 focus:outline-none">
+        <InformationCircleIcon className="h-3.5 w-3.5" />
+      </button>
+      {show && (
+        <div className="absolute z-20 left-5 -top-1 w-64 bg-white border border-blue-200 rounded-lg p-2.5 text-xs text-gray-600 shadow-lg leading-relaxed"
+          onClick={(e) => e.stopPropagation()}>
+          {text}
+          <button onClick={() => setShow(false)} className="block mt-1 text-blue-500 hover:underline text-[10px]">닫기</button>
+        </div>
+      )}
+    </span>
+  )
+}
+
+/** 손익계산서/재무상태표 엑셀 다운로드 */
+function downloadStatementsExcel(incomeData: any, balanceData: any, year: number, month: number | null) {
+  const wb = XLSX.utils.book_new()
+
+  // 손익계산서 시트
+  const isRows: any[][] = [
+    ['손 익 계 산 서'],
+    [`${year}년 ${month ? `${month}월` : '1월 1일 ~ 12월 31일'}`],
+    [],
+    ['구분', '과 목', '금 액', '비율(%)'],
+  ]
+  for (const section of (incomeData?.sections || [])) {
+    for (const item of (section.items || [])) {
+      isRows.push(['', item.name, item.amount, ''])
+    }
+    isRows.push([`${section.id}.`, section.name, section.total, section.pct !== undefined ? section.pct.toFixed(2) : ''])
+  }
+  const ws1 = XLSX.utils.aoa_to_sheet(isRows)
+  ws1['!cols'] = [{ wch: 8 }, { wch: 30 }, { wch: 18 }, { wch: 10 }]
+  XLSX.utils.book_append_sheet(wb, ws1, '손익계산서')
+
+  // 재무상태표 시트
+  const bsRows: any[][] = [
+    ['재 무 상 태 표'],
+    [`${year}년 기준`],
+    [],
+    ['과 목', '금 액'],
+  ]
+  for (const section of (balanceData?.sections || [])) {
+    bsRows.push([section.name, ''])
+    for (const sub of (section.subsections || [])) {
+      bsRows.push([`  ${sub.name}`, sub.total])
+      for (const item of (sub.items || [])) {
+        bsRows.push([`    ${item.name}`, item.amount])
+      }
+    }
+    bsRows.push([`${section.name} 총계`, section.total])
+    bsRows.push([])
+  }
+  const ws2 = XLSX.utils.aoa_to_sheet(bsRows)
+  ws2['!cols'] = [{ wch: 35 }, { wch: 18 }]
+  XLSX.utils.book_append_sheet(wb, ws2, '재무상태표')
+
+  XLSX.writeFile(wb, `재무제표_${year}년${month ? `_${month}월` : ''}.xlsx`)
+}
+
+/** 인쇄(PDF) 다운로드 */
+function printStatements() {
+  window.print()
+}
 const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 /** 엑셀 파일에서 [CODE] NAME 또는 (CODE) NAME 매핑 추출 */
@@ -122,6 +239,7 @@ export default function FinancialReportsPage() {
     { id: 'statements', label: '손익계산서 / 재무상태표' },
     { id: 'trend', label: '월별 추이' },
     { id: 'trial', label: '시산표' },
+    { id: 'ai-analysis', label: 'AI 분석' },
   ]
 
   return (
@@ -256,6 +374,7 @@ export default function FinancialReportsPage() {
           {activeTab === 'statements' && <StatementsTab year={activeYear} />}
           {activeTab === 'trend' && <TrendTab year={activeYear} />}
           {activeTab === 'trial' && <TrialBalanceTab year={activeYear} />}
+          {activeTab === 'ai-analysis' && <AIAnalysisTab year={activeYear} />}
         </>
       )}
     </div>
@@ -284,8 +403,8 @@ function StatementsTab({ year }: { year: number }) {
   const bsSections: any[] = balanceData?.sections || []
 
   return (
-    <div className="space-y-8">
-      <div className="card">
+    <div className="space-y-8 print:space-y-4">
+      <div className="card print:hidden">
         <div className="flex items-center gap-3 flex-wrap">
           <label className="text-sm font-medium text-gray-700">월 필터</label>
           <div className="flex gap-1 flex-wrap">
@@ -300,11 +419,25 @@ function StatementsTab({ year }: { year: number }) {
                 }`}>{m}월</button>
             ))}
           </div>
+          <div className="ml-auto flex gap-2">
+            <button onClick={() => downloadStatementsExcel(incomeData, balanceData, year, month)}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium bg-green-50 text-green-700 hover:bg-green-100">
+              <ArrowDownTrayIcon className="h-3.5 w-3.5" /> Excel
+            </button>
+            <button onClick={printStatements}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium bg-gray-100 text-gray-600 hover:bg-gray-200">
+              <ArrowDownTrayIcon className="h-3.5 w-3.5" /> PDF(인쇄)
+            </button>
+          </div>
         </div>
       </div>
 
       {/* 손익계산서 */}
-      <div className="card">
+      <div className="card" id="print-income">
+        <GuideBox title={INCOME_GUIDE.title}>
+          <p className="mb-2">{INCOME_GUIDE.summary}</p>
+          <p className="text-xs text-blue-600 mt-1">TIP: 비율(%) 열은 매출액 대비 각 항목의 비중을 나타냅니다.</p>
+        </GuideBox>
         <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
           <h2 className="text-xl font-bold text-gray-900 tracking-widest">손 익 계 산 서</h2>
           <p className="text-sm text-gray-500 mt-1">
@@ -339,7 +472,10 @@ function StatementsTab({ year }: { year: number }) {
                     ))}
                     <tr className={`border-b ${isSubtotal ? 'border-gray-400 bg-gray-50' : 'border-gray-200'}`}>
                       <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>{section.id}.</td>
-                      <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>{section.name}</td>
+                      <td className={`py-2 px-3 font-bold ${isSubtotal ? 'text-gray-900' : 'text-gray-700'}`}>
+                        {section.name}
+                        {(() => { const tip = INCOME_GUIDE.sections.find((s: any) => s.id === section.id); return tip ? <InfoTip text={tip.tip} /> : null })()}
+                      </td>
                       <td className={`py-2 px-3 text-right font-mono font-bold ${isSubtotal ? (section.total >= 0 ? 'text-gray-900' : 'text-red-600') : 'text-gray-800'}`}>
                         {section.total < 0 ? `(${fmtAmount(section.total)})` : fmtAmount(section.total)}
                       </td>
@@ -359,7 +495,11 @@ function StatementsTab({ year }: { year: number }) {
       <hr className="border-gray-300" />
 
       {/* 재무상태표 */}
-      <div className="card">
+      <div className="card" id="print-balance">
+        <GuideBox title={BALANCE_GUIDE.title}>
+          <p className="mb-2">{BALANCE_GUIDE.summary}</p>
+          <p className="font-semibold text-blue-700 text-xs mt-1">{BALANCE_GUIDE.formula}</p>
+        </GuideBox>
         <div className="text-center border-b-2 border-gray-800 pb-3 mb-4">
           <h2 className="text-xl font-bold text-gray-900 tracking-widest">재 무 상 태 표</h2>
           <p className="text-sm text-gray-500 mt-1">{year}년 기준</p>
@@ -381,7 +521,10 @@ function StatementsTab({ year }: { year: number }) {
                   {(section.subsections || []).map((sub: any, si: number) => (
                     <SectionGroup key={si}>
                       <tr className="border-b border-gray-200">
-                        <td className="py-1.5 px-3 pl-6 font-semibold text-gray-800">{sub.name}</td>
+                        <td className="py-1.5 px-3 pl-6 font-semibold text-gray-800">
+                          {sub.name}
+                          {(() => { const tip = BALANCE_GUIDE.sections.find((s: any) => s.name === sub.name); return tip ? <InfoTip text={tip.tip} /> : null })()}
+                        </td>
                         <td className="py-1.5 px-3 text-right font-mono font-semibold text-gray-800">{fmtAmount(sub.total)}</td>
                       </tr>
                       {(sub.items || []).map((item: any, idx: number) => (
@@ -720,6 +863,159 @@ function DetailModal({ accountCode, accountName, data, isLoading, page, onPageCh
     </div>
   )
 }
+
+// ============================================================================
+// Tab 4: AI 분석
+// ============================================================================
+const AI_CATEGORIES = [
+  { key: 'financial_improvements', title: '재무적으로 개선할 점', color: 'blue', icon: '📊' },
+  { key: 'pl_improvements', title: '손익에서 개선할 점', color: 'green', icon: '📈' },
+  { key: 'account_notable', title: '계정별 과목 특이사항', color: 'yellow', icon: '🔍' },
+  { key: 'accounting_concerns', title: '회계적 우려 및 확인 사항', color: 'red', icon: '⚠️' },
+] as const
+
+function AIAnalysisTab({ year }: { year: number }) {
+  const [analysisData, setAnalysisData] = useState<any>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [expandedCat, setExpandedCat] = useState<string | null>(null)
+
+  const runAnalysis = async () => {
+    setLoading(true)
+    setError('')
+    setAnalysisData(null)
+    try {
+      const res = await financialApi.getAIAnalysis(year)
+      setAnalysisData(res.data)
+      setExpandedCat(AI_CATEGORIES[0].key)
+    } catch (err: any) {
+      const detail = err.response?.data?.detail || err.message
+      setError(detail)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const analysis = analysisData?.analysis
+
+  const colorMap: Record<string, string> = {
+    blue: 'border-blue-200 bg-blue-50',
+    green: 'border-green-200 bg-green-50',
+    yellow: 'border-yellow-200 bg-yellow-50',
+    red: 'border-red-200 bg-red-50',
+  }
+  const headerColorMap: Record<string, string> = {
+    blue: 'text-blue-800 bg-blue-100',
+    green: 'text-green-800 bg-green-100',
+    yellow: 'text-yellow-800 bg-yellow-100',
+    red: 'text-red-800 bg-red-100',
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="card">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+              <SparklesIcon className="h-5 w-5 text-purple-500" />
+              AI 재무 분석
+            </h3>
+            <p className="text-sm text-gray-500 mt-1">
+              {year}년 재무 데이터를 AI가 분석하여 4가지 관점에서 인사이트를 제공합니다.
+            </p>
+          </div>
+          <button
+            onClick={runAnalysis}
+            disabled={loading}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 transition-colors"
+          >
+            {loading ? (
+              <><ArrowPathIcon className="h-4 w-4 animate-spin" /> 분석 중...</>
+            ) : (
+              <><SparklesIcon className="h-4 w-4" /> {analysis ? '다시 분석' : '분석 시작'}</>
+            )}
+          </button>
+        </div>
+        {error && (
+          <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+            {error}
+          </div>
+        )}
+      </div>
+
+      {loading && (
+        <div className="card text-center py-16">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto" />
+          <p className="text-gray-500 mt-4">AI가 재무 데이터를 분석하고 있습니다...</p>
+          <p className="text-xs text-gray-400 mt-1">약 10~20초 소요될 수 있습니다.</p>
+        </div>
+      )}
+
+      {analysis && !loading && (
+        <div className="space-y-4">
+          {AI_CATEGORIES.map((cat) => {
+            const items: any[] = analysis[cat.key] || []
+            const isExpanded = expandedCat === cat.key
+            return (
+              <div key={cat.key} className={`border rounded-lg overflow-hidden ${colorMap[cat.color]}`}>
+                <button
+                  onClick={() => setExpandedCat(isExpanded ? null : cat.key)}
+                  className={`w-full flex items-center justify-between px-5 py-3.5 text-left ${headerColorMap[cat.color]}`}
+                >
+                  <span className="font-bold text-sm flex items-center gap-2">
+                    <span>{cat.icon}</span> {cat.title}
+                    <span className="text-xs font-normal opacity-70">({items.length}개 항목)</span>
+                  </span>
+                  {isExpanded ? <ChevronUpIcon className="h-4 w-4" /> : <ChevronDownIcon className="h-4 w-4" />}
+                </button>
+                {isExpanded && (
+                  <div className="p-4 space-y-3 bg-white/70">
+                    {items.map((item: any, idx: number) => (
+                      <div key={idx} className="border border-gray-200 rounded-lg p-4 bg-white">
+                        <h4 className="font-bold text-gray-900 text-sm mb-2">{item.title}</h4>
+                        {item.current && (
+                          <div className="mb-1.5">
+                            <span className="text-xs font-medium text-gray-500 mr-1">현황:</span>
+                            <span className="text-sm text-gray-700">{item.current}</span>
+                          </div>
+                        )}
+                        {item.issue && (
+                          <div className="mb-1.5">
+                            <span className="text-xs font-medium text-orange-600 mr-1">문제점:</span>
+                            <span className="text-sm text-gray-700">{item.issue}</span>
+                          </div>
+                        )}
+                        {item.recommendation && (
+                          <div>
+                            <span className="text-xs font-medium text-blue-600 mr-1">개선방안:</span>
+                            <span className="text-sm text-gray-700">{item.recommendation}</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    {items.length === 0 && <p className="text-sm text-gray-400 text-center py-4">분석 항목 없음</p>}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {analysisData?.generated_at && (
+            <p className="text-xs text-gray-400 text-right">분석 시각: {new Date(analysisData.generated_at).toLocaleString('ko-KR')}</p>
+          )}
+        </div>
+      )}
+
+      {!analysis && !loading && !error && (
+        <div className="card text-center py-16 text-gray-400">
+          <SparklesIcon className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+          <p className="text-lg">"분석 시작" 버튼을 눌러주세요</p>
+          <p className="text-sm mt-1">손익계산서, 재무상태표, 시산표 데이터를 종합 분석합니다.</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 function Loading() {
   return <div className="text-center py-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" /><p className="text-gray-500 mt-2">로딩 중...</p></div>

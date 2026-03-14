@@ -156,3 +156,18 @@
   --ag-border-color: #e5e7eb;
   --ag-row-hover-color: #f3f4f6;
 }
+
+/* 인쇄(PDF) 시 불필요한 요소 숨기기 */
+@media print {
+  nav, header, aside, .print\:hidden, button {
+    display: none !important;
+  }
+  body {
+    background: white !important;
+  }
+  .card {
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+  }
+}

@@ -6,8 +6,11 @@ Smart Finance Core - Financial Reports API
 - 여러 파일을 나눠 업로드해도 같은 기간이면 합산
 - 계정별 원장에서 source_account_code(원장계정)와 account_code(상대계정) 구분
 """
+import json
+import logging
 import math
 import re
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List
 
@@ -15,6 +18,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, update
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.core.security import get_current_user
@@ -771,4 +776,226 @@ async def debug_raw_data(
         "top_source_codes": source_code_dist,
         "top_account_codes": account_code_dist,
         "sample_rows": sample_rows,
+    }
+
+
+# ============ AI 재무 분석 ============
+
+@router.get("/ai-analysis")
+async def get_ai_analysis(
+    year: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AI 재무 분석 - 4대 카테고리 (OpenAI GPT-4o 사용)"""
+    from app.core.config import settings
+
+    if not settings.OPENAI_API_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail="AI 분석을 위해 OPENAI_API_KEY 환경변수를 설정해주세요."
+        )
+
+    # 1) 재무 데이터 수집
+    if year is None:
+        years = await _detect_years(db)
+        if years:
+            year = years[0]
+
+    extra_filters = _date_filters(year, None) if year else []
+    mode = await _detect_ledger_mode(db, extra_filters)
+    rows = await _get_account_balances(db, mode, extra_filters)
+    codes = [r.code for r in rows]
+    names = await _resolve_names(db, codes, mode)
+
+    # 2) 손익계산서 데이터 구성
+    revenue_total = 0.0
+    cogs_total = 0.0
+    sga_total = 0.0
+    non_op_income_total = 0.0
+    non_op_expense_total = 0.0
+    revenue_items_text = []
+    cogs_items_text = []
+    sga_items_text = []
+    non_op_items_text = []
+
+    for r in rows:
+        code = r.code
+        d = float(r.debit_total)
+        c = float(r.credit_total)
+        first, _, stripped, _ = _classify_code(code)
+        acct_name = names.get(code, f"계정 {stripped}")
+
+        if mode == "multi":
+            if first == '4':
+                amt = c - d
+                revenue_total += amt
+                revenue_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+            elif first in ('5', '6', '7'):
+                amt = d - c
+                cogs_total += amt
+                cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+            elif first == '8':
+                amt = d - c
+                sga_total += amt
+                sga_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+            elif first == '9':
+                net = c - d
+                if net >= 0:
+                    non_op_income_total += net
+                else:
+                    non_op_expense_total += (-net)
+                non_op_items_text.append(f"  {acct_name}({code}): 차변={d:,.0f} 대변={c:,.0f}")
+
+    gross_profit = revenue_total - cogs_total
+    operating_income = gross_profit - sga_total
+    net_income = operating_income + non_op_income_total - non_op_expense_total
+
+    # 3) 재무상태표 데이터
+    asset_items = []
+    liab_items = []
+    equity_items = []
+    total_assets = 0.0
+    total_liab = 0.0
+    total_equity = 0.0
+
+    for r in rows:
+        code = r.code
+        d = float(r.debit_total)
+        c = float(r.credit_total)
+        first, _, stripped, _ = _classify_code(code)
+        acct_name = names.get(code, f"계정 {stripped}")
+
+        if first == '1':
+            amt = d - c if mode == "multi" else c - d
+            total_assets += amt
+            if abs(amt) > 10_000_000:
+                asset_items.append(f"  {acct_name}({code}): {amt:,.0f}")
+        elif first == '2':
+            amt = c - d if mode == "multi" else d - c
+            total_liab += amt
+            if abs(amt) > 10_000_000:
+                liab_items.append(f"  {acct_name}({code}): {amt:,.0f}")
+        elif first == '3':
+            amt = c - d if mode == "multi" else d - c
+            total_equity += amt
+            equity_items.append(f"  {acct_name}({code}): {amt:,.0f}")
+
+    # 4) 시산표 요약 (미분류 등 특이 항목)
+    unclassified = []
+    large_balance = []
+    for r in rows:
+        code = r.code
+        d = float(r.debit_total)
+        c = float(r.credit_total)
+        first, _, stripped, _ = _classify_code(code)
+        acct_name = names.get(code, f"계정 {stripped}")
+        balance = d - c
+
+        if DOUZONE_CATEGORY.get(first) is None:
+            unclassified.append(f"  {acct_name}({code}): 차변={d:,.0f} 대변={c:,.0f}")
+        if abs(balance) > 500_000_000:
+            large_balance.append(f"  {acct_name}({code}): 잔액={balance:,.0f}")
+
+    # 5) 프롬프트 구성
+    prompt = f"""당신은 한국 중소기업 전문 공인회계사입니다. 아래 {year}년 재무 데이터를 분석해주세요.
+회사명: 주식회사 조인앤조인 (식품/유통업)
+
+=== 손익계산서 ===
+매출액: {revenue_total:,.0f}원
+{chr(10).join(revenue_items_text[:20])}
+
+매출원가: {cogs_total:,.0f}원
+{chr(10).join(cogs_items_text[:20])}
+
+매출총이익: {gross_profit:,.0f}원
+매출총이익률: {(gross_profit/revenue_total*100) if revenue_total else 0:.1f}%
+
+판매비와관리비: {sga_total:,.0f}원
+{chr(10).join(sga_items_text[:20])}
+
+영업이익: {operating_income:,.0f}원
+영업이익률: {(operating_income/revenue_total*100) if revenue_total else 0:.1f}%
+
+영업외수익: {non_op_income_total:,.0f}원
+영업외비용: {non_op_expense_total:,.0f}원
+당기순이익: {net_income:,.0f}원
+
+=== 재무상태표 ===
+자산 총계: {total_assets:,.0f}원
+주요 자산:
+{chr(10).join(asset_items[:15])}
+
+부채 총계: {total_liab:,.0f}원
+주요 부채:
+{chr(10).join(liab_items[:15])}
+
+자본 총계: {total_equity:,.0f}원
+{chr(10).join(equity_items[:10])}
+
+부채비율: {(total_liab/total_equity*100) if total_equity else 0:.1f}%
+
+=== 특이사항 ===
+미분류 계정: {len(unclassified)}개
+{chr(10).join(unclassified[:10])}
+
+잔액 5억 이상 계정: {len(large_balance)}개
+{chr(10).join(large_balance[:15])}
+
+총 계정 수: {len(rows)}개, 거래 건수: {sum(r.tx_count for r in rows):,}건
+
+---
+
+위 데이터를 아래 4가지 카테고리로 분석해주세요. 각 카테고리별 3~5개의 구체적 항목을 제시하세요.
+
+반드시 아래 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
+{{
+  "financial_improvements": [
+    {{"title": "항목명", "current": "현재 수치/상황", "issue": "문제점", "recommendation": "구체적 개선방안"}}
+  ],
+  "pl_improvements": [
+    {{"title": "항목명", "current": "현재 수치/상황", "issue": "문제점", "recommendation": "구체적 개선방안"}}
+  ],
+  "account_notable": [
+    {{"title": "항목명", "current": "현재 수치/상황", "issue": "특이사항 설명", "recommendation": "확인/조치 방안"}}
+  ],
+  "accounting_concerns": [
+    {{"title": "항목명", "current": "현재 수치/상황", "issue": "우려 사항", "recommendation": "확인/조치 방안"}}
+  ]
+}}"""
+
+    # 6) OpenAI API 호출
+    try:
+        import openai
+        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": "당신은 한국 중소기업 전문 공인회계사입니다. 반드시 요청된 JSON 형식으로만 응답하세요."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=4000,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or "{}"
+        analysis = json.loads(content)
+    except json.JSONDecodeError:
+        logger.error(f"AI 응답 JSON 파싱 실패: {content[:500]}")
+        raise HTTPException(status_code=500, detail="AI 응답 파싱 실패")
+    except Exception as e:
+        logger.error(f"AI 분석 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"AI 분석 오류: {str(e)}")
+
+    return {
+        "year": year,
+        "analysis": analysis,
+        "generated_at": datetime.now().isoformat(),
+        "summary": {
+            "revenue": revenue_total,
+            "net_income": net_income,
+            "total_assets": total_assets,
+            "total_liabilities": total_liab,
+            "account_count": len(rows),
+        },
     }

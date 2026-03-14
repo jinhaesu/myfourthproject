@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     RESEND_FROM_EMAIL: str = "Smart Finance <onboarding@resend.dev>"
     ALLOWED_EMAILS: List[str] = []  # 빈 리스트면 모든 이메일 허용, 값이 있으면 화이트리스트
 
+    # AI Analysis (LLM)
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4o"
+
     # Douzone Integration
     DOUZONE_API_URL: Optional[str] = None
     DOUZONE_API_KEY: Optional[str] = None
