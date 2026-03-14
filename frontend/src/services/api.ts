@@ -518,7 +518,7 @@ export const financialApi = {
     api.post('/financial/backfill-names', { mappings }),
   getDebugData: () => api.get('/financial/debug-data'),
   getAIAnalysis: (year?: number) =>
-    api.get('/financial/ai-analysis', { params: { year }, timeout: 180000 }),
+    api.get('/financial/ai-analysis', { params: { year }, timeout: 300000 }),
 }
 
 export default api
