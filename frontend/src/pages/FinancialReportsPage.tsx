@@ -75,6 +75,7 @@ export default function FinancialReportsPage() {
   const [selectedYear, setSelectedYear] = useState<number | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState('')
+  const [debugData, setDebugData] = useState<any>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const queryClient = useQueryClient()
 
@@ -173,6 +174,30 @@ export default function FinancialReportsPage() {
           )}
           {syncMsg && (
             <span className="text-xs text-blue-600 w-full">{syncMsg}</span>
+          )}
+          {totalRows > 0 && (
+            <div className="w-full flex justify-end mt-1">
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await financialApi.getDebugData()
+                    setDebugData(res.data)
+                  } catch (err: any) {
+                    setDebugData({ error: err.message })
+                  }
+                }}
+                className="text-xs text-gray-400 hover:text-gray-600 underline"
+              >데이터 구조 확인</button>
+            </div>
+          )}
+          {debugData && (
+            <div className="w-full mt-2 bg-gray-50 border rounded p-3 text-xs font-mono max-h-80 overflow-auto">
+              <div className="flex justify-between mb-2">
+                <span className="font-bold text-gray-700">DB 원본 데이터 구조</span>
+                <button onClick={() => setDebugData(null)} className="text-gray-400 hover:text-gray-600">닫기</button>
+              </div>
+              <pre className="whitespace-pre-wrap break-all">{JSON.stringify(debugData, null, 2)}</pre>
+            </div>
           )}
         </div>
         {uploads.length > 0 && (

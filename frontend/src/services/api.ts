@@ -512,6 +512,7 @@ export const financialApi = {
     api.get('/financial/account-detail', { params: { account_code: accountCode, year, page, size } }),
   backfillNames: (mappings: Array<{ code: string; name: string }>) =>
     api.post('/financial/backfill-names', { mappings }),
+  getDebugData: () => api.get('/financial/debug-data'),
 }
 
 export default api
