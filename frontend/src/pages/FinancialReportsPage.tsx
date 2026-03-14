@@ -54,15 +54,15 @@ const BALANCE_GUIDE = {
 function GuideBox({ title, children, defaultOpen }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen ?? false)
   return (
-    <div className="mb-4 border border-blue-200 rounded-lg bg-blue-50/50">
-      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-4 py-2.5 text-left">
-        <span className="flex items-center gap-2 text-sm font-medium text-blue-700">
-          <InformationCircleIcon className="h-4.5 w-4.5" />
+    <div className="mb-4 border border-blue-200 rounded-lg bg-blue-50/50 print:hidden">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center justify-between px-4 py-2.5 text-left gap-4">
+        <span className="flex items-center gap-2 text-sm font-medium text-blue-700 whitespace-nowrap">
+          <InformationCircleIcon className="h-5 w-5 flex-shrink-0" />
           {title}
         </span>
-        {open ? <ChevronUpIcon className="h-4 w-4 text-blue-500" /> : <ChevronDownIcon className="h-4 w-4 text-blue-500" />}
+        {open ? <ChevronUpIcon className="h-4 w-4 text-blue-500 flex-shrink-0" /> : <ChevronDownIcon className="h-4 w-4 text-blue-500 flex-shrink-0" />}
       </button>
-      {open && <div className="px-4 pb-3 text-sm text-gray-700 leading-relaxed">{children}</div>}
+      {open && <div className="px-4 pb-3 text-sm text-gray-700 leading-relaxed break-keep">{children}</div>}
     </div>
   )
 }
@@ -133,6 +133,47 @@ function AmountBreakdown({ items, total, isSubtotal }: { items: any[]; total: nu
               ))}
             </div>
           )}
+        </div>
+      )}
+    </span>
+  )
+}
+
+/** 개별 과목 금액 호버 → 차변/대변/건수 표시 */
+function ItemAmountTip({ item }: { item: any }) {
+  const [show, setShow] = useState(false)
+  const hasDetail = item.debit !== undefined || item.credit !== undefined
+  return (
+    <span className="relative cursor-help"
+      onMouseEnter={() => hasDetail && setShow(true)}
+      onMouseLeave={() => setShow(false)}>
+      {item.amount < 0 ? `(${fmtAmount(item.amount)})` : fmtAmount(item.amount)}
+      {show && (
+        <div className="absolute z-30 right-0 top-full mt-1 w-64 bg-white border border-gray-200 rounded-xl shadow-xl p-3 text-xs print:hidden">
+          <div className="font-bold text-gray-800 mb-2 text-[13px] border-b pb-1.5">
+            {item.name}
+            {item.code && <span className="ml-1 text-gray-400 font-normal text-[11px]">({item.code})</span>}
+          </div>
+          <div className="space-y-1">
+            <div className="flex justify-between">
+              <span className="text-gray-500">차변 합계</span>
+              <span className="font-mono text-blue-700">{fmtNum(item.debit || 0)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-500">대변 합계</span>
+              <span className="font-mono text-red-600">{fmtNum(item.credit || 0)}</span>
+            </div>
+            <div className="flex justify-between font-bold border-t pt-1 mt-1">
+              <span>순액</span>
+              <span className="font-mono">{item.amount < 0 ? `(${fmtAmount(item.amount)})` : fmtNum(item.amount)}</span>
+            </div>
+            {item.tx_count > 0 && (
+              <div className="flex justify-between text-gray-400 text-[11px] mt-1">
+                <span>거래 건수</span>
+                <span>{fmtNum(item.tx_count)}건</span>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </span>
@@ -603,7 +644,7 @@ function StatementsTab({ year }: { year: number }) {
                         <td className="py-1.5 px-3"></td>
                         <td className="py-1.5 px-3 pl-12 text-gray-700">{item.name}</td>
                         <td className="py-1.5 px-3 text-right font-mono text-gray-700">
-                          {item.amount < 0 ? `(${fmtAmount(item.amount)})` : fmtAmount(item.amount)}
+                          <ItemAmountTip item={item} />
                         </td>
                         <td className="py-1.5 px-3"></td>
                       </tr>
@@ -671,7 +712,7 @@ function StatementsTab({ year }: { year: number }) {
                         <tr key={idx} className="border-b border-gray-100 hover:bg-gray-50">
                           <td className="py-1 px-3 pl-12 text-gray-600">{item.name}</td>
                           <td className="py-1 px-3 text-right font-mono text-gray-600">
-                            {item.amount < 0 ? `(${fmtAmount(item.amount)})` : fmtAmount(item.amount)}
+                            <ItemAmountTip item={item} />
                           </td>
                         </tr>
                       ))}

@@ -958,9 +958,6 @@ async def train_model(
     current_user: User = Depends(get_current_user)
 ):
     """AI 모델 학습/재학습"""
-    # 관리자 권한 확인
-    if current_user.role_id not in [1, 2]:  # 관리자 또는 재무담당자
-        raise HTTPException(status_code=403, detail="모델 학습 권한이 없습니다.")
 
     classifier = AIClassifierService()
     success, message = await classifier.retrain_model(db, current_user.id, min_samples)

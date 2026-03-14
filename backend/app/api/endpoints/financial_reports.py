@@ -426,7 +426,9 @@ async def get_income_statement(
         return round(val / revenue_total * 100, 2) if revenue_total else 0.0
 
     def make_items(arr):
-        return [{"code": i["code"], "name": i["name"], "amount": i["amount"]} for i in arr]
+        return [{"code": i["code"], "name": i["name"], "amount": i["amount"],
+                 "debit": i.get("debit", 0), "credit": i.get("credit", 0),
+                 "tx_count": i.get("tx_count", 0)} for i in arr]
 
     sections = [
         {"id": "I", "name": "매출액", "items": make_items(revenue_items), "total": revenue_total, "pct": 100.0 if revenue_total > 0 else 0.0},
