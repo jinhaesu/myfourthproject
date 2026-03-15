@@ -97,6 +97,7 @@ export default function AIClassificationPage() {
   const [classifyFile, setClassifyFile] = useState<File | null>(null)
   const [classificationResults, setClassificationResults] = useState<ClassificationResult[]>([])
   const [classifyStats, setClassifyStats] = useState<any>(null)
+  const [currentUploadId, setCurrentUploadId] = useState<number | null>(null)
 
   // Results filter/sort states
   const [resultFilter, setResultFilter] = useState<'all' | 'review' | 'confirmed'>('all')
@@ -222,12 +223,16 @@ export default function AIClassificationPage() {
   }
 
   // Handle delete upload
-  const handleDeleteUpload = async (uploadId: number, filename: string) => {
-    if (!confirm(`'${filename}' 데이터를 삭제하시겠습니까?\n관련 거래 데이터가 모두 삭제됩니다.`)) return
+  const handleDeleteUpload = async (uploadId: number, _filename?: string) => {
     setLoading(true)
     try {
       const response = await aiClassificationApi.deleteUpload(uploadId)
-      showMessage('success', response.data.message)
+      showMessage('success', response.data?.message || '삭제되었습니다.')
+      if (currentUploadId === uploadId) {
+        setClassificationResults([])
+        setClassifyStats(null)
+        setCurrentUploadId(null)
+      }
       refreshData()
     } catch (error: any) {
       showMessage('error', error.response?.data?.detail || '삭제 실패')
@@ -306,7 +311,9 @@ export default function AIClassificationPage() {
         isCardFormat: response.data.is_card_format || false,
         reviewReasonCounts: response.data.review_reason_counts || {},
       })
+      setCurrentUploadId(response.data.upload_id || null)
       setActiveTab('results')
+      refreshData()
       showMessage('success', `${response.data.total_rows}개 항목 분류 완료`)
     } catch (error: any) {
       showMessage('error', error.response?.data?.detail || '분류 실패')
@@ -388,8 +395,34 @@ export default function AIClassificationPage() {
     setClassificationResults([])
     setClassifyStats(null)
     setClassifyFile(null)
+    setCurrentUploadId(null)
     setActiveTab('classify')
   }
+
+  // Load saved classification result
+  const handleLoadClassifyResult = async (uploadId: number) => {
+    setLoading(true)
+    try {
+      const response = await aiClassificationApi.getClassifyResult(uploadId)
+      setClassificationResults(response.data.results || [])
+      setClassifyStats({
+        total: response.data.total_rows || 0,
+        autoConfirmed: response.data.auto_confirmed || 0,
+        needsReview: response.data.needs_review || 0,
+        avgConfidence: response.data.average_confidence || 0,
+        totalAmount: response.data.total_amount || 0,
+        isCardFormat: response.data.is_card_format || false,
+        reviewReasonCounts: response.data.review_reason_counts || {},
+      })
+      setCurrentUploadId(uploadId)
+      setActiveTab('results')
+    } catch (error: any) {
+      showMessage('error', error.response?.data?.detail || '분류 결과 불러오기 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
 
   // Update classification result
   const updateClassificationResult = (index: number, accountCode: string) => {
@@ -528,7 +561,15 @@ export default function AIClassificationPage() {
                   <tbody className="bg-white divide-y divide-gray-200">
                     {uploadHistory.map((u) => (
                       <tr key={u.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm font-medium">{u.filename}</td>
+                        <td className="px-4 py-3 text-sm font-medium">
+                          {u.filename}
+                          {u.upload_type === 'classification' && (
+                            <span className="ml-2 text-xs px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded">분류</span>
+                          )}
+                          {u.upload_type === 'journal_entry' && (
+                            <span className="ml-2 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded">장부반영</span>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-sm text-right text-gray-500">{fmtSize(u.file_size)}</td>
                         <td className="px-4 py-3 text-sm text-right">{fmtNum(u.saved_count || 0)}건</td>
                         <td className="px-4 py-3 text-center">
@@ -1108,12 +1149,53 @@ export default function AIClassificationPage() {
                 </div>
               </div>
             </div>
-          ) : (
-            <div className="bg-white p-12 rounded-lg shadow border text-center text-gray-500">
-              <p>분류 결과가 없습니다.</p>
-              <p className="text-sm mt-2">자동 분류 탭에서 파일을 업로드하여 분류를 실행하세요.</p>
+          ) : null}
+
+          {/* 분류 이력 목록 */}
+          <div className="bg-white rounded-lg shadow border">
+            <div className="p-4 border-b">
+              <h3 className="text-lg font-medium">분류 이력</h3>
+              <p className="text-sm text-gray-500 mt-1">과거 분류 결과를 클릭하면 다시 불러올 수 있습니다.</p>
             </div>
-          )}
+            {uploadHistory && uploadHistory.filter(u => u.upload_type === 'classification').length > 0 ? (
+              <div className="divide-y divide-gray-100">
+                {uploadHistory
+                  .filter(u => u.upload_type === 'classification')
+                  .map(u => (
+                    <div
+                      key={u.id}
+                      className={`flex items-center justify-between px-4 py-3 hover:bg-gray-50 ${
+                        currentUploadId === u.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''
+                      }`}
+                    >
+                      <div
+                        className="flex-1 cursor-pointer"
+                        onClick={() => handleLoadClassifyResult(u.id)}
+                      >
+                        <span className="font-medium text-sm">{u.filename}</span>
+                        <span className="text-xs text-gray-400 ml-3">
+                          {u.row_count}건 | {u.created_at ? new Date(u.created_at).toLocaleString('ko-KR') : '-'}
+                        </span>
+                        {currentUploadId === u.id && (
+                          <span className="ml-2 text-xs text-blue-600 font-medium">현재 보는 중</span>
+                        )}
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteUpload(u.id, u.filename) }}
+                        disabled={loading}
+                        className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50"
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            ) : (
+              <div className="p-8 text-center text-gray-400 text-sm">
+                분류 이력이 없습니다. 자동 분류 탭에서 파일을 업로드하여 분류를 실행하세요.
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

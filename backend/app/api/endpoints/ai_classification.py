@@ -1247,8 +1247,42 @@ async def classify_file(
             for reason in r.get('review_reasons', []):
                 reason_counts[reason] = reason_counts.get(reason, 0) + 1
 
+        # DB에 분류 결과 저장 (새로고침/배포 후에도 유지)
+        try:
+            from app.models.ai import AIDataUploadHistory, UploadStatus
+            upload_history = AIDataUploadHistory(
+                filename=file.filename,
+                file_size=len(content),
+                file_type=file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'unknown',
+                upload_type="classification",
+                uploaded_by=current_user.id,
+                status=UploadStatus.COMPLETED,
+                row_count=len(results),
+                saved_count=len(results),
+                result_json=json.dumps({
+                    "results": results,
+                    "stats": {
+                        "total_rows": len(results),
+                        "auto_confirmed": auto_confirm_count,
+                        "needs_review": needs_review_count,
+                        "average_confidence": round(avg_confidence, 4),
+                        "total_amount": total_amount,
+                        "is_card_format": is_card_format,
+                        "review_reason_counts": reason_counts,
+                    }
+                }, ensure_ascii=False, default=str),
+            )
+            db.add(upload_history)
+            await db.flush()
+            upload_id = upload_history.id
+            logger.info(f"[Classify] 분류 결과 DB 저장 완료 (upload_id={upload_id}, {len(results)}건)")
+        except Exception as save_err:
+            logger.warning(f"[Classify] 분류 결과 DB 저장 실패 (결과는 정상 반환): {save_err}")
+            upload_id = None
+
         return {
             "status": "success",
+            "upload_id": upload_id,
             "total_rows": len(results),
             "auto_confirmed": auto_confirm_count,
             "needs_review": needs_review_count,
@@ -1636,6 +1670,34 @@ async def get_upload_history(
     except Exception as e:
         logger.error(f"[upload-history] 조회 오류: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"업로드 이력 조회 실패: {str(e)[:200]}")
+
+
+@router.get("/classify-result/{upload_id}")
+async def get_classification_result(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """저장된 분류 결과 불러오기"""
+    from app.models.ai import AIDataUploadHistory
+
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="분류 이력을 찾을 수 없습니다.")
+    if not upload.result_json:
+        raise HTTPException(status_code=404, detail="저장된 분류 결과가 없습니다.")
+
+    try:
+        data = json.loads(upload.result_json)
+        return {
+            "upload_id": upload.id,
+            "filename": upload.filename,
+            "created_at": upload.created_at.isoformat() if upload.created_at else None,
+            **data.get("stats", {}),
+            "results": data.get("results", []),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"결과 파싱 실패: {str(e)[:200]}")
 
 
 @router.get("/upload/{upload_id}/raw-data")

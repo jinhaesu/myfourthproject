@@ -177,6 +177,7 @@ async def init_db():
     migrations = [
         "ALTER TABLE ai_raw_transaction_data ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(100)",
         "ALTER TABLE ai_training_data ALTER COLUMN account_id DROP NOT NULL",
+        "ALTER TABLE ai_data_upload_history ADD COLUMN IF NOT EXISTS result_json TEXT",
     ]
     for sql in migrations:
         try:

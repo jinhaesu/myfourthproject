@@ -422,6 +422,10 @@ export const aiClassificationApi = {
   getUploadHistory: (limit = 50) =>
     api.get('/ai-classification/upload-history', { params: { limit } }),
 
+  // 분류 결과 불러오기
+  getClassifyResult: (uploadId: number) =>
+    api.get(`/ai-classification/classify-result/${uploadId}`),
+
   // 업로드 삭제
   deleteUpload: (uploadId: number) =>
     api.delete(`/ai-classification/upload/${uploadId}`),

@@ -252,6 +252,9 @@ class AIDataUploadHistory(Base):
     )
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # 분류 결과 JSON (classify-file 결과 보관용)
+    result_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     # Relationships
