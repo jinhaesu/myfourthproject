@@ -92,12 +92,45 @@ class AIClassifierService:
             if not retrained:
                 await self._create_default_model(db)
 
-        # 계정과목 매핑 로드
+        # 계정과목 매핑 로드 (Account 테이블)
         result = await db.execute(
             select(Account).where(Account.is_active == True, Account.is_detail == True)
         )
         accounts = result.scalars().all()
         self.account_mapping = {acc.id: {"code": acc.code, "name": acc.name} for acc in accounts}
+
+        # 실제 사용 계정 코드→이름 매핑 (과거 데이터 기반, 시산표 코드 포함)
+        # Account 테이블 + 과거 raw 데이터에서 동적으로 구성
+        self.real_account_names: dict[str, str] = {}
+
+        # 1) Account 테이블 (우선)
+        for acc in accounts:
+            self.real_account_names[acc.code] = acc.name
+
+        # 2) 과거 업로드된 실제 거래 데이터에서 계정 코드/이름 수집
+        from app.models.ai import AIRawTransactionData
+        try:
+            raw_accts = await db.execute(
+                select(
+                    AIRawTransactionData.account_code,
+                    AIRawTransactionData.account_name,
+                ).where(
+                    AIRawTransactionData.account_code.isnot(None),
+                    AIRawTransactionData.account_name.isnot(None),
+                ).distinct().limit(500)
+            )
+            for code, name in raw_accts.all():
+                if code and name and code not in self.real_account_names:
+                    self.real_account_names[code] = name
+        except Exception as e:
+            logger.warning(f"Raw account loading skipped: {e}")
+
+        # 3) STANDARD_ACCOUNTS는 최후 fallback
+        for code, name in STANDARD_ACCOUNTS.items():
+            if code not in self.real_account_names:
+                self.real_account_names[code] = name
+
+        logger.info(f"[Model] 계정 매핑 로드: {len(self.real_account_names)}개 코드")
 
         self._loaded = True
 
@@ -351,31 +384,24 @@ class AIClassifierService:
         probabilities = self.model.predict_proba(X)[0]
         top_indices = np.argsort(probabilities)[::-1][:top_n]
 
-        # 기본 계정코드 → 계정명 매핑 (DB에 없을 때 fallback)
-        _default_account_names = {
-            "813100": "복리후생비", "813200": "접대비", "813300": "여비교통비",
-            "813400": "통신비", "813500": "소모품비", "813600": "광고선전비",
-            "813700": "지급수수료", "813800": "교육훈련비", "813900": "도서인쇄비",
-            "814000": "회의비",
-        }
+        # 계정 이름 캐시 (과거 데이터 기반)
+        acct_name_cache = getattr(self, 'real_account_names', STANDARD_ACCOUNTS)
 
         predictions = []
         for idx in top_indices:
             account_code = self.label_encoder.inverse_transform([idx])[0]
             confidence = float(probabilities[idx])
 
-            # 계정과목 정보 조회 (DB 우선, 없으면 기본 매핑 사용)
-            result = await db.execute(
-                select(Account).where(Account.code == account_code)
-            )
-            account = result.scalar_one_or_none()
+            account_name = acct_name_cache.get(account_code, f"계정 {account_code}")
+            # account_mapping에서 id 조회
+            acc_id = None
+            for aid, ainfo in self.account_mapping.items():
+                if ainfo["code"] == account_code:
+                    acc_id = aid
+                    break
 
-            account_name = (
-                account.name if account
-                else _default_account_names.get(account_code, f"계정 {account_code}")
-            )
             predictions.append({
-                "account_id": account.id if account else None,
+                "account_id": acc_id,
                 "account_code": account_code,
                 "account_name": account_name,
                 "confidence_score": Decimal(str(round(confidence, 4)))
@@ -505,10 +531,8 @@ class AIClassifierService:
         # 2) 전체 예측 (한번에)
         all_probs = self.model.predict_proba(X)  # shape: (n_items, n_classes)
 
-        # 3) 계정 이름 캐시 (DB 쿼리 0회)
-        acct_name_cache = {**STANDARD_ACCOUNTS}
-        for acc_info in self.account_mapping.values():
-            acct_name_cache[acc_info["code"]] = acc_info["name"]
+        # 3) 계정 이름 캐시 (과거 데이터 기반 실제 코드 우선)
+        acct_name_cache = getattr(self, 'real_account_names', {**STANDARD_ACCOUNTS})
 
         # 4) 결과 생성
         results = []
@@ -581,7 +605,7 @@ class AIClassifierService:
         }
 
     async def classify_batch_with_llm(self, items: List[dict]) -> List[Optional[dict]]:
-        """LLM(Claude)을 사용한 배치 분류
+        """LLM(Claude)을 사용한 배치 분류 — 과거 데이터 실제 계정코드 기반
 
         Args:
             items: [{"idx": int, "desc": str, "merchant": str, "amount": float}, ...]
@@ -595,17 +619,18 @@ class AIClassifierService:
         import anthropic
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
+        # 실제 과거 데이터 기반 계정 목록 (동적)
+        acct_map = getattr(self, 'real_account_names', STANDARD_ACCOUNTS)
         account_list = "\n".join(
-            f"- {code}: {name}" for code, name in STANDARD_ACCOUNTS.items()
+            f"- {code}: {name}" for code, name in sorted(acct_map.items())
         )
 
-        BATCH_SIZE = 30  # 한 번의 API 호출당 최대 항목 수
+        BATCH_SIZE = 30
         all_results: List[Optional[dict]] = [None] * len(items)
 
         for batch_start in range(0, len(items), BATCH_SIZE):
             batch = items[batch_start:batch_start + BATCH_SIZE]
 
-            # 거래 목록 텍스트 생성
             txn_lines = []
             for i, item in enumerate(batch):
                 txn_lines.append(
@@ -613,24 +638,22 @@ class AIClassifierService:
                 )
             txn_text = "\n".join(txn_lines)
 
-            prompt = f"""당신은 한국 기업 회계 전문가입니다. 아래 신용카드 거래 내역들을 보고 각각 적절한 계정과목을 분류해주세요.
+            prompt = f"""당신은 한국 기업 회계 전문가입니다. 아래 신용카드 거래 내역들을 보고 적절한 계정과목을 분류해주세요.
 
-## 사용 가능한 계정과목
+**반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드를 임의로 만들지 마세요.**
+
+## 사용 가능한 계정과목 (이 회사의 실제 계정과목)
 {account_list}
 
-## 분류 규칙
-- Facebook, Instagram, Google Ads, 네이버, 카카오 등 온라인 플랫폼 결제 → 광고선전비 (813600)
-- 음식점, 카페, 배달, 편의점 간식 → 복리후생비 (813100)
-- 거래처/고객 식사, 선물, 접대 → 접대비 (813200)
-- 택시, 주유, 톨게이트, 주차, 대리운전 → 여비교통비 (813300) 또는 차량유지비 (814600)
-- 사무용품, 문구, 프린터 소모품 → 소모품비 (813500)
-- 통신비, 인터넷, 클라우드, SaaS → 통신비 (813400)
-- 학원, 교육, 세미나, 수강료 → 교육훈련비 (813800)
-- AWS, Azure, 서버, 호스팅, 도메인 → 지급수수료 (813700)
-- 보험 → 보험료 (814100)
-- 택배, 배송 → 운반비 (814700)
-- 임대료, 월세 → 임차료 (814400)
-- 전기, 가스, 수도 → 수도광열비 (814800)
+## 분류 힌트
+- Facebook, Instagram, Google Ads, 네이버, 카카오 등 → 광고선전비 계정 사용
+- 음식점, 카페, 배달, 편의점 → 복리후생비 계정 사용
+- 거래처/고객 식사, 선물, 접대 → 접대비 계정 사용
+- 택시, 주유, 톨게이트, 주차 → 여비교통비 또는 차량유지비 계정 사용
+- 사무용품, 문구 → 소모품비 계정 사용
+- 통신, 인터넷, 클라우드 → 통신비 계정 사용
+- AWS, 서버, 호스팅, 수수료 → 지급수수료 계정 사용
+- 교육, 세미나 → 교육훈련비 계정 사용
 
 ## 거래 내역 ({len(batch)}건)
 {txn_text}
@@ -649,7 +672,6 @@ class AIClassifierService:
                 )
 
                 text = response.content[0].text.strip()
-                # JSON 추출
                 if "```" in text:
                     text = text.split("```")[1]
                     if text.startswith("json"):
@@ -659,11 +681,11 @@ class AIClassifierService:
                 batch_results = json.loads(text)
 
                 for item_result in batch_results:
-                    no = item_result.get("no", 0) - 1  # 1-based → 0-based
+                    no = item_result.get("no", 0) - 1
                     if 0 <= no < len(batch):
                         global_idx = batch_start + no
                         code = item_result.get("account_code", "")
-                        name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+                        name = item_result.get("account_name", "") or acct_map.get(code, "")
                         conf = min(float(item_result.get("confidence", 0.8)), 0.95)
                         all_results[global_idx] = {
                             "account_code": code,
@@ -676,7 +698,6 @@ class AIClassifierService:
 
             except Exception as e:
                 logger.warning(f"[LLM Batch] 배치 분류 실패: {e}")
-                # 이 배치는 None으로 유지 (ML 결과 그대로)
 
         return all_results
 
@@ -694,31 +715,21 @@ class AIClassifierService:
             import anthropic
             client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
+            acct_map = getattr(self, 'real_account_names', STANDARD_ACCOUNTS)
             account_list = "\n".join(
-                f"- {code}: {name}" for code, name in STANDARD_ACCOUNTS.items()
+                f"- {code}: {name}" for code, name in sorted(acct_map.items())
             )
 
             prompt = f"""당신은 한국 기업 회계 전문가입니다. 신용카드 거래 내역을 보고 적절한 계정과목을 분류해주세요.
+**반드시 아래 계정과목 목록에 있는 코드만 사용하세요.**
 
 ## 거래 정보
 - 가맹점/적요: {description}
 - 거래처명: {merchant_name or '없음'}
 - 금액: {amount:,.0f}원
 
-## 사용 가능한 계정과목
+## 사용 가능한 계정과목 (이 회사의 실제 계정과목)
 {account_list}
-
-## 분류 규칙
-- Facebook, Instagram, Google Ads, 네이버 등 온라인 플랫폼 결제 → 광고선전비 (813600)
-- 음식점, 카페, 배달 → 복리후생비 (813100) 또는 접대비 (813200)
-- 택시, 주유, 톨게이트, 주차 → 여비교통비 (813300) 또는 차량유지비 (814600)
-- 사무용품, 문구 → 소모품비 (813500)
-- 통신비, 인터넷, 클라우드 서비스 → 통신비 (813400)
-- 학원, 교육, 세미나, 수강료 → 교육훈련비 (813800)
-- AWS, Azure, 서버 호스팅 → 지급수수료 (813700) 또는 통신비 (813400)
-- 보험 → 보험료 (814100)
-- 택배, 배송 → 운반비 (814700)
-- 임대료, 월세 → 임차료 (814400)
 
 ## 응답 형식 (반드시 JSON만 출력)
 {{"account_code": "계정코드", "account_name": "계정과목명", "confidence": 0.0~1.0, "reasoning": "분류 근거 한 줄"}}"""
@@ -739,7 +750,7 @@ class AIClassifierService:
             result = json.loads(text)
 
             code = result.get("account_code", "")
-            name = result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+            name = result.get("account_name", "") or acct_map.get(code, "")
             confidence = min(float(result.get("confidence", 0.8)), 0.95)
             reasoning = result.get("reasoning", "LLM 분석")
 

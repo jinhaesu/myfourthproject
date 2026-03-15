@@ -973,11 +973,13 @@ export default function AIClassificationPage() {
               {/* 신뢰도 낮을 때 안내 */}
               {classifyStats.avgConfidence < 0.6 && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <h4 className="text-sm font-medium text-blue-800 mb-1">신뢰도가 낮은 이유</h4>
+                  <h4 className="text-sm font-medium text-blue-800 mb-1">신뢰도 안내</h4>
                   <p className="text-sm text-blue-700">
-                    현재 AI 모델은 기본 학습 데이터(약 30개)로만 학습되어 있습니다.
-                    <strong> 정확도를 높이려면:</strong> 아래 결과에서 잘못된 계정을 올바르게 수정 → "수정사항 저장 (AI 학습)" 클릭 → 이후 분류 시 정확도가 향상됩니다.
-                    또는 과거 회계 데이터를 업로드하여 모델을 재학습시키세요.
+                    {status?.training_samples && status.training_samples > 100
+                      ? `현재 모델: ${status.model_version} (학습 데이터: ${status.training_samples.toLocaleString()}건). 신뢰도가 낮은 항목은 AI(Claude)가 보조 분석합니다.`
+                      : '과거 회계 데이터를 업로드하고 모델을 학습시키면 정확도가 향상됩니다.'
+                    }
+                    {' '}아래 결과에서 잘못된 계정을 수정 후 "분개 확정 → 장부 반영"을 클릭하면 수정 내용이 AI 학습 데이터로 자동 저장됩니다.
                   </p>
                 </div>
               )}
