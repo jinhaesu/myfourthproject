@@ -101,7 +101,24 @@ export default function AIClassificationPage() {
 
   // Results filter/sort states
   const [resultFilter, setResultFilter] = useState<'all' | 'review' | 'confirmed'>('all')
-  const [resultSort, setResultSort] = useState<'default' | 'confidence_asc' | 'confidence_desc'>('default')
+  type SortKey = 'default' | 'date_asc' | 'date_desc' | 'debit_asc' | 'debit_desc' | 'debit_amt_asc' | 'debit_amt_desc' | 'credit_asc' | 'credit_desc' | 'credit_amt_asc' | 'credit_amt_desc' | 'confidence_asc' | 'confidence_desc'
+  const [resultSort, setResultSort] = useState<SortKey>('default')
+
+  const toggleSort = (column: string) => {
+    const ascKey = `${column}_asc` as SortKey
+    const descKey = `${column}_desc` as SortKey
+    if (resultSort === ascKey) setResultSort(descKey)
+    else if (resultSort === descKey) setResultSort('default')
+    else setResultSort(ascKey)
+  }
+
+  const sortIcon = (column: string) => {
+    const ascKey = `${column}_asc`
+    const descKey = `${column}_desc`
+    if (resultSort === ascKey) return ' ▲'
+    if (resultSort === descKey) return ' ▼'
+    return ' ↕'
+  }
 
   const queryClient = useQueryClient()
 
@@ -1029,10 +1046,18 @@ export default function AIClassificationPage() {
                   {/* 정렬 */}
                   <select
                     value={resultSort}
-                    onChange={(e) => setResultSort(e.target.value as typeof resultSort)}
+                    onChange={(e) => setResultSort(e.target.value as SortKey)}
                     className="text-sm border border-gray-300 rounded-lg px-2 py-1"
                   >
                     <option value="default">기본순</option>
+                    <option value="date_asc">일자 오름차순</option>
+                    <option value="date_desc">일자 내림차순</option>
+                    <option value="debit_asc">차변 코드순</option>
+                    <option value="debit_desc">차변 역순</option>
+                    <option value="debit_amt_asc">차변금액 낮은순</option>
+                    <option value="debit_amt_desc">차변금액 높은순</option>
+                    <option value="credit_asc">대변 코드순</option>
+                    <option value="credit_desc">대변 역순</option>
                     <option value="confidence_asc">신뢰도 낮은순</option>
                     <option value="confidence_desc">신뢰도 높은순</option>
                   </select>
@@ -1092,13 +1117,13 @@ export default function AIClassificationPage() {
                   <thead className="bg-gray-50">
                     <tr>
                       <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 w-8">#</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500">일자</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 cursor-pointer hover:bg-gray-100 select-none" onClick={() => toggleSort('date')}>일자{sortIcon('date')}</th>
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500">적요/가맹점</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-blue-50">차변(비용)</th>
-                      <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 bg-blue-50">차변금액</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-red-50">대변(지급)</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-blue-50 cursor-pointer hover:bg-blue-100 select-none" onClick={() => toggleSort('debit')}>차변(비용){sortIcon('debit')}</th>
+                      <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 bg-blue-50 cursor-pointer hover:bg-blue-100 select-none" onClick={() => toggleSort('debit_amt')}>차변금액{sortIcon('debit_amt')}</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-red-50 cursor-pointer hover:bg-red-100 select-none" onClick={() => toggleSort('credit')}>대변(지급){sortIcon('credit')}</th>
                       <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 bg-red-50">대변금액</th>
-                      <th className="px-2 py-3 text-center text-xs font-medium text-gray-500">신뢰도</th>
+                      <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 cursor-pointer hover:bg-gray-100 select-none" onClick={() => toggleSort('confidence')}>신뢰도{sortIcon('confidence')}</th>
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500" title="AI가 잘못 분류한 경우 올바른 계정으로 변경. 수정 후 'AI 학습' 버튼으로 피드백">계정 변경</th>
                     </tr>
                   </thead>
@@ -1111,9 +1136,20 @@ export default function AIClassificationPage() {
                         return true
                       })
                       .sort((a, b) => {
-                        if (resultSort === 'confidence_asc') return a.result.confidence - b.result.confidence
-                        if (resultSort === 'confidence_desc') return b.result.confidence - a.result.confidence
-                        return 0
+                        const ar = a.result, br = b.result
+                        switch (resultSort) {
+                          case 'date_asc': return (ar.transaction_date || '').localeCompare(br.transaction_date || '')
+                          case 'date_desc': return (br.transaction_date || '').localeCompare(ar.transaction_date || '')
+                          case 'debit_asc': return (ar.predicted_account_code || '').localeCompare(br.predicted_account_code || '')
+                          case 'debit_desc': return (br.predicted_account_code || '').localeCompare(ar.predicted_account_code || '')
+                          case 'debit_amt_asc': return (ar.amount || 0) - (br.amount || 0)
+                          case 'debit_amt_desc': return (br.amount || 0) - (ar.amount || 0)
+                          case 'credit_asc': return (ar.journal_entry?.credit_account_code || '').localeCompare(br.journal_entry?.credit_account_code || '')
+                          case 'credit_desc': return (br.journal_entry?.credit_account_code || '').localeCompare(ar.journal_entry?.credit_account_code || '')
+                          case 'confidence_asc': return ar.confidence - br.confidence
+                          case 'confidence_desc': return br.confidence - ar.confidence
+                          default: return 0
+                        }
                       })
                       .map(({ result, originalIndex }) => (
                       <tr
