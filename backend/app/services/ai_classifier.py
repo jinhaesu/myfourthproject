@@ -15,7 +15,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
+from sqlalchemy import select, text as sa_text
 
 from app.core.config import settings
 from app.models.accounting import Account
@@ -617,7 +617,7 @@ class AIClassifierService:
 
         # 이전 버전 비활성화
         await db.execute(
-            text("UPDATE ai_model_versions SET is_active = FALSE WHERE is_active = TRUE")
+            sa_text("UPDATE ai_model_versions SET is_active = FALSE WHERE is_active = TRUE")
         )
 
         # 새 버전 등록
@@ -758,7 +758,7 @@ class AIClassifierService:
 
         # DB 업데이트
         await db.execute(
-            text("UPDATE ai_model_versions SET is_active = FALSE WHERE is_active = TRUE")
+            sa_text("UPDATE ai_model_versions SET is_active = FALSE WHERE is_active = TRUE")
         )
         model_version_record = AIModelVersion(
             version=new_version,
