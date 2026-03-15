@@ -49,6 +49,12 @@ interface Account {
   category: string
 }
 
+interface StandardAccount {
+  code: string
+  name: string
+  group: string
+}
+
 interface ClassificationResult {
   row_index: number
   description: string
@@ -99,6 +105,10 @@ export default function AIClassificationPage() {
   const [classifyStats, setClassifyStats] = useState<any>(null)
   const [currentUploadId, setCurrentUploadId] = useState<number | null>(null)
 
+  // 계정 수정 상태
+  const [creditOverrides, setCreditOverrides] = useState<Record<number, { code: string; name: string }>>({})
+  const [editingCell, setEditingCell] = useState<{ rowIndex: number; side: 'debit' | 'credit' } | null>(null)
+
   // Results filter/sort states
   const [resultFilter, setResultFilter] = useState<'all' | 'review' | 'confirmed'>('all')
   type SortKey = 'default' | 'date_asc' | 'date_desc' | 'debit_asc' | 'debit_desc' | 'debit_amt_asc' | 'debit_amt_desc' | 'credit_asc' | 'credit_desc' | 'credit_amt_asc' | 'credit_amt_desc' | 'confidence_asc' | 'confidence_desc'
@@ -138,12 +148,29 @@ export default function AIClassificationPage() {
     retryDelay: 1000,
   })
 
-  // React Query - fetch accounts
+  // React Query - fetch accounts (DB)
   const { data: accounts = [] } = useQuery<Account[]>({
     queryKey: ['aiAccounts'],
     queryFn: () => aiClassificationApi.getAccounts().then((r) => r.data),
     retry: 3,
   })
+
+  // React Query - 표준 계정과목 (시산표 기반, 항상 반환)
+  const { data: stdAcctData } = useQuery<{
+    standard_accounts: StandardAccount[]
+    expense_accounts: StandardAccount[]
+  }>({
+    queryKey: ['aiStandardAccounts'],
+    queryFn: () => aiClassificationApi.getStandardAccounts().then((r) => r.data),
+    retry: 3,
+    staleTime: Infinity,
+  })
+  const expenseAccounts = stdAcctData?.expense_accounts || []
+  const allStandardAccounts = stdAcctData?.standard_accounts || []
+
+  const getAccountName = (code: string): string => {
+    return allStandardAccounts.find(a => a.code === code)?.name || accounts.find(a => a.code === code)?.name || ''
+  }
 
   const showMessage = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text })
@@ -252,7 +279,7 @@ export default function AIClassificationPage() {
       const response = await aiClassificationApi.deleteUpload(uploadId)
       showMessage('success', response.data?.message || '삭제되었습니다.')
       if (currentUploadId === uploadId) {
-        setClassificationResults([])
+        setClassificationResults([]); setCreditOverrides({}); setEditingCell(null)
         setClassifyStats(null)
         setCurrentUploadId(null)
       }
@@ -413,11 +440,13 @@ export default function AIClassificationPage() {
     }
     setLoading(true)
     try {
-      const entries = classificationResults.map((r) => {
+      const entries = classificationResults.map((r, idx) => {
         const finalCode = r.actual_account_code || r.predicted_account_code
         const finalName = finalCode === r.predicted_account_code
           ? r.predicted_account_name
-          : accounts.find(a => a.code === finalCode)?.name || r.predicted_account_name
+          : getAccountName(finalCode) || r.predicted_account_name
+        const creditCode = creditOverrides[idx]?.code || r.journal_entry?.credit_account_code || '253'
+        const creditName = creditOverrides[idx]?.name || r.journal_entry?.credit_account_name || '미지급금'
         return {
           description: r.description,
           merchant_name: r.merchant_name,
@@ -426,15 +455,15 @@ export default function AIClassificationPage() {
           amount: r.amount,
           debit_account_code: finalCode,
           debit_account_name: finalName,
-          credit_account_code: r.journal_entry?.credit_account_code || '253000',
-          credit_account_name: r.journal_entry?.credit_account_name || '미지급금(신용카드)',
+          credit_account_code: creditCode,
+          credit_account_name: creditName,
           vat_amount: r.journal_entry?.vat_amount || 0,
           supply_amount: r.journal_entry?.supply_amount || 0,
         }
       })
       const response = await aiClassificationApi.confirmJournal(entries, classifyFile?.name)
       showMessage('success', response.data.message)
-      setClassificationResults([])
+      setClassificationResults([]); setCreditOverrides({}); setEditingCell(null)
       setClassifyStats(null)
       setActiveTab('status')
       refreshData()
@@ -447,7 +476,7 @@ export default function AIClassificationPage() {
 
   // Clear classification results
   const handleClearResults = () => {
-    setClassificationResults([])
+    setClassificationResults([]); setCreditOverrides({}); setEditingCell(null)
     setClassifyStats(null)
     setClassifyFile(null)
     setCurrentUploadId(null)
@@ -479,11 +508,22 @@ export default function AIClassificationPage() {
   }
 
 
-  // Update classification result
+  // Update classification result (차변 계정 수정)
   const updateClassificationResult = (index: number, accountCode: string) => {
     setClassificationResults((prev) =>
       prev.map((r, i) => (i === index ? { ...r, actual_account_code: accountCode } : r))
     )
+    setEditingCell(null)
+  }
+
+  // 대변 계정 수정
+  const updateCreditAccount = (index: number, accountCode: string) => {
+    const name = getAccountName(accountCode)
+    setCreditOverrides((prev) => ({
+      ...prev,
+      [index]: { code: accountCode, name },
+    }))
+    setEditingCell(null)
   }
 
   // Download template
@@ -1119,12 +1159,11 @@ export default function AIClassificationPage() {
                       <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 w-8">#</th>
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 cursor-pointer hover:bg-gray-100 select-none" onClick={() => toggleSort('date')}>일자{sortIcon('date')}</th>
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500">적요/가맹점</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-blue-50 cursor-pointer hover:bg-blue-100 select-none" onClick={() => toggleSort('debit')}>차변(비용){sortIcon('debit')}</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-blue-50 cursor-pointer hover:bg-blue-100 select-none" onClick={() => toggleSort('debit')} title="클릭하여 계정 변경 가능">차변(비용){sortIcon('debit')}</th>
                       <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 bg-blue-50 cursor-pointer hover:bg-blue-100 select-none" onClick={() => toggleSort('debit_amt')}>차변금액{sortIcon('debit_amt')}</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-red-50 cursor-pointer hover:bg-red-100 select-none" onClick={() => toggleSort('credit')}>대변(지급){sortIcon('credit')}</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-red-50 cursor-pointer hover:bg-red-100 select-none" onClick={() => toggleSort('credit')} title="클릭하여 계정 변경 가능">대변(지급){sortIcon('credit')}</th>
                       <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 bg-red-50">대변금액</th>
                       <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 cursor-pointer hover:bg-gray-100 select-none" onClick={() => toggleSort('confidence')}>신뢰도{sortIcon('confidence')}</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500" title="AI가 잘못 분류한 경우 올바른 계정으로 변경. 수정 후 'AI 학습' 버튼으로 피드백">계정 변경</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -1155,7 +1194,8 @@ export default function AIClassificationPage() {
                       <tr
                         key={originalIndex}
                         className={
-                          result.actual_account_code && result.actual_account_code !== result.predicted_account_code
+                          (result.actual_account_code && result.actual_account_code !== result.predicted_account_code) ||
+                          (creditOverrides[originalIndex] && creditOverrides[originalIndex].code !== (result.journal_entry?.credit_account_code || '253'))
                             ? 'bg-blue-50'
                             : result.needs_review
                             ? 'bg-yellow-50'
@@ -1169,34 +1209,128 @@ export default function AIClassificationPage() {
                         <td className="px-2 py-2 text-sm max-w-[180px] truncate" title={result.memo || result.description}>
                           {result.memo || result.description}
                         </td>
-                        {/* 차변 (비용 계정) */}
-                        <td className="px-2 py-2 text-sm bg-blue-50/50">
-                          {(result.actual_account_code || result.predicted_account_code) ? (
-                            <>
-                              <span className="font-medium text-blue-800">{result.actual_account_code || result.predicted_account_code}</span>
-                              {' '}
-                              <span className="text-gray-500 text-xs">
-                                {result.actual_account_code && result.actual_account_code !== result.predicted_account_code
-                                  ? accounts.find(a => a.code === result.actual_account_code)?.name || ''
-                                  : result.predicted_account_name}
-                              </span>
-                            </>
+
+                        {/* 차변 (비용 계정) — 클릭하여 인라인 수정 */}
+                        <td
+                          className="px-2 py-2 text-sm bg-blue-50/50 cursor-pointer group"
+                          onClick={() => setEditingCell({ rowIndex: originalIndex, side: 'debit' })}
+                        >
+                          {editingCell?.rowIndex === originalIndex && editingCell?.side === 'debit' ? (
+                            <select
+                              autoFocus
+                              value={result.actual_account_code || result.predicted_account_code}
+                              onChange={(e) => { e.stopPropagation(); updateClassificationResult(originalIndex, e.target.value) }}
+                              onBlur={() => setEditingCell(null)}
+                              className="block w-full rounded-md border-blue-400 ring-1 ring-blue-300 text-xs focus:border-blue-500 focus:ring-blue-500"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <option value={result.predicted_account_code}>
+                                {result.predicted_account_code} {result.predicted_account_name} (AI)
+                              </option>
+                              {result.alternatives && result.alternatives.length > 0 && (
+                                <optgroup label="AI 대안">
+                                  {result.alternatives.map((alt) => (
+                                    <option key={alt.account_code} value={alt.account_code}>
+                                      {alt.account_code} {alt.account_name} ({(alt.confidence * 100).toFixed(0)}%)
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              )}
+                              <optgroup label="비용 계정과목">
+                                {expenseAccounts.map((acc) => (
+                                  <option key={acc.code} value={acc.code}>
+                                    {acc.code} {acc.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                              <optgroup label="전체 계정과목">
+                                {allStandardAccounts.filter(a => !a.code.startsWith('5') && !a.code.startsWith('8')).map((acc) => (
+                                  <option key={acc.code} value={acc.code}>
+                                    {acc.code} {acc.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            </select>
                           ) : (
-                            <span className="text-orange-500 text-xs">미분류 (계정 수정 필요)</span>
+                            <>
+                              {result.actual_account_code && result.actual_account_code !== result.predicted_account_code && (
+                                <span className="inline-block w-2 h-2 rounded-full bg-orange-400 mr-1" title="수정됨" />
+                              )}
+                              {(result.actual_account_code || result.predicted_account_code) ? (
+                                <>
+                                  <span className="font-medium text-blue-800">
+                                    {result.actual_account_code || result.predicted_account_code}
+                                  </span>{' '}
+                                  <span className="text-gray-500 text-xs">
+                                    {result.actual_account_code && result.actual_account_code !== result.predicted_account_code
+                                      ? getAccountName(result.actual_account_code) || result.predicted_account_name
+                                      : result.predicted_account_name}
+                                  </span>
+                                  <span className="text-gray-300 text-xs ml-1 opacity-0 group-hover:opacity-100 transition-opacity">&#9998;</span>
+                                </>
+                              ) : (
+                                <span className="text-orange-500 text-xs">미분류 (클릭하여 선택)</span>
+                              )}
+                            </>
                           )}
                         </td>
+
                         <td className="px-2 py-2 text-sm text-right font-mono bg-blue-50/50 text-blue-700">
                           {result.amount?.toLocaleString()}
                         </td>
-                        {/* 대변 (미지급금) */}
-                        <td className="px-2 py-2 text-sm bg-red-50/50">
-                          <span className="text-gray-600">{result.journal_entry?.credit_account_code || '253000'}</span>
-                          {' '}
-                          <span className="text-gray-400 text-xs">{result.journal_entry?.credit_account_name || '미지급금'}</span>
+
+                        {/* 대변 (지급 계정) — 클릭하여 인라인 수정 */}
+                        <td
+                          className="px-2 py-2 text-sm bg-red-50/50 cursor-pointer group"
+                          onClick={() => setEditingCell({ rowIndex: originalIndex, side: 'credit' })}
+                        >
+                          {editingCell?.rowIndex === originalIndex && editingCell?.side === 'credit' ? (
+                            <select
+                              autoFocus
+                              value={creditOverrides[originalIndex]?.code || result.journal_entry?.credit_account_code || '253'}
+                              onChange={(e) => { e.stopPropagation(); updateCreditAccount(originalIndex, e.target.value) }}
+                              onBlur={() => setEditingCell(null)}
+                              className="block w-full rounded-md border-red-400 ring-1 ring-red-300 text-xs focus:border-red-500 focus:ring-red-500"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <option value={result.journal_entry?.credit_account_code || '253'}>
+                                {result.journal_entry?.credit_account_code || '253'} {result.journal_entry?.credit_account_name || '미지급금'} (기본)
+                              </option>
+                              <optgroup label="부채/자산 계정">
+                                {allStandardAccounts.filter(a => a.code.startsWith('2') || a.code.startsWith('1')).map((acc) => (
+                                  <option key={acc.code} value={acc.code}>
+                                    {acc.code} {acc.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                              <optgroup label="전체 계정과목">
+                                {allStandardAccounts.filter(a => !a.code.startsWith('2') && !a.code.startsWith('1')).map((acc) => (
+                                  <option key={acc.code} value={acc.code}>
+                                    {acc.code} {acc.name}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            </select>
+                          ) : (
+                            <>
+                              {creditOverrides[originalIndex] && creditOverrides[originalIndex].code !== (result.journal_entry?.credit_account_code || '253') && (
+                                <span className="inline-block w-2 h-2 rounded-full bg-orange-400 mr-1" title="수정됨" />
+                              )}
+                              <span className="text-gray-600">
+                                {creditOverrides[originalIndex]?.code || result.journal_entry?.credit_account_code || '253'}
+                              </span>{' '}
+                              <span className="text-gray-400 text-xs">
+                                {creditOverrides[originalIndex]?.name || result.journal_entry?.credit_account_name || '미지급금'}
+                              </span>
+                              <span className="text-gray-300 text-xs ml-1 opacity-0 group-hover:opacity-100 transition-opacity">&#9998;</span>
+                            </>
+                          )}
                         </td>
+
                         <td className="px-2 py-2 text-sm text-right font-mono bg-red-50/50 text-red-600">
                           {result.amount?.toLocaleString()}
                         </td>
+
                         {/* 신뢰도 */}
                         <td className="px-2 py-2 text-center">
                           <span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-full ${
@@ -1212,34 +1346,6 @@ export default function AIClassificationPage() {
                             </span>
                           )}
                         </td>
-                        {/* 수정 */}
-                        <td className="px-2 py-2">
-                          <select
-                            value={result.actual_account_code || result.predicted_account_code}
-                            onChange={(e) => updateClassificationResult(originalIndex, e.target.value)}
-                            className={`block w-full rounded-md shadow-sm text-xs ${
-                              result.actual_account_code && result.actual_account_code !== result.predicted_account_code
-                                ? 'border-blue-400 ring-1 ring-blue-300'
-                                : 'border-gray-300'
-                            } focus:border-blue-500 focus:ring-blue-500`}
-                          >
-                            <option value={result.predicted_account_code}>
-                              {result.predicted_account_code} {result.predicted_account_name}
-                            </option>
-                            {result.alternatives.map((alt) => (
-                              <option key={alt.account_code} value={alt.account_code}>
-                                {alt.account_code} {alt.account_name} ({(alt.confidence * 100).toFixed(0)}%)
-                              </option>
-                            ))}
-                            <optgroup label="전체 계정과목">
-                              {accounts.map((acc) => (
-                                <option key={acc.id} value={acc.code}>
-                                  {acc.code} {acc.name}
-                                </option>
-                              ))}
-                            </optgroup>
-                          </select>
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1252,8 +1358,19 @@ export default function AIClassificationPage() {
                   <div className="flex gap-6">
                     <span className="text-gray-600">
                       수정: <span className="font-bold text-blue-600">
-                        {classificationResults.filter(r => r.actual_account_code && r.actual_account_code !== r.predicted_account_code).length}
+                        {classificationResults.filter(r => r.actual_account_code && r.actual_account_code !== r.predicted_account_code).length
+                         + Object.entries(creditOverrides).filter(([idx, ov]) => {
+                           const r = classificationResults[Number(idx)]
+                           return r && ov.code !== (r.journal_entry?.credit_account_code || '253')
+                         }).length}
                       </span>건
+                      <span className="text-xs text-gray-400 ml-1">
+                        (차변 {classificationResults.filter(r => r.actual_account_code && r.actual_account_code !== r.predicted_account_code).length} /
+                        대변 {Object.entries(creditOverrides).filter(([idx, ov]) => {
+                          const r = classificationResults[Number(idx)]
+                          return r && ov.code !== (r.journal_entry?.credit_account_code || '253')
+                        }).length})
+                      </span>
                     </span>
                     <span className="text-gray-600">
                       표시: {

@@ -330,6 +330,9 @@ export const aiClassificationApi = {
   // 계정과목 목록
   getAccounts: () => api.get('/ai-classification/accounts'),
 
+  // 표준 계정과목 (시산표 기반, 항상 반환)
+  getStandardAccounts: () => api.get('/ai-classification/standard-accounts'),
+
   // 과거 데이터 업로드 (학습용) - 백그라운드 처리, 10분 타임아웃
   uploadHistorical: (file: File, onUploadProgress?: (pct: number) => void) => {
     const formData = new FormData()

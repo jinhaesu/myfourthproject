@@ -408,6 +408,34 @@ async def get_account_list(
     ]
 
 
+@router.get("/standard-accounts")
+async def get_standard_accounts(
+    current_user: User = Depends(get_current_user)
+):
+    """시산표 기반 표준 계정과목 목록 (DB 무관, 항상 반환)"""
+    from app.services.ai_classifier import STANDARD_ACCOUNTS, EXPENSE_ACCOUNTS
+
+    # 계정 분류 그룹핑
+    groups = {
+        "1": "자산", "2": "부채/유형자산", "3": "자본",
+        "4": "수익/매출원가", "5": "매출원가(제조)", "8": "판관비", "9": "영업외"
+    }
+
+    def group_label(code: str) -> str:
+        return groups.get(code[0], "기타") if code else "기타"
+
+    return {
+        "standard_accounts": [
+            {"code": code, "name": name, "group": group_label(code)}
+            for code, name in sorted(STANDARD_ACCOUNTS.items())
+        ],
+        "expense_accounts": [
+            {"code": code, "name": name, "group": group_label(code)}
+            for code, name in sorted(EXPENSE_ACCOUNTS.items())
+        ],
+    }
+
+
 def _parse_file_sync(content: bytes, filename: str, upload_id: int):
     """동기 함수: 엑셀/CSV 파싱 (별도 스레드에서 실행)"""
     is_ledger_format = False
