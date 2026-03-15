@@ -1171,15 +1171,19 @@ async def classify_file(
             vat = float(row.get('vat_amount', 0)) if 'vat_amount' in df.columns else 0
             supply = float(row.get('supply_amount', 0)) if 'supply_amount' in df.columns else 0
 
-            classification = await classifier.classify(
-                db=db,
-                description=desc,
-                merchant_name=merchant or desc,
-                amount=Decimal(str(amount))
-            )
+            try:
+                classification = await classifier.classify(
+                    db=db,
+                    description=desc,
+                    merchant_name=merchant or desc,
+                    amount=Decimal(str(amount))
+                )
+            except Exception as cls_err:
+                logger.warning(f"[Classify] row {idx} 분류 실패: {cls_err}")
+                classification = {}
 
-            primary = classification.get('primary_prediction', {})
-            review_reasons = classification.get('review_reasons', [])
+            primary = classification.get('primary_prediction') or {}
+            review_reasons = classification.get('review_reasons') or []
             debit_code = primary.get('account_code', '')
             debit_name = primary.get('account_name', '')
 
@@ -1215,7 +1219,7 @@ async def classify_file(
                         "account_name": alt.get('account_name', ''),
                         "confidence": float(alt.get('confidence_score', 0))
                     }
-                    for alt in classification.get('alternative_predictions', [])[:2]
+                    for alt in (classification.get('alternative_predictions') or [])[:2]
                 ],
                 # 분개 (차변/대변)
                 "journal_entry": {

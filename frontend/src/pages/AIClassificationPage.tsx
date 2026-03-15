@@ -105,7 +105,7 @@ export default function AIClassificationPage() {
   const queryClient = useQueryClient()
 
   // React Query - fetch status
-  const { data: status } = useQuery<AIStatus>({
+  const { data: status, isLoading: statusLoading } = useQuery<AIStatus>({
     queryKey: ['aiStatus'],
     queryFn: () => aiClassificationApi.getStatus().then((r) => r.data),
     retry: 3,
@@ -457,28 +457,28 @@ export default function AIClassificationPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white p-6 rounded-lg shadow border">
               <h3 className="text-sm font-medium text-gray-500">모델 버전</h3>
-              <p className="mt-2 text-2xl font-semibold">{status?.model_version || '-'}</p>
-              <p className="text-sm text-gray-400">{status?.is_trained ? '학습됨' : '미학습'}</p>
+              <p className="mt-2 text-2xl font-semibold">{statusLoading ? '로딩 중...' : (status?.model_version || '-')}</p>
+              <p className="text-sm text-gray-400">{statusLoading ? '' : (status?.is_trained ? '학습됨' : '미학습')}</p>
             </div>
             <div className="bg-white p-6 rounded-lg shadow border">
               <h3 className="text-sm font-medium text-gray-500">학습 데이터</h3>
-              <p className="mt-2 text-2xl font-semibold">{fmtNum(status?.training_samples || 0)}</p>
+              <p className="mt-2 text-2xl font-semibold">{statusLoading ? '로딩 중...' : fmtNum(status?.training_samples || 0)}</p>
               <p className="text-sm text-gray-400">개 항목</p>
             </div>
             <div className="bg-white p-6 rounded-lg shadow border">
               <h3 className="text-sm font-medium text-gray-500">모델 정확도</h3>
               <p className="mt-2 text-2xl font-semibold">
-                {status?.model_accuracy ? `${(status.model_accuracy * 100).toFixed(1)}%` : '-'}
+                {statusLoading ? '로딩 중...' : (status?.model_accuracy ? `${(status.model_accuracy * 100).toFixed(1)}%` : '-')}
               </p>
               <p className="text-sm text-gray-400">교차 검증 기준</p>
             </div>
             <div className="bg-white p-6 rounded-lg shadow border">
               <h3 className="text-sm font-medium text-gray-500">분류 정확도</h3>
               <p className="mt-2 text-2xl font-semibold">
-                {status?.accuracy_rate ? `${status.accuracy_rate.toFixed(1)}%` : '-'}
+                {statusLoading ? '로딩 중...' : (status?.accuracy_rate ? `${status.accuracy_rate.toFixed(1)}%` : '-')}
               </p>
               <p className="text-sm text-gray-400">
-                {status?.total_classifications || 0}건 중 {status?.correct_classifications || 0}건 정확
+                {statusLoading ? '불러오는 중...' : `${status?.total_classifications || 0}건 중 ${status?.correct_classifications || 0}건 정확`}
               </p>
             </div>
           </div>
@@ -487,15 +487,15 @@ export default function AIClassificationPage() {
             <h3 className="text-lg font-medium mb-4">업로드 통계</h3>
             <div className="grid grid-cols-3 gap-4 text-center">
               <div>
-                <p className="text-3xl font-bold text-blue-600">{status?.completed_uploads || 0}</p>
+                <p className="text-3xl font-bold text-blue-600">{statusLoading ? '...' : (status?.completed_uploads || 0)}</p>
                 <p className="text-sm text-gray-500">완료된 업로드</p>
               </div>
               <div>
-                <p className="text-3xl font-bold text-green-600">{fmtNum(status?.total_raw_transactions || 0)}</p>
+                <p className="text-3xl font-bold text-green-600">{statusLoading ? '...' : fmtNum(status?.total_raw_transactions || 0)}</p>
                 <p className="text-sm text-gray-500">보관된 거래 데이터</p>
               </div>
               <div>
-                <p className="text-3xl font-bold text-purple-600">{fmtNum(status?.training_samples || 0)}</p>
+                <p className="text-3xl font-bold text-purple-600">{statusLoading ? '...' : fmtNum(status?.training_samples || 0)}</p>
                 <p className="text-sm text-gray-500">학습 데이터</p>
               </div>
             </div>
