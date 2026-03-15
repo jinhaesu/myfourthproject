@@ -1002,14 +1002,14 @@ async def train_model(
                 async_session_factory, user_id, min_samples, _training_progress,
                 max_samples=max_samples, upload_ids=parsed_upload_ids,
             )
-                if success:
-                    _training_progress["status"] = "completed"
-                    _training_progress["progress"] = 100
-                    _training_progress["message"] = message
-                else:
-                    _training_progress["status"] = "failed"
-                    _training_progress["message"] = message
-                _training_progress["completed_at"] = datetime.utcnow().isoformat()
+            if success:
+                _training_progress["status"] = "completed"
+                _training_progress["progress"] = 100
+                _training_progress["message"] = message
+            else:
+                _training_progress["status"] = "failed"
+                _training_progress["message"] = message
+            _training_progress["completed_at"] = datetime.utcnow().isoformat()
         except Exception as e:
             logger.error(f"[Train] 백그라운드 학습 오류: {e}", exc_info=True)
             _training_progress["status"] = "failed"
