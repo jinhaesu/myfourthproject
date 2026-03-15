@@ -23,9 +23,7 @@ COPY . .
 # Create directories
 RUN mkdir -p /app/uploads /app/ml/models
 
-# Create startup script
-RUN echo '#!/bin/sh\necho "Starting on port: $PORT"\nexec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}' > /app/start.sh && chmod +x /app/start.sh
-
 EXPOSE 8000
 
-CMD ["/app/start.sh"]
+# Shell form - allows $PORT env var expansion at runtime
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info

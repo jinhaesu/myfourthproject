@@ -2,13 +2,18 @@
 Smart Finance Core - Main Application
 AI 기반 회계 자동화 및 재무 예측 플랫폼
 """
+import sys
+import os
+
+# 가장 먼저 stdout으로 출력 (로깅 설정 전)
+print(f"[STARTUP] Python {sys.version}", flush=True)
+print(f"[STARTUP] CWD={os.getcwd()} PORT={os.environ.get('PORT', 'not set')}", flush=True)
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
-import sys
-import os
 
 # Logging setup - 먼저 설정
 logging.basicConfig(
