@@ -375,8 +375,12 @@ export const aiClassificationApi = {
     formData.append('file', file)
     return api.post('/ai-classification/classify-file', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 600000,  // 10분
     })
   },
+
+  // 분류 진행 상태 조회
+  getClassifyProgress: () => api.get('/ai-classification/classify-progress'),
 
   // 분개 확정 (장부 반영)
   confirmJournal: (entries: Array<{

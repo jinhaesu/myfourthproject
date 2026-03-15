@@ -31,6 +31,7 @@ _training_progress: dict = {
     "completed_at": None,
 }
 
+from app.core.config import settings
 from app.core.database import get_db, async_session_factory
 from app.core.security import get_current_user
 from app.models.user import User
@@ -43,6 +44,17 @@ router = APIRouter(prefix="/ai-classification", tags=["AI 분류"])
 # 백그라운드 태스크 참조 보관 (GC 방지) + 동시 업로드 제한
 _background_tasks: set = set()
 _MAX_CONCURRENT_UPLOADS = 1
+
+# 분류 진행 상태 추적 (in-memory)
+_classify_progress: dict = {
+    "status": "idle",  # idle, running, completed, failed
+    "step": "",
+    "progress": 0,      # 0~100
+    "message": "",
+    "total_rows": 0,
+    "processed_rows": 0,
+    "low_confidence_count": 0,
+}
 
 
 # ============ 계정별 원장 파싱 헬퍼 ============
@@ -290,37 +302,27 @@ async def get_ai_status(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """AI 모델 상태 조회"""
-    classifier = AIClassifierService()
-    await classifier.load_model(db)
+    """AI 모델 상태 조회 (경량 — 모델 로드 없이 DB 쿼리만)"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus, ClassificationResult
 
-    # 학습 데이터 통계
-    training_count = await db.scalar(
-        select(func.count(AITrainingData.id)).where(AITrainingData.is_active == True)
-    )
-
-    # 분류 로그 통계
-    from app.models.ai import ClassificationResult
-    log_stats = await db.execute(
+    # 단일 쿼리로 여러 COUNT를 한번에 조회
+    counts = await db.execute(
         select(
-            func.count(AIClassificationLog.id).label("total"),
-            func.sum(
-                sa_case(
-                    (AIClassificationLog.classification_result == ClassificationResult.CORRECT, 1),
-                    else_=0
-                )
-            ).label("correct"),
-            func.sum(
-                sa_case(
-                    (AIClassificationLog.classification_result == ClassificationResult.CORRECTED, 1),
-                    else_=0
-                )
-            ).label("corrected")
+            func.count(AITrainingData.id).filter(AITrainingData.is_active == True).label("training"),
+            func.count(AIClassificationLog.id).label("log_total"),
+            func.sum(sa_case(
+                (AIClassificationLog.classification_result == ClassificationResult.CORRECT, 1),
+                else_=0
+            )).label("correct"),
+            func.sum(sa_case(
+                (AIClassificationLog.classification_result == ClassificationResult.CORRECTED, 1),
+                else_=0
+            )).label("corrected"),
         )
     )
-    stats = log_stats.one()
+    c = counts.one()
 
-    # 최신 모델 버전 조회
+    # 모델 버전 (가벼운 쿼리)
     model_result = await db.execute(
         select(AIModelVersion)
         .where(AIModelVersion.is_active == True)
@@ -330,22 +332,24 @@ async def get_ai_status(
     active_model = model_result.scalar_one_or_none()
 
     accuracy_rate = 0
-    if stats.total and stats.total > 0:
-        accuracy_rate = (stats.correct or 0) / stats.total * 100
+    if c.log_total and c.log_total > 0:
+        accuracy_rate = (c.correct or 0) / c.log_total * 100
 
-    # 업로드 통계
-    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
-    upload_count = await db.scalar(
-        select(func.count(AIDataUploadHistory.id))
-    ) or 0
-    completed_uploads = await db.scalar(
-        select(func.count(AIDataUploadHistory.id)).where(
-            AIDataUploadHistory.status == UploadStatus.COMPLETED
+    # 업로드 통계 (단일 쿼리)
+    upload_counts = await db.execute(
+        select(
+            func.count(AIDataUploadHistory.id).label("total"),
+            func.count(AIDataUploadHistory.id).filter(
+                AIDataUploadHistory.status == UploadStatus.COMPLETED
+            ).label("completed"),
         )
-    ) or 0
+    )
+    uc = upload_counts.one()
+
     total_raw_rows = await db.scalar(
         select(func.count(AIRawTransactionData.id))
     ) or 0
+
     # 최근 업로드
     latest_upload_result = await db.execute(
         select(AIDataUploadHistory)
@@ -357,16 +361,15 @@ async def get_ai_status(
     return {
         "model_version": active_model.version if active_model else "default_v1.0",
         "is_trained": active_model is not None,
-        "training_samples": max(training_count or 0, total_raw_rows or 0),
-        "total_classifications": stats.total or 0,
-        "correct_classifications": stats.correct or 0,
-        "corrected_classifications": stats.corrected or 0,
+        "training_samples": max(c.training or 0, total_raw_rows or 0),
+        "total_classifications": c.log_total or 0,
+        "correct_classifications": c.correct or 0,
+        "corrected_classifications": c.corrected or 0,
         "accuracy_rate": round(accuracy_rate, 2),
         "last_trained_at": active_model.training_completed_at.isoformat() if active_model and active_model.training_completed_at else None,
         "model_accuracy": float(active_model.accuracy) if active_model and active_model.accuracy else None,
-        # 업로드 통계
-        "upload_count": upload_count,
-        "completed_uploads": completed_uploads,
+        "upload_count": uc.total or 0,
+        "completed_uploads": uc.completed or 0,
         "total_raw_transactions": total_raw_rows,
         "latest_upload": {
             "id": latest_upload.id,
@@ -1032,6 +1035,14 @@ async def get_training_progress(
     return _training_progress
 
 
+@router.get("/classify-progress")
+async def get_classify_progress(
+    current_user: User = Depends(get_current_user)
+):
+    """분류 진행 상태 조회"""
+    return _classify_progress
+
+
 @router.post("/classify")
 async def classify_transactions(
     request: ClassifyRequest,
@@ -1088,6 +1099,13 @@ async def classify_file(
     """
     if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
         raise HTTPException(status_code=400, detail="엑셀 또는 CSV 파일만 업로드 가능합니다.")
+
+    global _classify_progress
+    _classify_progress = {
+        "status": "running", "step": "파일 읽기",
+        "progress": 5, "message": "파일을 읽고 있습니다...",
+        "total_rows": 0, "processed_rows": 0, "low_confidence_count": 0,
+    }
 
     try:
         content = await file.read()
@@ -1156,15 +1174,28 @@ async def classify_file(
             df['supply_amount'] = pd.to_numeric(df['supply_amount'], errors='coerce').fillna(0)
 
         # AI 분류 수행
+        total_rows = len(df)
+        _classify_progress.update({
+            "step": "모델 로드", "progress": 10,
+            "message": f"AI 모델 로딩 중... ({total_rows}행 감지)",
+            "total_rows": total_rows,
+        })
         classifier = AIClassifierService()
         await classifier.load_model(db)
         await classifier.load_known_merchants(db)
 
-        # 카드 형식 감지 (가맹점명이 description으로 복사된 경우)
+        # 카드 형식 감지
         is_card_format = 'card_number' in df.columns or 'approval_number' in df.columns or 'vat_amount' in df.columns
 
+        # ===== 1단계: ML 모델로 전체 일괄 분류 (빠름) =====
+        _classify_progress.update({
+            "step": "ML 분류", "progress": 15,
+            "message": f"ML 모델로 {total_rows}행 분류 중...",
+        })
         results = []
-        for idx, row in df.iterrows():
+        low_confidence_indices = []  # LLM 보강 대상
+
+        for row_num, (idx, row) in enumerate(df.iterrows()):
             desc = row['description']
             merchant = row.get('merchant_name', '') if row.get('merchant_name', '') != desc else ''
             amount = float(row.get('amount', 0))
@@ -1172,56 +1203,46 @@ async def classify_file(
             supply = float(row.get('supply_amount', 0)) if 'supply_amount' in df.columns else 0
 
             try:
-                classification = await classifier.classify(
-                    db=db,
-                    description=desc,
+                classification = await classifier.classify_ml_only(
+                    db=db, description=desc,
                     merchant_name=merchant or desc,
                     amount=Decimal(str(amount))
                 )
             except Exception as cls_err:
-                logger.warning(f"[Classify] row {idx} 분류 실패: {cls_err}")
+                logger.warning(f"[Classify] row {idx} ML 분류 실패: {cls_err}")
                 classification = {}
 
             primary = classification.get('primary_prediction') or {}
             review_reasons = classification.get('review_reasons') or []
             debit_code = primary.get('account_code', '')
             debit_name = primary.get('account_name', '')
+            confidence = float(primary.get('confidence_score', 0))
 
-            # 적요 자동 생성
-            if is_card_format:
-                memo = f"{desc} 카드결제"
-            else:
-                memo = desc
-
-            # 거래일자
+            memo = f"{desc} 카드결제" if is_card_format else desc
             txn_date = ''
             if 'transaction_date' in df.columns and pd.notna(row.get('transaction_date')):
                 txn_date = str(row['transaction_date']).strip()
 
-            results.append({
+            result_item = {
                 "row_index": int(idx),
                 "description": desc,
                 "merchant_name": merchant or desc,
                 "amount": amount,
                 "transaction_date": txn_date,
                 "memo": memo,
-                # AI 분류
                 "predicted_account_code": debit_code,
                 "predicted_account_name": debit_name,
-                "confidence": float(primary.get('confidence_score', 0)),
+                "confidence": confidence,
                 "auto_confirm": classification.get('auto_confirm', False),
                 "needs_review": classification.get('needs_review', True),
                 "review_reasons": review_reasons,
                 "reasoning": classification.get('reasoning', ''),
                 "alternatives": [
-                    {
-                        "account_code": alt.get('account_code', ''),
-                        "account_name": alt.get('account_name', ''),
-                        "confidence": float(alt.get('confidence_score', 0))
-                    }
+                    {"account_code": alt.get('account_code', ''),
+                     "account_name": alt.get('account_name', ''),
+                     "confidence": float(alt.get('confidence_score', 0))}
                     for alt in (classification.get('alternative_predictions') or [])[:2]
                 ],
-                # 분개 (차변/대변)
                 "journal_entry": {
                     "debit_account_code": debit_code,
                     "debit_account_name": debit_name,
@@ -1233,9 +1254,58 @@ async def classify_file(
                     "supply_amount": supply if supply else amount - vat,
                     "is_balanced": True,
                 },
+            }
+            results.append(result_item)
+
+            if confidence < 0.6:
+                low_confidence_indices.append(len(results) - 1)
+
+            # 진행 상태 업데이트 (매 50행)
+            if (row_num + 1) % 50 == 0 or row_num + 1 == total_rows:
+                ml_pct = 15 + int((row_num + 1) / total_rows * 55)  # 15~70%
+                _classify_progress.update({
+                    "progress": ml_pct,
+                    "processed_rows": row_num + 1,
+                    "low_confidence_count": len(low_confidence_indices),
+                    "message": f"ML 분류 중... {row_num + 1}/{total_rows}행 (저신뢰: {len(low_confidence_indices)}건)",
+                })
+
+        # ===== 2단계: 저신뢰 항목 LLM 배치 보강 (한 번의 API 호출) =====
+        if low_confidence_indices and settings.ANTHROPIC_API_KEY:
+            _classify_progress.update({
+                "step": "AI 분석", "progress": 72,
+                "message": f"저신뢰 {len(low_confidence_indices)}건 AI(Claude) 분석 중...",
             })
+            try:
+                llm_items = [
+                    {"idx": i, "desc": results[i]["description"],
+                     "merchant": results[i]["merchant_name"],
+                     "amount": results[i]["amount"]}
+                    for i in low_confidence_indices
+                ]
+                llm_results = await classifier.classify_batch_with_llm(llm_items)
+
+                for i, llm in zip(low_confidence_indices, llm_results):
+                    if llm and llm.get("account_code"):
+                        results[i]["predicted_account_code"] = llm["account_code"]
+                        results[i]["predicted_account_name"] = llm["account_name"]
+                        results[i]["confidence"] = llm["confidence"]
+                        results[i]["reasoning"] = f"[AI 분석] {llm.get('reasoning', '')}"
+                        results[i]["review_reasons"] = ["AI 분석 (확인 권장)"]
+                        results[i]["needs_review"] = llm["confidence"] < 0.85
+                        results[i]["auto_confirm"] = llm["confidence"] >= 0.85
+                        results[i]["journal_entry"]["debit_account_code"] = llm["account_code"]
+                        results[i]["journal_entry"]["debit_account_name"] = llm["account_name"]
+
+                logger.info(f"[Classify] LLM 배치 보강: {len(low_confidence_indices)}건 처리")
+            except Exception as llm_err:
+                logger.warning(f"[Classify] LLM 배치 보강 실패: {llm_err}")
 
         # 통계
+        _classify_progress.update({
+            "step": "결과 저장", "progress": 90,
+            "message": f"분류 완료. 결과 저장 중...",
+        })
         auto_confirm_count = sum(1 for r in results if r['auto_confirm'])
         needs_review_count = sum(1 for r in results if r['needs_review'])
         avg_confidence = sum(r['confidence'] for r in results) / len(results) if results else 0
@@ -1280,6 +1350,12 @@ async def classify_file(
             logger.warning(f"[Classify] 분류 결과 DB 저장 실패 (결과는 정상 반환): {save_err}")
             upload_id = None
 
+        _classify_progress.update({
+            "status": "completed", "step": "완료", "progress": 100,
+            "message": f"분류 완료! {len(results)}건 (자동확정: {auto_confirm_count}, 검토필요: {needs_review_count})",
+            "processed_rows": len(results),
+        })
+
         return {
             "status": "success",
             "upload_id": upload_id,
@@ -1294,8 +1370,13 @@ async def classify_file(
         }
 
     except HTTPException:
+        _classify_progress.update({"status": "failed", "message": "파일 형식 오류"})
         raise
     except Exception as e:
+        _classify_progress.update({
+            "status": "failed", "step": "오류",
+            "message": f"분류 오류: {str(e)[:200]}",
+        })
         raise HTTPException(status_code=500, detail=f"파일 처리 중 오류: {str(e)}")
 
 

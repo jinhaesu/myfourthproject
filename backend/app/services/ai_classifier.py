@@ -464,6 +464,179 @@ class AIClassifierService:
             "model_version": f"{self.model_version}{'+ LLM' if llm_used else ''}"
         }
 
+    async def classify_ml_only(
+        self,
+        db: AsyncSession,
+        description: str,
+        merchant_name: Optional[str] = None,
+        amount: Decimal = Decimal("0"),
+        top_n: int = 5,
+    ) -> dict:
+        """ML 모델만 사용하는 분류 (LLM 호출 없음, 빠름)"""
+        await self.load_model(db)
+
+        processed_text = self._preprocess_text(description, merchant_name)
+        X = self.vectorizer.transform([processed_text])
+
+        probabilities = self.model.predict_proba(X)[0]
+        top_indices = np.argsort(probabilities)[::-1][:top_n]
+
+        predictions = []
+        for idx in top_indices:
+            account_code = self.label_encoder.inverse_transform([idx])[0]
+            confidence = float(probabilities[idx])
+
+            account_name = STANDARD_ACCOUNTS.get(account_code, f"계정 {account_code}")
+            # DB에서 더 정확한 이름 조회 시도
+            result = await db.execute(
+                select(Account).where(Account.code == account_code)
+            )
+            account = result.scalar_one_or_none()
+            if account:
+                account_name = account.name
+
+            predictions.append({
+                "account_id": account.id if account else None,
+                "account_code": account_code,
+                "account_name": account_name,
+                "confidence_score": Decimal(str(round(confidence, 4)))
+            })
+
+        primary_confidence = float(predictions[0]["confidence_score"]) if predictions else 0
+        auto_confirm = primary_confidence >= settings.AI_AUTO_CONFIRM_THRESHOLD
+        needs_review = primary_confidence < settings.AI_REVIEW_REQUIRED_THRESHOLD
+
+        review_reasons = []
+        if primary_confidence < 0.4:
+            review_reasons.append("신뢰도 매우 낮음")
+        elif primary_confidence < settings.AI_REVIEW_REQUIRED_THRESHOLD:
+            review_reasons.append("신뢰도 낮음")
+
+        if len(predictions) >= 2:
+            p1 = float(predictions[0]["confidence_score"])
+            p2 = float(predictions[1]["confidence_score"])
+            if p1 - p2 < 0.1:
+                review_reasons.append("분류 불확실")
+                needs_review = True
+
+        if needs_review and not review_reasons:
+            review_reasons.append("검토 권장")
+
+        reasoning = self._generate_reasoning(
+            description, merchant_name, amount, None,
+            predictions[0] if predictions else None, primary_confidence
+        )
+
+        return {
+            "primary_prediction": predictions[0] if predictions else None,
+            "alternative_predictions": predictions[1:5],
+            "auto_confirm": auto_confirm,
+            "needs_review": needs_review,
+            "review_reasons": review_reasons,
+            "reasoning": reasoning,
+            "model_version": self.model_version,
+        }
+
+    async def classify_batch_with_llm(self, items: List[dict]) -> List[Optional[dict]]:
+        """LLM(Claude)을 사용한 배치 분류
+
+        Args:
+            items: [{"idx": int, "desc": str, "merchant": str, "amount": float}, ...]
+
+        Returns:
+            [{account_code, account_name, confidence, reasoning}, ...] (items와 같은 순서)
+        """
+        if not settings.ANTHROPIC_API_KEY or not items:
+            return [None] * len(items)
+
+        import anthropic
+        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+        account_list = "\n".join(
+            f"- {code}: {name}" for code, name in STANDARD_ACCOUNTS.items()
+        )
+
+        BATCH_SIZE = 30  # 한 번의 API 호출당 최대 항목 수
+        all_results: List[Optional[dict]] = [None] * len(items)
+
+        for batch_start in range(0, len(items), BATCH_SIZE):
+            batch = items[batch_start:batch_start + BATCH_SIZE]
+
+            # 거래 목록 텍스트 생성
+            txn_lines = []
+            for i, item in enumerate(batch):
+                txn_lines.append(
+                    f"{i+1}. 적요: {item['desc']} | 거래처: {item.get('merchant', '')} | 금액: {item.get('amount', 0):,.0f}원"
+                )
+            txn_text = "\n".join(txn_lines)
+
+            prompt = f"""당신은 한국 기업 회계 전문가입니다. 아래 신용카드 거래 내역들을 보고 각각 적절한 계정과목을 분류해주세요.
+
+## 사용 가능한 계정과목
+{account_list}
+
+## 분류 규칙
+- Facebook, Instagram, Google Ads, 네이버, 카카오 등 온라인 플랫폼 결제 → 광고선전비 (813600)
+- 음식점, 카페, 배달, 편의점 간식 → 복리후생비 (813100)
+- 거래처/고객 식사, 선물, 접대 → 접대비 (813200)
+- 택시, 주유, 톨게이트, 주차, 대리운전 → 여비교통비 (813300) 또는 차량유지비 (814600)
+- 사무용품, 문구, 프린터 소모품 → 소모품비 (813500)
+- 통신비, 인터넷, 클라우드, SaaS → 통신비 (813400)
+- 학원, 교육, 세미나, 수강료 → 교육훈련비 (813800)
+- AWS, Azure, 서버, 호스팅, 도메인 → 지급수수료 (813700)
+- 보험 → 보험료 (814100)
+- 택배, 배송 → 운반비 (814700)
+- 임대료, 월세 → 임차료 (814400)
+- 전기, 가스, 수도 → 수도광열비 (814800)
+
+## 거래 내역 ({len(batch)}건)
+{txn_text}
+
+## 응답 형식 (반드시 JSON 배열만 출력, 다른 텍스트 없이)
+[
+  {{"no": 1, "account_code": "코드", "account_name": "이름", "confidence": 0.0~1.0, "reasoning": "근거"}},
+  ...
+]"""
+
+            try:
+                response = client.messages.create(
+                    model=settings.ANTHROPIC_MODEL or "claude-sonnet-4-20250514",
+                    max_tokens=4000,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+
+                text = response.content[0].text.strip()
+                # JSON 추출
+                if "```" in text:
+                    text = text.split("```")[1]
+                    if text.startswith("json"):
+                        text = text[4:]
+                    text = text.strip()
+
+                batch_results = json.loads(text)
+
+                for item_result in batch_results:
+                    no = item_result.get("no", 0) - 1  # 1-based → 0-based
+                    if 0 <= no < len(batch):
+                        global_idx = batch_start + no
+                        code = item_result.get("account_code", "")
+                        name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+                        conf = min(float(item_result.get("confidence", 0.8)), 0.95)
+                        all_results[global_idx] = {
+                            "account_code": code,
+                            "account_name": name,
+                            "confidence": conf,
+                            "reasoning": item_result.get("reasoning", "AI 분석"),
+                        }
+
+                logger.info(f"[LLM Batch] {len(batch)}건 분류 완료 (batch {batch_start // BATCH_SIZE + 1})")
+
+            except Exception as e:
+                logger.warning(f"[LLM Batch] 배치 분류 실패: {e}")
+                # 이 배치는 None으로 유지 (ML 결과 그대로)
+
+        return all_results
+
     async def _classify_with_llm(
         self,
         description: str,

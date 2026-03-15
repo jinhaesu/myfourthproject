@@ -143,6 +143,12 @@ export default function AIClassificationPage() {
   // Upload progress state
   const [uploadProgress, setUploadProgress] = useState<string | null>(null)
 
+  // Classify progress state
+  const [classifyProgress, setClassifyProgress] = useState<{
+    status: string; step: string; progress: number; message: string;
+    total_rows: number; processed_rows: number; low_confidence_count: number;
+  } | null>(null)
+
   // Handle historical data upload - 파싱 → 배치전송 (계정 생성 없이 raw INSERT만)
   const handleUploadHistorical = async () => {
     if (!uploadFile) {
@@ -292,15 +298,29 @@ export default function AIClassificationPage() {
     }
   }
 
-  // Handle file classification
+  // Handle file classification with progress polling
   const handleClassifyFile = async () => {
     if (!classifyFile) {
       showMessage('error', '분류할 파일을 선택해주세요.')
       return
     }
     setLoading(true)
+    setClassifyProgress({ status: 'running', step: '시작', progress: 0, message: '분류 요청 전송 중...', total_rows: 0, processed_rows: 0, low_confidence_count: 0 })
+
+    // 진행 상태 폴링 시작
+    const pollInterval = setInterval(async () => {
+      try {
+        const prog = await aiClassificationApi.getClassifyProgress()
+        if (prog.data && prog.data.status !== 'idle') {
+          setClassifyProgress(prog.data)
+        }
+      } catch { /* ignore polling errors */ }
+    }, 1000)
+
     try {
       const response = await aiClassificationApi.classifyFile(classifyFile)
+      clearInterval(pollInterval)
+      setClassifyProgress(null)
       setClassificationResults(response.data.results)
       setClassifyStats({
         total: response.data.total_rows,
@@ -316,6 +336,8 @@ export default function AIClassificationPage() {
       refreshData()
       showMessage('success', `${response.data.total_rows}개 항목 분류 완료`)
     } catch (error: any) {
+      clearInterval(pollInterval)
+      setClassifyProgress(null)
       showMessage('error', error.response?.data?.detail || '분류 실패')
     } finally {
       setLoading(false)
@@ -329,8 +351,21 @@ export default function AIClassificationPage() {
       return
     }
     setLoading(true)
+    setClassifyProgress({ status: 'running', step: '시작', progress: 0, message: '재분류 요청 전송 중...', total_rows: 0, processed_rows: 0, low_confidence_count: 0 })
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const prog = await aiClassificationApi.getClassifyProgress()
+        if (prog.data && prog.data.status !== 'idle') {
+          setClassifyProgress(prog.data)
+        }
+      } catch { /* ignore */ }
+    }, 1000)
+
     try {
       const response = await aiClassificationApi.classifyFile(classifyFile)
+      clearInterval(pollInterval)
+      setClassifyProgress(null)
       setClassificationResults(response.data.results)
       setClassifyStats({
         total: response.data.total_rows,
@@ -345,6 +380,8 @@ export default function AIClassificationPage() {
       refreshData()
       showMessage('success', `${response.data.total_rows}개 항목 재분류 완료`)
     } catch (error: any) {
+      clearInterval(pollInterval)
+      setClassifyProgress(null)
       showMessage('error', error.response?.data?.detail || '재분류 실패')
     } finally {
       setLoading(false)
@@ -874,6 +911,34 @@ export default function AIClassificationPage() {
               >
                 {loading ? '분류 중...' : '자동 분류 실행'}
               </button>
+
+              {/* 분류 진행 상태 표시 */}
+              {classifyProgress && classifyProgress.status === 'running' && (
+                <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-medium text-blue-700">{classifyProgress.step}</span>
+                    <span className="text-sm text-blue-600">{classifyProgress.progress}%</span>
+                  </div>
+                  <div className="w-full bg-blue-200 rounded-full h-3">
+                    <div
+                      className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                      style={{ width: `${classifyProgress.progress}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-600 mt-2">{classifyProgress.message}</p>
+                  {classifyProgress.total_rows > 0 && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      처리: {classifyProgress.processed_rows}/{classifyProgress.total_rows}행
+                      {classifyProgress.low_confidence_count > 0 && ` | 저신뢰(AI 분석 대상): ${classifyProgress.low_confidence_count}건`}
+                    </p>
+                  )}
+                </div>
+              )}
+              {classifyProgress && classifyProgress.status === 'failed' && (
+                <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-sm text-red-700">분류 오류: {classifyProgress.message}</p>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -983,7 +1048,7 @@ export default function AIClassificationPage() {
                     className="px-4 py-2 border border-purple-600 text-purple-600 rounded-lg hover:bg-purple-50 disabled:bg-gray-300 disabled:text-white disabled:border-gray-300"
                     title="현재 파일을 최신 AI 모델로 다시 분류합니다"
                   >
-                    {loading ? '분류 중...' : 'AI 재분류'}
+                    {loading && classifyProgress ? `재분류 ${classifyProgress.progress}%` : loading ? '분류 중...' : 'AI 재분류'}
                   </button>
                   <button
                     onClick={handleConfirmJournal}
@@ -995,6 +1060,23 @@ export default function AIClassificationPage() {
                   </button>
                 </div>
               </div>
+
+              {/* 재분류 진행 상태 */}
+              {classifyProgress && classifyProgress.status === 'running' && (
+                <div className="p-4 bg-purple-50 border border-purple-200 rounded-lg">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-medium text-purple-700">{classifyProgress.step}</span>
+                    <span className="text-sm text-purple-600">{classifyProgress.progress}%</span>
+                  </div>
+                  <div className="w-full bg-purple-200 rounded-full h-3">
+                    <div
+                      className="bg-purple-600 h-3 rounded-full transition-all duration-500"
+                      style={{ width: `${classifyProgress.progress}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-600 mt-2">{classifyProgress.message}</p>
+                </div>
+              )}
 
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
