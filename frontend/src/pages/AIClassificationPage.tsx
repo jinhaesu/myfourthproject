@@ -92,7 +92,7 @@ export default function AIClassificationPage() {
   const queryClient = useQueryClient()
 
   // React Query - fetch status
-  const { data: status } = useQuery<AIStatus>({
+  const { data: status, isError: statusError, error: statusErrorDetail } = useQuery<AIStatus>({
     queryKey: ['aiStatus'],
     queryFn: () => aiClassificationApi.getStatus().then((r) => r.data),
     retry: 3,
@@ -100,7 +100,7 @@ export default function AIClassificationPage() {
   })
 
   // React Query - fetch upload history
-  const { data: uploadHistory, isError: uploadHistoryError } = useQuery<UploadHistoryItem[]>({
+  const { data: uploadHistory, isError: uploadHistoryError, error: uploadHistoryErrorDetail } = useQuery<UploadHistoryItem[]>({
     queryKey: ['aiUploadHistory'],
     queryFn: () => aiClassificationApi.getUploadHistory().then((r) => r.data),
     retry: 3,
@@ -428,6 +428,11 @@ export default function AIClassificationPage() {
             </div>
           </div>
 
+          {statusError && (
+            <div className="bg-red-50 p-4 rounded-lg border border-red-200">
+              <p className="text-red-600 text-sm">API 상태 조회 실패: {(statusErrorDetail as any)?.response?.status || 'network'} - {(statusErrorDetail as any)?.response?.data?.detail || (statusErrorDetail as any)?.message || '알 수 없는 오류'}</p>
+            </div>
+          )}
           <div className="bg-white p-6 rounded-lg shadow border">
             <h3 className="text-lg font-medium mb-4">업로드 통계</h3>
             <div className="grid grid-cols-3 gap-4 text-center">
@@ -496,7 +501,9 @@ export default function AIClassificationPage() {
                 </table>
               </div>
             ) : uploadHistoryError ? (
-              <p className="text-center py-4 text-red-400 text-sm">업로드 이력을 불러오지 못했습니다. 새로고침해 주세요.</p>
+              <p className="text-center py-4 text-red-400 text-sm">
+                업로드 이력 조회 실패: {(uploadHistoryErrorDetail as any)?.response?.status || 'network'} - {(uploadHistoryErrorDetail as any)?.response?.data?.detail || (uploadHistoryErrorDetail as any)?.message || '알 수 없는 오류'}
+              </p>
             ) : (
               <p className="text-center py-4 text-gray-400 text-sm">업로드 이력이 없습니다.</p>
             )}

@@ -172,14 +172,29 @@ async def health_check():
     except Exception as e:
         db_status = f"error: {str(e)[:50]}"
 
+    # 인증 테스트
+    auth_test = "not_tested"
+    try:
+        from app.core.database import async_session_factory as _sf
+        if _sf:
+            from sqlalchemy import select as _sel
+            from app.models.user import User as _User
+            async with _sf() as _s:
+                ur = await _s.execute(_sel(_User).limit(1))
+                u = ur.scalar_one_or_none()
+                auth_test = f"user_ok:id={u.id},role_id={u.role_id}" if u else "no_users"
+    except Exception as ae:
+        auth_test = f"error:{str(ae)[:100]}"
+
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "deploy": "supabase-v3",
+        "deploy": "supabase-v4",
         "database": db_status,
         "raw_data_rows": raw_data_count,
         "upload_history_rows": upload_history_count,
+        "auth_test": auth_test,
         "upload_orm_test": upload_orm_test,
     }
 
