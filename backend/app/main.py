@@ -150,10 +150,21 @@ except Exception as e:
     logger.error("API endpoints will not be available")
 
 
-# Health check endpoint
+# Health check endpoint - DB 쿼리 없이 즉시 응답 (Railway 헬스체크용)
 @app.get("/health")
 async def health_check():
     """Health check endpoint for load balancers"""
+    return {
+        "status": "healthy",
+        "app": settings.APP_NAME,
+        "version": settings.APP_VERSION,
+    }
+
+
+# 상세 헬스체크 (DB 상태 포함) - 디버깅용
+@app.get("/health/detailed")
+async def health_check_detailed():
+    """Detailed health check with database status"""
     db_status = "unknown"
     raw_data_count = 0
     upload_history_count = 0
@@ -174,7 +185,6 @@ async def health_check():
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "deploy": "supabase-v5",
         "database": db_status,
         "raw_data_rows": raw_data_count,
         "upload_history_rows": upload_history_count,

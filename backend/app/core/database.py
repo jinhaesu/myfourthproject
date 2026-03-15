@@ -92,9 +92,6 @@ try:
         if _is_supabase or "pgbouncer" in DATABASE_URL:
             connect_args["statement_cache_size"] = 0
 
-        # 연결 타임아웃 단축 (기본 60초 → 10초) - Railway 헬스체크 대비
-        connect_args["timeout"] = 10
-
         if connect_args:
             engine_kwargs["connect_args"] = connect_args
 
