@@ -1389,16 +1389,38 @@ async def confirm_journal_entries(
             saved_count += 2
 
         upload_history.saved_count = saved_count
+
+        # AI 학습 데이터 자동 저장 (확정된 분개 = 정답 데이터)
+        from app.models.ai import AITrainingData
+        training_count = 0
+        for entry in request.entries:
+            if entry.debit_account_code and entry.description:
+                training_row = AITrainingData(
+                    description_tokens=entry.description.lower(),
+                    merchant_name=entry.merchant_name,
+                    amount_range=(
+                        "small" if entry.amount < 50000 else "medium" if entry.amount < 500000 else "large"
+                    ),
+                    account_code=entry.debit_account_code,
+                    source_type="journal_confirm",
+                    dataset_version="auto",
+                    is_active=True,
+                    sample_weight=Decimal("1.50"),
+                )
+                db.add(training_row)
+                training_count += 1
+
         await db.commit()
 
-        logger.info(f"[Journal] {len(request.entries)}건 분개 확정 → {saved_count}행 장부 반영 (upload_id={upload_id})")
+        logger.info(f"[Journal] {len(request.entries)}건 분개 확정 → {saved_count}행 장부 반영 + {training_count}건 AI 학습 (upload_id={upload_id})")
 
         return {
             "status": "success",
             "upload_id": upload_id,
             "entries_count": len(request.entries),
             "saved_rows": saved_count,
-            "message": f"{len(request.entries)}건 분개가 장부에 반영되었습니다.",
+            "training_saved": training_count,
+            "message": f"{len(request.entries)}건 분개가 장부에 반영되었습니다. ({training_count}건 AI 학습 데이터 저장)",
         }
 
     except Exception as e:

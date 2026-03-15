@@ -1,9 +1,12 @@
 """
 Smart Finance Core - AI Classifier Service
 AI 기반 계정과목 자동 분류 엔진 (Active Learning Core)
+- ML 모델 (TF-IDF + RandomForest): 과거 데이터 학습 기반
+- LLM (Claude API): ML 신뢰도 낮을 때 보조 분류
 """
 import json
 import re
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, List, Tuple
@@ -20,6 +23,21 @@ from sqlalchemy import select, text as sa_text
 from app.core.config import settings
 from app.models.accounting import Account
 from app.models.ai import AIClassificationLog, AITrainingData, AIModelVersion, CustomTag
+
+logger = logging.getLogger(__name__)
+
+# 표준 계정과목 매핑 (LLM 분류 + ML fallback 공용)
+STANDARD_ACCOUNTS = {
+    "811000": "급여", "811100": "상여금", "812000": "퇴직급여",
+    "813100": "복리후생비", "813200": "접대비", "813300": "여비교통비",
+    "813400": "통신비", "813500": "소모품비", "813600": "광고선전비",
+    "813700": "지급수수료", "813800": "교육훈련비", "813900": "도서인쇄비",
+    "814000": "회의비", "814100": "보험료", "814200": "세금과공과",
+    "814300": "감가상각비", "814400": "임차료", "814500": "수선비",
+    "814600": "차량유지비", "814700": "운반비", "814800": "수도광열비",
+    "814900": "외주용역비", "815000": "지급임차료", "815100": "잡비",
+    "510000": "원재료비", "520000": "상품매입", "540000": "외주가공비",
+}
 
 
 class AIClassifierService:
@@ -68,9 +86,11 @@ class AIClassifierService:
             except Exception:
                 pass
 
-        # 2) 모델 파일 없으면 기본 모델 생성 (블로킹 방지 - 재학습은 /train에서 수동으로)
+        # 2) 모델 파일 없으면: DB 학습데이터로 빠른 재학습 시도, 없으면 기본 모델
         if not model_loaded:
-            await self._create_default_model(db)
+            retrained = await self._quick_retrain_from_db(db)
+            if not retrained:
+                await self._create_default_model(db)
 
         # 계정과목 매핑 로드
         result = await db.execute(
@@ -80,6 +100,61 @@ class AIClassifierService:
         self.account_mapping = {acc.id: {"code": acc.code, "name": acc.name} for acc in accounts}
 
         self._loaded = True
+
+    async def _quick_retrain_from_db(self, db: AsyncSession) -> bool:
+        """DB의 학습 데이터로 빠른 재학습 (배포 후 모델 복원용)
+        최대 10,000건 샘플링하여 빠르게 학습"""
+        try:
+            result = await db.execute(
+                select(AITrainingData)
+                .where(AITrainingData.is_active == True)
+                .limit(10000)
+            )
+            training_data = list(result.scalars().all())
+
+            if len(training_data) < 50:
+                logger.info(f"[QuickRetrain] 학습 데이터 부족 ({len(training_data)}건), 기본 모델 사용")
+                return False
+
+            texts = []
+            labels = []
+            for d in training_data:
+                t = d.description_tokens or ""
+                if d.merchant_name:
+                    t += f" {d.merchant_name}"
+                if t.strip():
+                    texts.append(t)
+                    labels.append(d.account_code)
+
+            if len(texts) < 50:
+                return False
+
+            self.vectorizer = TfidfVectorizer(
+                analyzer='char_wb', ngram_range=(2, 4), max_features=5000
+            )
+            X = self.vectorizer.fit_transform(texts)
+
+            self.label_encoder = LabelEncoder()
+            y = self.label_encoder.fit_transform(labels)
+
+            self.model = RandomForestClassifier(
+                n_estimators=100, max_depth=12, random_state=42, class_weight='balanced'
+            )
+            self.model.fit(X, y)
+            self.model_version = f"auto_restored_{len(texts)}"
+
+            # 파일로도 저장 (다음 요청 시 빠르게 로드)
+            model_path = Path(settings.AI_MODEL_PATH) / self.model_version
+            model_path.mkdir(parents=True, exist_ok=True)
+            joblib.dump(self.model, model_path / "classifier.joblib")
+            joblib.dump(self.vectorizer, model_path / "vectorizer.joblib")
+            joblib.dump(self.label_encoder, model_path / "label_encoder.joblib")
+
+            logger.info(f"[QuickRetrain] DB 학습데이터 {len(texts)}건으로 모델 복원 완료")
+            return True
+        except Exception as e:
+            logger.warning(f"[QuickRetrain] 자동 복원 실패: {e}")
+            return False
 
     async def _create_default_model(self, db: AsyncSession):
         """기본 모델 생성 (초기 학습 데이터 기반)"""
@@ -306,6 +381,28 @@ class AIClassifierService:
                 "confidence_score": Decimal(str(round(confidence, 4)))
             })
 
+        ml_confidence = float(predictions[0]["confidence_score"]) if predictions else 0
+
+        # ML 신뢰도 낮으면 LLM(Claude) 보조 분류
+        llm_used = False
+        if ml_confidence < 0.6:
+            llm_result = await self._classify_with_llm(description, merchant_name, amount)
+            if llm_result and llm_result.get("account_code"):
+                llm_code = llm_result["account_code"]
+                llm_name = llm_result["account_name"]
+                llm_conf = llm_result["confidence"]
+                llm_reasoning = llm_result.get("reasoning", "")
+
+                # LLM 결과를 primary prediction으로 교체
+                predictions.insert(0, {
+                    "account_id": None,
+                    "account_code": llm_code,
+                    "account_name": llm_name or STANDARD_ACCOUNTS.get(llm_code, f"계정 {llm_code}"),
+                    "confidence_score": Decimal(str(round(llm_conf, 4)))
+                })
+                llm_used = True
+                logger.info(f"[Classify] LLM 보조: '{description}' → {llm_code} {llm_name} ({llm_conf:.0%})")
+
         primary_confidence = float(predictions[0]["confidence_score"]) if predictions else 0
 
         # 자동 확정/검토 필요 판단
@@ -314,19 +411,24 @@ class AIClassifierService:
 
         # 검토 사유 생성
         review_reasons = []
-        if primary_confidence < 0.4:
+        if not llm_used and primary_confidence < 0.4:
             review_reasons.append("신뢰도 매우 낮음")
-        elif primary_confidence < settings.AI_REVIEW_REQUIRED_THRESHOLD:
+        elif not llm_used and primary_confidence < settings.AI_REVIEW_REQUIRED_THRESHOLD:
             review_reasons.append("신뢰도 낮음")
+
+        if llm_used and primary_confidence < 0.7:
+            review_reasons.append("AI 분석 (확인 권장)")
+            needs_review = True
 
         # 1,2순위 예측이 비슷하면 분류 불확실
         if len(predictions) >= 2:
-            second_confidence = float(predictions[1]["confidence_score"])
-            if primary_confidence - second_confidence < 0.1:
+            p1 = float(predictions[0]["confidence_score"])
+            p2 = float(predictions[1]["confidence_score"])
+            if not llm_used and p1 - p2 < 0.1:
                 review_reasons.append("분류 불확실")
                 needs_review = True
 
-        # 미확인 거래처 (known_merchants가 설정되어 있으면 확인)
+        # 미확인 거래처
         if merchant_name and hasattr(self, '_known_merchants') and self._known_merchants:
             merchant_lower = merchant_name.lower().strip()
             if merchant_lower and not any(
@@ -340,24 +442,101 @@ class AIClassifierService:
             review_reasons.append("검토 권장")
 
         # 추론 근거 생성
-        reasoning = self._generate_reasoning(
-            description, merchant_name, amount, transaction_time,
-            predictions[0] if predictions else None, primary_confidence
-        )
+        if llm_used and llm_result:
+            reasoning = f"[AI 분석] {llm_result.get('reasoning', '')} (ML 모델 신뢰도: {ml_confidence:.0%})"
+        else:
+            reasoning = self._generate_reasoning(
+                description, merchant_name, amount, transaction_time,
+                predictions[0] if predictions else None, primary_confidence
+            )
 
         # 커스텀 태그 추천
         suggested_tags = await self._suggest_custom_tags(db, description, merchant_name)
 
         return {
             "primary_prediction": predictions[0] if predictions else None,
-            "alternative_predictions": predictions[1:],
+            "alternative_predictions": predictions[1:5],
             "auto_confirm": auto_confirm,
             "needs_review": needs_review,
             "review_reasons": review_reasons,
             "reasoning": reasoning,
             "suggested_tags": suggested_tags,
-            "model_version": self.model_version
+            "model_version": f"{self.model_version}{'+ LLM' if llm_used else ''}"
         }
+
+    async def _classify_with_llm(
+        self,
+        description: str,
+        merchant_name: Optional[str],
+        amount: Decimal,
+    ) -> Optional[dict]:
+        """Claude API를 이용한 LLM 기반 분류 (ML 신뢰도 낮을 때 사용)"""
+        if not settings.ANTHROPIC_API_KEY:
+            return None
+
+        try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+            account_list = "\n".join(
+                f"- {code}: {name}" for code, name in STANDARD_ACCOUNTS.items()
+            )
+
+            prompt = f"""당신은 한국 기업 회계 전문가입니다. 신용카드 거래 내역을 보고 적절한 계정과목을 분류해주세요.
+
+## 거래 정보
+- 가맹점/적요: {description}
+- 거래처명: {merchant_name or '없음'}
+- 금액: {amount:,.0f}원
+
+## 사용 가능한 계정과목
+{account_list}
+
+## 분류 규칙
+- Facebook, Instagram, Google Ads, 네이버 등 온라인 플랫폼 결제 → 광고선전비 (813600)
+- 음식점, 카페, 배달 → 복리후생비 (813100) 또는 접대비 (813200)
+- 택시, 주유, 톨게이트, 주차 → 여비교통비 (813300) 또는 차량유지비 (814600)
+- 사무용품, 문구 → 소모품비 (813500)
+- 통신비, 인터넷, 클라우드 서비스 → 통신비 (813400)
+- 학원, 교육, 세미나, 수강료 → 교육훈련비 (813800)
+- AWS, Azure, 서버 호스팅 → 지급수수료 (813700) 또는 통신비 (813400)
+- 보험 → 보험료 (814100)
+- 택배, 배송 → 운반비 (814700)
+- 임대료, 월세 → 임차료 (814400)
+
+## 응답 형식 (반드시 JSON만 출력)
+{{"account_code": "계정코드", "account_name": "계정과목명", "confidence": 0.0~1.0, "reasoning": "분류 근거 한 줄"}}"""
+
+            response = client.messages.create(
+                model=settings.ANTHROPIC_MODEL or "claude-sonnet-4-20250514",
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            text = response.content[0].text.strip()
+            # JSON 추출 (```json ... ``` 또는 { ... } 형태)
+            if "```" in text:
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+                text = text.strip()
+            result = json.loads(text)
+
+            code = result.get("account_code", "")
+            name = result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+            confidence = min(float(result.get("confidence", 0.8)), 0.95)
+            reasoning = result.get("reasoning", "LLM 분석")
+
+            logger.info(f"[LLM] '{description}' → {code} {name} ({confidence:.0%})")
+            return {
+                "account_code": code,
+                "account_name": name,
+                "confidence": confidence,
+                "reasoning": reasoning,
+            }
+        except Exception as e:
+            logger.warning(f"[LLM] 분류 실패: {e}")
+            return None
 
     def _generate_reasoning(
         self,

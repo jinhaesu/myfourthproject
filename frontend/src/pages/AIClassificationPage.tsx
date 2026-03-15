@@ -322,29 +322,30 @@ export default function AIClassificationPage() {
     }
   }
 
-  // Handle feedback submission
-  const handleSubmitFeedback = async () => {
-    const modifiedItems = classificationResults.filter(
-      (r) => r.actual_account_code && r.actual_account_code !== r.predicted_account_code
-    )
-    if (modifiedItems.length === 0) {
-      showMessage('error', '수정된 항목이 없습니다.')
+  // Handle re-classification (현재 파일로 재분류)
+  const handleReclassify = async () => {
+    if (!classifyFile) {
+      showMessage('error', '재분류할 파일이 없습니다. 자동 분류 탭에서 파일을 다시 업로드해주세요.')
       return
     }
     setLoading(true)
     try {
-      const feedbackItems = modifiedItems.map((item) => ({
-        description: item.description,
-        merchant_name: item.merchant_name,
-        amount: item.amount,
-        predicted_account_code: item.predicted_account_code,
-        actual_account_code: item.actual_account_code!,
-      }))
-      const response = await aiClassificationApi.submitFeedback(feedbackItems)
-      showMessage('success', response.data.message)
+      const response = await aiClassificationApi.classifyFile(classifyFile)
+      setClassificationResults(response.data.results)
+      setClassifyStats({
+        total: response.data.total_rows,
+        autoConfirmed: response.data.auto_confirmed,
+        needsReview: response.data.needs_review,
+        avgConfidence: response.data.average_confidence,
+        totalAmount: response.data.total_amount || 0,
+        isCardFormat: response.data.is_card_format || false,
+        reviewReasonCounts: response.data.review_reason_counts || {},
+      })
+      setCurrentUploadId(response.data.upload_id || null)
       refreshData()
+      showMessage('success', `${response.data.total_rows}개 항목 재분류 완료`)
     } catch (error: any) {
-      showMessage('error', error.response?.data?.detail || '피드백 제출 실패')
+      showMessage('error', error.response?.data?.detail || '재분류 실패')
     } finally {
       setLoading(false)
     }
@@ -977,18 +978,18 @@ export default function AIClassificationPage() {
                     결과 초기화
                   </button>
                   <button
-                    onClick={handleSubmitFeedback}
-                    disabled={loading}
-                    className="px-4 py-2 border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:bg-gray-300 disabled:text-white disabled:border-gray-300"
-                    title="계정을 수정한 항목을 AI에 피드백하여 다음 분류 시 정확도를 높입니다"
+                    onClick={handleReclassify}
+                    disabled={loading || !classifyFile}
+                    className="px-4 py-2 border border-purple-600 text-purple-600 rounded-lg hover:bg-purple-50 disabled:bg-gray-300 disabled:text-white disabled:border-gray-300"
+                    title="현재 파일을 최신 AI 모델로 다시 분류합니다"
                   >
-                    수정사항 저장 (AI 학습)
+                    {loading ? '분류 중...' : 'AI 재분류'}
                   </button>
                   <button
                     onClick={handleConfirmJournal}
                     disabled={loading}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300"
-                    title="분류된 결과를 분개장에 확정 저장합니다 (차변/대변 각 1행씩 장부에 기록)"
+                    title="확정된 분개를 장부에 반영하고, 수정된 계정은 AI 학습 데이터로 자동 저장됩니다"
                   >
                     분개 확정 → 장부 반영 ({classificationResults.length}건)
                   </button>
