@@ -105,7 +105,7 @@ export default function AIClassificationPage() {
   const queryClient = useQueryClient()
 
   // React Query - fetch status
-  const { data: status, isError: statusError, error: statusErrorDetail } = useQuery<AIStatus>({
+  const { data: status } = useQuery<AIStatus>({
     queryKey: ['aiStatus'],
     queryFn: () => aiClassificationApi.getStatus().then((r) => r.data),
     retry: 3,
@@ -113,7 +113,7 @@ export default function AIClassificationPage() {
   })
 
   // React Query - fetch upload history
-  const { data: uploadHistory, isError: uploadHistoryError, error: uploadHistoryErrorDetail } = useQuery<UploadHistoryItem[]>({
+  const { data: uploadHistory, isError: uploadHistoryError } = useQuery<UploadHistoryItem[]>({
     queryKey: ['aiUploadHistory'],
     queryFn: () => aiClassificationApi.getUploadHistory().then((r) => r.data),
     retry: 3,

@@ -153,42 +153,48 @@ async def init_db():
         logger.warning("Database engine not available, skipping init")
         return
 
+    from sqlalchemy import text
+
     for attempt in range(5):  # Supabase cold start 대비 5회 재시도
         try:
+            # Step 1: 테이블 생성 (별도 트랜잭션)
             async with engine.begin() as conn:
-                # 기존 테이블 유지, 없는 테이블만 생성 (데이터 보존)
                 await conn.run_sync(Base.metadata.create_all)
-
-                # 스키마 마이그레이션 (기존 테이블에 컬럼 추가)
-                from sqlalchemy import text
-                migrations = [
-                    "ALTER TABLE ai_raw_transaction_data ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(100)",
-                    "ALTER TABLE ai_training_data ALTER COLUMN account_id DROP NOT NULL",
-                ]
-                for sql in migrations:
-                    try:
-                        await conn.execute(text(sql))
-                    except Exception as col_err:
-                        # SQLite는 IF NOT EXISTS 미지원 → 무시
-                        if "duplicate" not in str(col_err).lower() and "already exists" not in str(col_err).lower():
-                            logger.warning(f"Migration skipped: {col_err}")
-
-            # 연결 테스트 - 데이터 존재 확인
-            async with async_session_factory() as session:
-                from sqlalchemy import text
-                result = await session.execute(text("SELECT COUNT(*) FROM ai_raw_transaction_data"))
-                count = result.scalar() or 0
-                result2 = await session.execute(text("SELECT COUNT(*) FROM ai_data_upload_history"))
-                upload_count = result2.scalar() or 0
-                logger.info(f"Database initialized. raw_data: {count:,}, upload_history: {upload_count:,} rows preserved.")
-
-            logger.info("Database tables ready (existing data preserved)")
-            return
+            logger.info("Tables created/verified")
+            break
         except Exception as e:
             logger.warning(f"DB init attempt {attempt + 1}/5 failed: {e}")
             if attempt < 4:
                 await asyncio.sleep(3)
-    raise RuntimeError("Failed to initialize database after 5 attempts")
+            else:
+                raise RuntimeError("Failed to initialize database after 5 attempts")
+
+    # Step 2: 마이그레이션 (각각 별도 트랜잭션, 실패해도 앱 시작에 영향 없음)
+    migrations = [
+        "ALTER TABLE ai_raw_transaction_data ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(100)",
+        "ALTER TABLE ai_training_data ALTER COLUMN account_id DROP NOT NULL",
+    ]
+    for sql in migrations:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(sql))
+        except Exception as col_err:
+            err_str = str(col_err).lower()
+            if "duplicate" not in err_str and "already exists" not in err_str:
+                logger.warning(f"Migration skipped: {str(col_err)[:100]}")
+
+    # Step 3: 연결 테스트
+    try:
+        async with async_session_factory() as session:
+            result = await session.execute(text("SELECT COUNT(*) FROM ai_raw_transaction_data"))
+            count = result.scalar() or 0
+            result2 = await session.execute(text("SELECT COUNT(*) FROM ai_data_upload_history"))
+            upload_count = result2.scalar() or 0
+            logger.info(f"Database initialized. raw_data: {count:,}, upload_history: {upload_count:,} rows preserved.")
+    except Exception as e:
+        logger.warning(f"DB count check skipped: {e}")
+
+    logger.info("Database tables ready (existing data preserved)")
 
 
 async def close_db():
