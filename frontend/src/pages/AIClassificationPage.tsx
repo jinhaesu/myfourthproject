@@ -100,7 +100,7 @@ export default function AIClassificationPage() {
   })
 
   // React Query - fetch upload history
-  const { data: uploadHistory } = useQuery<UploadHistoryItem[]>({
+  const { data: uploadHistory, isError: uploadHistoryError } = useQuery<UploadHistoryItem[]>({
     queryKey: ['aiUploadHistory'],
     queryFn: () => aiClassificationApi.getUploadHistory().then((r) => r.data),
     retry: 3,
@@ -495,6 +495,8 @@ export default function AIClassificationPage() {
                   </tbody>
                 </table>
               </div>
+            ) : uploadHistoryError ? (
+              <p className="text-center py-4 text-red-400 text-sm">업로드 이력을 불러오지 못했습니다. 새로고침해 주세요.</p>
             ) : (
               <p className="text-center py-4 text-gray-400 text-sm">업로드 이력이 없습니다.</p>
             )}

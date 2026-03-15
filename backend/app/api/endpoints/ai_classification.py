@@ -1426,36 +1426,41 @@ async def get_training_history(
 
 @router.get("/upload-history")
 async def get_upload_history(
-    limit: int = Query(default=20, description="조회 개수"),
+    limit: int = Query(default=50, description="조회 개수"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """업로드 이력 조회"""
     from app.models.ai import AIDataUploadHistory
 
-    result = await db.execute(
-        select(AIDataUploadHistory)
-        .order_by(AIDataUploadHistory.created_at.desc())
-        .limit(limit)
-    )
-    uploads = result.scalars().all()
+    try:
+        result = await db.execute(
+            select(AIDataUploadHistory)
+            .order_by(AIDataUploadHistory.created_at.desc())
+            .limit(limit)
+        )
+        uploads = result.scalars().all()
+        logger.info(f"[upload-history] {len(uploads)}건 조회 (user={current_user.id})")
 
-    return [
-        {
-            "id": u.id,
-            "filename": u.filename,
-            "file_size": u.file_size,
-            "file_type": u.file_type,
-            "upload_type": u.upload_type,
-            "row_count": u.row_count,
-            "saved_count": u.saved_count,
-            "error_count": u.error_count,
-            "status": u.status.value if hasattr(u.status, 'value') else str(u.status),
-            "error_message": u.error_message,
-            "created_at": u.created_at.isoformat() if u.created_at else None,
-        }
-        for u in uploads
-    ]
+        return [
+            {
+                "id": u.id,
+                "filename": u.filename,
+                "file_size": u.file_size,
+                "file_type": u.file_type,
+                "upload_type": u.upload_type,
+                "row_count": u.row_count,
+                "saved_count": u.saved_count,
+                "error_count": u.error_count,
+                "status": u.status.value if hasattr(u.status, 'value') else str(u.status),
+                "error_message": u.error_message,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in uploads
+        ]
+    except Exception as e:
+        logger.error(f"[upload-history] 조회 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"업로드 이력 조회 실패: {str(e)[:200]}")
 
 
 @router.get("/upload/{upload_id}/raw-data")

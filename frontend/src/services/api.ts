@@ -400,7 +400,7 @@ export const aiClassificationApi = {
     api.get('/ai-classification/training-history', { params: { limit } }),
 
   // 업로드 이력
-  getUploadHistory: (limit = 20) =>
+  getUploadHistory: (limit = 50) =>
     api.get('/ai-classification/upload-history', { params: { limit } }),
 
   // 업로드 삭제

@@ -91,7 +91,6 @@ try:
         # Supabase는 모든 연결(direct/pooler)에서 prepared statements 비활성화 필요
         if _is_supabase or "pgbouncer" in DATABASE_URL:
             connect_args["statement_cache_size"] = 0
-            connect_args["prepared_statement_cache_size"] = 0
 
         if connect_args:
             engine_kwargs["connect_args"] = connect_args
@@ -179,7 +178,9 @@ async def init_db():
                 from sqlalchemy import text
                 result = await session.execute(text("SELECT COUNT(*) FROM ai_raw_transaction_data"))
                 count = result.scalar() or 0
-                logger.info(f"Database initialized. ai_raw_transaction_data: {count:,} rows preserved.")
+                result2 = await session.execute(text("SELECT COUNT(*) FROM ai_data_upload_history"))
+                upload_count = result2.scalar() or 0
+                logger.info(f"Database initialized. raw_data: {count:,}, upload_history: {upload_count:,} rows preserved.")
 
             logger.info("Database tables ready (existing data preserved)")
             return

@@ -144,6 +144,7 @@ async def health_check():
     """Health check endpoint for load balancers"""
     db_status = "unknown"
     raw_data_count = 0
+    upload_history_count = 0
     try:
         from app.core.database import async_session_factory, DATABASE_URL
         if async_session_factory:
@@ -151,6 +152,8 @@ async def health_check():
             async with async_session_factory() as session:
                 result = await session.execute(sa_text("SELECT COUNT(*) FROM ai_raw_transaction_data"))
                 raw_data_count = result.scalar() or 0
+                result2 = await session.execute(sa_text("SELECT COUNT(*) FROM ai_data_upload_history"))
+                upload_history_count = result2.scalar() or 0
                 db_status = "supabase" if "supabase" in DATABASE_URL else "postgresql" if "postgresql" in DATABASE_URL else "sqlite"
     except Exception as e:
         db_status = f"error: {str(e)[:50]}"
@@ -159,9 +162,10 @@ async def health_check():
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "deploy": "supabase-v1",
+        "deploy": "supabase-v2",
         "database": db_status,
         "raw_data_rows": raw_data_count,
+        "upload_history_rows": upload_history_count,
     }
 
 
