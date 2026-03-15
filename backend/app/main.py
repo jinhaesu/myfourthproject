@@ -166,7 +166,6 @@ async def health_check():
         "database": db_status,
         "raw_data_rows": raw_data_count,
         "upload_history_rows": upload_history_count,
-        "upload_orm_test": upload_orm_test,
     }
 
 
