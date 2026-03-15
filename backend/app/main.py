@@ -38,18 +38,25 @@ except Exception as e:
     close_db = None
 
 
+async def _background_init_db():
+    """Run init_db in background so healthcheck can respond immediately"""
+    try:
+        await init_db()
+        logger.info("Database initialized (background)")
+    except Exception as e:
+        logger.warning(f"Database initialization failed: {e}")
+        logger.warning("Application running without database init")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
+    import asyncio
     # Startup
     logger.info("Starting Smart Finance Core...")
     if init_db:
-        try:
-            await init_db()
-            logger.info("Database initialized")
-        except Exception as e:
-            logger.warning(f"Database initialization failed: {e}")
-            logger.warning("Application will start without database")
+        # Run init_db in background - don't block app startup
+        asyncio.create_task(_background_init_db())
     yield
     # Shutdown
     logger.info("Shutting down Smart Finance Core...")

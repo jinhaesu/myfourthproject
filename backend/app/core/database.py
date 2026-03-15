@@ -92,6 +92,9 @@ try:
         if _is_supabase or "pgbouncer" in DATABASE_URL:
             connect_args["statement_cache_size"] = 0
 
+        # 연결 타임아웃 단축 (기본 60초 → 10초) - Railway 헬스체크 대비
+        connect_args["timeout"] = 10
+
         if connect_args:
             engine_kwargs["connect_args"] = connect_args
 
@@ -155,7 +158,7 @@ async def init_db():
 
     from sqlalchemy import text
 
-    for attempt in range(5):  # Supabase cold start 대비 5회 재시도
+    for attempt in range(3):  # Supabase cold start 대비 3회 재시도
         try:
             # Step 1: 테이블 생성 (별도 트랜잭션)
             async with engine.begin() as conn:
@@ -163,11 +166,12 @@ async def init_db():
             logger.info("Tables created/verified")
             break
         except Exception as e:
-            logger.warning(f"DB init attempt {attempt + 1}/5 failed: {e}")
-            if attempt < 4:
-                await asyncio.sleep(3)
+            logger.warning(f"DB init attempt {attempt + 1}/3 failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
             else:
-                raise RuntimeError("Failed to initialize database after 5 attempts")
+                logger.error("Failed to initialize database after 3 attempts")
+                return  # 실패해도 앱은 계속 실행
 
     # Step 2: 마이그레이션 (각각 별도 트랜잭션, 실패해도 앱 시작에 영향 없음)
     migrations = [
