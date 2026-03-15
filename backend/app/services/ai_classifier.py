@@ -276,24 +276,35 @@ class AIClassifierService:
         probabilities = self.model.predict_proba(X)[0]
         top_indices = np.argsort(probabilities)[::-1][:top_n]
 
+        # 기본 계정코드 → 계정명 매핑 (DB에 없을 때 fallback)
+        _default_account_names = {
+            "813100": "복리후생비", "813200": "접대비", "813300": "여비교통비",
+            "813400": "통신비", "813500": "소모품비", "813600": "광고선전비",
+            "813700": "지급수수료", "813800": "교육훈련비", "813900": "도서인쇄비",
+            "814000": "회의비",
+        }
+
         predictions = []
         for idx in top_indices:
             account_code = self.label_encoder.inverse_transform([idx])[0]
             confidence = float(probabilities[idx])
 
-            # 계정과목 정보 조회
+            # 계정과목 정보 조회 (DB 우선, 없으면 기본 매핑 사용)
             result = await db.execute(
                 select(Account).where(Account.code == account_code)
             )
             account = result.scalar_one_or_none()
 
-            if account:
-                predictions.append({
-                    "account_id": account.id,
-                    "account_code": account.code,
-                    "account_name": account.name,
-                    "confidence_score": Decimal(str(round(confidence, 4)))
-                })
+            account_name = (
+                account.name if account
+                else _default_account_names.get(account_code, f"계정 {account_code}")
+            )
+            predictions.append({
+                "account_id": account.id if account else None,
+                "account_code": account_code,
+                "account_name": account_name,
+                "confidence_score": Decimal(str(round(confidence, 4)))
+            })
 
         primary_confidence = float(predictions[0]["confidence_score"]) if predictions else 0
 

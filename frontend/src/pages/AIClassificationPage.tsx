@@ -383,6 +383,14 @@ export default function AIClassificationPage() {
     }
   }
 
+  // Clear classification results
+  const handleClearResults = () => {
+    setClassificationResults([])
+    setClassifyStats(null)
+    setClassifyFile(null)
+    setActiveTab('classify')
+  }
+
   // Update classification result
   const updateClassificationResult = (index: number, accountCode: string) => {
     setClassificationResults((prev) =>
@@ -855,6 +863,18 @@ export default function AIClassificationPage() {
                 </div>
               </div>
 
+              {/* 신뢰도 낮을 때 안내 */}
+              {classifyStats.avgConfidence < 0.6 && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="text-sm font-medium text-blue-800 mb-1">신뢰도가 낮은 이유</h4>
+                  <p className="text-sm text-blue-700">
+                    현재 AI 모델은 기본 학습 데이터(약 30개)로만 학습되어 있습니다.
+                    <strong> 정확도를 높이려면:</strong> 아래 결과에서 잘못된 계정을 올바르게 수정 → "수정사항 저장 (AI 학습)" 클릭 → 이후 분류 시 정확도가 향상됩니다.
+                    또는 과거 회계 데이터를 업로드하여 모델을 재학습시키세요.
+                  </p>
+                </div>
+              )}
+
               {/* 검토 사유별 요약 */}
               {classifyStats.reviewReasonCounts && Object.keys(classifyStats.reviewReasonCounts).length > 0 && (
                 <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
@@ -910,9 +930,16 @@ export default function AIClassificationPage() {
                 </div>
                 <div className="flex gap-2">
                   <button
+                    onClick={handleClearResults}
+                    className="px-4 py-2 border border-gray-400 text-gray-600 rounded-lg hover:bg-gray-100"
+                  >
+                    결과 초기화
+                  </button>
+                  <button
                     onClick={handleSubmitFeedback}
                     disabled={loading}
                     className="px-4 py-2 border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:bg-gray-300 disabled:text-white disabled:border-gray-300"
+                    title="계정을 수정한 항목을 AI에 피드백하여 다음 분류 시 정확도를 높입니다"
                   >
                     수정사항 저장 (AI 학습)
                   </button>
@@ -920,6 +947,7 @@ export default function AIClassificationPage() {
                     onClick={handleConfirmJournal}
                     disabled={loading}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300"
+                    title="분류된 결과를 분개장에 확정 저장합니다 (차변/대변 각 1행씩 장부에 기록)"
                   >
                     분개 확정 → 장부 반영 ({classificationResults.length}건)
                   </button>
@@ -938,7 +966,7 @@ export default function AIClassificationPage() {
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-red-50">대변(지급)</th>
                       <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 bg-red-50">대변금액</th>
                       <th className="px-2 py-3 text-center text-xs font-medium text-gray-500">신뢰도</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500">계정 수정</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500" title="AI가 잘못 분류한 경우 올바른 계정으로 변경. 수정 후 'AI 학습' 버튼으로 피드백">계정 변경</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -974,9 +1002,19 @@ export default function AIClassificationPage() {
                         </td>
                         {/* 차변 (비용 계정) */}
                         <td className="px-2 py-2 text-sm bg-blue-50/50">
-                          <span className="font-medium text-blue-800">{result.actual_account_code || result.predicted_account_code}</span>
-                          {' '}
-                          <span className="text-gray-500 text-xs">{result.predicted_account_name}</span>
+                          {(result.actual_account_code || result.predicted_account_code) ? (
+                            <>
+                              <span className="font-medium text-blue-800">{result.actual_account_code || result.predicted_account_code}</span>
+                              {' '}
+                              <span className="text-gray-500 text-xs">
+                                {result.actual_account_code && result.actual_account_code !== result.predicted_account_code
+                                  ? accounts.find(a => a.code === result.actual_account_code)?.name || ''
+                                  : result.predicted_account_name}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-orange-500 text-xs">미분류 (계정 수정 필요)</span>
+                          )}
                         </td>
                         <td className="px-2 py-2 text-sm text-right font-mono bg-blue-50/50 text-blue-700">
                           {result.amount?.toLocaleString()}
