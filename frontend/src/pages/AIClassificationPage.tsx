@@ -62,6 +62,19 @@ interface ClassificationResult {
   review_reasons: string[]
   reasoning: string
   actual_account_code?: string
+  memo?: string
+  transaction_date?: string
+  journal_entry?: {
+    debit_account_code: string
+    debit_account_name: string
+    debit_amount: number
+    credit_account_code: string
+    credit_account_name: string
+    credit_amount: number
+    vat_amount: number
+    supply_amount: number
+    is_balanced: boolean
+  }
   alternatives: Array<{
     account_code: string
     account_name: string
@@ -289,6 +302,8 @@ export default function AIClassificationPage() {
         autoConfirmed: response.data.auto_confirmed,
         needsReview: response.data.needs_review,
         avgConfidence: response.data.average_confidence,
+        totalAmount: response.data.total_amount || 0,
+        isCardFormat: response.data.is_card_format || false,
         reviewReasonCounts: response.data.review_reason_counts || {},
       })
       setActiveTab('results')
@@ -323,6 +338,46 @@ export default function AIClassificationPage() {
       refreshData()
     } catch (error: any) {
       showMessage('error', error.response?.data?.detail || '피드백 제출 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Handle journal entry confirmation (장부 반영)
+  const handleConfirmJournal = async () => {
+    if (classificationResults.length === 0) {
+      showMessage('error', '확정할 분개가 없습니다.')
+      return
+    }
+    setLoading(true)
+    try {
+      const entries = classificationResults.map((r) => {
+        const finalCode = r.actual_account_code || r.predicted_account_code
+        const finalName = finalCode === r.predicted_account_code
+          ? r.predicted_account_name
+          : accounts.find(a => a.code === finalCode)?.name || r.predicted_account_name
+        return {
+          description: r.description,
+          merchant_name: r.merchant_name,
+          memo: r.memo || r.description,
+          transaction_date: r.transaction_date || '',
+          amount: r.amount,
+          debit_account_code: finalCode,
+          debit_account_name: finalName,
+          credit_account_code: r.journal_entry?.credit_account_code || '253000',
+          credit_account_name: r.journal_entry?.credit_account_name || '미지급금(신용카드)',
+          vat_amount: r.journal_entry?.vat_amount || 0,
+          supply_amount: r.journal_entry?.supply_amount || 0,
+        }
+      })
+      const response = await aiClassificationApi.confirmJournal(entries, classifyFile?.name)
+      showMessage('success', response.data.message)
+      setClassificationResults([])
+      setClassifyStats(null)
+      setActiveTab('status')
+      refreshData()
+    } catch (error: any) {
+      showMessage('error', error.response?.data?.detail || '장부 반영 실패')
     } finally {
       setLoading(false)
     }
@@ -428,11 +483,6 @@ export default function AIClassificationPage() {
             </div>
           </div>
 
-          {statusError && (
-            <div className="bg-red-50 p-4 rounded-lg border border-red-200">
-              <p className="text-red-600 text-sm">API 상태 조회 실패: {(statusErrorDetail as any)?.response?.status || 'network'} - {(statusErrorDetail as any)?.response?.data?.detail || (statusErrorDetail as any)?.message || '알 수 없는 오류'}</p>
-            </div>
-          )}
           <div className="bg-white p-6 rounded-lg shadow border">
             <h3 className="text-lg font-medium mb-4">업로드 통계</h3>
             <div className="grid grid-cols-3 gap-4 text-center">
@@ -502,7 +552,7 @@ export default function AIClassificationPage() {
               </div>
             ) : uploadHistoryError ? (
               <p className="text-center py-4 text-red-400 text-sm">
-                업로드 이력 조회 실패: {(uploadHistoryErrorDetail as any)?.response?.status || 'network'} - {(uploadHistoryErrorDetail as any)?.response?.data?.detail || (uploadHistoryErrorDetail as any)?.message || '알 수 없는 오류'}
+                업로드 이력을 불러오지 못했습니다. 새로고침해 주세요.
               </p>
             ) : (
               <p className="text-center py-4 text-gray-400 text-sm">업로드 이력이 없습니다.</p>
@@ -730,17 +780,22 @@ export default function AIClassificationPage() {
               </div>
             )}
 
-            <div className="mb-4">
-              <h4 className="font-medium mb-2">필수 컬럼:</h4>
-              <ul className="text-sm text-gray-600 list-disc list-inside">
-                <li><strong>적요</strong> - 거래 설명</li>
-              </ul>
-              <h4 className="font-medium mt-3 mb-2">선택 컬럼:</h4>
-              <ul className="text-sm text-gray-600 list-disc list-inside">
-                <li>거래처명</li>
-                <li>금액</li>
-                <li>거래일자</li>
-              </ul>
+            <div className="mb-4 grid grid-cols-2 gap-4">
+              <div className="border rounded-lg p-3">
+                <h4 className="font-medium mb-2 text-sm">일반 엑셀</h4>
+                <ul className="text-xs text-gray-600 list-disc list-inside space-y-0.5">
+                  <li><strong>적요</strong> (필수)</li>
+                  <li>거래처명, 금액, 거래일자</li>
+                </ul>
+              </div>
+              <div className="border rounded-lg p-3 border-blue-200 bg-blue-50/50">
+                <h4 className="font-medium mb-2 text-sm text-blue-700">위하고 신용카드(매입)</h4>
+                <ul className="text-xs text-gray-600 list-disc list-inside space-y-0.5">
+                  <li><strong>가맹점명</strong> → 적요로 자동 사용</li>
+                  <li>매입금액, 부가세, 공급가액</li>
+                  <li>거래일자, 승인번호, 카드번호</li>
+                </ul>
+              </div>
             </div>
 
             <div className="flex gap-4 mb-4">
@@ -853,27 +908,37 @@ export default function AIClassificationPage() {
                     <option value="confidence_desc">신뢰도 높은순</option>
                   </select>
                 </div>
-                <button
-                  onClick={handleSubmitFeedback}
-                  disabled={loading}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300"
-                >
-                  수정사항 저장 (AI 학습)
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleSubmitFeedback}
+                    disabled={loading}
+                    className="px-4 py-2 border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 disabled:bg-gray-300 disabled:text-white disabled:border-gray-300"
+                  >
+                    수정사항 저장 (AI 학습)
+                  </button>
+                  <button
+                    onClick={handleConfirmJournal}
+                    disabled={loading}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300"
+                  >
+                    분개 확정 → 장부 반영 ({classificationResults.length}건)
+                  </button>
+                </div>
               </div>
 
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase w-8">#</th>
-                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">적요</th>
-                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">거래처</th>
-                      <th className="px-3 py-3 text-right text-xs font-medium text-gray-500 uppercase">금액</th>
-                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">AI 분류</th>
-                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">신뢰도</th>
-                      <th className="px-3 py-3 text-center text-xs font-medium text-gray-500 uppercase">검토사유</th>
-                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">수정</th>
+                      <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 w-8">#</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500">일자</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500">적요/가맹점</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-blue-50">차변(비용)</th>
+                      <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 bg-blue-50">차변금액</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 bg-red-50">대변(지급)</th>
+                      <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 bg-red-50">대변금액</th>
+                      <th className="px-2 py-3 text-center text-xs font-medium text-gray-500">신뢰도</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500">계정 수정</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
@@ -900,67 +965,69 @@ export default function AIClassificationPage() {
                             : ''
                         }
                       >
-                        <td className="px-3 py-3 text-xs text-gray-400 text-center">{result.row_index + 1}</td>
-                        <td className="px-3 py-3 text-sm max-w-[200px] truncate" title={result.description}>
-                          {result.description}
+                        <td className="px-2 py-2 text-xs text-gray-400 text-center">{result.row_index + 1}</td>
+                        <td className="px-2 py-2 text-xs text-gray-500 whitespace-nowrap">
+                          {result.transaction_date || '-'}
                         </td>
-                        <td className="px-3 py-3 text-sm text-gray-500">{result.merchant_name || '-'}</td>
-                        <td className="px-3 py-3 text-sm text-right">{result.amount?.toLocaleString() || 0}</td>
-                        <td className="px-3 py-3 text-sm">
-                          <span className="font-medium">{result.predicted_account_code}</span>
+                        <td className="px-2 py-2 text-sm max-w-[180px] truncate" title={result.memo || result.description}>
+                          {result.memo || result.description}
+                        </td>
+                        {/* 차변 (비용 계정) */}
+                        <td className="px-2 py-2 text-sm bg-blue-50/50">
+                          <span className="font-medium text-blue-800">{result.actual_account_code || result.predicted_account_code}</span>
                           {' '}
-                          <span className="text-gray-500">{result.predicted_account_name}</span>
+                          <span className="text-gray-500 text-xs">{result.predicted_account_name}</span>
                         </td>
-                        <td className="px-3 py-3 text-center">
-                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                        <td className="px-2 py-2 text-sm text-right font-mono bg-blue-50/50 text-blue-700">
+                          {result.amount?.toLocaleString()}
+                        </td>
+                        {/* 대변 (미지급금) */}
+                        <td className="px-2 py-2 text-sm bg-red-50/50">
+                          <span className="text-gray-600">{result.journal_entry?.credit_account_code || '253000'}</span>
+                          {' '}
+                          <span className="text-gray-400 text-xs">{result.journal_entry?.credit_account_name || '미지급금'}</span>
+                        </td>
+                        <td className="px-2 py-2 text-sm text-right font-mono bg-red-50/50 text-red-600">
+                          {result.amount?.toLocaleString()}
+                        </td>
+                        {/* 신뢰도 */}
+                        <td className="px-2 py-2 text-center">
+                          <span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-full ${
                             result.confidence >= 0.85 ? 'bg-green-100 text-green-800' :
                             result.confidence >= 0.6 ? 'bg-yellow-100 text-yellow-800' :
                             'bg-red-100 text-red-800'
                           }`}>
                             {(result.confidence * 100).toFixed(0)}%
                           </span>
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          {result.review_reasons && result.review_reasons.length > 0 ? (
-                            <div className="flex flex-wrap gap-1 justify-center">
-                              {result.review_reasons.map((reason, ri) => (
-                                <span key={ri} className={`inline-flex px-2 py-0.5 text-xs rounded-full font-medium ${
-                                  reason.includes('매우 낮음') ? 'bg-red-100 text-red-700 border border-red-300' :
-                                  reason.includes('낮음') ? 'bg-orange-100 text-orange-700 border border-orange-300' :
-                                  reason.includes('불확실') ? 'bg-purple-100 text-purple-700 border border-purple-300' :
-                                  reason.includes('거래처') ? 'bg-blue-100 text-blue-700 border border-blue-300' :
-                                  'bg-gray-100 text-gray-700 border border-gray-300'
-                                }`}>
-                                  {reason}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-green-500 text-xs">OK</span>
+                          {result.review_reasons && result.review_reasons.length > 0 && (
+                            <span className="block text-xs text-orange-500 mt-0.5" title={result.review_reasons.join(', ')}>
+                              {result.review_reasons[0]}
+                            </span>
                           )}
                         </td>
-                        <td className="px-3 py-3">
+                        {/* 수정 */}
+                        <td className="px-2 py-2">
                           <select
                             value={result.actual_account_code || result.predicted_account_code}
                             onChange={(e) => updateClassificationResult(originalIndex, e.target.value)}
-                            className={`block w-full rounded-md shadow-sm text-sm ${
+                            className={`block w-full rounded-md shadow-sm text-xs ${
                               result.actual_account_code && result.actual_account_code !== result.predicted_account_code
                                 ? 'border-blue-400 ring-1 ring-blue-300'
                                 : 'border-gray-300'
                             } focus:border-blue-500 focus:ring-blue-500`}
                           >
                             <option value={result.predicted_account_code}>
-                              {result.predicted_account_code} - {result.predicted_account_name}
+                              {result.predicted_account_code} {result.predicted_account_name}
                             </option>
                             {result.alternatives.map((alt) => (
                               <option key={alt.account_code} value={alt.account_code}>
-                                {alt.account_code} - {alt.account_name} ({(alt.confidence * 100).toFixed(0)}%)
+                                {alt.account_code} {alt.account_name} ({(alt.confidence * 100).toFixed(0)}%)
                               </option>
                             ))}
                             <optgroup label="전체 계정과목">
                               {accounts.map((acc) => (
                                 <option key={acc.id} value={acc.code}>
-                                  {acc.code} - {acc.name} ({acc.category})
+                                  {acc.code} {acc.name}
                                 </option>
                               ))}
                             </optgroup>
@@ -972,20 +1039,35 @@ export default function AIClassificationPage() {
                 </table>
               </div>
 
-              {/* 하단 요약 */}
-              <div className="p-4 border-t bg-gray-50 flex justify-between items-center text-sm text-gray-600">
-                <span>
-                  수정된 항목: <span className="font-bold text-blue-600">
-                    {classificationResults.filter(r => r.actual_account_code && r.actual_account_code !== r.predicted_account_code).length}
-                  </span>건
-                </span>
-                <span>
-                  현재 표시: {
-                    resultFilter === 'all' ? classificationResults.length :
-                    resultFilter === 'review' ? classificationResults.filter(r => r.needs_review).length :
-                    classificationResults.filter(r => r.auto_confirm).length
-                  }건
-                </span>
+              {/* 하단 합계 */}
+              <div className="p-4 border-t bg-gray-50">
+                <div className="flex justify-between items-center text-sm">
+                  <div className="flex gap-6">
+                    <span className="text-gray-600">
+                      수정: <span className="font-bold text-blue-600">
+                        {classificationResults.filter(r => r.actual_account_code && r.actual_account_code !== r.predicted_account_code).length}
+                      </span>건
+                    </span>
+                    <span className="text-gray-600">
+                      표시: {
+                        resultFilter === 'all' ? classificationResults.length :
+                        resultFilter === 'review' ? classificationResults.filter(r => r.needs_review).length :
+                        classificationResults.filter(r => r.auto_confirm).length
+                      }건
+                    </span>
+                  </div>
+                  <div className="flex gap-6 font-mono">
+                    <span className="text-blue-700">
+                      차변 합계: <span className="font-bold">{classificationResults.reduce((s, r) => s + (r.amount || 0), 0).toLocaleString()}</span>
+                    </span>
+                    <span className="text-red-600">
+                      대변 합계: <span className="font-bold">{classificationResults.reduce((s, r) => s + (r.amount || 0), 0).toLocaleString()}</span>
+                    </span>
+                    <span className="text-green-700 font-bold">
+                      대차 일치
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
           ) : (

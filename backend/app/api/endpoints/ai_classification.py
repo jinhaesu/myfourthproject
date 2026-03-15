@@ -1098,25 +1098,43 @@ async def classify_file(
             engine = 'xlrd' if file.filename.endswith('.xls') else 'openpyxl'
             df = pd.read_excel(io.BytesIO(content), engine=engine)
 
-        # 컬럼명 정규화
+        # 컬럼명 정규화 (일반 + 위하고 신용카드 매입 형식 지원)
         column_mapping = {
-            '적요': 'description',
-            '적요란': 'description',
-            '거래내역': 'description',
-            '내역': 'description',
-            '거래처명': 'merchant_name',
-            '거래처': 'merchant_name',
-            '가맹점': 'merchant_name',
-            '금액': 'amount',
-            '거래금액': 'amount',
-            '거래일자': 'transaction_date',
-            '일자': 'transaction_date'
+            # 적요/설명
+            '적요': 'description', '적요란': 'description',
+            '거래내역': 'description', '내역': 'description', '비고': 'description',
+            # 거래처/가맹점
+            '거래처명': 'merchant_name', '거래처': 'merchant_name',
+            '가맹점': 'merchant_name', '가맹점명': 'merchant_name', '상호': 'merchant_name',
+            # 금액
+            '금액': 'amount', '거래금액': 'amount',
+            '매입금액': 'amount', '결제금액': 'amount', '이용금액': 'amount',
+            '합계금액': 'amount', '합계': 'amount',
+            # 부가세/공급가액
+            '부가세': 'vat_amount', '세액': 'vat_amount', 'VAT': 'vat_amount',
+            '공급가액': 'supply_amount', '과세표준': 'supply_amount',
+            # 날짜
+            '거래일자': 'transaction_date', '일자': 'transaction_date',
+            '거래일': 'transaction_date', '결제일': 'transaction_date',
+            '매입일자': 'transaction_date', '승인일자': 'transaction_date',
+            # 카드 관련
+            '카드번호': 'card_number', '카드NO': 'card_number', '카드': 'card_number',
+            '승인번호': 'approval_number', '승인NO': 'approval_number',
         }
 
         df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
+        logger.info(f"[Classify] 매핑된 컬럼: {list(df.columns)}")
 
+        # 위하고 카드 형식: '적요' 없으면 '가맹점명'을 description으로 사용
         if 'description' not in df.columns:
-            raise HTTPException(status_code=400, detail="'적요' 또는 '거래내역' 컬럼이 필요합니다.")
+            if 'merchant_name' in df.columns:
+                df['description'] = df['merchant_name']
+                logger.info("[Classify] '적요' 없음 → '가맹점명'을 적요로 사용 (카드 형식)")
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"'적요' 또는 '가맹점명' 컬럼이 필요합니다. 현재 컬럼: {list(df.columns)}"
+                )
 
         # 데이터 정제
         df['description'] = df['description'].fillna('').astype(str).str.strip()
@@ -1132,29 +1150,60 @@ async def classify_file(
         else:
             df['amount'] = 0
 
+        if 'vat_amount' in df.columns:
+            df['vat_amount'] = pd.to_numeric(df['vat_amount'], errors='coerce').fillna(0)
+        if 'supply_amount' in df.columns:
+            df['supply_amount'] = pd.to_numeric(df['supply_amount'], errors='coerce').fillna(0)
+
         # AI 분류 수행
         classifier = AIClassifierService()
         await classifier.load_model(db)
         await classifier.load_known_merchants(db)
 
+        # 카드 형식 감지 (가맹점명이 description으로 복사된 경우)
+        is_card_format = 'card_number' in df.columns or 'approval_number' in df.columns or 'vat_amount' in df.columns
+
         results = []
         for idx, row in df.iterrows():
+            desc = row['description']
+            merchant = row.get('merchant_name', '') if row.get('merchant_name', '') != desc else ''
+            amount = float(row.get('amount', 0))
+            vat = float(row.get('vat_amount', 0)) if 'vat_amount' in df.columns else 0
+            supply = float(row.get('supply_amount', 0)) if 'supply_amount' in df.columns else 0
+
             classification = await classifier.classify(
                 db=db,
-                description=row['description'],
-                merchant_name=row.get('merchant_name', ''),
-                amount=Decimal(str(row.get('amount', 0)))
+                description=desc,
+                merchant_name=merchant or desc,
+                amount=Decimal(str(amount))
             )
 
             primary = classification.get('primary_prediction', {})
             review_reasons = classification.get('review_reasons', [])
+            debit_code = primary.get('account_code', '')
+            debit_name = primary.get('account_name', '')
+
+            # 적요 자동 생성
+            if is_card_format:
+                memo = f"{desc} 카드결제"
+            else:
+                memo = desc
+
+            # 거래일자
+            txn_date = ''
+            if 'transaction_date' in df.columns and pd.notna(row.get('transaction_date')):
+                txn_date = str(row['transaction_date']).strip()
+
             results.append({
                 "row_index": int(idx),
-                "description": row['description'],
-                "merchant_name": row.get('merchant_name', ''),
-                "amount": float(row.get('amount', 0)),
-                "predicted_account_code": primary.get('account_code', ''),
-                "predicted_account_name": primary.get('account_name', ''),
+                "description": desc,
+                "merchant_name": merchant or desc,
+                "amount": amount,
+                "transaction_date": txn_date,
+                "memo": memo,
+                # AI 분류
+                "predicted_account_code": debit_code,
+                "predicted_account_name": debit_name,
                 "confidence": float(primary.get('confidence_score', 0)),
                 "auto_confirm": classification.get('auto_confirm', False),
                 "needs_review": classification.get('needs_review', True),
@@ -1167,13 +1216,26 @@ async def classify_file(
                         "confidence": float(alt.get('confidence_score', 0))
                     }
                     for alt in classification.get('alternative_predictions', [])[:2]
-                ]
+                ],
+                # 분개 (차변/대변)
+                "journal_entry": {
+                    "debit_account_code": debit_code,
+                    "debit_account_name": debit_name,
+                    "debit_amount": amount,
+                    "credit_account_code": "253000",
+                    "credit_account_name": "미지급금(신용카드)",
+                    "credit_amount": amount,
+                    "vat_amount": vat,
+                    "supply_amount": supply if supply else amount - vat,
+                    "is_balanced": True,
+                },
             })
 
         # 통계
         auto_confirm_count = sum(1 for r in results if r['auto_confirm'])
         needs_review_count = sum(1 for r in results if r['needs_review'])
         avg_confidence = sum(r['confidence'] for r in results) / len(results) if results else 0
+        total_amount = sum(r['amount'] for r in results)
 
         # 검토 사유별 통계
         reason_counts: dict = {}
@@ -1187,14 +1249,123 @@ async def classify_file(
             "auto_confirmed": auto_confirm_count,
             "needs_review": needs_review_count,
             "average_confidence": round(avg_confidence, 4),
+            "total_amount": total_amount,
+            "is_card_format": is_card_format,
             "review_reason_counts": reason_counts,
-            "results": results
+            "results": results,
         }
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"파일 처리 중 오류: {str(e)}")
+
+
+class JournalEntryItem(BaseModel):
+    """확정된 분개 항목"""
+    description: str
+    merchant_name: Optional[str] = None
+    memo: str = ""
+    transaction_date: Optional[str] = None
+    amount: float
+    debit_account_code: str
+    debit_account_name: Optional[str] = None
+    credit_account_code: str = "253000"
+    credit_account_name: Optional[str] = "미지급금(신용카드)"
+    vat_amount: float = 0
+    supply_amount: float = 0
+
+
+class ConfirmJournalRequest(BaseModel):
+    """분개 확정 요청"""
+    entries: List[JournalEntryItem]
+    source_filename: Optional[str] = None
+
+
+@router.post("/confirm-journal")
+async def confirm_journal_entries(
+    request: ConfirmJournalRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    확정된 분개를 장부에 반영 (ai_raw_transaction_data에 저장)
+    - 차변/대변 각각 한 행씩 저장
+    - 재무제표에 바로 반영됨
+    """
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
+
+    try:
+        # 업로드 이력 생성
+        upload_history = AIDataUploadHistory(
+            filename=request.source_filename or "AI자동분개",
+            file_size=0,
+            file_type="journal",
+            upload_type="journal_entry",
+            uploaded_by=current_user.id,
+            status=UploadStatus.COMPLETED,
+            row_count=len(request.entries) * 2,
+            saved_count=0,
+        )
+        db.add(upload_history)
+        await db.flush()
+        upload_id = upload_history.id
+
+        saved_count = 0
+        for i, entry in enumerate(request.entries):
+            row_base = i * 2 + 1
+
+            # 차변 (비용 계정)
+            debit_row = AIRawTransactionData(
+                upload_id=upload_id,
+                row_number=row_base,
+                original_description=entry.memo or entry.description,
+                merchant_name=entry.merchant_name or entry.description,
+                amount=Decimal(str(entry.amount)),
+                debit_amount=Decimal(str(entry.amount)),
+                credit_amount=Decimal("0"),
+                transaction_date=entry.transaction_date,
+                account_code=entry.debit_account_code,
+                account_name=entry.debit_account_name,
+                source_account_code=entry.credit_account_code,
+                source_account_name=entry.credit_account_name,
+            )
+            db.add(debit_row)
+
+            # 대변 (미지급금)
+            credit_row = AIRawTransactionData(
+                upload_id=upload_id,
+                row_number=row_base + 1,
+                original_description=entry.memo or entry.description,
+                merchant_name=entry.merchant_name or entry.description,
+                amount=Decimal(str(entry.amount)),
+                debit_amount=Decimal("0"),
+                credit_amount=Decimal(str(entry.amount)),
+                transaction_date=entry.transaction_date,
+                account_code=entry.credit_account_code,
+                account_name=entry.credit_account_name,
+                source_account_code=entry.debit_account_code,
+                source_account_name=entry.debit_account_name,
+            )
+            db.add(credit_row)
+            saved_count += 2
+
+        upload_history.saved_count = saved_count
+        await db.commit()
+
+        logger.info(f"[Journal] {len(request.entries)}건 분개 확정 → {saved_count}행 장부 반영 (upload_id={upload_id})")
+
+        return {
+            "status": "success",
+            "upload_id": upload_id,
+            "entries_count": len(request.entries),
+            "saved_rows": saved_count,
+            "message": f"{len(request.entries)}건 분개가 장부에 반영되었습니다.",
+        }
+
+    except Exception as e:
+        logger.error(f"[Journal] 확정 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"분개 확정 오류: {str(e)[:200]}")
 
 
 @router.post("/feedback")

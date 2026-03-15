@@ -378,6 +378,25 @@ export const aiClassificationApi = {
     })
   },
 
+  // 분개 확정 (장부 반영)
+  confirmJournal: (entries: Array<{
+    description: string
+    merchant_name?: string
+    memo: string
+    transaction_date?: string
+    amount: number
+    debit_account_code: string
+    debit_account_name?: string
+    credit_account_code?: string
+    credit_account_name?: string
+    vat_amount?: number
+    supply_amount?: number
+  }>, sourceFilename?: string) =>
+    api.post('/ai-classification/confirm-journal', {
+      entries,
+      source_filename: sourceFilename,
+    }),
+
   // 피드백 제출
   submitFeedback: (items: Array<{
     description: string
