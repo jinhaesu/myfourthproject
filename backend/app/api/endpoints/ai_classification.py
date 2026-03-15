@@ -997,12 +997,11 @@ async def train_model(
     async def _run_training():
         global _training_progress
         try:
-            async with async_session_factory() as session:
-                classifier = AIClassifierService()
-                success, message = await classifier.retrain_model_with_progress(
-                    session, user_id, min_samples, _training_progress,
-                    max_samples=max_samples, upload_ids=parsed_upload_ids,
-                )
+            classifier = AIClassifierService()
+            success, message = await classifier.retrain_model_with_progress(
+                async_session_factory, user_id, min_samples, _training_progress,
+                max_samples=max_samples, upload_ids=parsed_upload_ids,
+            )
                 if success:
                     _training_progress["status"] = "completed"
                     _training_progress["progress"] = 100
