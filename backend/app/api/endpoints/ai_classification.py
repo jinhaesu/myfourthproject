@@ -1187,15 +1187,8 @@ async def classify_file(
         # 카드 형식 감지
         is_card_format = 'card_number' in df.columns or 'approval_number' in df.columns or 'vat_amount' in df.columns
 
-        # ===== 1단계: ML 일괄 분류 (벡터 연산, DB 쿼리 0회) =====
-        _classify_progress.update({
-            "step": "ML 분류", "progress": 20,
-            "message": f"ML 모델로 {total_rows}행 일괄 분류 중...",
-        })
-
         # DataFrame → 분류 입력 리스트 변환
-        ml_items = []
-        row_meta = []  # 원본 행 정보 보관
+        row_meta = []
         for idx, row in df.iterrows():
             desc = row['description']
             merchant = row.get('merchant_name', '') if row.get('merchant_name', '') != desc else ''
@@ -1205,40 +1198,99 @@ async def classify_file(
             txn_date = ''
             if 'transaction_date' in df.columns and pd.notna(row.get('transaction_date')):
                 txn_date = str(row['transaction_date']).strip()
-
-            ml_items.append({
-                "description": desc,
-                "merchant_name": merchant or desc,
-                "amount": amount,
-            })
             row_meta.append({
                 "idx": int(idx), "desc": desc, "merchant": merchant or desc,
                 "amount": amount, "vat": vat, "supply": supply, "txn_date": txn_date,
             })
 
-        # ML 일괄 예측 (numpy 벡터 연산 — 1초 이내)
-        try:
-            ml_classifications = classifier.classify_batch_ml_pure(ml_items)
-        except Exception as ml_err:
-            logger.error(f"[Classify] ML 일괄 분류 실패: {ml_err}")
-            ml_classifications = [classifier._empty_classification() for _ in ml_items]
+        # ===== LLM(Claude) 기본 분류기 → ML fallback =====
+        llm_used = False
+        llm_map: dict = {}  # index → {account_code, account_name, confidence, reasoning}
 
-        _classify_progress.update({
-            "step": "결과 조립", "progress": 65,
-            "processed_rows": total_rows,
-            "message": f"ML 분류 완료. 결과 정리 중...",
-        })
+        if settings.ANTHROPIC_API_KEY:
+            _classify_progress.update({
+                "step": "AI 분류", "progress": 20,
+                "message": f"Claude AI로 {total_rows}건 분류 중...",
+            })
+            try:
+                llm_items = [
+                    {"idx": i, "desc": m["desc"], "merchant": m["merchant"], "amount": m["amount"]}
+                    for i, m in enumerate(row_meta)
+                ]
+                llm_results = await classifier.classify_batch_with_llm(llm_items)
+
+                success_count = 0
+                for i, llm in enumerate(llm_results):
+                    if llm and llm.get("account_code"):
+                        llm_map[i] = llm
+                        success_count += 1
+
+                llm_used = success_count > 0
+                logger.info(f"[Classify] LLM 분류: {success_count}/{total_rows}건 성공")
+
+                _classify_progress.update({
+                    "progress": 65,
+                    "message": f"AI 분류 완료 ({success_count}/{total_rows}건)",
+                })
+            except Exception as llm_err:
+                logger.warning(f"[Classify] LLM 분류 실패, ML fallback: {llm_err}")
+                _classify_progress.update({
+                    "step": "ML fallback", "progress": 30,
+                    "message": f"AI 분류 실패. ML 모델로 분류 중...",
+                })
+        else:
+            logger.warning("[Classify] ANTHROPIC_API_KEY 미설정 — ML 모델만 사용")
+
+        # LLM 실패한 항목은 ML fallback
+        ml_needed_indices = [i for i in range(total_rows) if i not in llm_map]
+        if ml_needed_indices:
+            _classify_progress.update({
+                "step": "ML 분류" if not llm_used else "ML 보충",
+                "progress": 70 if llm_used else 20,
+                "message": f"ML 모델로 {len(ml_needed_indices)}건 분류 중...",
+            })
+            ml_items = [
+                {"description": row_meta[i]["desc"],
+                 "merchant_name": row_meta[i]["merchant"],
+                 "amount": row_meta[i]["amount"]}
+                for i in ml_needed_indices
+            ]
+            try:
+                ml_results = classifier.classify_batch_ml_pure(ml_items)
+            except Exception:
+                ml_results = [classifier._empty_classification() for _ in ml_items]
 
         # 결과 조립
+        _classify_progress.update({
+            "step": "결과 조립", "progress": 75,
+            "message": f"결과 정리 중...",
+        })
         results = []
-        low_confidence_indices = []
+        ml_result_idx = 0
 
-        for i, (meta, classification) in enumerate(zip(row_meta, ml_classifications)):
-            primary = classification.get('primary_prediction') or {}
-            review_reasons = classification.get('review_reasons') or []
-            debit_code = primary.get('account_code', '')
-            debit_name = primary.get('account_name', '')
-            confidence = float(primary.get('confidence_score', 0))
+        for i, meta in enumerate(row_meta):
+            if i in llm_map:
+                # LLM 결과 사용
+                llm = llm_map[i]
+                debit_code = llm["account_code"]
+                debit_name = llm["account_name"]
+                confidence = llm["confidence"]
+                reasoning = f"[AI 분석] {llm.get('reasoning', '')}"
+                review_reasons = ["AI 분석 (확인 권장)"] if confidence < 0.85 else []
+                auto_confirm = confidence >= 0.85
+                needs_review = confidence < 0.85
+            else:
+                # ML fallback
+                classification = ml_results[ml_result_idx] if ml_needed_indices else classifier._empty_classification()
+                ml_result_idx += 1
+                primary = classification.get('primary_prediction') or {}
+                debit_code = primary.get('account_code', '')
+                debit_name = primary.get('account_name', '')
+                confidence = float(primary.get('confidence_score', 0))
+                reasoning = classification.get('reasoning', '')
+                review_reasons = classification.get('review_reasons') or []
+                auto_confirm = classification.get('auto_confirm', False)
+                needs_review = classification.get('needs_review', True)
 
             memo = f"{meta['desc']} 카드결제" if is_card_format else meta['desc']
 
@@ -1252,22 +1304,17 @@ async def classify_file(
                 "predicted_account_code": debit_code,
                 "predicted_account_name": debit_name,
                 "confidence": confidence,
-                "auto_confirm": classification.get('auto_confirm', False),
-                "needs_review": classification.get('needs_review', True),
+                "auto_confirm": auto_confirm,
+                "needs_review": needs_review,
                 "review_reasons": review_reasons,
-                "reasoning": classification.get('reasoning', ''),
-                "alternatives": [
-                    {"account_code": alt.get('account_code', ''),
-                     "account_name": alt.get('account_name', ''),
-                     "confidence": float(alt.get('confidence_score', 0))}
-                    for alt in (classification.get('alternative_predictions') or [])[:2]
-                ],
+                "reasoning": reasoning,
+                "alternatives": [],
                 "journal_entry": {
                     "debit_account_code": debit_code,
                     "debit_account_name": debit_name,
                     "debit_amount": meta['amount'],
-                    "credit_account_code": "253000",
-                    "credit_account_name": "미지급금(신용카드)",
+                    "credit_account_code": "253",
+                    "credit_account_name": "미지급금",
                     "credit_amount": meta['amount'],
                     "vat_amount": meta['vat'],
                     "supply_amount": meta['supply'] if meta['supply'] else meta['amount'] - meta['vat'],
@@ -1275,46 +1322,6 @@ async def classify_file(
                 },
             }
             results.append(result_item)
-
-            if confidence < 0.6:
-                low_confidence_indices.append(i)
-
-        _classify_progress.update({
-            "progress": 70,
-            "low_confidence_count": len(low_confidence_indices),
-            "message": f"ML 분류 완료 ({total_rows}행). 저신뢰: {len(low_confidence_indices)}건",
-        })
-
-        # ===== 2단계: 저신뢰 항목 LLM 배치 보강 (한 번의 API 호출) =====
-        if low_confidence_indices and settings.ANTHROPIC_API_KEY:
-            _classify_progress.update({
-                "step": "AI 분석", "progress": 72,
-                "message": f"저신뢰 {len(low_confidence_indices)}건 AI(Claude) 분석 중...",
-            })
-            try:
-                llm_items = [
-                    {"idx": i, "desc": results[i]["description"],
-                     "merchant": results[i]["merchant_name"],
-                     "amount": results[i]["amount"]}
-                    for i in low_confidence_indices
-                ]
-                llm_results = await classifier.classify_batch_with_llm(llm_items)
-
-                for i, llm in zip(low_confidence_indices, llm_results):
-                    if llm and llm.get("account_code"):
-                        results[i]["predicted_account_code"] = llm["account_code"]
-                        results[i]["predicted_account_name"] = llm["account_name"]
-                        results[i]["confidence"] = llm["confidence"]
-                        results[i]["reasoning"] = f"[AI 분석] {llm.get('reasoning', '')}"
-                        results[i]["review_reasons"] = ["AI 분석 (확인 권장)"]
-                        results[i]["needs_review"] = llm["confidence"] < 0.85
-                        results[i]["auto_confirm"] = llm["confidence"] >= 0.85
-                        results[i]["journal_entry"]["debit_account_code"] = llm["account_code"]
-                        results[i]["journal_entry"]["debit_account_name"] = llm["account_name"]
-
-                logger.info(f"[Classify] LLM 배치 보강: {len(low_confidence_indices)}건 처리")
-            except Exception as llm_err:
-                logger.warning(f"[Classify] LLM 배치 보강 실패: {llm_err}")
 
         # 통계
         _classify_progress.update({

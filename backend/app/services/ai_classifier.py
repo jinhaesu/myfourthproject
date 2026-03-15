@@ -647,10 +647,9 @@ class AIClassifierService:
         import anthropic
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-        # 실제 과거 데이터 기반 계정 목록 (동적)
-        acct_map = getattr(self, 'real_account_names', STANDARD_ACCOUNTS)
-        account_list = "\n".join(
-            f"- {code}: {name}" for code, name in sorted(acct_map.items())
+        # 비용 계정만 (카드 결제 차변용)
+        expense_list = "\n".join(
+            f"- {code}: {name}" for code, name in sorted(EXPENSE_ACCOUNTS.items())
         )
 
         BATCH_SIZE = 30
@@ -666,31 +665,33 @@ class AIClassifierService:
                 )
             txn_text = "\n".join(txn_lines)
 
-            prompt = f"""당신은 한국 기업 회계 전문가입니다. 아래 신용카드 거래 내역들을 보고 적절한 계정과목을 분류해주세요.
+            prompt = f"""한국 식품제조회사(조인앤조인) 신용카드 거래의 차변(비용) 계정을 분류하세요.
+**반드시 아래 3자리 코드만 사용. 목록에 없는 코드 금지.**
 
-**반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드를 임의로 만들지 마세요.**
+## 비용 계정 목록
+{expense_list}
 
-## 사용 가능한 계정과목 (이 회사의 실제 계정과목)
-{account_list}
+## 분류 기준
+- FACEBK, FACEBOOK, FB *, Instagram, META → 833 (광고선전비)
+- Google Ads, 네이버광고, 카카오비즈, YouTube → 833 (광고선전비)
+- 음식점, 카페, 배달, 편의점, 마트(소액) → 811 (복리후생비)
+- 거래처/고객 접대, 선물 → 813 (접대비)
+- 택시, KTX, 주유, 주차, 톨게이트 → 812 (여비교통비)
+- 사무용품, 문구, 프린터 → 830 (소모품비)
+- 통신, 인터넷, 클라우드, SaaS → 814 (통신비)
+- AWS, 서버, 호스팅, 결제수수료 → 831 (지급수수료)
+- 택배, 배송, 퀵 → 824 (운반비)
+- 교육, 세미나, 수강 → 825 (교육훈련비)
+- 보험 → 821 (보험료)
+- 임대, 월세 → 819 (지급임차료)
+- 관리비, 건물관리 → 837 (건물관리비)
+- 전기 → 816 (전력비)
 
-## 분류 힌트
-- Facebook, Instagram, Google Ads, 네이버, 카카오 등 → 광고선전비 계정 사용
-- 음식점, 카페, 배달, 편의점 → 복리후생비 계정 사용
-- 거래처/고객 식사, 선물, 접대 → 접대비 계정 사용
-- 택시, 주유, 톨게이트, 주차 → 여비교통비 또는 차량유지비 계정 사용
-- 사무용품, 문구 → 소모품비 계정 사용
-- 통신, 인터넷, 클라우드 → 통신비 계정 사용
-- AWS, 서버, 호스팅, 수수료 → 지급수수료 계정 사용
-- 교육, 세미나 → 교육훈련비 계정 사용
-
-## 거래 내역 ({len(batch)}건)
+## 거래 ({len(batch)}건)
 {txn_text}
 
-## 응답 형식 (반드시 JSON 배열만 출력, 다른 텍스트 없이)
-[
-  {{"no": 1, "account_code": "코드", "account_name": "이름", "confidence": 0.0~1.0, "reasoning": "근거"}},
-  ...
-]"""
+## 응답 (JSON 배열만 출력)
+[{{"no":1,"account_code":"833","account_name":"광고선전비","confidence":0.95,"reasoning":"Facebook 광고"}},...]"""
 
             try:
                 response = client.messages.create(
@@ -713,7 +714,7 @@ class AIClassifierService:
                     if 0 <= no < len(batch):
                         global_idx = batch_start + no
                         code = item_result.get("account_code", "")
-                        name = item_result.get("account_name", "") or acct_map.get(code, "")
+                        name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
                         conf = min(float(item_result.get("confidence", 0.8)), 0.95)
                         all_results[global_idx] = {
                             "account_code": code,
