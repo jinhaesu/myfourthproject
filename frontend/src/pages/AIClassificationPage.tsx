@@ -1045,10 +1045,17 @@ export default function AIClassificationPage() {
                     결과 초기화
                   </button>
                   <button
-                    onClick={handleReclassify}
-                    disabled={loading || !classifyFile}
+                    onClick={() => {
+                      if (!classifyFile) {
+                        showMessage('error', '자동 분류 탭에서 파일을 다시 선택 후 재분류해주세요.')
+                        setActiveTab('classify')
+                        return
+                      }
+                      handleReclassify()
+                    }}
+                    disabled={loading}
                     className="px-4 py-2 border border-purple-600 text-purple-600 rounded-lg hover:bg-purple-50 disabled:bg-gray-300 disabled:text-white disabled:border-gray-300"
-                    title="현재 파일을 최신 AI 모델로 다시 분류합니다"
+                    title={classifyFile ? '현재 파일을 최신 AI 모델로 다시 분류합니다' : '자동 분류 탭에서 파일 선택 필요'}
                   >
                     {loading && classifyProgress ? `재분류 ${classifyProgress.progress}%` : loading ? '분류 중...' : 'AI 재분류'}
                   </button>
