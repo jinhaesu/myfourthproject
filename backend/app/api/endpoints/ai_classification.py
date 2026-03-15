@@ -1187,48 +1187,67 @@ async def classify_file(
         # 카드 형식 감지
         is_card_format = 'card_number' in df.columns or 'approval_number' in df.columns or 'vat_amount' in df.columns
 
-        # ===== 1단계: ML 모델로 전체 일괄 분류 (빠름) =====
+        # ===== 1단계: ML 일괄 분류 (벡터 연산, DB 쿼리 0회) =====
         _classify_progress.update({
-            "step": "ML 분류", "progress": 15,
-            "message": f"ML 모델로 {total_rows}행 분류 중...",
+            "step": "ML 분류", "progress": 20,
+            "message": f"ML 모델로 {total_rows}행 일괄 분류 중...",
         })
-        results = []
-        low_confidence_indices = []  # LLM 보강 대상
 
-        for row_num, (idx, row) in enumerate(df.iterrows()):
+        # DataFrame → 분류 입력 리스트 변환
+        ml_items = []
+        row_meta = []  # 원본 행 정보 보관
+        for idx, row in df.iterrows():
             desc = row['description']
             merchant = row.get('merchant_name', '') if row.get('merchant_name', '') != desc else ''
             amount = float(row.get('amount', 0))
             vat = float(row.get('vat_amount', 0)) if 'vat_amount' in df.columns else 0
             supply = float(row.get('supply_amount', 0)) if 'supply_amount' in df.columns else 0
+            txn_date = ''
+            if 'transaction_date' in df.columns and pd.notna(row.get('transaction_date')):
+                txn_date = str(row['transaction_date']).strip()
 
-            try:
-                classification = await classifier.classify_ml_only(
-                    db=db, description=desc,
-                    merchant_name=merchant or desc,
-                    amount=Decimal(str(amount))
-                )
-            except Exception as cls_err:
-                logger.warning(f"[Classify] row {idx} ML 분류 실패: {cls_err}")
-                classification = {}
+            ml_items.append({
+                "description": desc,
+                "merchant_name": merchant or desc,
+                "amount": amount,
+            })
+            row_meta.append({
+                "idx": int(idx), "desc": desc, "merchant": merchant or desc,
+                "amount": amount, "vat": vat, "supply": supply, "txn_date": txn_date,
+            })
 
+        # ML 일괄 예측 (numpy 벡터 연산 — 1초 이내)
+        try:
+            ml_classifications = classifier.classify_batch_ml_pure(ml_items)
+        except Exception as ml_err:
+            logger.error(f"[Classify] ML 일괄 분류 실패: {ml_err}")
+            ml_classifications = [classifier._empty_classification() for _ in ml_items]
+
+        _classify_progress.update({
+            "step": "결과 조립", "progress": 65,
+            "processed_rows": total_rows,
+            "message": f"ML 분류 완료. 결과 정리 중...",
+        })
+
+        # 결과 조립
+        results = []
+        low_confidence_indices = []
+
+        for i, (meta, classification) in enumerate(zip(row_meta, ml_classifications)):
             primary = classification.get('primary_prediction') or {}
             review_reasons = classification.get('review_reasons') or []
             debit_code = primary.get('account_code', '')
             debit_name = primary.get('account_name', '')
             confidence = float(primary.get('confidence_score', 0))
 
-            memo = f"{desc} 카드결제" if is_card_format else desc
-            txn_date = ''
-            if 'transaction_date' in df.columns and pd.notna(row.get('transaction_date')):
-                txn_date = str(row['transaction_date']).strip()
+            memo = f"{meta['desc']} 카드결제" if is_card_format else meta['desc']
 
             result_item = {
-                "row_index": int(idx),
-                "description": desc,
-                "merchant_name": merchant or desc,
-                "amount": amount,
-                "transaction_date": txn_date,
+                "row_index": meta['idx'],
+                "description": meta['desc'],
+                "merchant_name": meta['merchant'],
+                "amount": meta['amount'],
+                "transaction_date": meta['txn_date'],
                 "memo": memo,
                 "predicted_account_code": debit_code,
                 "predicted_account_name": debit_name,
@@ -1246,29 +1265,25 @@ async def classify_file(
                 "journal_entry": {
                     "debit_account_code": debit_code,
                     "debit_account_name": debit_name,
-                    "debit_amount": amount,
+                    "debit_amount": meta['amount'],
                     "credit_account_code": "253000",
                     "credit_account_name": "미지급금(신용카드)",
-                    "credit_amount": amount,
-                    "vat_amount": vat,
-                    "supply_amount": supply if supply else amount - vat,
+                    "credit_amount": meta['amount'],
+                    "vat_amount": meta['vat'],
+                    "supply_amount": meta['supply'] if meta['supply'] else meta['amount'] - meta['vat'],
                     "is_balanced": True,
                 },
             }
             results.append(result_item)
 
             if confidence < 0.6:
-                low_confidence_indices.append(len(results) - 1)
+                low_confidence_indices.append(i)
 
-            # 진행 상태 업데이트 (매 50행)
-            if (row_num + 1) % 50 == 0 or row_num + 1 == total_rows:
-                ml_pct = 15 + int((row_num + 1) / total_rows * 55)  # 15~70%
-                _classify_progress.update({
-                    "progress": ml_pct,
-                    "processed_rows": row_num + 1,
-                    "low_confidence_count": len(low_confidence_indices),
-                    "message": f"ML 분류 중... {row_num + 1}/{total_rows}행 (저신뢰: {len(low_confidence_indices)}건)",
-                })
+        _classify_progress.update({
+            "progress": 70,
+            "low_confidence_count": len(low_confidence_indices),
+            "message": f"ML 분류 완료 ({total_rows}행). 저신뢰: {len(low_confidence_indices)}건",
+        })
 
         # ===== 2단계: 저신뢰 항목 LLM 배치 보강 (한 번의 API 호출) =====
         if low_confidence_indices and settings.ANTHROPIC_API_KEY:

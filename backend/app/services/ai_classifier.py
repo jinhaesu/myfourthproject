@@ -472,69 +472,112 @@ class AIClassifierService:
         amount: Decimal = Decimal("0"),
         top_n: int = 5,
     ) -> dict:
-        """ML 모델만 사용하는 분류 (LLM 호출 없음, 빠름)"""
+        """ML 모델만 사용하는 분류 (단건, LLM 호출 없음)"""
         await self.load_model(db)
+        results = self.classify_batch_ml_pure(
+            [{"description": description, "merchant_name": merchant_name, "amount": float(amount)}],
+            top_n=top_n,
+        )
+        return results[0]
 
-        processed_text = self._preprocess_text(description, merchant_name)
-        X = self.vectorizer.transform([processed_text])
+    def classify_batch_ml_pure(
+        self,
+        items: List[dict],
+        top_n: int = 3,
+    ) -> List[dict]:
+        """ML 일괄 분류 — DB 접근 없이 메모리에서만 (매우 빠름)
 
-        probabilities = self.model.predict_proba(X)[0]
-        top_indices = np.argsort(probabilities)[::-1][:top_n]
+        Args:
+            items: [{"description": str, "merchant_name": str|None, "amount": float}, ...]
+        Returns:
+            [{primary_prediction, alternative_predictions, auto_confirm, needs_review, ...}, ...]
+        """
+        if not self.model or not self.vectorizer or not self.label_encoder:
+            return [self._empty_classification() for _ in items]
 
-        predictions = []
-        for idx in top_indices:
-            account_code = self.label_encoder.inverse_transform([idx])[0]
-            confidence = float(probabilities[idx])
+        # 1) 전체 텍스트 전처리 + 벡터화 (한번에)
+        texts = [
+            self._preprocess_text(it.get("description", ""), it.get("merchant_name"))
+            for it in items
+        ]
+        X = self.vectorizer.transform(texts)  # sparse matrix, 전체 한번에
 
-            account_name = STANDARD_ACCOUNTS.get(account_code, f"계정 {account_code}")
-            # DB에서 더 정확한 이름 조회 시도
-            result = await db.execute(
-                select(Account).where(Account.code == account_code)
+        # 2) 전체 예측 (한번에)
+        all_probs = self.model.predict_proba(X)  # shape: (n_items, n_classes)
+
+        # 3) 계정 이름 캐시 (DB 쿼리 0회)
+        acct_name_cache = {**STANDARD_ACCOUNTS}
+        for acc_info in self.account_mapping.values():
+            acct_name_cache[acc_info["code"]] = acc_info["name"]
+
+        # 4) 결과 생성
+        results = []
+        for i, probs in enumerate(all_probs):
+            top_indices = np.argsort(probs)[::-1][:top_n]
+
+            predictions = []
+            for idx in top_indices:
+                code = self.label_encoder.inverse_transform([idx])[0]
+                conf = float(probs[idx])
+                name = acct_name_cache.get(code, f"계정 {code}")
+                # account_mapping에서 id 조회
+                acc_id = None
+                for aid, ainfo in self.account_mapping.items():
+                    if ainfo["code"] == code:
+                        acc_id = aid
+                        break
+                predictions.append({
+                    "account_id": acc_id,
+                    "account_code": code,
+                    "account_name": name,
+                    "confidence_score": Decimal(str(round(conf, 4))),
+                })
+
+            pc = float(predictions[0]["confidence_score"]) if predictions else 0
+            auto_confirm = pc >= settings.AI_AUTO_CONFIRM_THRESHOLD
+            needs_review = pc < settings.AI_REVIEW_REQUIRED_THRESHOLD
+
+            review_reasons = []
+            if pc < 0.4:
+                review_reasons.append("신뢰도 매우 낮음")
+            elif pc < settings.AI_REVIEW_REQUIRED_THRESHOLD:
+                review_reasons.append("신뢰도 낮음")
+            if len(predictions) >= 2:
+                p2 = float(predictions[1]["confidence_score"])
+                if pc - p2 < 0.1:
+                    review_reasons.append("분류 불확실")
+                    needs_review = True
+            if needs_review and not review_reasons:
+                review_reasons.append("검토 권장")
+
+            amt = Decimal(str(items[i].get("amount", 0)))
+            reasoning = self._generate_reasoning(
+                items[i].get("description", ""), items[i].get("merchant_name"),
+                amt, None, predictions[0] if predictions else None, pc,
             )
-            account = result.scalar_one_or_none()
-            if account:
-                account_name = account.name
 
-            predictions.append({
-                "account_id": account.id if account else None,
-                "account_code": account_code,
-                "account_name": account_name,
-                "confidence_score": Decimal(str(round(confidence, 4)))
+            results.append({
+                "primary_prediction": predictions[0] if predictions else None,
+                "alternative_predictions": predictions[1:top_n],
+                "auto_confirm": auto_confirm,
+                "needs_review": needs_review,
+                "review_reasons": review_reasons,
+                "reasoning": reasoning,
+                "model_version": self.model_version,
             })
 
-        primary_confidence = float(predictions[0]["confidence_score"]) if predictions else 0
-        auto_confirm = primary_confidence >= settings.AI_AUTO_CONFIRM_THRESHOLD
-        needs_review = primary_confidence < settings.AI_REVIEW_REQUIRED_THRESHOLD
+        return results
 
-        review_reasons = []
-        if primary_confidence < 0.4:
-            review_reasons.append("신뢰도 매우 낮음")
-        elif primary_confidence < settings.AI_REVIEW_REQUIRED_THRESHOLD:
-            review_reasons.append("신뢰도 낮음")
-
-        if len(predictions) >= 2:
-            p1 = float(predictions[0]["confidence_score"])
-            p2 = float(predictions[1]["confidence_score"])
-            if p1 - p2 < 0.1:
-                review_reasons.append("분류 불확실")
-                needs_review = True
-
-        if needs_review and not review_reasons:
-            review_reasons.append("검토 권장")
-
-        reasoning = self._generate_reasoning(
-            description, merchant_name, amount, None,
-            predictions[0] if predictions else None, primary_confidence
-        )
-
+    def _empty_classification(self) -> dict:
+        """모델 없을 때 빈 분류 결과"""
         return {
-            "primary_prediction": predictions[0] if predictions else None,
-            "alternative_predictions": predictions[1:5],
-            "auto_confirm": auto_confirm,
-            "needs_review": needs_review,
-            "review_reasons": review_reasons,
-            "reasoning": reasoning,
-            "model_version": self.model_version,
+            "primary_prediction": None,
+            "alternative_predictions": [],
+            "auto_confirm": False,
+            "needs_review": True,
+            "review_reasons": ["모델 미로드"],
+            "reasoning": "분류 모델이 로드되지 않았습니다.",
+            "model_version": None,
         }
 
     async def classify_batch_with_llm(self, items: List[dict]) -> List[Optional[dict]]:
