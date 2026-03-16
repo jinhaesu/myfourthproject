@@ -105,6 +105,9 @@ export default function AIClassificationPage() {
   const [classifyStats, setClassifyStats] = useState<any>(null)
   const [currentUploadId, setCurrentUploadId] = useState<number | null>(null)
 
+  // 행 선택 상태 (장부 반영용)
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
+
   // 계정 수정 상태
   const [creditOverrides, setCreditOverrides] = useState<Record<number, { code: string; name: string }>>({})
   const [editingCell, setEditingCell] = useState<{ rowIndex: number; side: 'debit' | 'credit' } | null>(null)
@@ -182,6 +185,13 @@ export default function AIClassificationPage() {
     queryClient.invalidateQueries({ queryKey: ['aiStatus'] })
     queryClient.invalidateQueries({ queryKey: ['aiUploadHistory'] })
     queryClient.invalidateQueries({ queryKey: ['financialUploadHistory'] })
+    // 재무보고서 캐시도 무효화 (장부 반영/삭제 시 보고서 데이터 갱신)
+    queryClient.invalidateQueries({ queryKey: ['financialIncome'] })
+    queryClient.invalidateQueries({ queryKey: ['financialBalance'] })
+    queryClient.invalidateQueries({ queryKey: ['financialTrialBalance'] })
+    queryClient.invalidateQueries({ queryKey: ['financialTrend'] })
+    queryClient.invalidateQueries({ queryKey: ['financialYears'] })
+    queryClient.invalidateQueries({ queryKey: ['financialSummary'] })
   }
 
   // Upload progress state
@@ -291,6 +301,34 @@ export default function AIClassificationPage() {
     }
   }
 
+  // Handle delete journal entry (장부 반영 취소)
+  const handleDeleteJournal = async (uploadId: number, filename: string) => {
+    if (!window.confirm(`"${filename}" 장부 반영을 취소하시겠습니까?\n반영된 분개가 모두 삭제됩니다. 재무보고서에서도 제외됩니다.`)) {
+      return
+    }
+    setLoading(true)
+    try {
+      const response = await aiClassificationApi.deleteJournal(uploadId)
+      showMessage('success', response.data?.message || '장부 반영이 취소되었습니다.')
+      // 현재 보고 있는 분류 결과가 삭제된 항목과 연결되어 있으면 초기화
+      if (currentUploadId === uploadId) {
+        setClassificationResults([]); setCreditOverrides({}); setEditingCell(null)
+        setClassifyStats(null)
+        setCurrentUploadId(null)
+        setSelectedRows(new Set())
+      }
+      // localStorage AI 분석 캐시 클리어 (재무보고서 정합성)
+      Object.keys(localStorage).forEach(key => {
+        if (key.startsWith('ai_analysis_')) localStorage.removeItem(key)
+      })
+      refreshData()
+    } catch (error: any) {
+      showMessage('error', error.response?.data?.detail || '장부 반영 취소 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // Training progress state
   const [trainProgress, setTrainProgress] = useState<any>(null)
   const [training, setTraining] = useState(false)
@@ -366,6 +404,7 @@ export default function AIClassificationPage() {
       clearInterval(pollInterval)
       setClassifyProgress(null)
       setClassificationResults(response.data.results)
+      setSelectedRows(new Set())
       setClassifyStats({
         total: response.data.total_rows,
         autoConfirmed: response.data.auto_confirmed,
@@ -411,6 +450,7 @@ export default function AIClassificationPage() {
       clearInterval(pollInterval)
       setClassifyProgress(null)
       setClassificationResults(response.data.results)
+      setSelectedRows(new Set())
       setClassifyStats({
         total: response.data.total_rows,
         autoConfirmed: response.data.auto_confirmed,
@@ -438,6 +478,11 @@ export default function AIClassificationPage() {
       showMessage('error', '확정할 분개가 없습니다.')
       return
     }
+    // 선택된 행이 있으면 선택된 것만, 없으면 전체
+    const indicesToConfirm = selectedRows.size > 0
+      ? Array.from(selectedRows)
+      : classificationResults.map((_, idx) => idx)
+
     setLoading(true)
     try {
       const entries = classificationResults.map((r, idx) => {
@@ -461,12 +506,32 @@ export default function AIClassificationPage() {
           supply_amount: r.journal_entry?.supply_amount || 0,
         }
       })
-      const response = await aiClassificationApi.confirmJournal(entries, classifyFile?.name)
+      const response = await aiClassificationApi.confirmJournal(entries, classifyFile?.name, indicesToConfirm)
       showMessage('success', response.data.message)
-      setClassificationResults([]); setCreditOverrides({}); setEditingCell(null)
-      setClassifyStats(null)
-      setActiveTab('status')
-      refreshData()
+
+      if (selectedRows.size > 0 && selectedRows.size < classificationResults.length) {
+        // 선택된 항목만 반영: 나머지 결과 유지
+        setClassificationResults(prev => prev.filter((_, idx) => !selectedRows.has(idx)))
+        // creditOverrides 인덱스 재매핑
+        const remaining = classificationResults
+          .map((_, idx) => idx)
+          .filter(idx => !selectedRows.has(idx))
+        const newOverrides: Record<number, { code: string; name: string }> = {}
+        remaining.forEach((oldIdx, newIdx) => {
+          if (creditOverrides[oldIdx]) newOverrides[newIdx] = creditOverrides[oldIdx]
+        })
+        setCreditOverrides(newOverrides)
+        setSelectedRows(new Set())
+        setEditingCell(null)
+        refreshData()
+      } else {
+        // 전체 반영: 결과 초기화
+        setClassificationResults([]); setCreditOverrides({}); setEditingCell(null)
+        setSelectedRows(new Set())
+        setClassifyStats(null)
+        setActiveTab('status')
+        refreshData()
+      }
     } catch (error: any) {
       showMessage('error', error.response?.data?.detail || '장부 반영 실패')
     } finally {
@@ -477,6 +542,7 @@ export default function AIClassificationPage() {
   // Clear classification results
   const handleClearResults = () => {
     setClassificationResults([]); setCreditOverrides({}); setEditingCell(null)
+    setSelectedRows(new Set())
     setClassifyStats(null)
     setClassifyFile(null)
     setCurrentUploadId(null)
@@ -489,6 +555,7 @@ export default function AIClassificationPage() {
     try {
       const response = await aiClassificationApi.getClassifyResult(uploadId)
       setClassificationResults(response.data.results || [])
+      setSelectedRows(new Set())
       setClassifyStats({
         total: response.data.total_rows || 0,
         autoConfirmed: response.data.auto_confirmed || 0,
@@ -680,14 +747,26 @@ export default function AIClassificationPage() {
                           {u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : '-'}
                         </td>
                         <td className="px-4 py-3 text-center">
-                          <button
-                            onClick={() => handleDeleteUpload(u.id, u.filename)}
-                            disabled={loading}
-                            className="text-red-500 hover:text-red-700 disabled:opacity-50"
-                            title="삭제"
-                          >
-                            <TrashIcon className="h-5 w-5" />
-                          </button>
+                          <div className="flex items-center justify-center gap-1">
+                            {u.upload_type === 'journal_entry' && (
+                              <button
+                                onClick={() => handleDeleteJournal(u.id, u.filename)}
+                                disabled={loading}
+                                className="text-xs text-orange-600 hover:text-orange-800 hover:bg-orange-50 px-2 py-1 rounded disabled:opacity-50"
+                                title="장부 반영 취소"
+                              >
+                                장부 반영 취소
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleDeleteUpload(u.id, u.filename)}
+                              disabled={loading}
+                              className="text-red-500 hover:text-red-700 disabled:opacity-50"
+                              title="삭제"
+                            >
+                              <TrashIcon className="h-5 w-5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1130,7 +1209,9 @@ export default function AIClassificationPage() {
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300"
                     title="확정된 분개를 장부에 반영하고, 수정된 계정은 AI 학습 데이터로 자동 저장됩니다"
                   >
-                    분개 확정 → 장부 반영 ({classificationResults.length}건)
+                    {selectedRows.size > 0
+                      ? `선택된 ${selectedRows.size}건 장부 반영`
+                      : `전체 장부 반영 (${classificationResults.length}건)`}
                   </button>
                 </div>
               </div>
@@ -1156,6 +1237,21 @@ export default function AIClassificationPage() {
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
+                      <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 w-8">
+                        <input
+                          type="checkbox"
+                          checked={classificationResults.length > 0 && selectedRows.size === classificationResults.length}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedRows(new Set(classificationResults.map((_, i) => i)))
+                            } else {
+                              setSelectedRows(new Set())
+                            }
+                          }}
+                          className="rounded border-gray-300"
+                          title="전체 선택/해제"
+                        />
+                      </th>
                       <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 w-8">#</th>
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 cursor-pointer hover:bg-gray-100 select-none" onClick={() => toggleSort('date')}>일자{sortIcon('date')}</th>
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500">적요/가맹점</th>
@@ -1202,6 +1298,21 @@ export default function AIClassificationPage() {
                             : ''
                         }
                       >
+                        <td className="px-2 py-2 text-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedRows.has(originalIndex)}
+                            onChange={(e) => {
+                              setSelectedRows(prev => {
+                                const next = new Set(prev)
+                                if (e.target.checked) next.add(originalIndex)
+                                else next.delete(originalIndex)
+                                return next
+                              })
+                            }}
+                            className="rounded border-gray-300"
+                          />
+                        </td>
                         <td className="px-2 py-2 text-xs text-gray-400 text-center">{result.row_index + 1}</td>
                         <td className="px-2 py-2 text-xs text-gray-500 whitespace-nowrap">
                           {result.transaction_date || '-'}
@@ -1372,6 +1483,11 @@ export default function AIClassificationPage() {
                         }).length})
                       </span>
                     </span>
+                    {selectedRows.size > 0 && (
+                      <span className="text-green-700 font-medium">
+                        선택: <span className="font-bold">{selectedRows.size}</span>건
+                      </span>
+                    )}
                     <span className="text-gray-600">
                       표시: {
                         resultFilter === 'all' ? classificationResults.length :

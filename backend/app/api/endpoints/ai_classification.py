@@ -1449,6 +1449,7 @@ class ConfirmJournalRequest(BaseModel):
     """분개 확정 요청"""
     entries: List[JournalEntryItem]
     source_filename: Optional[str] = None
+    selected_indices: Optional[List[int]] = None
 
 
 @router.post("/confirm-journal")
@@ -1465,6 +1466,22 @@ async def confirm_journal_entries(
     from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
 
     try:
+        # selected_indices가 지정된 경우 해당 인덱스만 필터링
+        if request.selected_indices is not None:
+            # 유효한 인덱스만 필터링
+            valid_indices = [
+                idx for idx in request.selected_indices
+                if 0 <= idx < len(request.entries)
+            ]
+            if not valid_indices:
+                raise HTTPException(
+                    status_code=400,
+                    detail="유효한 선택 인덱스가 없습니다."
+                )
+            entries_to_save = [request.entries[idx] for idx in valid_indices]
+        else:
+            entries_to_save = request.entries
+
         # 업로드 이력 생성
         upload_history = AIDataUploadHistory(
             filename=request.source_filename or "AI자동분개",
@@ -1473,7 +1490,7 @@ async def confirm_journal_entries(
             upload_type="journal_entry",
             uploaded_by=current_user.id,
             status=UploadStatus.COMPLETED,
-            row_count=len(request.entries) * 2,
+            row_count=len(entries_to_save) * 2,
             saved_count=0,
         )
         db.add(upload_history)
@@ -1481,7 +1498,7 @@ async def confirm_journal_entries(
         upload_id = upload_history.id
 
         saved_count = 0
-        for i, entry in enumerate(request.entries):
+        for i, entry in enumerate(entries_to_save):
             row_base = i * 2 + 1
 
             # 차변 (비용 계정)
@@ -1524,7 +1541,7 @@ async def confirm_journal_entries(
         # AI 학습 데이터 자동 저장 (확정된 분개 = 정답 데이터)
         from app.models.ai import AITrainingData
         training_count = 0
-        for entry in request.entries:
+        for entry in entries_to_save:
             if entry.debit_account_code and entry.description:
                 training_row = AITrainingData(
                     description_tokens=entry.description.lower(),
@@ -1543,20 +1560,103 @@ async def confirm_journal_entries(
 
         await db.commit()
 
-        logger.info(f"[Journal] {len(request.entries)}건 분개 확정 → {saved_count}행 장부 반영 + {training_count}건 AI 학습 (upload_id={upload_id})")
+        logger.info(f"[Journal] {len(entries_to_save)}건 분개 확정 → {saved_count}행 장부 반영 + {training_count}건 AI 학습 (upload_id={upload_id})")
 
         return {
             "status": "success",
             "upload_id": upload_id,
-            "entries_count": len(request.entries),
+            "entries_count": len(entries_to_save),
             "saved_rows": saved_count,
             "training_saved": training_count,
-            "message": f"{len(request.entries)}건 분개가 장부에 반영되었습니다. ({training_count}건 AI 학습 데이터 저장)",
+            "message": f"{len(entries_to_save)}건 분개가 장부에 반영되었습니다. ({training_count}건 AI 학습 데이터 저장)",
         }
 
     except Exception as e:
         logger.error(f"[Journal] 확정 오류: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"분개 확정 오류: {str(e)[:200]}")
+
+
+@router.delete("/journal/{upload_id}")
+async def delete_journal_entries(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    반영된 분개 삭제 (journal_entry 타입만)
+    - AIDataUploadHistory 삭제 (cascade로 AIRawTransactionData 자동 삭제)
+    - 연관된 AITrainingData (source_type="journal_confirm") 삭제
+    """
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, AITrainingData
+    from sqlalchemy import delete as sa_delete
+
+    try:
+        # 업로드 이력 조회
+        upload = await db.get(AIDataUploadHistory, upload_id)
+        if not upload:
+            raise HTTPException(status_code=404, detail="해당 업로드 이력을 찾을 수 없습니다.")
+
+        # journal_entry 타입만 삭제 가능
+        if upload.upload_type != "journal_entry":
+            raise HTTPException(
+                status_code=400,
+                detail=f"journal_entry 타입만 삭제할 수 있습니다. (현재: {upload.upload_type})"
+            )
+
+        # 삭제할 AIRawTransactionData 행 수 조회
+        raw_count_result = await db.execute(
+            select(func.count(AIRawTransactionData.id))
+            .where(AIRawTransactionData.upload_id == upload_id)
+        )
+        raw_count = raw_count_result.scalar() or 0
+
+        # 연관된 AITrainingData 삭제 (source_type="journal_confirm")
+        # description_tokens 기반으로 매칭 (해당 upload의 raw 데이터와 연결)
+        raw_descriptions_result = await db.execute(
+            select(AIRawTransactionData.original_description)
+            .where(AIRawTransactionData.upload_id == upload_id)
+            .where(AIRawTransactionData.debit_amount > 0)
+        )
+        raw_descriptions = [row[0].lower() for row in raw_descriptions_result.fetchall()]
+
+        training_deleted = 0
+        if raw_descriptions:
+            training_count_result = await db.execute(
+                select(func.count(AITrainingData.id))
+                .where(
+                    AITrainingData.source_type == "journal_confirm",
+                    AITrainingData.description_tokens.in_(raw_descriptions)
+                )
+            )
+            training_deleted = training_count_result.scalar() or 0
+
+            await db.execute(
+                sa_delete(AITrainingData)
+                .where(
+                    AITrainingData.source_type == "journal_confirm",
+                    AITrainingData.description_tokens.in_(raw_descriptions)
+                )
+            )
+
+        # AIDataUploadHistory 삭제 (cascade로 AIRawTransactionData 자동 삭제)
+        await db.delete(upload)
+        await db.commit()
+
+        deleted_entries = raw_count // 2  # 차변/대변 쌍이므로 2로 나눔
+
+        logger.info(f"[Journal] 삭제 완료: upload_id={upload_id}, entries={deleted_entries}, raw_rows={raw_count}, training={training_deleted}")
+
+        return {
+            "status": "success",
+            "deleted_entries": deleted_entries,
+            "message": f"분개 {deleted_entries}건이 삭제되었습니다. (장부 {raw_count}행, AI학습 {training_deleted}건 삭제)",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Journal] 삭제 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"분개 삭제 오류: {str(e)[:200]}")
 
 
 @router.post("/feedback")

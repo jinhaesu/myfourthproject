@@ -385,7 +385,7 @@ export const aiClassificationApi = {
   // 분류 진행 상태 조회
   getClassifyProgress: () => api.get('/ai-classification/classify-progress'),
 
-  // 분개 확정 (장부 반영)
+  // 분개 확정 (장부 반영) - selectedIndices가 주어지면 해당 인덱스만 전송
   confirmJournal: (entries: Array<{
     description: string
     merchant_name?: string
@@ -398,11 +398,15 @@ export const aiClassificationApi = {
     credit_account_name?: string
     vat_amount?: number
     supply_amount?: number
-  }>, sourceFilename?: string) =>
-    api.post('/ai-classification/confirm-journal', {
-      entries,
+  }>, sourceFilename?: string, selectedIndices?: number[]) => {
+    const filteredEntries = selectedIndices
+      ? entries.filter((_, idx) => selectedIndices.includes(idx))
+      : entries
+    return api.post('/ai-classification/confirm-journal', {
+      entries: filteredEntries,
       source_filename: sourceFilename,
-    }),
+    })
+  },
 
   // 피드백 제출
   submitFeedback: (items: Array<{
@@ -432,6 +436,10 @@ export const aiClassificationApi = {
   // 분류 결과 불러오기
   getClassifyResult: (uploadId: number) =>
     api.get(`/ai-classification/classify-result/${uploadId}`),
+
+  // 장부 반영 취소 (journal_entry 삭제)
+  deleteJournal: (uploadId: number) =>
+    api.delete(`/ai-classification/journal/${uploadId}`),
 
   // 업로드 삭제
   deleteUpload: (uploadId: number) =>
