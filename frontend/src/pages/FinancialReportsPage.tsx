@@ -1108,7 +1108,21 @@ function TrialBalanceTab({ year }: { year: number }) {
                       <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
                         f.severity === 'high' ? 'bg-red-200 text-red-800' : f.severity === 'medium' ? 'bg-yellow-200 text-yellow-800' : 'bg-gray-200 text-gray-700'
                       }`}>{f.severity === 'high' ? '높음' : f.severity === 'medium' ? '보통' : '낮음'}</span>
-                      <span className="text-xs text-gray-500">{f.type}</span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                        ['fund_leakage','intentional_error','round_tripping','ghost_vendor'].includes(f.type)
+                          ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'
+                      }`}>{{
+                        misclassification: '계정 오분류',
+                        duplicate: '중복 분개',
+                        unusual_amount: '비정상 금액',
+                        wrong_counterpart: '상대계정 부적절',
+                        fund_leakage: '자금 유출 의심',
+                        wrong_transfer: '이체 오류',
+                        intentional_error: '의도적 실수 의심',
+                        round_tripping: '회전거래 의심',
+                        ghost_vendor: '유령 거래처 의심',
+                        internal_control: '내부통제 취약',
+                      }[f.type as string] || f.type}</span>
                     </div>
                     <p className="text-gray-800">{f.description}</p>
                     {f.transaction_detail && <p className="text-xs text-gray-500 mt-1">관련 거래: {f.transaction_detail}</p>}

@@ -1186,11 +1186,20 @@ async def ai_account_check(
 ---
 
 각 계정별로 아래 항목을 점검해주세요:
+
+[A. 분개 정확성 점검]
 1. 계정 분류가 올바른지 (해당 거래가 이 계정에 맞는지)
 2. 상대 계정이 적절한지
 3. 중복 분개가 있는지
 4. 금액이 비정상적인 거래가 있는지
-5. 기타 회계적 확인 사항
+
+[B. 내부통제 및 부정 징후 점검 — 매우 중요]
+5. 자금 유출 의심: 정당한 사유 없이 외부로 자금이 빠져나가는 패턴 (가공 거래처, 비정상 지급, 수수료 과다 등)
+6. 잘못된 이체/계좌 오류: 실제 거래와 다른 계좌로 기록되거나, 동일 금액이 다른 계정으로 분산 기록된 경우
+7. 담당자 의도적 실수 가능성: 소액 분산 처리하여 결재 한도를 회피하는 패턴, 기말/기초에 몰린 비정상 거래, 동일 거래처에 반복적 소액 지급, 적요가 모호하거나 일반적이지 않은 표현, 주말/공휴일 처리 거래
+8. 회전거래(라운드트리핑) 의심: 동일 또는 유사 금액이 입출금 반복되는 패턴
+9. 유령 거래처: 특정 거래처에 대한 거래가 비정상적으로 집중되거나, 거래처명이 불명확한 경우
+10. 기타 내부통제 취약점
 
 반드시 아래 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
 {{
@@ -1200,12 +1209,12 @@ async def ai_account_check(
       "name": "계정명",
       "status": "정상" | "확인필요" | "문제발견",
       "findings": [
-        {{"type": "misclassification|duplicate|unusual_amount|wrong_counterpart|other", "description": "...", "severity": "high|medium|low", "transaction_detail": "관련 거래 설명", "recommendation": "권장 조치"}}
+        {{"type": "misclassification|duplicate|unusual_amount|wrong_counterpart|fund_leakage|wrong_transfer|intentional_error|round_tripping|ghost_vendor|internal_control|other", "description": "구체적 설명", "severity": "high|medium|low", "transaction_detail": "관련 거래 날짜와 금액 포함", "recommendation": "권장 조치 (경영진 보고 필요 여부 포함)"}}
       ],
-      "summary": "해당 계정에 대한 종합 의견"
+      "summary": "해당 계정에 대한 종합 의견 (부정 위험도 포함)"
     }}
   ],
-  "overall_summary": "전체적인 분개 점검 결과 요약"
+  "overall_summary": "전체적인 분개 점검 결과 요약 (내부통제 관점 포함)"
 }}"""
 
     # 4) Claude API call
@@ -1216,7 +1225,7 @@ async def ai_account_check(
             model=settings.ANTHROPIC_MODEL,
             max_tokens=8000,
             temperature=0.3,
-            system="당신은 한국 중소기업 전문 공인회계사입니다. 반드시 요청된 JSON 형식으로만 응답하세요. JSON 외 다른 텍스트는 절대 포함하지 마세요.",
+            system="당신은 한국 중소기업 전문 공인회계사이자 내부감사/포렌식 회계 전문가입니다. 분개의 정확성뿐 아니라 자금 유출, 횡령, 담당자 부정행위 징후를 날카롭게 포착해야 합니다. 의심스러운 패턴이 있으면 반드시 지적하세요. 반드시 요청된 JSON 형식으로만 응답하세요. JSON 외 다른 텍스트는 절대 포함하지 마세요.",
             messages=[
                 {"role": "user", "content": prompt},
             ],
