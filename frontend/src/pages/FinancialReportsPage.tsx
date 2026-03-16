@@ -883,6 +883,12 @@ function TrialBalanceTab({ year }: { year: number }) {
   const [search, setSearch] = useState('')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [detailPage, setDetailPage] = useState(1)
+  // AI 분개 점검용 체크박스 상태
+  const [checkedAccounts, setCheckedAccounts] = useState<Set<string>>(new Set())
+  const [checkLoading, setCheckLoading] = useState(false)
+  const [checkResult, setCheckResult] = useState<any>(null)
+  const [checkError, setCheckError] = useState('')
+  const [checkElapsed, setCheckElapsed] = useState(0)
 
   const { data: trialData, isLoading } = useQuery({
     queryKey: ['financialTrialBalance', year],
@@ -955,12 +961,59 @@ function TrialBalanceTab({ year }: { year: number }) {
       </div>
 
       <div className="card">
-        <h3 className="text-sm font-semibold text-gray-700 mb-3">시산표 ({fmtNum(filtered.length)}개 계정)</h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-gray-700">시산표 ({fmtNum(filtered.length)}개 계정)</h3>
+          {checkedAccounts.size > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-teal-700 bg-teal-50 px-2 py-1 rounded">{checkedAccounts.size}개 계정 선택됨</span>
+              <button
+                onClick={async () => {
+                  setCheckLoading(true)
+                  setCheckError('')
+                  setCheckResult(null)
+                  setCheckElapsed(0)
+                  const t0 = Date.now()
+                  const timer = setInterval(() => setCheckElapsed(Math.floor((Date.now() - t0) / 1000)), 1000)
+                  try {
+                    const res = await financialApi.getAIAccountCheck(year, Array.from(checkedAccounts))
+                    setCheckResult(res.data)
+                  } catch (err: any) {
+                    setCheckError(err.response?.data?.detail || err.message)
+                  } finally {
+                    clearInterval(timer)
+                    setCheckLoading(false)
+                  }
+                }}
+                disabled={checkLoading}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs rounded-lg font-medium bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 transition-colors"
+              >
+                {checkLoading ? (
+                  <><ArrowPathIcon className="h-3.5 w-3.5 animate-spin" /> AI 점검 중... ({checkElapsed}초)</>
+                ) : (
+                  <><SparklesIcon className="h-3.5 w-3.5" /> AI 분개 점검</>
+                )}
+              </button>
+              <button onClick={() => { setCheckedAccounts(new Set()); setCheckResult(null); setCheckError('') }}
+                className="text-xs text-gray-500 hover:text-gray-700">선택 해제</button>
+            </div>
+          )}
+        </div>
         {grouped.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="table w-full text-sm">
               <thead className="table-header">
                 <tr>
+                  <th className="w-8 text-center">
+                    <input type="checkbox"
+                      checked={filtered.length > 0 && checkedAccounts.size === filtered.length}
+                      ref={(el) => { if (el) el.indeterminate = checkedAccounts.size > 0 && checkedAccounts.size < filtered.length }}
+                      onChange={(e) => {
+                        if (e.target.checked) setCheckedAccounts(new Set(filtered.map((a: any) => a.account_code)))
+                        else setCheckedAccounts(new Set())
+                      }}
+                      className="rounded border-gray-300"
+                    />
+                  </th>
                   <th>계정코드</th><th>계정명</th><th>카테고리</th>
                   <th className="text-right">차변합계</th><th className="text-right">대변합계</th>
                   <th className="text-right">잔액</th><th className="text-right">건수</th>
@@ -970,12 +1023,26 @@ function TrialBalanceTab({ year }: { year: number }) {
                 {grouped.map(([catName, group]) => (
                   <SectionGroup key={catName}>
                     <tr className={CATEGORY_COLORS[catName] || 'bg-gray-50 text-gray-700'}>
-                      <td colSpan={7} className="font-bold text-xs py-1">{group.name} ({group.items.length}개)</td>
+                      <td colSpan={8} className="font-bold text-xs py-1">{group.name} ({group.items.length}개)</td>
                     </tr>
                     {group.items.map((a: any) => (
-                      <tr key={a.account_code} className="cursor-pointer hover:bg-blue-50"
+                      <tr key={a.account_code} className={`cursor-pointer hover:bg-blue-50 ${checkedAccounts.has(a.account_code) ? 'bg-teal-50' : ''}`}
                         onClick={() => { setSelectedAccount(selectedAccount === a.account_code ? null : a.account_code); setDetailPage(1) }}>
-                        <td className="text-gray-500 font-mono text-xs pl-6">{a.account_code}</td>
+                        <td className="text-center" onClick={(e) => e.stopPropagation()}>
+                          <input type="checkbox"
+                            checked={checkedAccounts.has(a.account_code)}
+                            onChange={(e) => {
+                              setCheckedAccounts(prev => {
+                                const next = new Set(prev)
+                                if (e.target.checked) next.add(a.account_code)
+                                else next.delete(a.account_code)
+                                return next
+                              })
+                            }}
+                            className="rounded border-gray-300"
+                          />
+                        </td>
+                        <td className="text-gray-500 font-mono text-xs pl-2">{a.account_code}</td>
                         <td className="font-medium">{a.account_name}</td>
                         <td className="text-xs text-gray-400">{a.category_name || '미분류'}</td>
                         <td className="amount">{fmt(a.debit_total)}</td>
@@ -987,6 +1054,7 @@ function TrialBalanceTab({ year }: { year: number }) {
                   </SectionGroup>
                 ))}
                 <tr className="bg-gray-100 font-bold border-t-2 border-gray-300">
+                  <td></td>
                   <td colSpan={3} className="text-right">합계</td>
                   <td className="amount">{fmt(totals.debit)}</td>
                   <td className="amount">{fmt(totals.credit)}</td>
@@ -998,6 +1066,64 @@ function TrialBalanceTab({ year }: { year: number }) {
           </div>
         ) : <div className="text-center py-8 text-gray-400">데이터가 없습니다.</div>}
       </div>
+
+      {/* AI 분개 점검 결과 */}
+      {checkLoading && (
+        <div className="card text-center py-12">
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-teal-600 mx-auto" />
+          <p className="text-gray-500 mt-3">AI(Claude)가 선택된 계정의 분개를 점검하고 있습니다...</p>
+          <p className="text-xs text-gray-400 mt-1">계정 수에 따라 1~3분 소요 ({checkElapsed}초 경과)</p>
+        </div>
+      )}
+      {checkError && (
+        <div className="card p-4 bg-red-50 border border-red-200 text-sm text-red-700">{checkError}</div>
+      )}
+      {checkResult && !checkLoading && (
+        <div className="card space-y-4">
+          <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+            <SparklesIcon className="h-4 w-4 text-teal-600" /> AI 분개 점검 결과
+          </h3>
+          {checkResult.analysis?.overall_summary && (
+            <div className="p-3 bg-gray-50 rounded-lg text-sm text-gray-700">{checkResult.analysis.overall_summary}</div>
+          )}
+          {(checkResult.analysis?.accounts || []).map((acct: any, idx: number) => (
+            <div key={idx} className={`border rounded-lg overflow-hidden ${
+              acct.status === '정상' ? 'border-green-200' : acct.status === '문제발견' ? 'border-red-200' : 'border-yellow-200'
+            }`}>
+              <div className={`px-4 py-2.5 flex items-center justify-between ${
+                acct.status === '정상' ? 'bg-green-50' : acct.status === '문제발견' ? 'bg-red-50' : 'bg-yellow-50'
+              }`}>
+                <span className="font-bold text-sm">{acct.code} - {acct.name}</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                  acct.status === '정상' ? 'bg-green-200 text-green-800' : acct.status === '문제발견' ? 'bg-red-200 text-red-800' : 'bg-yellow-200 text-yellow-800'
+                }`}>{acct.status}</span>
+              </div>
+              <div className="p-4 space-y-2">
+                {acct.summary && <p className="text-sm text-gray-700">{acct.summary}</p>}
+                {(acct.findings || []).map((f: any, fi: number) => (
+                  <div key={fi} className={`p-3 rounded text-sm border ${
+                    f.severity === 'high' ? 'border-red-200 bg-red-50' : f.severity === 'medium' ? 'border-yellow-200 bg-yellow-50' : 'border-gray-200 bg-gray-50'
+                  }`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+                        f.severity === 'high' ? 'bg-red-200 text-red-800' : f.severity === 'medium' ? 'bg-yellow-200 text-yellow-800' : 'bg-gray-200 text-gray-700'
+                      }`}>{f.severity === 'high' ? '높음' : f.severity === 'medium' ? '보통' : '낮음'}</span>
+                      <span className="text-xs text-gray-500">{f.type}</span>
+                    </div>
+                    <p className="text-gray-800">{f.description}</p>
+                    {f.transaction_detail && <p className="text-xs text-gray-500 mt-1">관련 거래: {f.transaction_detail}</p>}
+                    {f.recommendation && <p className="text-xs text-blue-600 mt-1">권장: {f.recommendation}</p>}
+                  </div>
+                ))}
+                {(!acct.findings || acct.findings.length === 0) && <p className="text-sm text-green-600">이상 없음</p>}
+              </div>
+            </div>
+          ))}
+          {checkResult.generated_at && (
+            <p className="text-xs text-gray-400 text-right">점검 시각: {new Date(checkResult.generated_at).toLocaleString('ko-KR')}</p>
+          )}
+        </div>
+      )}
 
       {selectedAccount && (
         <DetailModal
