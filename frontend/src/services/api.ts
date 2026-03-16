@@ -453,6 +453,16 @@ export const aiClassificationApi = {
   getUploadStatus: (uploadId: number) =>
     api.get(`/ai-classification/upload-status/${uploadId}`),
 
+  // 통장 일괄 분류 (여러 은행 파일)
+  classifyBankStatements: (files: File[]) => {
+    const formData = new FormData()
+    files.forEach(file => formData.append('files', file))
+    return api.post('/ai-classification/classify-bank-statements', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 600000,
+    })
+  },
+
   // 배치 업로드 (클라이언트 사이드 파싱 후)
   uploadHistoricalBatch: (data: {
     upload_id: number | null

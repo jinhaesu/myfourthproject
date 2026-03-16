@@ -105,6 +105,13 @@ export default function AIClassificationPage() {
   const [classifyStats, setClassifyStats] = useState<any>(null)
   const [currentUploadId, setCurrentUploadId] = useState<number | null>(null)
 
+  // 통장 일괄 분류 states
+  const [bankUploadMode, setBankUploadMode] = useState(false)
+  const [bankFiles, setBankFiles] = useState<File[]>([])
+  const [bankUploadProgress, setBankUploadProgress] = useState<string | null>(null)
+  const [bankResults, setBankResults] = useState<any>(null)
+  const [bankDragOver, setBankDragOver] = useState(false)
+
   // 행 선택 상태 (장부 반영용)
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
 
@@ -472,6 +479,101 @@ export default function AIClassificationPage() {
     }
   }
 
+  // Handle multi-bank statement classification (통장 일괄 분류)
+  const handleBankClassify = async () => {
+    if (bankFiles.length === 0) return
+    setLoading(true)
+    setBankUploadProgress('파일 업로드 중...')
+    try {
+      const response = await aiClassificationApi.classifyBankStatements(bankFiles)
+      setBankResults(response.data)
+      // Convert bank results to classificationResults format for reuse of existing table
+      const converted = response.data.results.map((r: any, idx: number) => ({
+        row_index: idx,
+        description: r.description,
+        merchant_name: r.counterparty || r.description,
+        amount: r.withdrawal || r.deposit,
+        transaction_date: r.transaction_date,
+        predicted_account_code: r.predicted_account_code,
+        predicted_account_name: r.predicted_account_name,
+        confidence: r.confidence,
+        auto_confirm: r.confidence > 0.8,
+        needs_review: r.confidence < 0.6,
+        review_reasons: r.review_reasons || [],
+        reasoning: '',
+        alternatives: [],
+        memo: `[${r.bank_name}] ${r.description}`,
+        journal_entry: {
+          debit_account_code: r.is_deposit ? '103' : r.predicted_account_code,
+          debit_account_name: r.is_deposit ? '보통예금' : r.predicted_account_name,
+          credit_account_code: r.is_deposit ? r.predicted_account_code : '103',
+          credit_account_name: r.is_deposit ? r.predicted_account_name : '보통예금',
+          debit_amount: r.withdrawal || r.deposit,
+          credit_amount: r.withdrawal || r.deposit,
+          vat_amount: 0,
+          supply_amount: 0,
+          is_balanced: true,
+        }
+      }))
+      setClassificationResults(converted)
+      setSelectedRows(new Set())
+      setClassifyStats({
+        total: response.data.total_transactions,
+        autoConfirmed: converted.filter((r: any) => r.auto_confirm).length,
+        needsReview: converted.filter((r: any) => r.needs_review).length,
+        avgConfidence: converted.length > 0 ? converted.reduce((s: number, r: any) => s + r.confidence, 0) / converted.length : 0,
+        totalAmount: converted.reduce((s: number, r: any) => s + r.amount, 0),
+      })
+      setCurrentUploadId(response.data.upload_id || null)
+      setActiveTab('results')
+      refreshData()
+      showMessage('success', `${response.data.banks?.length || 0}개 은행 ${response.data.total_transactions}건 분류 완료${response.data.inter_bank_transfers ? ` (은행간 이체 ${response.data.inter_bank_transfers}건 감지)` : ''}`)
+    } catch (error: any) {
+      showMessage('error', error.response?.data?.detail || '통장 분류 실패')
+    } finally {
+      setLoading(false)
+      setBankUploadProgress(null)
+    }
+  }
+
+  // Handle bank file drop
+  const handleBankFileDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setBankDragOver(false)
+    const droppedFiles = Array.from(e.dataTransfer.files).filter(
+      f => f.name.endsWith('.xls') || f.name.endsWith('.xlsx')
+    )
+    if (droppedFiles.length === 0) {
+      showMessage('error', '.xls 또는 .xlsx 파일만 업로드할 수 있습니다.')
+      return
+    }
+    setBankFiles(prev => {
+      const combined = [...prev, ...droppedFiles]
+      if (combined.length > 10) {
+        showMessage('error', '최대 10개 파일까지 업로드할 수 있습니다.')
+        return combined.slice(0, 10)
+      }
+      return combined
+    })
+  }
+
+  const handleBankFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files || [])
+    setBankFiles(prev => {
+      const combined = [...prev, ...selected]
+      if (combined.length > 10) {
+        showMessage('error', '최대 10개 파일까지 업로드할 수 있습니다.')
+        return combined.slice(0, 10)
+      }
+      return combined
+    })
+    e.target.value = ''
+  }
+
+  const removeBankFile = (index: number) => {
+    setBankFiles(prev => prev.filter((_, i) => i !== index))
+  }
+
   // Handle journal entry confirmation (장부 반영)
   const handleConfirmJournal = async () => {
     if (classificationResults.length === 0) {
@@ -529,6 +631,7 @@ export default function AIClassificationPage() {
         setClassificationResults([]); setCreditOverrides({}); setEditingCell(null)
         setSelectedRows(new Set())
         setClassifyStats(null)
+        setBankResults(null)
         setActiveTab('status')
         refreshData()
       }
@@ -546,6 +649,7 @@ export default function AIClassificationPage() {
     setClassifyStats(null)
     setClassifyFile(null)
     setCurrentUploadId(null)
+    setBankResults(null)
     setActiveTab('classify')
   }
 
@@ -972,6 +1076,32 @@ export default function AIClassificationPage() {
       {/* Classify Tab */}
       {activeTab === 'classify' && (
         <div className="space-y-6">
+          {/* Mode Toggle: 파일 분류 / 통장 일괄 분류 */}
+          <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm w-fit">
+            <button
+              onClick={() => setBankUploadMode(false)}
+              className={`px-5 py-2.5 font-medium transition-colors ${
+                !bankUploadMode
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              파일 분류
+            </button>
+            <button
+              onClick={() => setBankUploadMode(true)}
+              className={`px-5 py-2.5 font-medium border-l transition-colors ${
+                bankUploadMode
+                  ? 'bg-teal-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              통장 일괄 분류
+            </button>
+          </div>
+
+          {/* Single File Classification Mode */}
+          {!bankUploadMode && (
           <div className="bg-white p-6 rounded-lg shadow border">
             <h3 className="text-lg font-medium mb-4">미분류 데이터 자동 분류</h3>
             <p className="text-sm text-gray-600 mb-4">
@@ -1077,6 +1207,110 @@ export default function AIClassificationPage() {
               )}
             </div>
           </div>
+          )}
+
+          {/* Multi-Bank Upload Mode (통장 일괄 분류) */}
+          {bankUploadMode && (
+          <div className="bg-white p-6 rounded-lg shadow border">
+            <h3 className="text-lg font-medium mb-2 flex items-center gap-2">
+              <span>통장 일괄 분류</span>
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              여러 은행의 통장 내역 파일을 한번에 업로드하면 은행을 자동 감지하고 AI가 계정과목을 분류합니다.
+            </p>
+
+            {!status?.is_trained && (
+              <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <p className="text-sm text-yellow-800 mb-2">
+                  AI 모델이 아직 학습되지 않았습니다.
+                  {(status?.training_samples || 0) >= 50
+                    ? ' 학습 데이터가 충분합니다. 상태/통계 탭에서 모델을 학습시켜주세요.'
+                    : ' 먼저 과거 데이터를 업로드하고 모델을 학습시켜주세요.'}
+                </p>
+              </div>
+            )}
+
+            {/* Drag & Drop area */}
+            <div
+              className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                bankDragOver
+                  ? 'border-teal-500 bg-teal-50'
+                  : 'border-gray-300 hover:border-teal-400 hover:bg-gray-50'
+              }`}
+              onDragOver={(e) => { e.preventDefault(); setBankDragOver(true) }}
+              onDragLeave={(e) => { e.preventDefault(); setBankDragOver(false) }}
+              onDrop={handleBankFileDrop}
+              onClick={() => document.getElementById('bank-file-input')?.click()}
+            >
+              <input
+                id="bank-file-input"
+                type="file"
+                accept=".xlsx,.xls"
+                multiple
+                onChange={handleBankFileSelect}
+                className="hidden"
+              />
+              <div className="text-gray-500">
+                <svg className="mx-auto h-12 w-12 text-gray-400 mb-3" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                  <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <p className="text-sm font-medium">여러 통장 파일을 드래그하거나 클릭해서 선택</p>
+                <p className="text-xs text-gray-400 mt-1">.xls, .xlsx 형식 (최대 10개)</p>
+              </div>
+            </div>
+
+            {/* Selected files list */}
+            {bankFiles.length > 0 && (
+              <div className="mt-4">
+                <p className="text-sm font-medium text-gray-700 mb-2">
+                  선택된 파일 ({bankFiles.length}개):
+                </p>
+                <div className="space-y-2">
+                  {bankFiles.map((file, idx) => (
+                    <div key={`${file.name}-${idx}`} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-2.5 border border-gray-200">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="text-lg flex-shrink-0">🏦</span>
+                        <span className="text-sm font-medium text-gray-800 truncate">{file.name}</span>
+                        <span className="text-xs text-gray-400 flex-shrink-0">{(file.size / 1024).toFixed(0)}KB</span>
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeBankFile(idx) }}
+                        className="text-red-400 hover:text-red-600 flex-shrink-0 ml-3 p-1 rounded hover:bg-red-50"
+                        title="제거"
+                      >
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Upload progress */}
+            {bankUploadProgress && (
+              <div className="mt-4 flex items-center gap-2 text-sm text-teal-700">
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                <span>{bankUploadProgress}</span>
+              </div>
+            )}
+
+            {/* Submit button */}
+            <div className="mt-4">
+              <button
+                onClick={handleBankClassify}
+                disabled={loading || bankFiles.length === 0 || !status?.is_trained}
+                className="px-6 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium transition-colors"
+              >
+                {loading ? '분류 중...' : `통장 일괄 분류 시작${bankFiles.length > 0 ? ` (${bankFiles.length}개 파일)` : ''}`}
+              </button>
+            </div>
+          </div>
+          )}
         </div>
       )}
 
@@ -1134,6 +1368,41 @@ export default function AIClassificationPage() {
                 </div>
               )}
             </>
+          )}
+
+          {/* Bank Summary Card (shown when bankResults exists) */}
+          {bankResults && bankResults.banks && bankResults.banks.length > 0 && (
+            <div className="bg-white rounded-lg shadow border overflow-hidden">
+              <div className="p-4 border-b">
+                <h3 className="text-sm font-medium text-gray-700">은행별 요약</h3>
+              </div>
+              <div className="p-4 space-y-2">
+                {bankResults.banks.map((bank: any, idx: number) => (
+                  <div key={idx} className="flex items-center gap-3 text-sm">
+                    <span className="text-lg">🏦</span>
+                    <span className="font-medium text-gray-800">{bank.bank_name}</span>
+                    {bank.account_number && (
+                      <span className="text-gray-400">({bank.account_number})</span>
+                    )}
+                    <span className="text-gray-500">|</span>
+                    <span className="text-gray-600">{fmtNum(bank.transaction_count || 0)}건</span>
+                    <span className="text-gray-500">|</span>
+                    <span className="text-green-600">
+                      입금 {fmtNum(bank.total_deposit || 0)}
+                    </span>
+                    <span className="text-red-600">
+                      출금 {fmtNum(bank.total_withdrawal || 0)}
+                    </span>
+                  </div>
+                ))}
+                {bankResults.inter_bank_transfers > 0 && (
+                  <div className="flex items-center gap-2 text-sm text-amber-700 mt-2 pt-2 border-t border-gray-100">
+                    <span>&#9888;&#65039;</span>
+                    <span>은행간 이체 {bankResults.inter_bank_transfers}건 감지 (자동 매칭됨)</span>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {classificationResults.length > 0 ? (

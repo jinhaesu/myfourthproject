@@ -2009,3 +2009,624 @@ async def get_upload_raw_data(
             for r in rows
         ],
     }
+
+
+# ============ 통장 거래 내역 분류 ============
+
+def _parse_bank_statement_xls(content: bytes, filename: str) -> dict:
+    """
+    통장 거래 내역 엑셀(.xls/.xlsx) 파싱
+
+    Returns:
+        {
+            "bank_name": str, "account_number": str,
+            "date_range": str, "year": str,
+            "transactions": [{"date": ..., "description": ..., ...}, ...],
+            "total_deposit": float, "total_withdrawal": float,
+        }
+    """
+    import re
+
+    try:
+        import xlrd
+    except ImportError:
+        raise ValueError("xlrd 패키지가 필요합니다: pip install xlrd>=2.0.1")
+
+    if filename.endswith('.xls'):
+        wb = xlrd.open_workbook(file_contents=content)
+        sheet = wb.sheet_by_index(0)
+        nrows = sheet.nrows
+        ncols = sheet.ncols
+
+        def cell_value(r, c):
+            if r < nrows and c < ncols:
+                return sheet.cell_value(r, c)
+            return ""
+    else:
+        # .xlsx
+        import openpyxl
+        wb_xlsx = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb_xlsx.active
+        rows_data = list(ws.iter_rows(values_only=True))
+        nrows = len(rows_data)
+        ncols = max(len(r) for r in rows_data) if rows_data else 0
+
+        def cell_value(r, c):
+            if r < nrows and c < len(rows_data[r]):
+                return rows_data[r][c] if rows_data[r][c] is not None else ""
+            return ""
+
+    # Row 2: date range (e.g., "2026.01.01~2026.02.27")
+    date_range_str = ""
+    year_str = ""
+    for c in range(ncols):
+        val = str(cell_value(2, c)).strip()
+        if val and re.search(r'\d{4}\.\d{2}\.\d{2}', val):
+            date_range_str = val
+            year_match = re.search(r'(\d{4})', val)
+            if year_match:
+                year_str = year_match.group(1)
+            break
+
+    # Row 4: Company name in col A; Bank/account info in col I
+    bank_name = ""
+    account_number = ""
+    # Try col I (index 8) first, then search all columns
+    for c in [8] + list(range(ncols)):
+        val = str(cell_value(4, c)).strip()
+        bank_match = re.search(r'\[(\d+)\](.+?)\((.+?)\)', val)
+        if bank_match:
+            bank_name = bank_match.group(2).strip()
+            account_number = bank_match.group(3).strip()
+            break
+
+    if not year_str:
+        # fallback: try to find year anywhere in first 5 rows
+        for r in range(min(5, nrows)):
+            for c in range(ncols):
+                val = str(cell_value(r, c))
+                ym = re.search(r'(20\d{2})', val)
+                if ym:
+                    year_str = ym.group(1)
+                    break
+            if year_str:
+                break
+
+    # Row 7+: Data rows
+    transactions = []
+    total_deposit = 0.0
+    total_withdrawal = 0.0
+
+    def safe_float(val):
+        if val == "" or val is None:
+            return 0.0
+        try:
+            return float(str(val).replace(",", "").strip())
+        except (ValueError, TypeError):
+            return 0.0
+
+    for r in range(7, nrows):
+        col0 = str(cell_value(r, 0)).strip()
+
+        # Skip repeated header rows (col 0 == "거래일시")
+        if col0 == "거래일시":
+            continue
+
+        # Skip summary rows (contains "합" and "계")
+        if "합" in col0 and "계" in col0:
+            continue
+
+        # Skip empty rows
+        if not col0:
+            continue
+
+        # Parse date: MM-DD → YYYY-MM-DD
+        date_raw = col0.replace(".", "-")
+        if year_str and not re.match(r'^\d{4}', date_raw):
+            transaction_date = f"{year_str}-{date_raw}"
+        else:
+            transaction_date = date_raw
+
+        description = str(cell_value(r, 1)).strip()  # 적요
+        content_val = str(cell_value(r, 2)).strip()   # 내용
+
+        deposit = safe_float(cell_value(r, 3))      # 입금액
+        withdrawal = safe_float(cell_value(r, 4))    # 출금액
+        balance = safe_float(cell_value(r, 5))        # 잔액
+        branch = str(cell_value(r, 6)).strip()         # 취급점
+        counterparty = str(cell_value(r, 7)).strip()   # 거래처
+        remarks = str(cell_value(r, 8)).strip()        # 비고
+
+        # Skip rows that are clearly not data
+        if deposit == 0 and withdrawal == 0 and not description:
+            continue
+
+        total_deposit += deposit
+        total_withdrawal += withdrawal
+
+        transactions.append({
+            "transaction_date": transaction_date,
+            "description": description,
+            "content": content_val,
+            "deposit": deposit,
+            "withdrawal": withdrawal,
+            "balance": balance,
+            "branch": branch,
+            "counterparty": counterparty,
+            "remarks": remarks,
+        })
+
+    return {
+        "bank_name": bank_name or "알수없음",
+        "account_number": account_number or "",
+        "date_range": date_range_str,
+        "year": year_str,
+        "transactions": transactions,
+        "total_deposit": total_deposit,
+        "total_withdrawal": total_withdrawal,
+    }
+
+
+def _detect_inter_bank_transfers(all_transactions: List[dict]) -> List[tuple]:
+    """
+    은행 간 이체 감지: 출금(Bank A) ↔ 입금(Bank B) 매칭
+
+    - 같은 날짜 또는 +1일
+    - 같은 금액
+    - 적요/내용에 은행 관련 키워드 포함
+    """
+    from datetime import timedelta
+
+    transfer_keywords = [
+        "이체", "자금이체", "타행이체", "당행이체", "계좌이체",
+        "신한", "국민", "우리", "하나", "기업", "농협", "수협", "SC",
+        "대구", "부산", "광주", "전북", "제주", "경남",
+    ]
+
+    withdrawals = []
+    deposits = []
+
+    for txn in all_transactions:
+        if txn["withdrawal"] > 0:
+            withdrawals.append(txn)
+        if txn["deposit"] > 0:
+            deposits.append(txn)
+
+    matched_pairs = set()  # (withdrawal_idx, deposit_idx) in all_transactions
+    used_deposit_indices = set()
+
+    for w in withdrawals:
+        w_amount = w["withdrawal"]
+        w_date_str = w["transaction_date"]
+        w_bank = w.get("_bank_name", "")
+        w_text = f"{w['description']} {w['content']} {w.get('counterparty', '')}"
+
+        # Check if this withdrawal looks like a transfer
+        has_keyword = any(kw in w_text for kw in transfer_keywords)
+        if not has_keyword:
+            continue
+
+        try:
+            w_date = datetime.strptime(w_date_str, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+
+        for d in deposits:
+            d_global_idx = d.get("_global_idx")
+            if d_global_idx in used_deposit_indices:
+                continue
+            if d.get("_bank_name", "") == w_bank:
+                continue  # same bank, skip
+            if d["deposit"] != w_amount:
+                continue  # amount mismatch
+
+            try:
+                d_date = datetime.strptime(d["transaction_date"], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+
+            # Same day or +1 day
+            diff = (d_date - w_date).days
+            if diff < 0 or diff > 1:
+                continue
+
+            # Found a match
+            w_global_idx = w.get("_global_idx")
+
+            if w_global_idx is not None and d_global_idx is not None:
+                if w_global_idx not in {p[0] for p in matched_pairs}:
+                    matched_pairs.add((w_global_idx, d_global_idx))
+                    used_deposit_indices.add(d_global_idx)
+                    break  # one match per withdrawal
+
+    return list(matched_pairs)
+
+
+# 통장 분류 진행 상태 추적 (in-memory)
+_bank_classify_progress: dict = {
+    "status": "idle",
+    "step": "",
+    "progress": 0,
+    "message": "",
+    "total_rows": 0,
+    "processed_rows": 0,
+}
+
+
+@router.get("/bank-classify-progress")
+async def get_bank_classify_progress(
+    current_user: User = Depends(get_current_user)
+):
+    """통장 분류 진행 상태 조회"""
+    return _bank_classify_progress
+
+
+@router.post("/classify-bank-statements")
+async def classify_bank_statements(
+    files: List[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    통장 거래 내역 다중 파일 업로드 및 AI 분류
+
+    - 1~10개의 은행 통장 거래 내역 엑셀 파일(.xls/.xlsx) 동시 업로드
+    - 파일별 파싱 → 은행 간 이체 감지 → AI(Claude) 분류
+    """
+    import re
+
+    global _bank_classify_progress
+    _bank_classify_progress = {
+        "status": "running", "step": "파일 검증",
+        "progress": 2, "message": f"{len(files)}개 파일 검증 중...",
+        "total_rows": 0, "processed_rows": 0,
+    }
+
+    try:
+        # Validate file count
+        if len(files) < 1 or len(files) > 10:
+            raise HTTPException(status_code=400, detail="1~10개의 파일만 업로드 가능합니다.")
+
+        # Validate file types
+        for f in files:
+            if not f.filename.endswith(('.xls', '.xlsx')):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"엑셀 파일(.xls, .xlsx)만 업로드 가능합니다: {f.filename}"
+                )
+
+        # ===== Phase 1: Parse all files =====
+        _bank_classify_progress.update({
+            "step": "파일 파싱", "progress": 5,
+            "message": f"{len(files)}개 파일 파싱 중...",
+        })
+
+        banks_info = []
+        all_transactions = []
+        global_idx = 0
+
+        for file_obj in files:
+            file_content = await file_obj.read()
+            try:
+                parsed = await asyncio.to_thread(
+                    _parse_bank_statement_xls, file_content, file_obj.filename
+                )
+            except Exception as parse_err:
+                logger.error(f"[BankStatement] 파싱 실패: {file_obj.filename} - {parse_err}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"파일 파싱 실패 ({file_obj.filename}): {str(parse_err)[:200]}"
+                )
+
+            bank_info = {
+                "bank_name": parsed["bank_name"],
+                "account_number": parsed["account_number"],
+                "date_range": parsed["date_range"],
+                "total_rows": len(parsed["transactions"]),
+                "total_deposit": parsed["total_deposit"],
+                "total_withdrawal": parsed["total_withdrawal"],
+            }
+            banks_info.append(bank_info)
+
+            # Tag each transaction with bank info and global index
+            for txn in parsed["transactions"]:
+                txn["_bank_name"] = parsed["bank_name"]
+                txn["_account_number"] = parsed["account_number"]
+                txn["_global_idx"] = global_idx
+                all_transactions.append(txn)
+                global_idx += 1
+
+        total_transactions = len(all_transactions)
+        _bank_classify_progress.update({
+            "step": "파싱 완료", "progress": 15,
+            "message": f"{len(files)}개 파일, {total_transactions:,}건 거래 파싱 완료",
+            "total_rows": total_transactions,
+        })
+        logger.info(f"[BankStatement] 파싱 완료: {len(files)}개 파일, {total_transactions}건")
+
+        # ===== Phase 2: Detect inter-bank transfers =====
+        _bank_classify_progress.update({
+            "step": "은행간 이체 감지", "progress": 20,
+            "message": "은행 간 이체를 감지하고 있습니다...",
+        })
+
+        matched_pairs = _detect_inter_bank_transfers(all_transactions)
+        transfer_set = set()
+        transfer_match_map = {}  # global_idx → matched partner global_idx
+        for w_idx, d_idx in matched_pairs:
+            transfer_set.add(w_idx)
+            transfer_set.add(d_idx)
+            transfer_match_map[w_idx] = d_idx
+            transfer_match_map[d_idx] = w_idx
+
+        inter_bank_count = len(matched_pairs)
+        logger.info(f"[BankStatement] 은행간 이체 감지: {inter_bank_count}쌍")
+
+        _bank_classify_progress.update({
+            "step": "AI 분류 준비", "progress": 25,
+            "message": f"은행간 이체 {inter_bank_count}쌍 감지. AI 분류 준비 중...",
+        })
+
+        # ===== Phase 3: Classify with AI (Claude) =====
+        # Separate inter-bank transfers (auto-classify) from normal transactions
+        normal_indices = [i for i in range(total_transactions) if i not in transfer_set]
+        transfer_indices = list(transfer_set)
+
+        # Auto-classify inter-bank transfers as 보통예금(103)
+        classification_map = {}
+        for idx in transfer_indices:
+            partner_idx = transfer_match_map.get(idx)
+            partner_bank = all_transactions[partner_idx]["_bank_name"] if partner_idx is not None else ""
+            txn = all_transactions[idx]
+            is_withdrawal = txn["withdrawal"] > 0
+
+            classification_map[idx] = {
+                "account_code": "103",
+                "account_name": "보통예금",
+                "confidence": 0.98,
+                "reasoning": f"은행간 이체 ({'출금→' + partner_bank if is_withdrawal else partner_bank + '→입금'})",
+            }
+
+        # Classify normal transactions with LLM in batches
+        if normal_indices and settings.ANTHROPIC_API_KEY:
+            _bank_classify_progress.update({
+                "step": "AI 분류", "progress": 30,
+                "message": f"Claude AI로 {len(normal_indices):,}건 분류 중...",
+            })
+
+            try:
+                from app.services.ai_classifier import STANDARD_ACCOUNTS
+
+                import anthropic
+                client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+                account_list = "\n".join(
+                    f"- {code}: {name}" for code, name in sorted(STANDARD_ACCOUNTS.items())
+                )
+
+                BATCH_SIZE = 50
+                for batch_start in range(0, len(normal_indices), BATCH_SIZE):
+                    batch_indices = normal_indices[batch_start:batch_start + BATCH_SIZE]
+                    batch_num = batch_start // BATCH_SIZE + 1
+                    total_batches = (len(normal_indices) + BATCH_SIZE - 1) // BATCH_SIZE
+
+                    progress_pct = 30 + int(55 * (batch_start / max(len(normal_indices), 1)))
+                    _bank_classify_progress.update({
+                        "progress": progress_pct,
+                        "message": f"AI 분류 중... ({batch_num}/{total_batches} 배치, {batch_start + len(batch_indices):,}/{len(normal_indices):,}건)",
+                        "processed_rows": len(transfer_indices) + batch_start + len(batch_indices),
+                    })
+
+                    txn_lines = []
+                    for i, gi in enumerate(batch_indices):
+                        txn = all_transactions[gi]
+                        txn_type = "입금" if txn["deposit"] > 0 else "출금"
+                        amount = txn["deposit"] if txn["deposit"] > 0 else txn["withdrawal"]
+                        txn_lines.append(
+                            f"{i+1}. [{txn['_bank_name']}] {txn_type} | 적요: {txn['description']} | "
+                            f"내용: {txn['content']} | 거래처: {txn['counterparty']} | 금액: {amount:,.0f}원"
+                        )
+                    txn_text = "\n".join(txn_lines)
+
+                    prompt = f"""한국 식품제조회사(조인앤조인) 통장 거래 내역의 계정과목을 분류하세요.
+**반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
+
+## 계정과목 목록
+{account_list}
+
+## 통장 거래 분류 기준
+- 입금(매출): 상품매출(401), 제품매출(404)
+- 입금(이자): 이자수익(901)
+- 입금(기타): 잡이익(930), 미수금 회수(120), 선수금(259)
+- 출금(원재료/부재료 구매): 원재료비(501), 부재료비(502)
+- 출금(급여): 직원급여(802) 또는 급여(503)
+- 출금(4대보험, 세금): 예수금(254), 세금과공과금(817)
+- 출금(임대/월세): 지급임차료(819)
+- 출금(대출이자): 이자비용(931)
+- 출금(대출상환): 단기차입금(260), 장기차입금(293)
+- 출금(외상대금 지급): 외상매입금(251)
+- 출금(카드대금): 미지급금(253)
+- 출금(보험료): 보험료(821)
+- 출금(수수료): 지급수수료(831)
+- 출금(운반/택배): 운반비(824)
+- 출금(전기/수도/가스): 전력비(816), 수도광열비(815)
+- 출금(통신): 통신비(814)
+- 출금(기타): 적요/거래처 내용으로 판단
+
+## 거래 ({len(batch_indices)}건)
+{txn_text}
+
+## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
+[{{"no":1,"account_code":"401","account_name":"상품매출","confidence":0.9,"reasoning":"매출 입금"}},...]"""
+
+                    try:
+                        response = client.messages.create(
+                            model=settings.ANTHROPIC_MODEL or "claude-sonnet-4-20250514",
+                            max_tokens=8000,
+                            messages=[{"role": "user", "content": prompt}],
+                        )
+
+                        text = response.content[0].text.strip()
+                        if "```" in text:
+                            text = text.split("```")[1]
+                            if text.startswith("json"):
+                                text = text[4:]
+                            text = text.strip()
+
+                        batch_results = json.loads(text)
+
+                        for item_result in batch_results:
+                            no = item_result.get("no", 0) - 1
+                            if 0 <= no < len(batch_indices):
+                                gi = batch_indices[no]
+                                code = item_result.get("account_code", "")
+                                name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+                                conf = min(float(item_result.get("confidence", 0.8)), 0.95)
+                                classification_map[gi] = {
+                                    "account_code": code,
+                                    "account_name": name,
+                                    "confidence": conf,
+                                    "reasoning": item_result.get("reasoning", "AI 분석"),
+                                }
+
+                        logger.info(f"[BankStatement LLM] 배치 {batch_num}/{total_batches} 완료")
+
+                    except Exception as llm_err:
+                        logger.warning(f"[BankStatement LLM] 배치 {batch_num} 실패: {llm_err}")
+
+            except Exception as llm_setup_err:
+                logger.warning(f"[BankStatement] LLM 분류 실패: {llm_setup_err}")
+        elif not settings.ANTHROPIC_API_KEY:
+            logger.warning("[BankStatement] ANTHROPIC_API_KEY 미설정 — 분류 생략")
+
+        # ===== Phase 4: Build results =====
+        _bank_classify_progress.update({
+            "step": "결과 조립", "progress": 88,
+            "message": "결과를 정리하고 있습니다...",
+        })
+
+        results = []
+        for i, txn in enumerate(all_transactions):
+            cls = classification_map.get(i)
+            is_transfer = i in transfer_set
+            partner_idx = transfer_match_map.get(i)
+
+            transfer_match_info = None
+            if partner_idx is not None:
+                partner = all_transactions[partner_idx]
+                transfer_match_info = {
+                    "matched_index": partner_idx,
+                    "matched_bank": partner["_bank_name"],
+                    "matched_account": partner["_account_number"],
+                    "matched_type": "입금" if partner["deposit"] > 0 else "출금",
+                }
+
+            amount = txn["deposit"] if txn["deposit"] > 0 else txn["withdrawal"]
+
+            result_item = {
+                "bank_name": txn["_bank_name"],
+                "account_number": txn["_account_number"],
+                "row_index": i,
+                "transaction_date": txn["transaction_date"],
+                "description": txn["description"],
+                "content": txn["content"],
+                "deposit": txn["deposit"],
+                "withdrawal": txn["withdrawal"],
+                "balance": txn["balance"],
+                "branch": txn.get("branch", ""),
+                "counterparty": txn.get("counterparty", ""),
+                "remarks": txn.get("remarks", ""),
+                "is_inter_bank_transfer": is_transfer,
+                "transfer_match": transfer_match_info,
+                "predicted_account_code": cls["account_code"] if cls else "",
+                "predicted_account_name": cls["account_name"] if cls else "",
+                "confidence": cls["confidence"] if cls else 0.0,
+                "reasoning": cls.get("reasoning", "") if cls else "",
+                "auto_confirm": (cls["confidence"] >= 0.85) if cls else False,
+                "needs_review": (cls["confidence"] < 0.85) if cls else True,
+                "amount": amount,
+                "journal_entry": {
+                    "debit_account_code": cls["account_code"] if cls and txn["withdrawal"] > 0 else "103",
+                    "debit_account_name": cls["account_name"] if cls and txn["withdrawal"] > 0 else "보통예금",
+                    "debit_amount": amount,
+                    "credit_account_code": "103" if txn["withdrawal"] > 0 else (cls["account_code"] if cls else ""),
+                    "credit_account_name": "보통예금" if txn["withdrawal"] > 0 else (cls["account_name"] if cls else ""),
+                    "credit_amount": amount,
+                    "is_balanced": True,
+                } if cls else None,
+            }
+            results.append(result_item)
+
+        # ===== Phase 5: Save to DB and respond =====
+        _bank_classify_progress.update({
+            "step": "결과 저장", "progress": 92,
+            "message": "분류 결과를 저장하고 있습니다...",
+        })
+
+        # Statistics
+        auto_confirm_count = sum(1 for r in results if r.get("auto_confirm"))
+        needs_review_count = sum(1 for r in results if r.get("needs_review"))
+        avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
+
+        # Save to DB
+        upload_id = None
+        try:
+            from app.models.ai import AIDataUploadHistory, UploadStatus
+            filenames = ", ".join(f.filename for f in files)
+            upload_history = AIDataUploadHistory(
+                filename=f"통장분류: {filenames}"[:500],
+                file_size=0,
+                file_type="bank_statement",
+                upload_type="classification",
+                uploaded_by=current_user.id,
+                status=UploadStatus.COMPLETED,
+                row_count=total_transactions,
+                saved_count=total_transactions,
+                result_json=json.dumps({
+                    "banks": banks_info,
+                    "results": results,
+                    "stats": {
+                        "total_transactions": total_transactions,
+                        "inter_bank_transfers": inter_bank_count,
+                        "auto_confirmed": auto_confirm_count,
+                        "needs_review": needs_review_count,
+                        "average_confidence": round(avg_confidence, 4),
+                    }
+                }, ensure_ascii=False, default=str),
+            )
+            db.add(upload_history)
+            await db.flush()
+            upload_id = upload_history.id
+            await db.commit()
+            logger.info(f"[BankStatement] DB 저장 완료 (upload_id={upload_id})")
+        except Exception as save_err:
+            logger.warning(f"[BankStatement] DB 저장 실패 (결과는 정상 반환): {save_err}")
+
+        _bank_classify_progress.update({
+            "status": "completed", "step": "완료", "progress": 100,
+            "message": f"분류 완료! {total_transactions:,}건 (자동확정: {auto_confirm_count:,}, 검토필요: {needs_review_count:,}, 은행간이체: {inter_bank_count}쌍)",
+            "processed_rows": total_transactions,
+        })
+
+        return {
+            "status": "success",
+            "upload_id": upload_id,
+            "banks": banks_info,
+            "total_transactions": total_transactions,
+            "inter_bank_transfers": inter_bank_count,
+            "auto_confirmed": auto_confirm_count,
+            "needs_review": needs_review_count,
+            "average_confidence": round(avg_confidence, 4),
+            "results": results,
+        }
+
+    except HTTPException:
+        _bank_classify_progress.update({"status": "failed", "message": "파일 형식 오류"})
+        raise
+    except Exception as e:
+        logger.error(f"[BankStatement] 오류: {e}", exc_info=True)
+        _bank_classify_progress.update({
+            "status": "failed", "step": "오류",
+            "message": f"처리 오류: {str(e)[:200]}",
+        })
+        raise HTTPException(status_code=500, detail=f"통장 분류 처리 중 오류: {str(e)}")
