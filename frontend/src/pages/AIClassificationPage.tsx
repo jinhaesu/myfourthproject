@@ -484,8 +484,28 @@ export default function AIClassificationPage() {
     if (bankFiles.length === 0) return
     setLoading(true)
     setBankUploadProgress('파일 업로드 중...')
+    // 진행률 폴링 시작
+    const progressPoll = setInterval(async () => {
+      try {
+        const prog = await aiClassificationApi.getBankClassifyProgress()
+        const d = prog.data
+        if (d.status === 'running') {
+          const elapsed = d.elapsed_seconds || 0
+          const remaining = d.estimated_remaining || 0
+          const rule = d.rule_classified || 0
+          const llm = d.llm_classified || 0
+          const pct = d.progress || 0
+          setBankUploadProgress(
+            `${d.step || '처리 중'} (${pct}%) — 룰분류: ${rule.toLocaleString()}건, AI분류: ${llm.toLocaleString()}건` +
+            (elapsed > 0 ? ` | ${elapsed}초 경과` : '') +
+            (remaining > 0 ? ` | 약 ${remaining}초 남음` : '')
+          )
+        }
+      } catch { /* ignore polling errors */ }
+    }, 2000)
     try {
       const response = await aiClassificationApi.classifyBankStatements(bankFiles)
+      clearInterval(progressPoll)
       setBankResults(response.data)
       // Convert bank results to classificationResults format for reuse of existing table
       const converted = response.data.results.map((r: any, idx: number) => ({
@@ -529,6 +549,7 @@ export default function AIClassificationPage() {
       refreshData()
       showMessage('success', `${response.data.banks?.length || 0}개 은행 ${response.data.total_transactions}건 분류 완료${response.data.inter_bank_transfers ? ` (은행간 이체 ${response.data.inter_bank_transfers}건 감지)` : ''}`)
     } catch (error: any) {
+      clearInterval(progressPoll)
       showMessage('error', error.response?.data?.detail || '통장 분류 실패')
     } finally {
       setLoading(false)
@@ -1288,14 +1309,20 @@ export default function AIClassificationPage() {
               </div>
             )}
 
-            {/* Upload progress */}
+            {/* Upload progress - detailed */}
             {bankUploadProgress && (
-              <div className="mt-4 flex items-center gap-2 text-sm text-teal-700">
-                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                <span>{bankUploadProgress}</span>
+              <div className="mt-4 p-4 bg-teal-50 border border-teal-200 rounded-lg">
+                <div className="flex items-center gap-2 text-sm font-medium text-teal-800 mb-2">
+                  <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>{bankUploadProgress}</span>
+                </div>
+                <div className="w-full bg-teal-200 rounded-full h-2">
+                  <div className="bg-teal-600 h-2 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min(parseInt(bankUploadProgress.match(/(\d+)%/)?.[1] || '5'), 100)}%` }} />
+                </div>
               </div>
             )}
 

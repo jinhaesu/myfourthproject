@@ -463,6 +463,9 @@ export const aiClassificationApi = {
     })
   },
 
+  // 통장 분류 진행률 조회
+  getBankClassifyProgress: () => api.get('/ai-classification/bank-classify-progress'),
+
   // 배치 업로드 (클라이언트 사이드 파싱 후)
   uploadHistoricalBatch: (data: {
     upload_id: number | null
