@@ -520,12 +520,28 @@ export default function FinancialReportsPage() {
             </div>
           )}
         </div>
-        {uploads.length > 0 && (
-          <div className="mt-3 text-xs text-gray-400">
-            반영된 파일: {uploads.slice(0, 5).map((u: any) => u.filename).join(', ')}
-            {uploads.length > 5 && ` 외 ${uploads.length - 5}개`}
-          </div>
-        )}
+        {(() => {
+          const journalUploads = uploads.filter((u: any) => u.upload_type === 'journal_entry')
+          const otherUploads = uploads.filter((u: any) => u.upload_type !== 'journal_entry')
+          return (
+            <>
+              {journalUploads.length > 0 && (
+                <div className="mt-3 text-xs text-gray-400">
+                  <span className="text-green-600 font-medium">장부 반영 파일:</span>{' '}
+                  {journalUploads.slice(0, 5).map((u: any) => u.filename).join(', ')}
+                  {journalUploads.length > 5 && ` 외 ${journalUploads.length - 5}개`}
+                </div>
+              )}
+              {otherUploads.length > 0 && (
+                <div className="mt-1 text-xs text-gray-400">
+                  <span className="text-blue-600 font-medium">학습/분류 데이터:</span>{' '}
+                  {otherUploads.slice(0, 3).map((u: any) => u.filename).join(', ')}
+                  {otherUploads.length > 3 && ` 외 ${otherUploads.length - 3}개`}
+                </div>
+              )}
+            </>
+          )
+        })()}
       </div>
 
       <div className="border-b border-gray-200">
@@ -1088,6 +1104,35 @@ function AIAnalysisTab({ year }: { year: number }) {
   const [cachedAt, setCachedAt] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
 
+  // 분석 모드: 'full' = 전체 분석, 'account-check' = 선택 계정 분개 점검
+  const [analysisMode, setAnalysisMode] = useState<'full' | 'account-check'>('full')
+  // 계정 분개 점검용 상태
+  const [selectedAccountCodes, setSelectedAccountCodes] = useState<string[]>([])
+  const [accountCheckData, setAccountCheckData] = useState<any>(null)
+  const [accountCheckLoading, setAccountCheckLoading] = useState(false)
+  const [accountCheckError, setAccountCheckError] = useState('')
+  const [accountCheckElapsed, setAccountCheckElapsed] = useState(0)
+  const [accountSearchTerm, setAccountSearchTerm] = useState('')
+
+  // 시산표 데이터 로드 (계정 목록용)
+  const { data: trialData } = useQuery({
+    queryKey: ['financialTrialBalance', year],
+    queryFn: () => financialApi.getTrialBalance(year).then((r) => r.data),
+    staleTime: 3 * 60 * 60 * 1000,
+  })
+  const trialItems: any[] = trialData?.items || []
+
+  // 계정 검색 필터
+  const filteredTrialItems = useMemo(() => {
+    if (!accountSearchTerm.trim()) return trialItems
+    const kw = accountSearchTerm.toLowerCase()
+    return trialItems.filter((a: any) =>
+      a.account_code.toLowerCase().includes(kw) ||
+      a.account_name.toLowerCase().includes(kw) ||
+      (a.category_name || '').toLowerCase().includes(kw)
+    )
+  }, [trialItems, accountSearchTerm])
+
   // 캐시 자동 로드
   useMemo(() => {
     const cached = getAICache(year, selectedMonth)
@@ -1129,6 +1174,35 @@ function AIAnalysisTab({ year }: { year: number }) {
     }
   }
 
+  const runAccountCheck = async () => {
+    if (selectedAccountCodes.length === 0) {
+      setAccountCheckError('점검할 계정과목을 1개 이상 선택해주세요.')
+      return
+    }
+    setAccountCheckLoading(true)
+    setAccountCheckError('')
+    setAccountCheckData(null)
+    setAccountCheckElapsed(0)
+    const t0 = Date.now()
+    const timer = setInterval(() => setAccountCheckElapsed(Math.floor((Date.now() - t0) / 1000)), 1000)
+    try {
+      const res = await financialApi.getAIAccountCheck(year, selectedAccountCodes)
+      setAccountCheckData(res.data)
+    } catch (err: any) {
+      const detail = err.response?.data?.detail || err.message
+      setAccountCheckError(detail)
+    } finally {
+      clearInterval(timer)
+      setAccountCheckLoading(false)
+    }
+  }
+
+  const toggleAccountCode = (code: string) => {
+    setSelectedAccountCodes(prev =>
+      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+    )
+  }
+
   const analysis = analysisData?.analysis
 
   const colorMap: Record<string, string> = {
@@ -1157,61 +1231,199 @@ function AIAnalysisTab({ year }: { year: number }) {
               {year}년{selectedMonth ? ` ${selectedMonth}월` : ''} 재무 데이터를 AI(Claude Opus)가 분석합니다.
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => runAnalysis(false)}
-              disabled={loading}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 transition-colors"
-            >
-              {loading ? (
-                <><ArrowPathIcon className="h-4 w-4 animate-spin" /> 분석 중... ({elapsed}초)</>
-              ) : (
-                <><SparklesIcon className="h-4 w-4" /> {analysis ? '분석 시작' : '분석 시작'}</>
-              )}
-            </button>
-            {analysis && (
-              <button
-                onClick={() => runAnalysis(true)}
-                disabled={loading}
-                className="flex items-center gap-2 px-3 py-2.5 rounded-lg font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 transition-colors text-sm"
-              >
-                <ArrowPathIcon className="h-4 w-4" /> 다시 분석
-              </button>
+        </div>
+
+        {/* 분석 모드 선택 */}
+        <div className="mt-4 flex items-center gap-3">
+          <label className="text-sm font-medium text-gray-700">분석 모드</label>
+          <div className="flex gap-1">
+            <button onClick={() => setAnalysisMode('full')}
+              className={`px-4 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                analysisMode === 'full' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}>전체 분석</button>
+            <button onClick={() => setAnalysisMode('account-check')}
+              className={`px-4 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                analysisMode === 'account-check' ? 'bg-teal-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}>선택 계정 분개 점검</button>
+          </div>
+        </div>
+
+        {/* 전체 분석 모드 UI */}
+        {analysisMode === 'full' && (
+          <>
+            <div className="mt-4 flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="text-sm font-medium text-gray-700">분석 기간</label>
+                <div className="flex gap-1 flex-wrap">
+                  <button onClick={() => setSelectedMonth(null)}
+                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                      !selectedMonth ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}>연간 전체</button>
+                  {MONTHS.map((m) => (
+                    <button key={m} onClick={() => setSelectedMonth(m)}
+                      className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                        selectedMonth === m ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      }`}>{m}월</button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => runAnalysis(false)}
+                  disabled={loading}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 transition-colors"
+                >
+                  {loading ? (
+                    <><ArrowPathIcon className="h-4 w-4 animate-spin" /> 분석 중... ({elapsed}초)</>
+                  ) : (
+                    <><SparklesIcon className="h-4 w-4" /> 분석 시작</>
+                  )}
+                </button>
+                {analysis && (
+                  <button
+                    onClick={() => runAnalysis(true)}
+                    disabled={loading}
+                    className="flex items-center gap-2 px-3 py-2.5 rounded-lg font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 transition-colors text-sm"
+                  >
+                    <ArrowPathIcon className="h-4 w-4" /> 다시 분석
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {cachedAt && (
+              <p className="mt-2 text-xs text-purple-500">
+                캐시된 결과 표시 중 (분석 시각: {new Date(cachedAt).toLocaleString('ko-KR')}) - "다시 분석"으로 새로 분석 가능
+              </p>
             )}
-          </div>
-        </div>
-
-        {/* 기간 선택 */}
-        <div className="mt-4 flex items-center gap-3 flex-wrap">
-          <label className="text-sm font-medium text-gray-700">분석 기간</label>
-          <div className="flex gap-1 flex-wrap">
-            <button onClick={() => setSelectedMonth(null)}
-              className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
-                !selectedMonth ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}>연간 전체</button>
-            {MONTHS.map((m) => (
-              <button key={m} onClick={() => setSelectedMonth(m)}
-                className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
-                  selectedMonth === m ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}>{m}월</button>
-            ))}
-          </div>
-        </div>
-
-        {cachedAt && (
-          <p className="mt-2 text-xs text-purple-500">
-            캐시된 결과 표시 중 (분석 시각: {new Date(cachedAt).toLocaleString('ko-KR')}) - "다시 분석"으로 새로 분석 가능
-          </p>
+          </>
         )}
 
-        {error && (
+        {/* 계정 분개 점검 모드 UI */}
+        {analysisMode === 'account-check' && (
+          <div className="mt-4 space-y-3">
+            <p className="text-sm text-gray-500">
+              시산표에서 계정과목을 선택하면 해당 계정의 분개/계정 분류가 올바른지 AI가 점검합니다.
+            </p>
+            <div className="flex items-center gap-2">
+              <MagnifyingGlassIcon className="h-4 w-4 text-gray-400" />
+              <input
+                type="text"
+                placeholder="계정코드 또는 계정명 검색..."
+                value={accountSearchTerm}
+                onChange={(e) => setAccountSearchTerm(e.target.value)}
+                className="flex-1 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+              />
+              {selectedAccountCodes.length > 0 && (
+                <button
+                  onClick={() => setSelectedAccountCodes([])}
+                  className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+                >
+                  선택 초기화
+                </button>
+              )}
+            </div>
+
+            {/* 선택된 계정 태그 */}
+            {selectedAccountCodes.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {selectedAccountCodes.map((code) => {
+                  const acct = trialItems.find((a: any) => a.account_code === code)
+                  return (
+                    <span key={code} className="inline-flex items-center gap-1 px-2.5 py-1 bg-teal-100 text-teal-800 text-xs rounded-full font-medium">
+                      {code} {acct?.account_name || ''}
+                      <button onClick={() => toggleAccountCode(code)} className="hover:text-teal-600">
+                        <XMarkIcon className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
+                  )
+                })}
+              </div>
+            )}
+
+            {/* 계정 목록 (체크박스 선택) */}
+            <div className="max-h-60 overflow-y-auto border border-gray-200 rounded-lg">
+              {filteredTrialItems.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-4">
+                  {trialItems.length === 0 ? '시산표 데이터가 없습니다.' : '검색 결과가 없습니다.'}
+                </p>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <th className="px-3 py-2 text-left w-8"></th>
+                      <th className="px-3 py-2 text-left">코드</th>
+                      <th className="px-3 py-2 text-left">계정명</th>
+                      <th className="px-3 py-2 text-left">분류</th>
+                      <th className="px-3 py-2 text-right">차변</th>
+                      <th className="px-3 py-2 text-right">대변</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredTrialItems.map((item: any) => {
+                      const isSelected = selectedAccountCodes.includes(item.account_code)
+                      return (
+                        <tr
+                          key={item.account_code}
+                          onClick={() => toggleAccountCode(item.account_code)}
+                          className={`cursor-pointer hover:bg-teal-50 transition-colors ${isSelected ? 'bg-teal-50' : ''}`}
+                        >
+                          <td className="px-3 py-1.5">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleAccountCode(item.account_code)}
+                              className="h-3.5 w-3.5 text-teal-600 rounded"
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          </td>
+                          <td className="px-3 py-1.5 font-mono text-gray-600">{item.account_code}</td>
+                          <td className="px-3 py-1.5 font-medium text-gray-900">{item.account_name}</td>
+                          <td className="px-3 py-1.5 text-gray-500">{item.category_name || '-'}</td>
+                          <td className="px-3 py-1.5 text-right text-gray-700">{item.total_debit ? fmtNum(item.total_debit) : '-'}</td>
+                          <td className="px-3 py-1.5 text-right text-gray-700">{item.total_credit ? fmtNum(item.total_credit) : '-'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-500">
+                {selectedAccountCodes.length}개 계정 선택됨 (시산표 전체 {trialItems.length}개)
+              </span>
+              <button
+                onClick={runAccountCheck}
+                disabled={accountCheckLoading || selectedAccountCodes.length === 0}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-50 transition-colors"
+              >
+                {accountCheckLoading ? (
+                  <><ArrowPathIcon className="h-4 w-4 animate-spin" /> 점검 중... ({accountCheckElapsed}초)</>
+                ) : (
+                  <><SparklesIcon className="h-4 w-4" /> 분개 점검 시작</>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 공통 에러 표시 */}
+        {analysisMode === 'full' && error && (
           <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
             {error}
           </div>
         )}
+        {analysisMode === 'account-check' && accountCheckError && (
+          <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+            {accountCheckError}
+          </div>
+        )}
       </div>
 
-      {loading && (
+      {/* 전체 분석 모드 - 로딩 / 결과 */}
+      {analysisMode === 'full' && loading && (
         <div className="card text-center py-16">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600 mx-auto" />
           <p className="text-gray-500 mt-4">AI(Claude Opus 4.6)가 재무 데이터를 분석하고 있습니다...</p>
@@ -1219,7 +1431,7 @@ function AIAnalysisTab({ year }: { year: number }) {
         </div>
       )}
 
-      {analysis && !loading && (
+      {analysisMode === 'full' && analysis && !loading && (
         <div className="space-y-4">
           {AI_CATEGORIES.map((cat) => {
             const items: any[] = analysis[cat.key] || []
@@ -1273,11 +1485,110 @@ function AIAnalysisTab({ year }: { year: number }) {
         </div>
       )}
 
-      {!analysis && !loading && !error && (
+      {analysisMode === 'full' && !analysis && !loading && !error && (
         <div className="card text-center py-16 text-gray-400">
           <SparklesIcon className="h-12 w-12 mx-auto mb-3 text-gray-300" />
           <p className="text-lg">"분석 시작" 버튼을 눌러주세요</p>
           <p className="text-sm mt-1">{year}년{selectedMonth ? ` ${selectedMonth}월` : ''} 손익계산서, 재무상태표, 시산표 데이터를 종합 분석합니다.</p>
+        </div>
+      )}
+
+      {/* 계정 분개 점검 모드 - 로딩 / 결과 */}
+      {analysisMode === 'account-check' && accountCheckLoading && (
+        <div className="card text-center py-16">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-teal-600 mx-auto" />
+          <p className="text-gray-500 mt-4">AI가 선택된 {selectedAccountCodes.length}개 계정의 분개를 점검하고 있습니다...</p>
+          <p className="text-xs text-gray-400 mt-1">계정 수에 따라 1~3분 정도 소요될 수 있습니다. ({accountCheckElapsed}초 경과)</p>
+        </div>
+      )}
+
+      {analysisMode === 'account-check' && accountCheckData && !accountCheckLoading && (
+        <div className="space-y-4">
+          {/* 요약 */}
+          {accountCheckData.summary && (
+            <div className="card">
+              <h4 className="font-bold text-gray-900 text-sm mb-2">점검 요약</h4>
+              <p className="text-sm text-gray-700">{accountCheckData.summary}</p>
+            </div>
+          )}
+          {/* 계정별 점검 결과 */}
+          {(accountCheckData.accounts || accountCheckData.results || []).map((acct: any, idx: number) => (
+            <div key={idx} className={`card border-l-4 ${acct.has_issues ? 'border-l-orange-500' : 'border-l-green-500'}`}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded">{acct.account_code}</span>
+                <span className="font-bold text-sm text-gray-900">{acct.account_name}</span>
+                {acct.has_issues ? (
+                  <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">확인 필요</span>
+                ) : (
+                  <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">정상</span>
+                )}
+              </div>
+              {acct.analysis && <p className="text-sm text-gray-700 mb-2">{acct.analysis}</p>}
+              {acct.issues && acct.issues.length > 0 && (
+                <div className="space-y-1.5">
+                  {acct.issues.map((issue: any, iIdx: number) => (
+                    <div key={iIdx} className="bg-orange-50 border border-orange-200 rounded p-2.5 text-sm">
+                      {typeof issue === 'string' ? (
+                        <p className="text-gray-700">{issue}</p>
+                      ) : (
+                        <>
+                          {issue.title && <p className="font-medium text-orange-800 mb-1">{issue.title}</p>}
+                          {issue.description && <p className="text-gray-700">{issue.description}</p>}
+                          {issue.recommendation && (
+                            <p className="text-blue-700 mt-1 text-xs">
+                              <span className="font-medium">개선방안:</span> {issue.recommendation}
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {acct.entries && acct.entries.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-xs font-medium text-gray-500 mb-1">샘플 분개 내역:</p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs border">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-2 py-1 text-left">날짜</th>
+                          <th className="px-2 py-1 text-left">적요</th>
+                          <th className="px-2 py-1 text-right">차변</th>
+                          <th className="px-2 py-1 text-right">대변</th>
+                          {acct.entries.some((e: any) => e.issue) && <th className="px-2 py-1 text-left">문제</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {acct.entries.map((entry: any, eIdx: number) => (
+                          <tr key={eIdx} className={entry.issue ? 'bg-orange-50' : ''}>
+                            <td className="px-2 py-1 text-gray-600">{entry.date || '-'}</td>
+                            <td className="px-2 py-1 text-gray-700">{entry.description || '-'}</td>
+                            <td className="px-2 py-1 text-right">{entry.debit ? fmtNum(entry.debit) : '-'}</td>
+                            <td className="px-2 py-1 text-right">{entry.credit ? fmtNum(entry.credit) : '-'}</td>
+                            {acct.entries.some((e: any) => e.issue) && (
+                              <td className="px-2 py-1 text-orange-600">{entry.issue || ''}</td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          {accountCheckData.generated_at && (
+            <p className="text-xs text-gray-400 text-right">점검 시각: {new Date(accountCheckData.generated_at).toLocaleString('ko-KR')}</p>
+          )}
+        </div>
+      )}
+
+      {analysisMode === 'account-check' && !accountCheckData && !accountCheckLoading && !accountCheckError && (
+        <div className="card text-center py-16 text-gray-400">
+          <SparklesIcon className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+          <p className="text-lg">계정을 선택한 후 "분개 점검 시작" 버튼을 눌러주세요</p>
+          <p className="text-sm mt-1">선택한 계정의 분개 처리가 올바른지 AI가 점검합니다.</p>
         </div>
       )}
     </div>

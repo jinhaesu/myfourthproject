@@ -200,7 +200,10 @@ async def _get_account_balances(
 
 
 async def _detect_years(db: AsyncSession) -> List[int]:
-    """DB에 있는 모든 연도 감지"""
+    """DB에 있는 모든 연도 감지 (transaction_date + upload history created_at)"""
+    years = set()
+
+    # 1) transaction_date에서 연도 추출
     result = await db.execute(
         select(AIRawTransactionData.transaction_date)
         .where(
@@ -210,11 +213,24 @@ async def _detect_years(db: AsyncSession) -> List[int]:
         .distinct()
         .limit(1000)
     )
-    years = set()
     for row in result.all():
         m = re.match(r'(\d{4})', str(row.transaction_date).strip())
         if m:
             years.add(int(m.group(1)))
+
+    # 2) AIDataUploadHistory.created_at에서 연도 추출 (fallback)
+    from app.models.ai import UploadStatus
+    upload_years_result = await db.execute(
+        select(func.distinct(func.extract('year', AIDataUploadHistory.created_at)))
+        .where(
+            AIDataUploadHistory.status == UploadStatus.COMPLETED,
+            AIDataUploadHistory.created_at.isnot(None),
+        )
+    )
+    for row in upload_years_result.all():
+        if row[0] is not None:
+            years.add(int(row[0]))
+
     return sorted(years, reverse=True)
 
 
@@ -249,6 +265,7 @@ async def get_available_years(
                 "id": u.id,
                 "filename": u.filename,
                 "saved_count": u.saved_count or 0,
+                "upload_type": u.upload_type,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
             }
             for u in uploads
@@ -1041,4 +1058,222 @@ async def get_ai_analysis(
             "total_liabilities": total_liab,
             "account_count": len(rows),
         },
+    }
+
+
+# ============ AI 계정 분개 점검 ============
+
+@router.get("/ai-account-check")
+async def ai_account_check(
+    year: Optional[int] = Query(None),
+    account_codes: Optional[str] = Query(None, description="Comma-separated account codes"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AI 계정 분개 점검 - 선택된 계정코드의 분개 내역을 분석하여 올바른 분류인지 검증"""
+    from app.core.config import settings
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail="AI 분석을 위해 ANTHROPIC_API_KEY 환경변수를 설정해주세요. (Railway Variables에서 설정)"
+        )
+
+    if not account_codes:
+        raise HTTPException(
+            status_code=400,
+            detail="검토할 계정코드를 지정해주세요. (account_codes 파라미터)"
+        )
+
+    # 1) Parse account_codes from comma-separated string
+    code_list = [c.strip() for c in account_codes.split(",") if c.strip()]
+    if not code_list:
+        raise HTTPException(
+            status_code=400,
+            detail="유효한 계정코드가 없습니다."
+        )
+
+    extra_filters = _date_filters(year, None) if year else []
+    period_label = f"{year}년" if year else "전체 기간"
+
+    # 2) For each account code, query transactions
+    account_sections = []
+    for code in code_list:
+        filters = [
+            or_(
+                AIRawTransactionData.source_account_code == code,
+                AIRawTransactionData.account_code == code,
+            )
+        ]
+        filters.extend(extra_filters)
+
+        result = await db.execute(
+            select(
+                AIRawTransactionData.original_description,
+                AIRawTransactionData.merchant_name,
+                AIRawTransactionData.amount,
+                AIRawTransactionData.debit_amount,
+                AIRawTransactionData.credit_amount,
+                AIRawTransactionData.transaction_date,
+                AIRawTransactionData.account_code,
+                AIRawTransactionData.account_name,
+                AIRawTransactionData.source_account_code,
+                AIRawTransactionData.source_account_name,
+            )
+            .where(*filters)
+            .order_by(AIRawTransactionData.transaction_date)
+            .limit(50)
+        )
+        txns = result.all()
+
+        if not txns:
+            continue
+
+        # Resolve account name for this code
+        name_map = await _resolve_names(db, [code])
+        acct_name = name_map.get(code, f"계정 {_strip_code(code)}")
+
+        # Build transaction lines
+        tx_lines = []
+        for tx in txns:
+            date_str = tx.transaction_date or "날짜없음"
+            desc = tx.original_description or ""
+            merchant = tx.merchant_name or ""
+            debit = float(tx.debit_amount or 0)
+            credit = float(tx.credit_amount or 0)
+            src_code = tx.source_account_code or ""
+            src_name = tx.source_account_name or ""
+            cpart_code = tx.account_code or ""
+            cpart_name = tx.account_name or ""
+
+            # Determine counterpart info based on which side this code is on
+            if src_code == code:
+                counter_code = cpart_code
+                counter_name = cpart_name
+            else:
+                counter_code = src_code
+                counter_name = src_name
+
+            tx_lines.append(
+                f"  - {date_str} | {desc} | {merchant} | "
+                f"차변: {debit:,.0f} / 대변: {credit:,.0f} | "
+                f"상대계정: {counter_code} {counter_name}"
+            )
+
+        account_sections.append({
+            "code": code,
+            "name": acct_name,
+            "tx_count": len(txns),
+            "text": f"계정코드: {code} / 계정명: {acct_name}\n거래 내역:\n" + "\n".join(tx_lines),
+        })
+
+    if not account_sections:
+        raise HTTPException(
+            status_code=404,
+            detail="지정된 계정코드에 대한 거래 데이터가 없습니다."
+        )
+
+    # 3) Build Claude prompt
+    accounts_text = "\n\n".join(section["text"] for section in account_sections)
+
+    prompt = f"""당신은 한국 중소기업 전문 공인회계사입니다. 아래 선택된 계정의 분개 내역을 검토해주세요.
+회사명: 주식회사 조인앤조인 (식품/유통업)
+분석 기간: {period_label}
+
+=== 검토 대상 계정 ===
+{accounts_text}
+
+---
+
+각 계정별로 아래 항목을 점검해주세요:
+1. 계정 분류가 올바른지 (해당 거래가 이 계정에 맞는지)
+2. 상대 계정이 적절한지
+3. 중복 분개가 있는지
+4. 금액이 비정상적인 거래가 있는지
+5. 기타 회계적 확인 사항
+
+반드시 아래 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
+{{
+  "accounts": [
+    {{
+      "code": "계정코드",
+      "name": "계정명",
+      "status": "정상" | "확인필요" | "문제발견",
+      "findings": [
+        {{"type": "misclassification|duplicate|unusual_amount|wrong_counterpart|other", "description": "...", "severity": "high|medium|low", "transaction_detail": "관련 거래 설명", "recommendation": "권장 조치"}}
+      ],
+      "summary": "해당 계정에 대한 종합 의견"
+    }}
+  ],
+  "overall_summary": "전체적인 분개 점검 결과 요약"
+}}"""
+
+    # 4) Claude API call
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=8000,
+            temperature=0.3,
+            system="당신은 한국 중소기업 전문 공인회계사입니다. 반드시 요청된 JSON 형식으로만 응답하세요. JSON 외 다른 텍스트는 절대 포함하지 마세요.",
+            messages=[
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        # Extract text content (skip thinking blocks)
+        content = ""
+        for block in (message.content or []):
+            if getattr(block, 'type', None) == 'text':
+                content = block.text
+                break
+        if not content:
+            content = message.content[0].text if message.content else "{}"
+
+        # JSON extraction - multiple strategies
+        import re as _re
+        parsed = None
+
+        # Strategy 1: parse directly
+        try:
+            parsed = json.loads(content.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: extract from ```json ... ``` code block
+        if parsed is None:
+            json_match = _re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group(1).strip())
+                except json.JSONDecodeError:
+                    pass
+
+        # Strategy 3: extract first { ... last }
+        if parsed is None:
+            brace_match = _re.search(r'\{[\s\S]*\}', content)
+            if brace_match:
+                try:
+                    parsed = json.loads(brace_match.group(0))
+                except json.JSONDecodeError:
+                    pass
+
+        if parsed is None:
+            logger.error(f"AI 계정점검 응답 JSON 파싱 실패: {content[:1000]}")
+            raise HTTPException(status_code=500, detail="AI 응답 파싱 실패")
+
+        analysis = parsed
+    except Exception as e:
+        logger.error(f"AI 계정 분개 점검 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"AI 계정 분개 점검 오류: {str(e)}")
+
+    return {
+        "year": year,
+        "period": period_label,
+        "account_codes": code_list,
+        "analysis": analysis,
+        "generated_at": datetime.now().isoformat(),
+        "accounts_checked": len(account_sections),
+        "total_transactions_checked": sum(s["tx_count"] for s in account_sections),
     }

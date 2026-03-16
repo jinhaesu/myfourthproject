@@ -568,6 +568,8 @@ export const financialApi = {
   getDebugData: () => api.get('/financial/debug-data'),
   getAIAnalysis: (year?: number, month?: number) =>
     api.get('/financial/ai-analysis', { params: { year, month }, timeout: 300000 }),
+  getAIAccountCheck: (year?: number, accountCodes?: string[]) =>
+    api.get('/financial/ai-account-check', { params: { year, account_codes: accountCodes?.join(',') }, timeout: 300000 }),
 }
 
 export default api
