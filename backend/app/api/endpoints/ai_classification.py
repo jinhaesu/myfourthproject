@@ -2382,7 +2382,7 @@ async def classify_bank_statements(
 
             classification_map[idx] = {
                 "account_code": "103",
-                "account_name": "보통예금",
+                "account_name": f"보통예금({partner_bank})" if partner_bank else "보통예금",
                 "confidence": 0.98,
                 "reasoning": f"은행간 이체 ({'출금→' + partner_bank if is_withdrawal else partner_bank + '→입금'})",
             }
@@ -2547,10 +2547,10 @@ async def classify_bank_statements(
                 "amount": amount,
                 "journal_entry": {
                     "debit_account_code": cls["account_code"] if cls and txn["withdrawal"] > 0 else "103",
-                    "debit_account_name": cls["account_name"] if cls and txn["withdrawal"] > 0 else "보통예금",
+                    "debit_account_name": cls["account_name"] if cls and txn["withdrawal"] > 0 else f"보통예금({txn['bank_name']})",
                     "debit_amount": amount,
                     "credit_account_code": "103" if txn["withdrawal"] > 0 else (cls["account_code"] if cls else ""),
-                    "credit_account_name": "보통예금" if txn["withdrawal"] > 0 else (cls["account_name"] if cls else ""),
+                    "credit_account_name": f"보통예금({txn['bank_name']})" if txn["withdrawal"] > 0 else (cls["account_name"] if cls else ""),
                     "credit_amount": amount,
                     "is_balanced": True,
                 } if cls else None,
