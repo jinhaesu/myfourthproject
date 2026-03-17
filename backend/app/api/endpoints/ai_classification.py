@@ -8,6 +8,7 @@ import io
 import logging
 import time
 import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
@@ -2247,7 +2248,7 @@ def _detect_inter_bank_transfers(all_transactions: List[dict]) -> List[tuple]:
 # ── Rule-based bank transaction pre-classifier ──────────────────────
 # Returns a classification dict or None if unsure (fallback to LLM).
 # This eliminates 60-70% of LLM calls for typical bank statements.
-def _rule_classify_bank_txn(txn: dict) -> dict | None:
+def _rule_classify_bank_txn(txn: dict) -> Optional[dict]:
     desc = (txn.get("description", "") or "").lower()
     content = (txn.get("content", "") or "").lower()
     counterparty = (txn.get("counterparty", "") or "").lower()
@@ -2396,6 +2397,9 @@ _bank_classify_progress: dict = {
     "processed_rows": 0,
 }
 
+# 통장 분류 결과 저장 (in-memory)
+_bank_classify_result: dict = {}
+
 
 @router.get("/bank-classify-progress")
 async def get_bank_classify_progress(
@@ -2405,6 +2409,18 @@ async def get_bank_classify_progress(
     return _bank_classify_progress
 
 
+@router.get("/bank-classify-result")
+async def get_bank_classify_result(
+    current_user: User = Depends(get_current_user)
+):
+    """Get the result of the last bank classification task"""
+    if not _bank_classify_result:
+        if _bank_classify_progress.get("status") == "running":
+            return {"status": "running", "progress": _bank_classify_progress}
+        return {"status": "no_result"}
+    return _bank_classify_result
+
+
 @router.post("/classify-bank-statements")
 async def classify_bank_statements(
     files: List[UploadFile] = File(...),
@@ -2412,55 +2428,86 @@ async def classify_bank_statements(
     current_user: User = Depends(get_current_user)
 ):
     """
-    통장 거래 내역 다중 파일 업로드 및 AI 분류
+    통장 거래 내역 다중 파일 업로드 및 AI 분류 (백그라운드 실행)
 
     - 1~10개의 은행 통장 거래 내역 엑셀 파일(.xls/.xlsx) 동시 업로드
-    - 파일별 파싱 → 은행 간 이체 감지 → AI(Claude) 분류
+    - 즉시 task_id 반환, 분류는 백그라운드에서 실행
+    - GET /bank-classify-progress 로 진행 상태 확인
+    - GET /bank-classify-result 로 결과 조회
     """
+    global _bank_classify_progress, _bank_classify_result
+
+    # Validate file count
+    if len(files) < 1 or len(files) > 10:
+        raise HTTPException(status_code=400, detail="1~10개의 파일만 업로드 가능합니다.")
+
+    # Validate file types
+    for f in files:
+        if not f.filename.endswith(('.xls', '.xlsx')):
+            raise HTTPException(
+                status_code=400,
+                detail=f"엑셀 파일(.xls, .xlsx)만 업로드 가능합니다: {f.filename}"
+            )
+
+    # Read all file contents NOW (before background task, since UploadFile objects expire)
+    file_data = []
+    for f in files:
+        content = await f.read()
+        file_data.append({"content": content, "filename": f.filename})
+
+    task_id = str(uuid.uuid4())[:8]
+
+    # Reset progress
+    _bank_classify_progress = {
+        "status": "running", "step": "시작",
+        "progress": 1, "message": f"{len(files)}개 파일 처리 시작...",
+        "total_rows": 0, "processed_rows": 0,
+        "task_id": task_id,
+    }
+    _bank_classify_result = {}
+
+    # Start background task
+    task = asyncio.create_task(
+        _classify_bank_statements_bg(file_data, current_user.id, task_id)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return {"status": "started", "task_id": task_id, "message": f"{len(files)}개 파일 분류가 시작되었습니다."}
+
+
+async def _classify_bank_statements_bg(file_data: list, user_id: int, task_id: str):
+    """Background task for bank statement classification"""
     import re
 
-    global _bank_classify_progress
-    _bank_classify_progress = {
-        "status": "running", "step": "파일 검증",
-        "progress": 2, "message": f"{len(files)}개 파일 검증 중...",
-        "total_rows": 0, "processed_rows": 0,
-    }
+    global _bank_classify_progress, _bank_classify_result
 
     try:
-        # Validate file count
-        if len(files) < 1 or len(files) > 10:
-            raise HTTPException(status_code=400, detail="1~10개의 파일만 업로드 가능합니다.")
+        num_files = len(file_data)
 
-        # Validate file types
-        for f in files:
-            if not f.filename.endswith(('.xls', '.xlsx')):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"엑셀 파일(.xls, .xlsx)만 업로드 가능합니다: {f.filename}"
-                )
-
-        # ===== Phase 1: Parse all files =====
         _bank_classify_progress.update({
             "step": "파일 파싱", "progress": 5,
-            "message": f"{len(files)}개 파일 파싱 중...",
+            "message": f"{num_files}개 파일 파싱 중...",
         })
 
+        # ===== Phase 1: Parse all files =====
         banks_info = []
         all_transactions = []
         global_idx = 0
 
-        for file_obj in files:
-            file_content = await file_obj.read()
+        for fd in file_data:
             try:
                 parsed = await asyncio.to_thread(
-                    _parse_bank_statement_xls, file_content, file_obj.filename
+                    _parse_bank_statement_xls, fd["content"], fd["filename"]
                 )
             except Exception as parse_err:
-                logger.error(f"[BankStatement] 파싱 실패: {file_obj.filename} - {parse_err}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"파일 파싱 실패 ({file_obj.filename}): {str(parse_err)[:200]}"
-                )
+                logger.error(f"[BankStatement BG] 파싱 실패: {fd['filename']} - {parse_err}")
+                _bank_classify_progress.update({
+                    "status": "failed", "step": "오류",
+                    "message": f"파일 파싱 실패 ({fd['filename']}): {str(parse_err)[:200]}",
+                })
+                _bank_classify_result = {"status": "failed", "task_id": task_id, "error": f"파일 파싱 실패 ({fd['filename']}): {str(parse_err)[:200]}"}
+                return
 
             bank_info = {
                 "bank_name": parsed["bank_name"],
@@ -2483,10 +2530,10 @@ async def classify_bank_statements(
         total_transactions = len(all_transactions)
         _bank_classify_progress.update({
             "step": "파싱 완료", "progress": 15,
-            "message": f"{len(files)}개 파일, {total_transactions:,}건 거래 파싱 완료",
+            "message": f"{num_files}개 파일, {total_transactions:,}건 거래 파싱 완료",
             "total_rows": total_transactions,
         })
-        logger.info(f"[BankStatement] 파싱 완료: {len(files)}개 파일, {total_transactions}건")
+        logger.info(f"[BankStatement BG] 파싱 완료: {num_files}개 파일, {total_transactions}건")
 
         # ===== Phase 2: Detect inter-bank transfers =====
         _bank_classify_progress.update({
@@ -2504,7 +2551,7 @@ async def classify_bank_statements(
             transfer_match_map[d_idx] = w_idx
 
         inter_bank_count = len(matched_pairs)
-        logger.info(f"[BankStatement] 은행간 이체 감지: {inter_bank_count}쌍")
+        logger.info(f"[BankStatement BG] 은행간 이체 감지: {inter_bank_count}쌍")
 
         _bank_classify_progress.update({
             "step": "AI 분류 준비", "progress": 25,
@@ -2543,7 +2590,7 @@ async def classify_bank_statements(
                 llm_needed_indices.append(gi)
 
         logger.info(
-            f"[BankStatement] 규칙 분류: {rule_classified_count}건, "
+            f"[BankStatement BG] 규칙 분류: {rule_classified_count}건, "
             f"LLM 필요: {len(llm_needed_indices)}건 "
             f"(전체 {len(normal_indices)}건 중 {rule_classified_count/max(len(normal_indices),1)*100:.0f}% 규칙 처리)"
         )
@@ -2668,7 +2715,7 @@ async def classify_bank_statements(
 
                 # Run batches in parallel groups of 3
                 PARALLEL = 3
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
 
                 for group_start in range(0, total_batches, PARALLEL):
                     group_end = min(group_start + PARALLEL, total_batches)
@@ -2718,18 +2765,18 @@ async def classify_bank_statements(
                     })
 
                 logger.info(
-                    f"[BankStatement] LLM 분류 완료: {llm_classified_so_far}건, "
+                    f"[BankStatement BG] LLM 분류 완료: {llm_classified_so_far}건, "
                     f"총 소요: {time.time() - phase3_start:.1f}초"
                 )
 
             except Exception as llm_setup_err:
-                logger.warning(f"[BankStatement] LLM 분류 실패: {llm_setup_err}")
+                logger.warning(f"[BankStatement BG] LLM 분류 실패: {llm_setup_err}")
         elif llm_needed_indices and not settings.ANTHROPIC_API_KEY:
-            logger.warning("[BankStatement] ANTHROPIC_API_KEY 미설정 — LLM 분류 생략")
+            logger.warning("[BankStatement BG] ANTHROPIC_API_KEY 미설정 — LLM 분류 생략")
 
         phase3_elapsed = time.time() - phase3_start
         logger.info(
-            f"[BankStatement] Phase 3 총 소요: {phase3_elapsed:.1f}초 "
+            f"[BankStatement BG] Phase 3 총 소요: {phase3_elapsed:.1f}초 "
             f"(이체: {len(transfer_indices)}, 규칙: {rule_classified_count}, "
             f"LLM: {len(llm_needed_indices)}건)"
         )
@@ -2782,10 +2829,10 @@ async def classify_bank_statements(
                 "amount": amount,
                 "journal_entry": {
                     "debit_account_code": cls["account_code"] if cls and txn["withdrawal"] > 0 else "103",
-                    "debit_account_name": cls["account_name"] if cls and txn["withdrawal"] > 0 else f"보통예금({txn['bank_name']})",
+                    "debit_account_name": cls["account_name"] if cls and txn["withdrawal"] > 0 else f"보통예금({txn['_bank_name']})",
                     "debit_amount": amount,
                     "credit_account_code": "103" if txn["withdrawal"] > 0 else (cls["account_code"] if cls else ""),
-                    "credit_account_name": f"보통예금({txn['bank_name']})" if txn["withdrawal"] > 0 else (cls["account_name"] if cls else ""),
+                    "credit_account_name": f"보통예금({txn['_bank_name']})" if txn["withdrawal"] > 0 else (cls["account_name"] if cls else ""),
                     "credit_amount": amount,
                     "is_balanced": True,
                 } if cls else None,
@@ -2803,39 +2850,40 @@ async def classify_bank_statements(
         needs_review_count = sum(1 for r in results if r.get("needs_review"))
         avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
 
-        # Save to DB
+        # Save to DB (use fresh session since we're in a background task)
         upload_id = None
         try:
             from app.models.ai import AIDataUploadHistory, UploadStatus
-            filenames = ", ".join(f.filename for f in files)
-            upload_history = AIDataUploadHistory(
-                filename=f"통장분류: {filenames}"[:500],
-                file_size=0,
-                file_type="bank_statement",
-                upload_type="classification",
-                uploaded_by=current_user.id,
-                status=UploadStatus.COMPLETED,
-                row_count=total_transactions,
-                saved_count=total_transactions,
-                result_json=json.dumps({
-                    "banks": banks_info,
-                    "results": results,
-                    "stats": {
-                        "total_transactions": total_transactions,
-                        "inter_bank_transfers": inter_bank_count,
-                        "auto_confirmed": auto_confirm_count,
-                        "needs_review": needs_review_count,
-                        "average_confidence": round(avg_confidence, 4),
-                    }
-                }, ensure_ascii=False, default=str),
-            )
-            db.add(upload_history)
-            await db.flush()
-            upload_id = upload_history.id
-            await db.commit()
-            logger.info(f"[BankStatement] DB 저장 완료 (upload_id={upload_id})")
+            filenames = ", ".join(fd["filename"] for fd in file_data)
+            async with async_session_factory() as db:
+                upload_history = AIDataUploadHistory(
+                    filename=f"통장분류: {filenames}"[:500],
+                    file_size=0,
+                    file_type="bank_statement",
+                    upload_type="classification",
+                    uploaded_by=user_id,
+                    status=UploadStatus.COMPLETED,
+                    row_count=total_transactions,
+                    saved_count=total_transactions,
+                    result_json=json.dumps({
+                        "banks": banks_info,
+                        "results": results,
+                        "stats": {
+                            "total_transactions": total_transactions,
+                            "inter_bank_transfers": inter_bank_count,
+                            "auto_confirmed": auto_confirm_count,
+                            "needs_review": needs_review_count,
+                            "average_confidence": round(avg_confidence, 4),
+                        }
+                    }, ensure_ascii=False, default=str),
+                )
+                db.add(upload_history)
+                await db.flush()
+                upload_id = upload_history.id
+                await db.commit()
+                logger.info(f"[BankStatement BG] DB 저장 완료 (upload_id={upload_id})")
         except Exception as save_err:
-            logger.warning(f"[BankStatement] DB 저장 실패 (결과는 정상 반환): {save_err}")
+            logger.warning(f"[BankStatement BG] DB 저장 실패 (결과는 정상 반환): {save_err}")
 
         _bank_classify_progress.update({
             "status": "completed", "step": "완료", "progress": 100,
@@ -2843,8 +2891,9 @@ async def classify_bank_statements(
             "processed_rows": total_transactions,
         })
 
-        return {
-            "status": "success",
+        _bank_classify_result = {
+            "status": "completed",
+            "task_id": task_id,
             "upload_id": upload_id,
             "banks": banks_info,
             "total_transactions": total_transactions,
@@ -2855,13 +2904,10 @@ async def classify_bank_statements(
             "results": results,
         }
 
-    except HTTPException:
-        _bank_classify_progress.update({"status": "failed", "message": "파일 형식 오류"})
-        raise
     except Exception as e:
-        logger.error(f"[BankStatement] 오류: {e}", exc_info=True)
+        logger.error(f"[BankStatement BG] Error: {e}", exc_info=True)
         _bank_classify_progress.update({
             "status": "failed", "step": "오류",
             "message": f"처리 오류: {str(e)[:200]}",
         })
-        raise HTTPException(status_code=500, detail=f"통장 분류 처리 중 오류: {str(e)}")
+        _bank_classify_result = {"status": "failed", "task_id": task_id, "error": str(e)[:200]}

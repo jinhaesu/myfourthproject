@@ -479,36 +479,58 @@ export default function AIClassificationPage() {
     }
   }
 
-  // Handle multi-bank statement classification (통장 일괄 분류)
+  // Handle multi-bank statement classification (통장 일괄 분류) — 백그라운드 실행
   const handleBankClassify = async () => {
     if (bankFiles.length === 0) return
     setLoading(true)
     setBankUploadProgress('파일 업로드 중...')
-    // 진행률 폴링 시작
-    const progressPoll = setInterval(async () => {
-      try {
-        const prog = await aiClassificationApi.getBankClassifyProgress()
-        const d = prog.data
-        if (d.status === 'running') {
-          const elapsed = d.elapsed_seconds || 0
-          const remaining = d.estimated_remaining || 0
-          const rule = d.rule_classified || 0
-          const llm = d.llm_classified || 0
-          const pct = d.progress || 0
-          setBankUploadProgress(
-            `${d.step || '처리 중'} (${pct}%) — 룰분류: ${rule.toLocaleString()}건, AI분류: ${llm.toLocaleString()}건` +
-            (elapsed > 0 ? ` | ${elapsed}초 경과` : '') +
-            (remaining > 0 ? ` | 약 ${remaining}초 남음` : '')
-          )
-        }
-      } catch { /* ignore polling errors */ }
-    }, 2000)
+
     try {
-      const response = await aiClassificationApi.classifyBankStatements(bankFiles)
-      clearInterval(progressPoll)
-      setBankResults(response.data)
-      // Convert bank results to classificationResults format for reuse of existing table
-      const converted = response.data.results.map((r: any, idx: number) => ({
+      // Step 1: Start background classification (returns immediately)
+      const startResponse = await aiClassificationApi.classifyBankStatements(bankFiles)
+      if (startResponse.data.status !== 'started') {
+        throw new Error(startResponse.data.detail || '분류 시작 실패')
+      }
+      setBankUploadProgress(startResponse.data.message || '분류가 시작되었습니다...')
+
+      // Step 2: Poll progress until completed or failed
+      const resultData: any = await new Promise((resolve, reject) => {
+        const progressPoll = setInterval(async () => {
+          try {
+            const prog = await aiClassificationApi.getBankClassifyProgress()
+            const d = prog.data
+
+            if (d.status === 'running') {
+              const elapsed = d.elapsed_seconds || 0
+              const remaining = d.estimated_remaining || 0
+              const rule = d.rule_classified || 0
+              const llm = d.llm_classified || 0
+              const pct = d.progress || 0
+              setBankUploadProgress(
+                `${d.step || '처리 중'} (${pct}%) — 룰분류: ${rule.toLocaleString()}건, AI분류: ${llm.toLocaleString()}건` +
+                (elapsed > 0 ? ` | ${elapsed}초 경과` : '') +
+                (remaining > 0 ? ` | 약 ${remaining}초 남음` : '')
+              )
+            } else if (d.status === 'completed') {
+              clearInterval(progressPoll)
+              // Step 3: Fetch full results
+              try {
+                const resultResponse = await aiClassificationApi.getBankClassifyResult()
+                resolve(resultResponse.data)
+              } catch (fetchErr: any) {
+                reject(new Error(fetchErr.response?.data?.detail || '결과 조회 실패'))
+              }
+            } else if (d.status === 'failed') {
+              clearInterval(progressPoll)
+              reject(new Error(d.message || '분류 실패'))
+            }
+          } catch { /* ignore polling errors */ }
+        }, 2000)
+      })
+
+      // Step 4: Process results (same as before)
+      setBankResults(resultData)
+      const converted = resultData.results.map((r: any, idx: number) => ({
         row_index: idx,
         description: r.description,
         merchant_name: r.counterparty || r.description,
@@ -538,19 +560,18 @@ export default function AIClassificationPage() {
       setClassificationResults(converted)
       setSelectedRows(new Set())
       setClassifyStats({
-        total: response.data.total_transactions,
+        total: resultData.total_transactions,
         autoConfirmed: converted.filter((r: any) => r.auto_confirm).length,
         needsReview: converted.filter((r: any) => r.needs_review).length,
         avgConfidence: converted.length > 0 ? converted.reduce((s: number, r: any) => s + r.confidence, 0) / converted.length : 0,
         totalAmount: converted.reduce((s: number, r: any) => s + r.amount, 0),
       })
-      setCurrentUploadId(response.data.upload_id || null)
+      setCurrentUploadId(resultData.upload_id || null)
       setActiveTab('results')
       refreshData()
-      showMessage('success', `${response.data.banks?.length || 0}개 은행 ${response.data.total_transactions}건 분류 완료${response.data.inter_bank_transfers ? ` (은행간 이체 ${response.data.inter_bank_transfers}건 감지)` : ''}`)
+      showMessage('success', `${resultData.banks?.length || 0}개 은행 ${resultData.total_transactions}건 분류 완료${resultData.inter_bank_transfers ? ` (은행간 이체 ${resultData.inter_bank_transfers}건 감지)` : ''}`)
     } catch (error: any) {
-      clearInterval(progressPoll)
-      showMessage('error', error.response?.data?.detail || '통장 분류 실패')
+      showMessage('error', error.message || error.response?.data?.detail || '통장 분류 실패')
     } finally {
       setLoading(false)
       setBankUploadProgress(null)

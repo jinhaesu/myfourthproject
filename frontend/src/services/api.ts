@@ -453,18 +453,21 @@ export const aiClassificationApi = {
   getUploadStatus: (uploadId: number) =>
     api.get(`/ai-classification/upload-status/${uploadId}`),
 
-  // 통장 일괄 분류 (여러 은행 파일)
+  // 통장 일괄 분류 (여러 은행 파일) — 백그라운드 실행, 즉시 task_id 반환
   classifyBankStatements: (files: File[]) => {
     const formData = new FormData()
     files.forEach(file => formData.append('files', file))
     return api.post('/ai-classification/classify-bank-statements', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 600000,
+      timeout: 120000,
     })
   },
 
   // 통장 분류 진행률 조회
   getBankClassifyProgress: () => api.get('/ai-classification/bank-classify-progress'),
+
+  // 통장 분류 결과 조회
+  getBankClassifyResult: () => api.get('/ai-classification/bank-classify-result'),
 
   // 배치 업로드 (클라이언트 사이드 파싱 후)
   uploadHistoricalBatch: (data: {
