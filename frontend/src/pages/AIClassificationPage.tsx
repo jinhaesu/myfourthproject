@@ -479,56 +479,67 @@ export default function AIClassificationPage() {
     }
   }
 
-  // Handle multi-bank statement classification (통장 일괄 분류) — 백그라운드 실행
+  // Handle multi-bank statement classification (통장 일괄 분류) — SSE 스트리밍
   const handleBankClassify = async () => {
     if (bankFiles.length === 0) return
     setLoading(true)
     setBankUploadProgress('파일 업로드 중...')
 
     try {
-      // Step 1: Start background classification (returns immediately)
-      const startResponse = await aiClassificationApi.classifyBankStatements(bankFiles)
-      if (startResponse.data.status !== 'started') {
-        throw new Error(startResponse.data.detail || '분류 시작 실패')
+      const response = await aiClassificationApi.classifyBankStatements(bankFiles)
+      if (!response.ok) {
+        let errMsg = '분류 시작 실패'
+        try {
+          const err = await response.json()
+          errMsg = err.detail || errMsg
+        } catch { /* ignore parse error */ }
+        throw new Error(errMsg)
       }
-      setBankUploadProgress(startResponse.data.message || '분류가 시작되었습니다...')
 
-      // Step 2: Poll progress until completed or failed
-      const resultData: any = await new Promise((resolve, reject) => {
-        const progressPoll = setInterval(async () => {
+      const reader = response.body!.getReader()
+      const decoder = new TextDecoder()
+      let resultData: any = null
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
           try {
-            const prog = await aiClassificationApi.getBankClassifyProgress()
-            const d = prog.data
-
-            if (d.status === 'running') {
-              const elapsed = d.elapsed_seconds || 0
-              const remaining = d.estimated_remaining || 0
-              const rule = d.rule_classified || 0
-              const llm = d.llm_classified || 0
-              const pct = d.progress || 0
-              setBankUploadProgress(
-                `${d.step || '처리 중'} (${pct}%) — 룰분류: ${rule.toLocaleString()}건, AI분류: ${llm.toLocaleString()}건` +
-                (elapsed > 0 ? ` | ${elapsed}초 경과` : '') +
-                (remaining > 0 ? ` | 약 ${remaining}초 남음` : '')
-              )
-            } else if (d.status === 'completed') {
-              clearInterval(progressPoll)
-              // Step 3: Fetch full results
-              try {
-                const resultResponse = await aiClassificationApi.getBankClassifyResult()
-                resolve(resultResponse.data)
-              } catch (fetchErr: any) {
-                reject(new Error(fetchErr.response?.data?.detail || '결과 조회 실패'))
+            const event = JSON.parse(line.slice(6))
+            if (event.type === 'progress') {
+              const rule = event.rule_classified || 0
+              const llm = event.llm_classified || 0
+              const elapsed = event.elapsed_seconds || 0
+              const remaining = event.estimated_remaining || 0
+              let progressText = `${event.step || '처리 중'} (${event.progress}%) — ${event.message}`
+              if (rule > 0 || llm > 0) {
+                progressText = `${event.step || '처리 중'} (${event.progress}%) — 룰분류: ${rule.toLocaleString()}건, AI분류: ${llm.toLocaleString()}건`
+                if (elapsed > 0) progressText += ` | ${elapsed}초 경과`
+                if (remaining > 0) progressText += ` | 약 ${remaining}초 남음`
               }
-            } else if (d.status === 'failed') {
-              clearInterval(progressPoll)
-              reject(new Error(d.message || '분류 실패'))
+              setBankUploadProgress(progressText)
+            } else if (event.type === 'result') {
+              resultData = event.data
+            } else if (event.type === 'error') {
+              throw new Error(event.message)
             }
-          } catch { /* ignore polling errors */ }
-        }, 2000)
-      })
+          } catch (e) {
+            if (e instanceof Error && e.message !== 'Unexpected end of JSON input'
+                && !e.message.includes('Unexpected token')) throw e
+          }
+        }
+      }
 
-      // Step 4: Process results (same as before)
+      if (!resultData) throw new Error('결과를 받지 못했습니다.')
+
+      // Process results
       setBankResults(resultData)
       const converted = resultData.results.map((r: any, idx: number) => ({
         row_index: idx,
@@ -571,7 +582,7 @@ export default function AIClassificationPage() {
       refreshData()
       showMessage('success', `${resultData.banks?.length || 0}개 은행 ${resultData.total_transactions}건 분류 완료${resultData.inter_bank_transfers ? ` (은행간 이체 ${resultData.inter_bank_transfers}건 감지)` : ''}`)
     } catch (error: any) {
-      showMessage('error', error.message || error.response?.data?.detail || '통장 분류 실패')
+      showMessage('error', error.message || '통장 분류 실패')
     } finally {
       setLoading(false)
       setBankUploadProgress(null)

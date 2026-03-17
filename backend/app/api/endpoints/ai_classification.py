@@ -2410,7 +2410,7 @@ def _rule_classify_bank_txn(txn: dict) -> Optional[dict]:
 _bank_llm_executor = ThreadPoolExecutor(max_workers=3)
 
 
-# 통장 분류 진행 상태 추적 (in-memory)
+# 통장 분류 진행 상태 추적 (in-memory, backward compat)
 _bank_classify_progress: dict = {
     "status": "idle",
     "step": "",
@@ -2420,28 +2420,13 @@ _bank_classify_progress: dict = {
     "processed_rows": 0,
 }
 
-# 통장 분류 결과 저장 (in-memory)
-_bank_classify_result: dict = {}
-
 
 @router.get("/bank-classify-progress")
 async def get_bank_classify_progress(
     current_user: User = Depends(get_current_user)
 ):
-    """통장 분류 진행 상태 조회"""
+    """통장 분류 진행 상태 조회 (backward compat)"""
     return _bank_classify_progress
-
-
-@router.get("/bank-classify-result")
-async def get_bank_classify_result(
-    current_user: User = Depends(get_current_user)
-):
-    """Get the result of the last bank classification task"""
-    if not _bank_classify_result:
-        if _bank_classify_progress.get("status") == "running":
-            return {"status": "running", "progress": _bank_classify_progress}
-        return {"status": "no_result"}
-    return _bank_classify_result
 
 
 @router.post("/classify-bank-statements")
@@ -2451,14 +2436,12 @@ async def classify_bank_statements(
     current_user: User = Depends(get_current_user)
 ):
     """
-    통장 거래 내역 다중 파일 업로드 및 AI 분류 (백그라운드 실행)
+    통장 거래 내역 다중 파일 업로드 및 AI 분류 (SSE 스트리밍 응답)
 
     - 1~10개의 은행 통장 거래 내역 엑셀 파일(.xls/.xlsx) 동시 업로드
-    - 즉시 task_id 반환, 분류는 백그라운드에서 실행
-    - GET /bank-classify-progress 로 진행 상태 확인
-    - GET /bank-classify-result 로 결과 조회
+    - Server-Sent Events로 진행 상태와 최종 결과를 스트리밍 반환
     """
-    global _bank_classify_progress, _bank_classify_result
+    global _bank_classify_progress
 
     # Validate file count
     if len(files) < 1 or len(files) > 10:
@@ -2472,202 +2455,186 @@ async def classify_bank_statements(
                 detail=f"엑셀 파일(.xls, .xlsx)만 업로드 가능합니다: {f.filename}"
             )
 
-    # Read all file contents NOW (before background task, since UploadFile objects expire)
+    # Read all file contents NOW (UploadFile objects expire after response starts)
     file_data = []
     for f in files:
         content = await f.read()
         file_data.append({"content": content, "filename": f.filename})
 
-    task_id = str(uuid.uuid4())[:8]
+    user_id = current_user.id
 
-    # Reset progress
-    _bank_classify_progress = {
-        "status": "running", "step": "시작",
-        "progress": 1, "message": f"{len(files)}개 파일 처리 시작...",
-        "total_rows": 0, "processed_rows": 0,
-        "task_id": task_id,
-    }
-    _bank_classify_result = {}
+    async def event_stream():
+        import re
 
-    # Start background task
-    task = asyncio.create_task(
-        _classify_bank_statements_bg(file_data, current_user.id, task_id)
-    )
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+        try:
+            num_files = len(file_data)
 
-    return {"status": "started", "task_id": task_id, "message": f"{len(files)}개 파일 분류가 시작되었습니다."}
+            _bank_classify_progress.update({
+                "status": "running", "step": "파일 파싱", "progress": 5,
+                "message": f"{num_files}개 파일 파싱 중...",
+                "total_rows": 0, "processed_rows": 0,
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '파일 파싱', 'progress': 5, 'message': f'{num_files}개 파일 파싱 중...'}, ensure_ascii=False)}\n\n"
 
+            # ===== Phase 1: Parse all files =====
+            banks_info = []
+            all_transactions = []
+            global_idx = 0
 
-async def _classify_bank_statements_bg(file_data: list, user_id: int, task_id: str):
-    """Background task for bank statement classification"""
-    import re
+            for fd in file_data:
+                try:
+                    parsed = await asyncio.to_thread(
+                        _parse_bank_statement_xls, fd["content"], fd["filename"]
+                    )
+                except Exception as parse_err:
+                    logger.error(f"[BankStatement SSE] 파싱 실패: {fd['filename']} - {parse_err}")
+                    err_msg = f"파일 파싱 실패 ({fd['filename']}): {str(parse_err)[:200]}"
+                    _bank_classify_progress.update({
+                        "status": "failed", "step": "오류",
+                        "message": err_msg,
+                    })
+                    yield f"data: {json.dumps({'type': 'error', 'message': err_msg}, ensure_ascii=False)}\n\n"
+                    return
 
-    global _bank_classify_progress, _bank_classify_result
+                bank_info = {
+                    "bank_name": parsed["bank_name"],
+                    "account_number": parsed["account_number"],
+                    "date_range": parsed["date_range"],
+                    "total_rows": len(parsed["transactions"]),
+                    "total_deposit": parsed["total_deposit"],
+                    "total_withdrawal": parsed["total_withdrawal"],
+                }
+                banks_info.append(bank_info)
 
-    try:
-        num_files = len(file_data)
+                for txn in parsed["transactions"]:
+                    txn["_bank_name"] = parsed["bank_name"]
+                    txn["_account_number"] = parsed["account_number"]
+                    txn["_global_idx"] = global_idx
+                    all_transactions.append(txn)
+                    global_idx += 1
 
-        _bank_classify_progress.update({
-            "step": "파일 파싱", "progress": 5,
-            "message": f"{num_files}개 파일 파싱 중...",
-        })
+            total_transactions = len(all_transactions)
+            _bank_classify_progress.update({
+                "step": "파싱 완료", "progress": 15,
+                "message": f"{num_files}개 파일, {total_transactions:,}건 거래 파싱 완료",
+                "total_rows": total_transactions,
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '파싱 완료', 'progress': 15, 'message': f'{num_files}개 파일, {total_transactions:,}건 거래 파싱 완료'}, ensure_ascii=False)}\n\n"
+            logger.info(f"[BankStatement SSE] 파싱 완료: {num_files}개 파일, {total_transactions}건")
 
-        # ===== Phase 1: Parse all files =====
-        banks_info = []
-        all_transactions = []
-        global_idx = 0
+            # ===== Phase 2: Detect inter-bank transfers =====
+            _bank_classify_progress.update({
+                "step": "은행간 이체 감지", "progress": 20,
+                "message": "은행 간 이체를 감지하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '은행간 이체 감지', 'progress': 20, 'message': '은행 간 이체를 감지하고 있습니다...'}, ensure_ascii=False)}\n\n"
 
-        for fd in file_data:
-            try:
-                parsed = await asyncio.to_thread(
-                    _parse_bank_statement_xls, fd["content"], fd["filename"]
-                )
-            except Exception as parse_err:
-                logger.error(f"[BankStatement BG] 파싱 실패: {fd['filename']} - {parse_err}")
-                _bank_classify_progress.update({
-                    "status": "failed", "step": "오류",
-                    "message": f"파일 파싱 실패 ({fd['filename']}): {str(parse_err)[:200]}",
-                })
-                _bank_classify_result = {"status": "failed", "task_id": task_id, "error": f"파일 파싱 실패 ({fd['filename']}): {str(parse_err)[:200]}"}
-                return
+            matched_pairs = _detect_inter_bank_transfers(all_transactions)
+            transfer_set = set()
+            transfer_match_map = {}
+            for w_idx, d_idx in matched_pairs:
+                transfer_set.add(w_idx)
+                transfer_set.add(d_idx)
+                transfer_match_map[w_idx] = d_idx
+                transfer_match_map[d_idx] = w_idx
 
-            bank_info = {
-                "bank_name": parsed["bank_name"],
-                "account_number": parsed["account_number"],
-                "date_range": parsed["date_range"],
-                "total_rows": len(parsed["transactions"]),
-                "total_deposit": parsed["total_deposit"],
-                "total_withdrawal": parsed["total_withdrawal"],
-            }
-            banks_info.append(bank_info)
+            inter_bank_count = len(matched_pairs)
+            logger.info(f"[BankStatement SSE] 은행간 이체 감지: {inter_bank_count}쌍")
 
-            # Tag each transaction with bank info and global index
-            for txn in parsed["transactions"]:
-                txn["_bank_name"] = parsed["bank_name"]
-                txn["_account_number"] = parsed["account_number"]
-                txn["_global_idx"] = global_idx
-                all_transactions.append(txn)
-                global_idx += 1
+            _bank_classify_progress.update({
+                "step": "AI 분류 준비", "progress": 25,
+                "message": f"은행간 이체 {inter_bank_count}쌍 감지. AI 분류 준비 중...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류 준비', 'progress': 25, 'message': f'은행간 이체 {inter_bank_count}쌍 감지. AI 분류 준비 중...'}, ensure_ascii=False)}\n\n"
 
-        total_transactions = len(all_transactions)
-        _bank_classify_progress.update({
-            "step": "파싱 완료", "progress": 15,
-            "message": f"{num_files}개 파일, {total_transactions:,}건 거래 파싱 완료",
-            "total_rows": total_transactions,
-        })
-        logger.info(f"[BankStatement BG] 파싱 완료: {num_files}개 파일, {total_transactions}건")
+            # ===== Phase 3: Classify (rules -> LLM fallback, parallel) =====
+            phase3_start = time.time()
+            normal_indices = [i for i in range(total_transactions) if i not in transfer_set]
+            transfer_indices = list(transfer_set)
 
-        # ===== Phase 2: Detect inter-bank transfers =====
-        _bank_classify_progress.update({
-            "step": "은행간 이체 감지", "progress": 20,
-            "message": "은행 간 이체를 감지하고 있습니다...",
-        })
+            # Auto-classify inter-bank transfers as 보통예금(103)
+            classification_map = {}
+            for idx in transfer_indices:
+                partner_idx = transfer_match_map.get(idx)
+                partner_bank = all_transactions[partner_idx]["_bank_name"] if partner_idx is not None else ""
+                txn = all_transactions[idx]
+                is_withdrawal = txn["withdrawal"] > 0
 
-        matched_pairs = _detect_inter_bank_transfers(all_transactions)
-        transfer_set = set()
-        transfer_match_map = {}  # global_idx → matched partner global_idx
-        for w_idx, d_idx in matched_pairs:
-            transfer_set.add(w_idx)
-            transfer_set.add(d_idx)
-            transfer_match_map[w_idx] = d_idx
-            transfer_match_map[d_idx] = w_idx
+                classification_map[idx] = {
+                    "account_code": "103",
+                    "account_name": f"보통예금({partner_bank})" if partner_bank else "보통예금",
+                    "confidence": 0.98,
+                    "reasoning": f"은행간 이체 ({'출금→' + partner_bank if is_withdrawal else partner_bank + '→입금'})",
+                }
 
-        inter_bank_count = len(matched_pairs)
-        logger.info(f"[BankStatement BG] 은행간 이체 감지: {inter_bank_count}쌍")
+            # -- Step 3a: Rule-based pre-classification --
+            rule_classified_count = 0
+            llm_needed_indices = []
+            for gi in normal_indices:
+                rule_result = _rule_classify_bank_txn(all_transactions[gi])
+                if rule_result is not None:
+                    classification_map[gi] = rule_result
+                    rule_classified_count += 1
+                else:
+                    llm_needed_indices.append(gi)
 
-        _bank_classify_progress.update({
-            "step": "AI 분류 준비", "progress": 25,
-            "message": f"은행간 이체 {inter_bank_count}쌍 감지. AI 분류 준비 중...",
-        })
+            logger.info(
+                f"[BankStatement SSE] 규칙 분류: {rule_classified_count}건, "
+                f"LLM 필요: {len(llm_needed_indices)}건 "
+                f"(전체 {len(normal_indices)}건 중 {rule_classified_count/max(len(normal_indices),1)*100:.0f}% 규칙 처리)"
+            )
 
-        # ===== Phase 3: Classify (rules → LLM fallback, parallel) =====
-        phase3_start = time.time()
-        normal_indices = [i for i in range(total_transactions) if i not in transfer_set]
-        transfer_indices = list(transfer_set)
-
-        # Auto-classify inter-bank transfers as 보통예금(103)
-        classification_map = {}
-        for idx in transfer_indices:
-            partner_idx = transfer_match_map.get(idx)
-            partner_bank = all_transactions[partner_idx]["_bank_name"] if partner_idx is not None else ""
-            txn = all_transactions[idx]
-            is_withdrawal = txn["withdrawal"] > 0
-
-            classification_map[idx] = {
-                "account_code": "103",
-                "account_name": f"보통예금({partner_bank})" if partner_bank else "보통예금",
-                "confidence": 0.98,
-                "reasoning": f"은행간 이체 ({'출금→' + partner_bank if is_withdrawal else partner_bank + '→입금'})",
-            }
-
-        # ── Step 3a: Rule-based pre-classification ──────────────────
-        rule_classified_count = 0
-        llm_needed_indices = []
-        for gi in normal_indices:
-            rule_result = _rule_classify_bank_txn(all_transactions[gi])
-            if rule_result is not None:
-                classification_map[gi] = rule_result
-                rule_classified_count += 1
-            else:
-                llm_needed_indices.append(gi)
-
-        logger.info(
-            f"[BankStatement BG] 규칙 분류: {rule_classified_count}건, "
-            f"LLM 필요: {len(llm_needed_indices)}건 "
-            f"(전체 {len(normal_indices)}건 중 {rule_classified_count/max(len(normal_indices),1)*100:.0f}% 규칙 처리)"
-        )
-
-        _bank_classify_progress.update({
-            "step": "AI 분류", "progress": 30,
-            "message": (
+            rule_msg = (
                 f"규칙 분류 {rule_classified_count:,}건 완료. "
                 f"Claude AI로 나머지 {len(llm_needed_indices):,}건 분류 중..."
-            ),
-            "rule_classified": rule_classified_count,
-            "llm_classified": 0,
-            "total_to_classify": len(normal_indices),
-            "elapsed_seconds": round(time.time() - phase3_start, 1),
-        })
+            )
+            _bank_classify_progress.update({
+                "step": "AI 분류", "progress": 30,
+                "message": rule_msg,
+                "rule_classified": rule_classified_count,
+                "llm_classified": 0,
+                "total_to_classify": len(normal_indices),
+                "elapsed_seconds": round(time.time() - phase3_start, 1),
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류', 'progress': 30, 'message': rule_msg, 'rule_classified': rule_classified_count, 'llm_classified': 0}, ensure_ascii=False)}\n\n"
 
-        # ── Step 3b: LLM classification (batch=200, 3-way parallel) ─
-        if llm_needed_indices and settings.ANTHROPIC_API_KEY:
-            try:
-                from app.services.ai_classifier import STANDARD_ACCOUNTS
+            # -- Step 3b: LLM classification (batch=200, 3-way parallel) --
+            if llm_needed_indices and settings.ANTHROPIC_API_KEY:
+                try:
+                    from app.services.ai_classifier import STANDARD_ACCOUNTS
 
-                import anthropic
-                client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 
-                account_list = "\n".join(
-                    f"- {code}: {name}" for code, name in sorted(STANDARD_ACCOUNTS.items())
-                )
+                    account_list = "\n".join(
+                        f"- {code}: {name}" for code, name in sorted(STANDARD_ACCOUNTS.items())
+                    )
 
-                BATCH_SIZE = 200
-                llm_classified_so_far = 0
+                    BATCH_SIZE = 200
+                    llm_classified_so_far = 0
 
-                # Build all batches
-                all_batches = []
-                for batch_start in range(0, len(llm_needed_indices), BATCH_SIZE):
-                    batch_indices = llm_needed_indices[batch_start:batch_start + BATCH_SIZE]
-                    all_batches.append(batch_indices)
+                    all_batches = []
+                    for batch_start in range(0, len(llm_needed_indices), BATCH_SIZE):
+                        batch_indices = llm_needed_indices[batch_start:batch_start + BATCH_SIZE]
+                        all_batches.append(batch_indices)
 
-                total_batches = len(all_batches)
-                LLM_MODEL = "claude-sonnet-4-20250514"
+                    total_batches = len(all_batches)
+                    LLM_MODEL = "claude-sonnet-4-20250514"
 
-                def _call_llm_for_batch(batch_indices, batch_num):
-                    """Synchronous LLM call for one batch (runs in thread pool)."""
-                    txn_lines = []
-                    for i, gi in enumerate(batch_indices):
-                        txn = all_transactions[gi]
-                        txn_type = "입금" if txn["deposit"] > 0 else "출금"
-                        amount = txn["deposit"] if txn["deposit"] > 0 else txn["withdrawal"]
-                        txn_lines.append(
-                            f"{i+1}. [{txn['_bank_name']}] {txn_type} | 적요: {txn['description']} | "
-                            f"내용: {txn['content']} | 거래처: {txn['counterparty']} | 금액: {amount:,.0f}원"
-                        )
-                    txn_text = "\n".join(txn_lines)
+                    def _call_llm_for_batch(batch_indices, batch_num):
+                        """Synchronous LLM call for one batch (runs in thread pool)."""
+                        txn_lines = []
+                        for i, gi in enumerate(batch_indices):
+                            txn = all_transactions[gi]
+                            txn_type = "입금" if txn["deposit"] > 0 else "출금"
+                            amount = txn["deposit"] if txn["deposit"] > 0 else txn["withdrawal"]
+                            txn_lines.append(
+                                f"{i+1}. [{txn['_bank_name']}] {txn_type} | 적요: {txn['description']} | "
+                                f"내용: {txn['content']} | 거래처: {txn['counterparty']} | 금액: {amount:,.0f}원"
+                            )
+                        txn_text = "\n".join(txn_lines)
 
-                    prompt = f"""한국 식품제조회사(조인앤조인) 통장 거래 내역의 계정과목을 분류하세요.
+                        prompt = f"""한국 식품제조회사(조인앤조인) 통장 거래 내역의 계정과목을 분류하세요.
 **반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
 
 ## 계정과목 목록
@@ -2698,187 +2665,189 @@ async def _classify_bank_statements_bg(file_data: list, user_id: int, task_id: s
 ## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
 [{{"no":1,"account_code":"401","account_name":"상품매출","confidence":0.9,"reasoning":"매출 입금"}},...]"""
 
-                    try:
-                        response = client.messages.create(
-                            model=LLM_MODEL,
-                            max_tokens=16000,
-                            messages=[{"role": "user", "content": prompt}],
-                        )
-
-                        text = response.content[0].text.strip()
-                        if "```" in text:
-                            text = text.split("```")[1]
-                            if text.startswith("json"):
-                                text = text[4:]
-                            text = text.strip()
-
-                        batch_results = json.loads(text)
-
-                        mapped = {}
-                        for item_result in batch_results:
-                            no = item_result.get("no", 0) - 1
-                            if 0 <= no < len(batch_indices):
-                                gi = batch_indices[no]
-                                code = item_result.get("account_code", "")
-                                name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
-                                conf = min(float(item_result.get("confidence", 0.8)), 0.95)
-                                mapped[gi] = {
-                                    "account_code": code,
-                                    "account_name": name,
-                                    "confidence": conf,
-                                    "reasoning": item_result.get("reasoning", "AI 분석"),
-                                }
-
-                        logger.info(f"[BankStatement LLM] 배치 {batch_num}/{total_batches} 완료 ({len(mapped)}건)")
-                        return mapped
-
-                    except Exception as llm_err:
-                        logger.warning(f"[BankStatement LLM] 배치 {batch_num} 실패: {llm_err}")
-                        return {}
-
-                # Run batches in parallel groups of 3
-                PARALLEL = 3
-                loop = asyncio.get_running_loop()
-
-                for group_start in range(0, total_batches, PARALLEL):
-                    group_end = min(group_start + PARALLEL, total_batches)
-                    group_tasks = []
-                    for b_idx in range(group_start, group_end):
-                        group_tasks.append(
-                            loop.run_in_executor(
-                                _bank_llm_executor,
-                                _call_llm_for_batch,
-                                all_batches[b_idx],
-                                b_idx + 1,
+                        try:
+                            response = client.messages.create(
+                                model=LLM_MODEL,
+                                max_tokens=16000,
+                                messages=[{"role": "user", "content": prompt}],
                             )
-                        )
 
-                    group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
+                            text = response.content[0].text.strip()
+                            if "```" in text:
+                                text = text.split("```")[1]
+                                if text.startswith("json"):
+                                    text = text[4:]
+                                text = text.strip()
 
-                    for res in group_results:
-                        if isinstance(res, dict):
-                            classification_map.update(res)
-                            llm_classified_so_far += len(res)
-                        elif isinstance(res, Exception):
-                            logger.warning(f"[BankStatement LLM] 병렬 배치 예외: {res}")
+                            batch_results = json.loads(text)
 
-                    # Update progress after each parallel group
-                    elapsed = time.time() - phase3_start
-                    done_batches = min(group_end, total_batches)
-                    remaining_batches = total_batches - done_batches
-                    avg_per_batch = elapsed / max(done_batches, 1)
-                    # Remaining groups (ceil division by PARALLEL), each group runs in parallel
-                    remaining_groups = (remaining_batches + PARALLEL - 1) // PARALLEL if remaining_batches > 0 else 0
-                    est_remaining = remaining_groups * avg_per_batch
+                            mapped = {}
+                            for item_result in batch_results:
+                                no = item_result.get("no", 0) - 1
+                                if 0 <= no < len(batch_indices):
+                                    gi = batch_indices[no]
+                                    code = item_result.get("account_code", "")
+                                    name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+                                    conf = min(float(item_result.get("confidence", 0.8)), 0.95)
+                                    mapped[gi] = {
+                                        "account_code": code,
+                                        "account_name": name,
+                                        "confidence": conf,
+                                        "reasoning": item_result.get("reasoning", "AI 분석"),
+                                    }
 
-                    progress_pct = 30 + int(55 * (done_batches / max(total_batches, 1)))
-                    _bank_classify_progress.update({
-                        "progress": progress_pct,
-                        "message": (
+                            logger.info(f"[BankStatement LLM] 배치 {batch_num}/{total_batches} 완료 ({len(mapped)}건)")
+                            return mapped
+
+                        except Exception as llm_err:
+                            logger.warning(f"[BankStatement LLM] 배치 {batch_num} 실패: {llm_err}")
+                            return {}
+
+                    # Run batches in parallel groups of 3
+                    PARALLEL = 3
+                    loop = asyncio.get_running_loop()
+
+                    for group_start in range(0, total_batches, PARALLEL):
+                        group_end = min(group_start + PARALLEL, total_batches)
+                        group_tasks = []
+                        for b_idx in range(group_start, group_end):
+                            group_tasks.append(
+                                loop.run_in_executor(
+                                    _bank_llm_executor,
+                                    _call_llm_for_batch,
+                                    all_batches[b_idx],
+                                    b_idx + 1,
+                                )
+                            )
+
+                        group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
+
+                        for res in group_results:
+                            if isinstance(res, dict):
+                                classification_map.update(res)
+                                llm_classified_so_far += len(res)
+                            elif isinstance(res, Exception):
+                                logger.warning(f"[BankStatement LLM] 병렬 배치 예외: {res}")
+
+                        # Update progress after each parallel group
+                        elapsed = time.time() - phase3_start
+                        done_batches = min(group_end, total_batches)
+                        remaining_batches = total_batches - done_batches
+                        avg_per_batch = elapsed / max(done_batches, 1)
+                        remaining_groups = (remaining_batches + PARALLEL - 1) // PARALLEL if remaining_batches > 0 else 0
+                        est_remaining = remaining_groups * avg_per_batch
+
+                        progress_pct = 30 + int(55 * (done_batches / max(total_batches, 1)))
+                        llm_msg = (
                             f"AI 분류 중... 배치 {done_batches}/{total_batches} "
                             f"(규칙: {rule_classified_count:,}, AI: {llm_classified_so_far:,}, "
                             f"경과: {elapsed:.0f}초, 남은 예상: {est_remaining:.0f}초)"
-                        ),
-                        "processed_rows": len(transfer_indices) + rule_classified_count + llm_classified_so_far,
-                        "rule_classified": rule_classified_count,
-                        "llm_classified": llm_classified_so_far,
-                        "total_to_classify": len(normal_indices),
-                        "elapsed_seconds": round(elapsed, 1),
-                        "estimated_remaining": round(est_remaining, 1),
-                    })
+                        )
+                        _bank_classify_progress.update({
+                            "progress": progress_pct,
+                            "message": llm_msg,
+                            "processed_rows": len(transfer_indices) + rule_classified_count + llm_classified_so_far,
+                            "rule_classified": rule_classified_count,
+                            "llm_classified": llm_classified_so_far,
+                            "total_to_classify": len(normal_indices),
+                            "elapsed_seconds": round(elapsed, 1),
+                            "estimated_remaining": round(est_remaining, 1),
+                        })
+                        yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류', 'progress': progress_pct, 'message': llm_msg, 'rule_classified': rule_classified_count, 'llm_classified': llm_classified_so_far, 'elapsed_seconds': round(elapsed, 1), 'estimated_remaining': round(est_remaining, 1)}, ensure_ascii=False)}\n\n"
 
-                logger.info(
-                    f"[BankStatement BG] LLM 분류 완료: {llm_classified_so_far}건, "
-                    f"총 소요: {time.time() - phase3_start:.1f}초"
-                )
+                    logger.info(
+                        f"[BankStatement SSE] LLM 분류 완료: {llm_classified_so_far}건, "
+                        f"총 소요: {time.time() - phase3_start:.1f}초"
+                    )
 
-            except Exception as llm_setup_err:
-                logger.warning(f"[BankStatement BG] LLM 분류 실패: {llm_setup_err}")
-        elif llm_needed_indices and not settings.ANTHROPIC_API_KEY:
-            logger.warning("[BankStatement BG] ANTHROPIC_API_KEY 미설정 — LLM 분류 생략")
+                except Exception as llm_setup_err:
+                    logger.warning(f"[BankStatement SSE] LLM 분류 실패: {llm_setup_err}")
+            elif llm_needed_indices and not settings.ANTHROPIC_API_KEY:
+                logger.warning("[BankStatement SSE] ANTHROPIC_API_KEY 미설정 — LLM 분류 생략")
 
-        phase3_elapsed = time.time() - phase3_start
-        logger.info(
-            f"[BankStatement BG] Phase 3 총 소요: {phase3_elapsed:.1f}초 "
-            f"(이체: {len(transfer_indices)}, 규칙: {rule_classified_count}, "
-            f"LLM: {len(llm_needed_indices)}건)"
-        )
+            phase3_elapsed = time.time() - phase3_start
+            logger.info(
+                f"[BankStatement SSE] Phase 3 총 소요: {phase3_elapsed:.1f}초 "
+                f"(이체: {len(transfer_indices)}, 규칙: {rule_classified_count}, "
+                f"LLM: {len(llm_needed_indices)}건)"
+            )
 
-        # ===== Phase 4: Build results =====
-        _bank_classify_progress.update({
-            "step": "결과 조립", "progress": 88,
-            "message": "결과를 정리하고 있습니다...",
-        })
+            # ===== Phase 4: Build results =====
+            _bank_classify_progress.update({
+                "step": "결과 조립", "progress": 88,
+                "message": "결과를 정리하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '결과 조립', 'progress': 88, 'message': '결과를 정리하고 있습니다...'}, ensure_ascii=False)}\n\n"
 
-        results = []
-        for i, txn in enumerate(all_transactions):
-            cls = classification_map.get(i)
-            is_transfer = i in transfer_set
-            partner_idx = transfer_match_map.get(i)
+            results = []
+            for i, txn in enumerate(all_transactions):
+                cls = classification_map.get(i)
+                is_transfer = i in transfer_set
+                partner_idx = transfer_match_map.get(i)
 
-            transfer_match_info = None
-            if partner_idx is not None:
-                partner = all_transactions[partner_idx]
-                transfer_match_info = {
-                    "matched_index": partner_idx,
-                    "matched_bank": partner["_bank_name"],
-                    "matched_account": partner["_account_number"],
-                    "matched_type": "입금" if partner["deposit"] > 0 else "출금",
+                transfer_match_info = None
+                if partner_idx is not None:
+                    partner = all_transactions[partner_idx]
+                    transfer_match_info = {
+                        "matched_index": partner_idx,
+                        "matched_bank": partner["_bank_name"],
+                        "matched_account": partner["_account_number"],
+                        "matched_type": "입금" if partner["deposit"] > 0 else "출금",
+                    }
+
+                amount = txn["deposit"] if txn["deposit"] > 0 else txn["withdrawal"]
+
+                result_item = {
+                    "bank_name": txn["_bank_name"],
+                    "account_number": txn["_account_number"],
+                    "row_index": i,
+                    "transaction_date": txn["transaction_date"],
+                    "description": txn["description"],
+                    "content": txn["content"],
+                    "deposit": txn["deposit"],
+                    "withdrawal": txn["withdrawal"],
+                    "balance": txn["balance"],
+                    "branch": txn.get("branch", ""),
+                    "counterparty": txn.get("counterparty", ""),
+                    "remarks": txn.get("remarks", ""),
+                    "is_inter_bank_transfer": is_transfer,
+                    "transfer_match": transfer_match_info,
+                    "predicted_account_code": cls["account_code"] if cls else "",
+                    "predicted_account_name": cls["account_name"] if cls else "",
+                    "confidence": cls["confidence"] if cls else 0.0,
+                    "reasoning": cls.get("reasoning", "") if cls else "",
+                    "auto_confirm": (cls["confidence"] >= 0.85) if cls else False,
+                    "needs_review": (cls["confidence"] < 0.85) if cls else True,
+                    "amount": amount,
+                    "journal_entry": {
+                        "debit_account_code": cls["account_code"] if cls and txn["withdrawal"] > 0 else "103",
+                        "debit_account_name": cls["account_name"] if cls and txn["withdrawal"] > 0 else f"보통예금({txn['_bank_name']})",
+                        "debit_amount": amount,
+                        "credit_account_code": "103" if txn["withdrawal"] > 0 else (cls["account_code"] if cls else ""),
+                        "credit_account_name": f"보통예금({txn['_bank_name']})" if txn["withdrawal"] > 0 else (cls["account_name"] if cls else ""),
+                        "credit_amount": amount,
+                        "is_balanced": True,
+                    } if cls else None,
                 }
+                results.append(result_item)
 
-            amount = txn["deposit"] if txn["deposit"] > 0 else txn["withdrawal"]
+            # ===== Phase 5: Save to DB and respond =====
+            _bank_classify_progress.update({
+                "step": "결과 저장", "progress": 92,
+                "message": "분류 결과를 저장하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '결과 저장', 'progress': 92, 'message': '분류 결과를 저장하고 있습니다...'}, ensure_ascii=False)}\n\n"
 
-            result_item = {
-                "bank_name": txn["_bank_name"],
-                "account_number": txn["_account_number"],
-                "row_index": i,
-                "transaction_date": txn["transaction_date"],
-                "description": txn["description"],
-                "content": txn["content"],
-                "deposit": txn["deposit"],
-                "withdrawal": txn["withdrawal"],
-                "balance": txn["balance"],
-                "branch": txn.get("branch", ""),
-                "counterparty": txn.get("counterparty", ""),
-                "remarks": txn.get("remarks", ""),
-                "is_inter_bank_transfer": is_transfer,
-                "transfer_match": transfer_match_info,
-                "predicted_account_code": cls["account_code"] if cls else "",
-                "predicted_account_name": cls["account_name"] if cls else "",
-                "confidence": cls["confidence"] if cls else 0.0,
-                "reasoning": cls.get("reasoning", "") if cls else "",
-                "auto_confirm": (cls["confidence"] >= 0.85) if cls else False,
-                "needs_review": (cls["confidence"] < 0.85) if cls else True,
-                "amount": amount,
-                "journal_entry": {
-                    "debit_account_code": cls["account_code"] if cls and txn["withdrawal"] > 0 else "103",
-                    "debit_account_name": cls["account_name"] if cls and txn["withdrawal"] > 0 else f"보통예금({txn['_bank_name']})",
-                    "debit_amount": amount,
-                    "credit_account_code": "103" if txn["withdrawal"] > 0 else (cls["account_code"] if cls else ""),
-                    "credit_account_name": f"보통예금({txn['_bank_name']})" if txn["withdrawal"] > 0 else (cls["account_name"] if cls else ""),
-                    "credit_amount": amount,
-                    "is_balanced": True,
-                } if cls else None,
-            }
-            results.append(result_item)
+            # Statistics
+            auto_confirm_count = sum(1 for r in results if r.get("auto_confirm"))
+            needs_review_count = sum(1 for r in results if r.get("needs_review"))
+            avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
 
-        # ===== Phase 5: Save to DB and respond =====
-        _bank_classify_progress.update({
-            "step": "결과 저장", "progress": 92,
-            "message": "분류 결과를 저장하고 있습니다...",
-        })
-
-        # Statistics
-        auto_confirm_count = sum(1 for r in results if r.get("auto_confirm"))
-        needs_review_count = sum(1 for r in results if r.get("needs_review"))
-        avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
-
-        # Save to DB (use fresh session since we're in a background task)
-        upload_id = None
-        try:
-            from app.models.ai import AIDataUploadHistory, UploadStatus
-            filenames = ", ".join(fd["filename"] for fd in file_data)
-            async with async_session_factory() as db:
+            # Save to DB (use request-scoped session)
+            upload_id = None
+            try:
+                from app.models.ai import AIDataUploadHistory, UploadStatus
+                filenames = ", ".join(fd["filename"] for fd in file_data)
                 upload_history = AIDataUploadHistory(
                     filename=f"통장분류: {filenames}"[:500],
                     file_size=0,
@@ -2904,33 +2873,37 @@ async def _classify_bank_statements_bg(file_data: list, user_id: int, task_id: s
                 await db.flush()
                 upload_id = upload_history.id
                 await db.commit()
-                logger.info(f"[BankStatement BG] DB 저장 완료 (upload_id={upload_id})")
-        except Exception as save_err:
-            logger.warning(f"[BankStatement BG] DB 저장 실패 (결과는 정상 반환): {save_err}")
+                logger.info(f"[BankStatement SSE] DB 저장 완료 (upload_id={upload_id})")
+            except Exception as save_err:
+                logger.warning(f"[BankStatement SSE] DB 저장 실패 (결과는 정상 반환): {save_err}")
 
-        _bank_classify_progress.update({
-            "status": "completed", "step": "완료", "progress": 100,
-            "message": f"분류 완료! {total_transactions:,}건 (자동확정: {auto_confirm_count:,}, 검토필요: {needs_review_count:,}, 은행간이체: {inter_bank_count}쌍)",
-            "processed_rows": total_transactions,
-        })
+            _bank_classify_progress.update({
+                "status": "completed", "step": "완료", "progress": 100,
+                "message": f"분류 완료! {total_transactions:,}건 (자동확정: {auto_confirm_count:,}, 검토필요: {needs_review_count:,}, 은행간이체: {inter_bank_count}쌍)",
+                "processed_rows": total_transactions,
+            })
 
-        _bank_classify_result = {
-            "status": "completed",
-            "task_id": task_id,
-            "upload_id": upload_id,
-            "banks": banks_info,
-            "total_transactions": total_transactions,
-            "inter_bank_transfers": inter_bank_count,
-            "auto_confirmed": auto_confirm_count,
-            "needs_review": needs_review_count,
-            "average_confidence": round(avg_confidence, 4),
-            "results": results,
-        }
+            # Send final result
+            final_result = {
+                "status": "completed",
+                "upload_id": upload_id,
+                "banks": banks_info,
+                "total_transactions": total_transactions,
+                "inter_bank_transfers": inter_bank_count,
+                "auto_confirmed": auto_confirm_count,
+                "needs_review": needs_review_count,
+                "average_confidence": round(avg_confidence, 4),
+                "results": results,
+            }
+            yield f"data: {json.dumps({'type': 'result', 'data': final_result}, ensure_ascii=False, default=str)}\n\n"
+            yield "data: {\"type\": \"done\"}\n\n"
 
-    except Exception as e:
-        logger.error(f"[BankStatement BG] Error: {e}", exc_info=True)
-        _bank_classify_progress.update({
-            "status": "failed", "step": "오류",
-            "message": f"처리 오류: {str(e)[:200]}",
-        })
-        _bank_classify_result = {"status": "failed", "task_id": task_id, "error": str(e)[:200]}
+        except Exception as e:
+            logger.error(f"[BankStatement SSE] Error: {e}", exc_info=True)
+            _bank_classify_progress.update({
+                "status": "failed", "step": "오류",
+                "message": f"처리 오류: {str(e)[:200]}",
+            })
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
