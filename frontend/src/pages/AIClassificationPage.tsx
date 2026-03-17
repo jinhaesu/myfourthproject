@@ -1418,36 +1418,22 @@ export default function AIClassificationPage() {
             </>
           )}
 
-          {/* Bank Summary Card (shown when bankResults exists) */}
+          {/* Bank Summary - compact inline banner */}
           {bankResults && bankResults.banks && bankResults.banks.length > 0 && (
-            <div className="bg-white rounded-lg shadow border overflow-hidden">
-              <div className="p-4 border-b">
-                <h3 className="text-sm font-medium text-gray-700">은행별 요약</h3>
-              </div>
-              <div className="p-4 space-y-2">
+            <div className="bg-teal-50 border border-teal-200 rounded-lg p-3">
+              <div className="flex items-center gap-4 flex-wrap text-xs">
                 {bankResults.banks.map((bank: any, idx: number) => (
-                  <div key={idx} className="flex items-center gap-3 text-sm">
-                    <span className="text-lg">🏦</span>
-                    <span className="font-medium text-gray-800">{bank.bank_name}</span>
-                    {bank.account_number && (
-                      <span className="text-gray-400">({bank.account_number})</span>
-                    )}
-                    <span className="text-gray-500">|</span>
-                    <span className="text-gray-600">{fmtNum(bank.transaction_count || 0)}건</span>
-                    <span className="text-gray-500">|</span>
-                    <span className="text-green-600">
-                      입금 {fmtNum(bank.total_deposit || 0)}
-                    </span>
-                    <span className="text-red-600">
-                      출금 {fmtNum(bank.total_withdrawal || 0)}
-                    </span>
-                  </div>
+                  <span key={idx} className="inline-flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded border border-teal-200">
+                    <span className="font-semibold text-gray-800">{bank.bank_name}</span>
+                    <span className="text-gray-400">{fmtNum(bank.transaction_count || 0)}건</span>
+                    <span className="text-green-600">+{fmtNum(bank.total_deposit || 0)}</span>
+                    <span className="text-red-500">-{fmtNum(bank.total_withdrawal || 0)}</span>
+                  </span>
                 ))}
                 {bankResults.inter_bank_transfers > 0 && (
-                  <div className="flex items-center gap-2 text-sm text-amber-700 mt-2 pt-2 border-t border-gray-100">
-                    <span>&#9888;&#65039;</span>
-                    <span>은행간 이체 {bankResults.inter_bank_transfers}건 감지 (자동 매칭됨)</span>
-                  </div>
+                  <span className="inline-flex items-center gap-1 bg-purple-100 px-2.5 py-1.5 rounded border border-purple-200 text-purple-700">
+                    은행간 이체 {bankResults.inter_bank_transfers}건
+                  </span>
                 )}
               </div>
             </div>
@@ -1829,48 +1815,58 @@ export default function AIClassificationPage() {
             </div>
           ) : null}
 
-          {/* 분류 이력 목록 */}
+          {/* 분류 이력 목록 — 카드/통장 구분 */}
           <div className="bg-white rounded-lg shadow border">
             <div className="p-4 border-b">
               <h3 className="text-lg font-medium">분류 이력</h3>
-              <p className="text-sm text-gray-500 mt-1">과거 분류 결과를 클릭하면 다시 불러올 수 있습니다.</p>
+              <p className="text-sm text-gray-500 mt-1">클릭하면 해당 분류 결과를 다시 불러옵니다.</p>
             </div>
-            {uploadHistory && uploadHistory.filter(u => u.upload_type === 'classification').length > 0 ? (
+            {uploadHistory && uploadHistory.filter(u => u.upload_type === 'classification' || u.upload_type === 'bank_classification').length > 0 ? (
               <div className="divide-y divide-gray-100">
                 {uploadHistory
-                  .filter(u => u.upload_type === 'classification')
-                  .map(u => (
-                    <div
-                      key={u.id}
-                      className={`flex items-center justify-between px-4 py-3 hover:bg-gray-50 ${
-                        currentUploadId === u.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''
-                      }`}
-                    >
+                  .filter(u => u.upload_type === 'classification' || u.upload_type === 'bank_classification')
+                  .map(u => {
+                    const isBank = u.upload_type === 'bank_classification' || u.filename.includes('통장')
+                    const isCurrent = currentUploadId === u.id
+                    return (
                       <div
-                        className="flex-1 cursor-pointer"
+                        key={u.id}
+                        className={`flex items-center justify-between px-4 py-3 hover:bg-gray-50 cursor-pointer transition-colors ${
+                          isCurrent ? 'bg-blue-50 border-l-4 border-blue-500' : ''
+                        }`}
                         onClick={() => handleLoadClassifyResult(u.id)}
                       >
-                        <span className="font-medium text-sm">{u.filename}</span>
-                        <span className="text-xs text-gray-400 ml-3">
-                          {u.row_count}건 | {u.created_at ? new Date(u.created_at).toLocaleString('ko-KR') : '-'}
-                        </span>
-                        {currentUploadId === u.id && (
-                          <span className="ml-2 text-xs text-blue-600 font-medium">현재 보는 중</span>
-                        )}
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          {isBank ? (
+                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-teal-100 text-teal-700 font-medium">통장</span>
+                          ) : (
+                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-purple-100 text-purple-700 font-medium">카드</span>
+                          )}
+                          <span className="font-medium text-sm truncate">{u.filename}</span>
+                          <span className="text-xs text-gray-400 flex-shrink-0">
+                            {u.row_count || u.saved_count || 0}건
+                          </span>
+                          <span className="text-xs text-gray-400 flex-shrink-0">
+                            {u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : ''}
+                          </span>
+                          {isCurrent && (
+                            <span className="flex-shrink-0 text-xs text-blue-600 font-medium bg-blue-100 px-1.5 py-0.5 rounded">보는 중</span>
+                          )}
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteUpload(u.id, u.filename) }}
+                          disabled={loading}
+                          className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 flex-shrink-0"
+                        >
+                          삭제
+                        </button>
                       </div>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteUpload(u.id, u.filename) }}
-                        disabled={loading}
-                        className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50"
-                      >
-                        삭제
-                      </button>
-                    </div>
-                  ))}
+                    )
+                  })}
               </div>
             ) : (
               <div className="p-8 text-center text-gray-400 text-sm">
-                분류 이력이 없습니다. 자동 분류 탭에서 파일을 업로드하여 분류를 실행하세요.
+                분류 이력이 없습니다. 자동 분류 탭에서 파일을 업로드하여 분류를 시작하세요.
               </div>
             )}
           </div>
