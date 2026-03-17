@@ -2843,39 +2843,40 @@ async def classify_bank_statements(
             needs_review_count = sum(1 for r in results if r.get("needs_review"))
             avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
 
-            # Save to DB (use request-scoped session)
+            # Save to DB (use separate session — request session may be stale in SSE)
             upload_id = None
             try:
                 from app.models.ai import AIDataUploadHistory, UploadStatus
                 filenames = ", ".join(fd["filename"] for fd in file_data)
-                upload_history = AIDataUploadHistory(
-                    filename=f"통장분류: {filenames}"[:500],
-                    file_size=0,
-                    file_type="bank_statement",
-                    upload_type="classification",
-                    uploaded_by=user_id,
-                    status=UploadStatus.COMPLETED,
-                    row_count=total_transactions,
-                    saved_count=total_transactions,
-                    result_json=json.dumps({
-                        "banks": banks_info,
-                        "results": results,
-                        "stats": {
-                            "total_transactions": total_transactions,
-                            "inter_bank_transfers": inter_bank_count,
-                            "auto_confirmed": auto_confirm_count,
-                            "needs_review": needs_review_count,
-                            "average_confidence": round(avg_confidence, 4),
-                        }
-                    }, ensure_ascii=False, default=str),
-                )
-                db.add(upload_history)
-                await db.flush()
-                upload_id = upload_history.id
-                await db.commit()
+                async with async_session_factory() as save_db:
+                    upload_history = AIDataUploadHistory(
+                        filename=f"통장분류: {filenames}"[:500],
+                        file_size=0,
+                        file_type="bank_statement",
+                        upload_type="classification",
+                        uploaded_by=user_id,
+                        status=UploadStatus.COMPLETED,
+                        row_count=total_transactions,
+                        saved_count=total_transactions,
+                        result_json=json.dumps({
+                            "banks": banks_info,
+                            "results": results,
+                            "stats": {
+                                "total_transactions": total_transactions,
+                                "inter_bank_transfers": inter_bank_count,
+                                "auto_confirmed": auto_confirm_count,
+                                "needs_review": needs_review_count,
+                                "average_confidence": round(avg_confidence, 4),
+                            }
+                        }, ensure_ascii=False, default=str),
+                    )
+                    save_db.add(upload_history)
+                    await save_db.flush()
+                    upload_id = upload_history.id
+                    await save_db.commit()
                 logger.info(f"[BankStatement SSE] DB 저장 완료 (upload_id={upload_id})")
             except Exception as save_err:
-                logger.warning(f"[BankStatement SSE] DB 저장 실패 (결과는 정상 반환): {save_err}")
+                logger.error(f"[BankStatement SSE] DB 저장 실패: {save_err}", exc_info=True)
 
             _bank_classify_progress.update({
                 "status": "completed", "step": "완료", "progress": 100,
