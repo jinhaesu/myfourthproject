@@ -1945,13 +1945,36 @@ async def get_classification_result(
 
     try:
         data = json.loads(upload.result_json)
-        return {
+        stats = data.get("stats", {})
+        results = data.get("results", [])
+        banks = data.get("banks", None)
+
+        # 통장 분류와 카드 분류 모두 호환되도록 통일
+        total_rows = (
+            stats.get("total_rows") or
+            stats.get("total_transactions") or
+            data.get("total_rows") or
+            len(results)
+        )
+
+        resp = {
             "upload_id": upload.id,
             "filename": upload.filename,
+            "file_type": upload.file_type,
             "created_at": upload.created_at.isoformat() if upload.created_at else None,
-            **data.get("stats", {}),
-            "results": data.get("results", []),
+            "total_rows": total_rows,
+            "auto_confirmed": stats.get("auto_confirmed", 0),
+            "needs_review": stats.get("needs_review", 0),
+            "average_confidence": stats.get("average_confidence", 0),
+            "total_amount": stats.get("total_amount", 0),
+            "results": results,
         }
+        # 통장 분류인 경우 은행 정보 포함
+        if banks is not None:
+            resp["banks"] = banks
+            resp["inter_bank_transfers"] = stats.get("inter_bank_transfers", 0)
+            resp["is_bank_statement"] = True
+        return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"결과 파싱 실패: {str(e)[:200]}")
 

@@ -695,21 +695,63 @@ export default function AIClassificationPage() {
     setActiveTab('classify')
   }
 
-  // Load saved classification result
+  // Load saved classification result (카드 + 통장 모두 지원)
   const handleLoadClassifyResult = async (uploadId: number) => {
     setLoading(true)
     try {
       const response = await aiClassificationApi.getClassifyResult(uploadId)
-      setClassificationResults(response.data.results || [])
+      const data = response.data
+      const results = data.results || []
+
+      // 통장 분류인 경우: bank 결과 형식을 classificationResults 형식으로 변환
+      if (data.is_bank_statement && results.length > 0 && results[0].bank_name) {
+        const converted = results.map((r: any, idx: number) => ({
+          row_index: idx,
+          description: r.description,
+          merchant_name: r.counterparty || r.description,
+          amount: r.withdrawal || r.deposit || r.amount || 0,
+          transaction_date: r.transaction_date,
+          predicted_account_code: r.predicted_account_code,
+          predicted_account_name: r.predicted_account_name,
+          confidence: r.confidence || 0,
+          auto_confirm: (r.confidence || 0) > 0.8,
+          needs_review: (r.confidence || 0) < 0.6,
+          review_reasons: r.review_reasons || [],
+          reasoning: r.reasoning || '',
+          alternatives: [],
+          memo: `[${r.bank_name}] ${r.description}`,
+          journal_entry: r.journal_entry || {
+            debit_account_code: r.is_deposit ? '103' : r.predicted_account_code,
+            debit_account_name: r.is_deposit ? '보통예금' : r.predicted_account_name,
+            credit_account_code: r.is_deposit ? r.predicted_account_code : '103',
+            credit_account_name: r.is_deposit ? r.predicted_account_name : '보통예금',
+            debit_amount: r.withdrawal || r.deposit || r.amount || 0,
+            credit_amount: r.withdrawal || r.deposit || r.amount || 0,
+            vat_amount: 0,
+            supply_amount: 0,
+            is_balanced: true,
+          }
+        }))
+        setClassificationResults(converted)
+        setBankResults({
+          banks: data.banks || [],
+          inter_bank_transfers: data.inter_bank_transfers || 0,
+          total_transactions: data.total_rows || converted.length,
+        })
+      } else {
+        setClassificationResults(results)
+        setBankResults(null)
+      }
+
       setSelectedRows(new Set())
       setClassifyStats({
-        total: response.data.total_rows || 0,
-        autoConfirmed: response.data.auto_confirmed || 0,
-        needsReview: response.data.needs_review || 0,
-        avgConfidence: response.data.average_confidence || 0,
-        totalAmount: response.data.total_amount || 0,
-        isCardFormat: response.data.is_card_format || false,
-        reviewReasonCounts: response.data.review_reason_counts || {},
+        total: data.total_rows || results.length,
+        autoConfirmed: data.auto_confirmed || 0,
+        needsReview: data.needs_review || 0,
+        avgConfidence: data.average_confidence || 0,
+        totalAmount: data.total_amount || 0,
+        isCardFormat: data.is_card_format || false,
+        reviewReasonCounts: data.review_reason_counts || {},
       })
       setCurrentUploadId(uploadId)
       setActiveTab('results')
