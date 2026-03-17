@@ -1821,12 +1821,12 @@ export default function AIClassificationPage() {
               <h3 className="text-lg font-medium">분류 이력</h3>
               <p className="text-sm text-gray-500 mt-1">클릭하면 해당 분류 결과를 다시 불러옵니다.</p>
             </div>
-            {uploadHistory && uploadHistory.filter(u => u.upload_type === 'classification' || u.upload_type === 'bank_classification').length > 0 ? (
+            {uploadHistory && uploadHistory.filter(u => u.upload_type !== 'historical' && u.upload_type !== 'journal_entry').length > 0 ? (
               <div className="divide-y divide-gray-100">
                 {uploadHistory
-                  .filter(u => u.upload_type === 'classification' || u.upload_type === 'bank_classification')
+                  .filter(u => u.upload_type !== 'historical' && u.upload_type !== 'journal_entry')
                   .map(u => {
-                    const isBank = u.upload_type === 'bank_classification' || u.filename.includes('통장')
+                    const isBank = u.upload_type === 'bank_classification' || (u.filename || '').includes('통장')
                     const isCurrent = currentUploadId === u.id
                     return (
                       <div
