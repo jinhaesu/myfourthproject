@@ -91,7 +91,11 @@ interface ClassificationResult {
 type TabType = 'status' | 'upload' | 'classify' | 'results'
 
 export default function AIClassificationPage() {
-  const [activeTab, setActiveTab] = useState<TabType>('status')
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    // 페이지 복귀 시 이전 탭 복원
+    const saved = sessionStorage.getItem('ai_classification_active_tab')
+    return (saved as TabType) || 'status'
+  })
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -103,7 +107,12 @@ export default function AIClassificationPage() {
   const [classifyFile, setClassifyFile] = useState<File | null>(null)
   const [classificationResults, setClassificationResults] = useState<ClassificationResult[]>([])
   const [classifyStats, setClassifyStats] = useState<any>(null)
-  const [currentUploadId, setCurrentUploadId] = useState<number | null>(null)
+  const [currentUploadId, setCurrentUploadId] = useState<number | null>(() => {
+    // sessionStorage에서 마지막으로 본 upload ID 복원
+    const saved = sessionStorage.getItem('ai_classification_current_upload_id')
+    return saved ? Number(saved) : null
+  })
+  const autoLoadAttempted = useRef(false)
 
   // 통장 일괄 분류 states
   const [bankUploadMode, setBankUploadMode] = useState(false)
@@ -367,6 +376,47 @@ export default function AIClassificationPage() {
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
+
+  // activeTab 변경 시 sessionStorage에 저장
+  useEffect(() => {
+    sessionStorage.setItem('ai_classification_active_tab', activeTab)
+  }, [activeTab])
+
+  // currentUploadId 변경 시 sessionStorage에 저장
+  useEffect(() => {
+    if (currentUploadId !== null) {
+      sessionStorage.setItem('ai_classification_current_upload_id', String(currentUploadId))
+    } else {
+      sessionStorage.removeItem('ai_classification_current_upload_id')
+    }
+  }, [currentUploadId])
+
+  // Results 탭 진입 시 분류 결과 자동 로드
+  useEffect(() => {
+    if (activeTab !== 'results') {
+      autoLoadAttempted.current = false
+      return
+    }
+    if (classificationResults.length > 0) return
+    if (autoLoadAttempted.current) return
+    if (!uploadHistory || uploadHistory.length === 0) return
+
+    autoLoadAttempted.current = true
+
+    // sessionStorage에 저장된 uploadId가 있으면 우선 로드
+    const savedId = currentUploadId
+    const classificationHistory = uploadHistory.filter(
+      u => u.upload_type !== 'historical' && u.upload_type !== 'journal_entry'
+    )
+
+    if (classificationHistory.length === 0) return
+
+    const targetId = savedId && classificationHistory.some(u => u.id === savedId)
+      ? savedId
+      : classificationHistory[0].id  // 가장 최근 분류 이력
+
+    handleLoadClassifyResult(targetId)
+  }, [activeTab, classificationResults.length, uploadHistory, currentUploadId])
 
   // Handle model training
   const handleTrainModel = async () => {
@@ -703,6 +753,7 @@ export default function AIClassificationPage() {
     setClassifyFile(null)
     setCurrentUploadId(null)
     setBankResults(null)
+    autoLoadAttempted.current = false
     setActiveTab('classify')
   }
 
@@ -1866,7 +1917,17 @@ export default function AIClassificationPage() {
                 </div>
               </div>
             </div>
-          ) : null}
+          ) : loading ? (
+            <div className="bg-white rounded-lg shadow border p-8 text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3"></div>
+              <p className="text-gray-500">분류 결과를 불러오는 중...</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-lg shadow border p-8 text-center">
+              <p className="text-gray-500 mb-2">아래 분류 이력에서 항목을 클릭하면 결과를 확인할 수 있습니다.</p>
+              <p className="text-sm text-gray-400">또는 자동 분류 탭에서 새로운 파일을 분류하세요.</p>
+            </div>
+          )}
 
           {/* 분류 이력 목록 — 카드/통장 구분 */}
           <div className="bg-white rounded-lg shadow border">
