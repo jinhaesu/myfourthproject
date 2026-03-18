@@ -2466,6 +2466,30 @@ async def classify_bank_statements(
     async def event_stream():
         import re
 
+        # SSE 시작 직후, 분류 이력 레코드를 먼저 생성 (status=processing)
+        pre_upload_id = None
+        try:
+            from app.models.ai import AIDataUploadHistory, UploadStatus
+            filenames = ", ".join(fd["filename"] for fd in file_data)
+            async with async_session_factory() as pre_db:
+                pre_upload = AIDataUploadHistory(
+                    filename=f"통장분류: {filenames}"[:500],
+                    file_size=sum(len(fd["content"]) for fd in file_data),
+                    file_type="bank_statement",
+                    upload_type="classification",
+                    uploaded_by=user_id,
+                    status=UploadStatus.PROCESSING,
+                    row_count=0,
+                    saved_count=0,
+                )
+                pre_db.add(pre_upload)
+                await pre_db.flush()
+                pre_upload_id = pre_upload.id
+                await pre_db.commit()
+            logger.info(f"[BankStatement SSE] 이력 레코드 사전 생성 (upload_id={pre_upload_id})")
+        except Exception as pre_err:
+            logger.error(f"[BankStatement SSE] 이력 사전 생성 실패: {pre_err}", exc_info=True)
+
         try:
             num_files = len(file_data)
 
@@ -2843,40 +2867,75 @@ async def classify_bank_statements(
             needs_review_count = sum(1 for r in results if r.get("needs_review"))
             avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
 
-            # Save to DB (use separate session — request session may be stale in SSE)
-            upload_id = None
+            # Save to DB — 사전 생성된 레코드를 업데이트 (또는 새로 생성)
+            upload_id = pre_upload_id
             try:
                 from app.models.ai import AIDataUploadHistory, UploadStatus
-                filenames = ", ".join(fd["filename"] for fd in file_data)
+
+                result_json_str = json.dumps({
+                    "banks": banks_info,
+                    "results": results,
+                    "stats": {
+                        "total_transactions": total_transactions,
+                        "inter_bank_transfers": inter_bank_count,
+                        "auto_confirmed": auto_confirm_count,
+                        "needs_review": needs_review_count,
+                        "average_confidence": round(avg_confidence, 4),
+                    }
+                }, ensure_ascii=False, default=str)
+
                 async with async_session_factory() as save_db:
-                    upload_history = AIDataUploadHistory(
-                        filename=f"통장분류: {filenames}"[:500],
-                        file_size=0,
-                        file_type="bank_statement",
-                        upload_type="classification",
-                        uploaded_by=user_id,
-                        status=UploadStatus.COMPLETED,
-                        row_count=total_transactions,
-                        saved_count=total_transactions,
-                        result_json=json.dumps({
-                            "banks": banks_info,
-                            "results": results,
-                            "stats": {
-                                "total_transactions": total_transactions,
-                                "inter_bank_transfers": inter_bank_count,
-                                "auto_confirmed": auto_confirm_count,
-                                "needs_review": needs_review_count,
-                                "average_confidence": round(avg_confidence, 4),
-                            }
-                        }, ensure_ascii=False, default=str),
-                    )
-                    save_db.add(upload_history)
-                    await save_db.flush()
-                    upload_id = upload_history.id
-                    await save_db.commit()
-                logger.info(f"[BankStatement SSE] DB 저장 완료 (upload_id={upload_id})")
+                    if pre_upload_id:
+                        # 사전 생성 레코드 업데이트
+                        upload_rec = await save_db.get(AIDataUploadHistory, pre_upload_id)
+                        if upload_rec:
+                            upload_rec.status = UploadStatus.COMPLETED
+                            upload_rec.row_count = total_transactions
+                            upload_rec.saved_count = total_transactions
+                            upload_rec.result_json = result_json_str
+                            upload_rec.error_message = None
+                            await save_db.commit()
+                            logger.info(f"[BankStatement SSE] 기존 레코드 업데이트 완료 (upload_id={pre_upload_id})")
+                        else:
+                            logger.warning(f"[BankStatement SSE] 사전 레코드 조회 실패, 새로 생성")
+                            pre_upload_id = None  # fallback to create new
+
+                    if not pre_upload_id:
+                        # 사전 생성 실패했으면 새로 생성
+                        filenames = ", ".join(fd["filename"] for fd in file_data)
+                        new_upload = AIDataUploadHistory(
+                            filename=f"통장분류: {filenames}"[:500],
+                            file_size=sum(len(fd["content"]) for fd in file_data),
+                            file_type="bank_statement",
+                            upload_type="classification",
+                            uploaded_by=user_id,
+                            status=UploadStatus.COMPLETED,
+                            row_count=total_transactions,
+                            saved_count=total_transactions,
+                            result_json=result_json_str,
+                        )
+                        save_db.add(new_upload)
+                        await save_db.flush()
+                        upload_id = new_upload.id
+                        await save_db.commit()
+                        logger.info(f"[BankStatement SSE] 새 레코드 생성 완료 (upload_id={upload_id})")
+
             except Exception as save_err:
                 logger.error(f"[BankStatement SSE] DB 저장 실패: {save_err}", exc_info=True)
+                # result_json이 너무 크면 결과 없이 이력만 저장 시도
+                if pre_upload_id:
+                    try:
+                        async with async_session_factory() as fallback_db:
+                            upload_rec = await fallback_db.get(AIDataUploadHistory, pre_upload_id)
+                            if upload_rec:
+                                upload_rec.status = UploadStatus.COMPLETED
+                                upload_rec.row_count = total_transactions
+                                upload_rec.saved_count = total_transactions
+                                upload_rec.error_message = f"결과 JSON 저장 실패: {str(save_err)[:200]}"
+                                await fallback_db.commit()
+                                logger.info(f"[BankStatement SSE] 폴백: 이력만 저장 (result_json 없이)")
+                    except Exception as fb_err:
+                        logger.error(f"[BankStatement SSE] 폴백 저장도 실패: {fb_err}")
 
             _bank_classify_progress.update({
                 "status": "completed", "step": "완료", "progress": 100,
@@ -2905,6 +2964,18 @@ async def classify_bank_statements(
                 "status": "failed", "step": "오류",
                 "message": f"처리 오류: {str(e)[:200]}",
             })
+            # 사전 생성 레코드를 실패 상태로 업데이트
+            if pre_upload_id:
+                try:
+                    from app.models.ai import AIDataUploadHistory, UploadStatus
+                    async with async_session_factory() as err_db:
+                        upload_rec = await err_db.get(AIDataUploadHistory, pre_upload_id)
+                        if upload_rec:
+                            upload_rec.status = UploadStatus.FAILED
+                            upload_rec.error_message = str(e)[:500]
+                            await err_db.commit()
+                except Exception:
+                    pass
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
