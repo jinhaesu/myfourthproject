@@ -175,6 +175,10 @@ async def init_db():
         "ALTER TABLE ai_raw_transaction_data ADD COLUMN IF NOT EXISTS source_account_name VARCHAR(100)",
         "ALTER TABLE ai_training_data ALTER COLUMN account_id DROP NOT NULL",
         "ALTER TABLE ai_data_upload_history ADD COLUMN IF NOT EXISTS result_json TEXT",
+        # file_type VARCHAR(10) → VARCHAR(50): "bank_statement" 등 긴 값 저장 지원
+        "ALTER TABLE ai_data_upload_history ALTER COLUMN file_type TYPE VARCHAR(50)",
+        # upload_type VARCHAR(20) → VARCHAR(50): 여유 확보
+        "ALTER TABLE ai_data_upload_history ALTER COLUMN upload_type TYPE VARCHAR(50)",
     ]
     for sql in migrations:
         try:

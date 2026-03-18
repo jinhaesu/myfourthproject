@@ -238,8 +238,8 @@ class AIDataUploadHistory(Base):
 
     filename: Mapped[str] = mapped_column(String(500))
     file_size: Mapped[int] = mapped_column(Integer)  # bytes
-    file_type: Mapped[str] = mapped_column(String(10))  # xls, xlsx, csv
-    upload_type: Mapped[str] = mapped_column(String(20))  # historical, classify
+    file_type: Mapped[str] = mapped_column(String(50))  # xls, xlsx, csv, bank_statement, journal
+    upload_type: Mapped[str] = mapped_column(String(50))  # historical, classification, journal_entry
 
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     saved_count: Mapped[int] = mapped_column(Integer, default=0)
