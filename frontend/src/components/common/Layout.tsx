@@ -18,6 +18,7 @@ import {
   CpuChipIcon,
   PresentationChartBarIcon,
   TableCellsIcon,
+  ClipboardDocumentListIcon,
 } from '@heroicons/react/24/outline'
 
 const baseNavigation = [
@@ -31,6 +32,7 @@ const baseNavigation = [
   { name: '매출 자동화', href: '/sales', icon: PresentationChartBarIcon },
   { name: '예측/시뮬레이션', href: '/forecast', icon: ChartBarIcon },
   { name: '보고서', href: '/reports', icon: DocumentChartBarIcon },
+  { name: '설문/출퇴근', href: '/survey', icon: ClipboardDocumentListIcon },
   { name: '설정', href: '/settings', icon: Cog6ToothIcon },
 ]
 

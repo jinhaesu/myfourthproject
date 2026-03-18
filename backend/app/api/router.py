@@ -19,6 +19,7 @@ from app.api.endpoints import (
     ai_classification,
     sales,
     financial_reports,
+    survey,
 )
 
 api_router = APIRouter()
@@ -118,4 +119,10 @@ api_router.include_router(
     financial_reports.router,
     prefix="/financial",
     tags=["재무제표"]
+)
+
+# 설문/출퇴근 관리
+api_router.include_router(
+    survey.router,
+    tags=["설문/출퇴근"]
 )

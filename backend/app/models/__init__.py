@@ -41,6 +41,13 @@ from app.models.sales import (
     SalesRecord,
     SalesAutomationSchedule,
 )
+from app.models.survey import (
+    Survey,
+    SurveyQuestion,
+    SurveyResponse,
+    SurveyAnswer,
+    CommuteRecord,
+)
 
 __all__ = [
     # User
@@ -86,4 +93,10 @@ __all__ = [
     "SalesChannel",
     "SalesRecord",
     "SalesAutomationSchedule",
+    # Survey & Commute
+    "Survey",
+    "SurveyQuestion",
+    "SurveyResponse",
+    "SurveyAnswer",
+    "CommuteRecord",
 ]
