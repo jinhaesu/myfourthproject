@@ -584,39 +584,4 @@ export const financialApi = {
     api.get('/financial/ai-account-check', { params: { year, account_codes: accountCodes?.join(',') }, timeout: 300000 }),
 }
 
-// 설문/출퇴근 관리 API
-export const surveyApi = {
-  // Surveys
-  list: (params?: { category?: string; status?: string }) =>
-    api.get('/survey/', { params }),
-  get: (id: number) => api.get(`/survey/${id}`),
-  create: (data: any) => api.post('/survey/', data),
-  update: (id: number, data: any) => api.put(`/survey/${id}`, data),
-  delete: (id: number) => api.delete(`/survey/${id}`),
-  publish: (id: number) => api.post(`/survey/${id}/publish`),
-  close: (id: number) => api.post(`/survey/${id}/close`),
-
-  // Responses
-  getResponses: (params: any) => api.get('/survey/responses/', { params }),
-  getResponse: (id: number) => api.get(`/survey/responses/${id}`),
-  submitResponse: (data: any) => api.post('/survey/responses/', data),
-  updateResponse: (id: number, data: any) => api.put(`/survey/responses/${id}`, data),
-  deleteResponse: (id: number) => api.delete(`/survey/responses/${id}`),
-  exportResponses: (params: any) => api.get('/survey/responses/export/excel', { params, responseType: 'blob' }),
-
-  // Commute
-  getCommuteRecords: (params: any) => api.get('/survey/commute/', { params }),
-  createCommute: (data: any) => api.post('/survey/commute/', data),
-  updateCommute: (id: number, data: any) => api.put(`/survey/commute/${id}`, data),
-  deleteCommute: (id: number) => api.delete(`/survey/commute/${id}`),
-  checkIn: () => api.post('/survey/commute/check-in'),
-  checkOut: () => api.post('/survey/commute/check-out'),
-  getCommuteSummary: (params: any) => api.get('/survey/commute/summary', { params }),
-  exportCommute: (params: any) => api.get('/survey/commute/export/excel', { params, responseType: 'blob' }),
-
-  // Templates
-  getTemplates: () => api.get('/survey/templates/'),
-  createFromTemplate: (templateType: string) => api.post(`/survey/templates/${templateType}/create`),
-}
-
 export default api
