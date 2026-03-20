@@ -12,12 +12,19 @@ import math
 import re
 from datetime import datetime
 from decimal import Decimal
+from io import BytesIO
 from typing import Optional, List
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_, update
+from starlette.responses import StreamingResponse
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 
 logger = logging.getLogger(__name__)
 
@@ -613,6 +620,7 @@ async def get_monthly_trend(
 async def get_account_detail(
     account_code: str = Query(...),
     year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None, ge=1, le=12, description="월 필터 (1-12)"),
     upload_id: Optional[int] = Query(None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=500),
@@ -628,6 +636,22 @@ async def get_account_detail(
         filters.extend(_date_filters(year, None))
 
     base_filter = and_(*filters)
+
+    if month is not None:
+        month_str = f"{month:02d}"
+        if year:
+            date_prefix1 = f"{year}-{month_str}"
+            date_prefix2 = f"{year}.{month_str}"
+            month_filter = or_(
+                AIRawTransactionData.transaction_date.like(f"{date_prefix1}%"),
+                AIRawTransactionData.transaction_date.like(f"{date_prefix2}%"),
+            )
+        else:
+            month_filter = or_(
+                AIRawTransactionData.transaction_date.like(f"{month_str}-%"),
+                AIRawTransactionData.transaction_date.like(f"%-{month_str}-%"),
+            )
+        base_filter = and_(base_filter, month_filter)
 
     total = await db.scalar(
         select(func.count(AIRawTransactionData.id)).where(base_filter)
@@ -655,6 +679,7 @@ async def get_account_detail(
     return {
         "account_code": account_code,
         "year": year,
+        "month": month,
         "total": total,
         "page": page,
         "size": size,
@@ -678,6 +703,182 @@ async def get_account_detail(
             "balance": float(s.debit_total) - float(s.credit_total),
         },
     }
+
+
+@router.get("/account-monthly")
+async def get_account_monthly_breakdown(
+    account_code: str = Query(..., description="계정코드"),
+    year: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """특정 계정의 월별 집계 (시산표 드릴다운용)"""
+    filters = [
+        (AIRawTransactionData.source_account_code == account_code)
+        | (AIRawTransactionData.account_code == account_code),
+        AIRawTransactionData.transaction_date.isnot(None),
+        AIRawTransactionData.transaction_date != "",
+    ]
+    if year:
+        filters.extend(_date_filters(year, None))
+
+    result = await db.execute(
+        select(
+            AIRawTransactionData.transaction_date,
+            AIRawTransactionData.debit_amount,
+            AIRawTransactionData.credit_amount,
+        ).where(and_(*filters))
+    )
+    rows = result.all()
+
+    monthly: dict = {}
+    for r in rows:
+        month_key = _extract_month(str(r.transaction_date))
+        if not month_key:
+            continue
+        # month_key is "YYYY-MM"; extract month number
+        try:
+            m_num = int(month_key.split("-")[1])
+        except (IndexError, ValueError):
+            continue
+        if m_num not in monthly:
+            monthly[m_num] = {"debit": 0.0, "credit": 0.0, "count": 0}
+        monthly[m_num]["debit"] += float(r.debit_amount or 0)
+        monthly[m_num]["credit"] += float(r.credit_amount or 0)
+        monthly[m_num]["count"] += 1
+
+    months_data = []
+    for m_num in sorted(monthly.keys()):
+        m = monthly[m_num]
+        months_data.append({
+            "month": m_num,
+            "month_label": f"{m_num}월",
+            "debit_total": m["debit"],
+            "credit_total": m["credit"],
+            "balance": m["debit"] - m["credit"],
+            "tx_count": m["count"],
+        })
+
+    total_debit = sum(m["debit_total"] for m in months_data)
+    total_credit = sum(m["credit_total"] for m in months_data)
+    total_count = sum(m["tx_count"] for m in months_data)
+
+    return {
+        "account_code": account_code,
+        "year": year,
+        "months": months_data,
+        "total": {
+            "debit_total": total_debit,
+            "credit_total": total_credit,
+            "balance": total_debit - total_credit,
+            "tx_count": total_count,
+        },
+    }
+
+
+@router.get("/account-detail/export/excel")
+async def export_account_detail_excel(
+    account_code: str = Query(...),
+    year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """계정별 분개 내역 엑셀 다운로드"""
+    filters = [
+        (AIRawTransactionData.source_account_code == account_code)
+        | (AIRawTransactionData.account_code == account_code),
+    ]
+    if year:
+        filters.extend(_date_filters(year, None))
+
+    base_filter = and_(*filters)
+
+    if month is not None:
+        month_str = f"{month:02d}"
+        if year:
+            date_prefix1 = f"{year}-{month_str}"
+            date_prefix2 = f"{year}.{month_str}"
+            month_filter = or_(
+                AIRawTransactionData.transaction_date.like(f"{date_prefix1}%"),
+                AIRawTransactionData.transaction_date.like(f"{date_prefix2}%"),
+            )
+        else:
+            month_filter = or_(
+                AIRawTransactionData.transaction_date.like(f"{month_str}-%"),
+                AIRawTransactionData.transaction_date.like(f"%-{month_str}-%"),
+            )
+        base_filter = and_(base_filter, month_filter)
+
+    data_result = await db.execute(
+        select(AIRawTransactionData)
+        .where(base_filter)
+        .order_by(AIRawTransactionData.transaction_date, AIRawTransactionData.row_number)
+    )
+    rows = data_result.scalars().all()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "분개내역"
+
+    header = ["날짜", "적요", "거래처", "차변", "대변", "계정코드"]
+    ws.append(header)
+
+    # Header style
+    for col_idx, _ in enumerate(header, start=1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
+
+    total_debit = 0.0
+    total_credit = 0.0
+
+    for r in rows:
+        debit = float(r.debit_amount or 0)
+        credit = float(r.credit_amount or 0)
+        total_debit += debit
+        total_credit += credit
+        ws.append([
+            r.transaction_date or "",
+            r.original_description or "",
+            r.merchant_name or "",
+            debit if debit else None,
+            credit if credit else None,
+            r.account_code or "",
+        ])
+
+    # Number format for debit/credit columns (D and E)
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=4, max_col=5):
+        for cell in row:
+            if cell.value is not None:
+                cell.number_format = "#,##0"
+
+    # Summary row
+    summary_row = ws.max_row + 1
+    ws.cell(row=summary_row, column=1, value="합계")
+    ws.cell(row=summary_row, column=4, value=total_debit)
+    ws.cell(row=summary_row, column=5, value=total_credit)
+    for col_idx in [1, 4, 5]:
+        cell = ws.cell(row=summary_row, column=col_idx)
+        cell.font = Font(bold=True)
+    for col_idx in [4, 5]:
+        ws.cell(row=summary_row, column=col_idx).number_format = "#,##0"
+
+    # Column widths
+    col_widths = [15, 40, 20, 18, 18, 12]
+    for i, width in enumerate(col_widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    filename = f"분개내역_{account_code}_{year or 'all'}{'_' + str(month) + '월' if month else ''}.xlsx"
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 # ============ 계정명 보정 (기존 데이터용) ============

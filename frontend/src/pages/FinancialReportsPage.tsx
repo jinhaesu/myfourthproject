@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { financialApi, aiClassificationApi } from '@/services/api'
+import toast from 'react-hot-toast'
 import { MagnifyingGlassIcon, XMarkIcon, ArrowPathIcon, ArrowDownTrayIcon, InformationCircleIcon, ChevronDownIcon, ChevronUpIcon, SparklesIcon } from '@heroicons/react/24/outline'
 import * as XLSX from 'xlsx'
 import {
@@ -883,6 +884,9 @@ function TrialBalanceTab({ year }: { year: number }) {
   const [search, setSearch] = useState('')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [detailPage, setDetailPage] = useState(1)
+  const [expandedAccount, setExpandedAccount] = useState<string | null>(null)
+  const [selectedMonth, setSelectedMonth] = useState<number | null>(null)
+  const [trendAccount, setTrendAccount] = useState<string | null>(null)
   // AI 분개 점검용 체크박스 상태
   const [checkedAccounts, setCheckedAccounts] = useState<Set<string>>(new Set())
   const [checkLoading, setCheckLoading] = useState(false)
@@ -897,9 +901,23 @@ function TrialBalanceTab({ year }: { year: number }) {
   })
 
   const { data: detailData, isLoading: detailLoading } = useQuery({
-    queryKey: ['financialAccountDetail', year, selectedAccount, detailPage],
-    queryFn: () => financialApi.getAccountDetail(selectedAccount!, year, detailPage, 30).then((r) => r.data),
+    queryKey: ['financialAccountDetail', year, selectedAccount, detailPage, selectedMonth],
+    queryFn: () => financialApi.getAccountDetail(selectedAccount!, year, detailPage, 30, selectedMonth || undefined).then((r) => r.data),
     enabled: !!selectedAccount,
+    staleTime: 3 * 60 * 60 * 1000,
+  })
+
+  const { data: monthlyData } = useQuery({
+    queryKey: ['financialAccountMonthly', year, expandedAccount],
+    queryFn: () => financialApi.getAccountMonthly(expandedAccount!, year).then((r) => r.data),
+    enabled: !!expandedAccount,
+    staleTime: 3 * 60 * 60 * 1000,
+  })
+
+  const { data: accountTrendData } = useQuery({
+    queryKey: ['financialAccountTrend', year, trendAccount],
+    queryFn: () => financialApi.getMonthlyTrend(year, trendAccount!).then((r) => r.data),
+    enabled: !!trendAccount,
     staleTime: 3 * 60 * 60 * 1000,
   })
 
@@ -1026,30 +1044,76 @@ function TrialBalanceTab({ year }: { year: number }) {
                       <td colSpan={8} className="font-bold text-xs py-1">{group.name} ({group.items.length}개)</td>
                     </tr>
                     {group.items.map((a: any) => (
-                      <tr key={a.account_code} className={`cursor-pointer hover:bg-blue-50 ${checkedAccounts.has(a.account_code) ? 'bg-teal-50' : ''}`}
-                        onClick={() => { setSelectedAccount(selectedAccount === a.account_code ? null : a.account_code); setDetailPage(1) }}>
-                        <td className="text-center" onClick={(e) => e.stopPropagation()}>
-                          <input type="checkbox"
-                            checked={checkedAccounts.has(a.account_code)}
-                            onChange={(e) => {
-                              setCheckedAccounts(prev => {
-                                const next = new Set(prev)
-                                if (e.target.checked) next.add(a.account_code)
-                                else next.delete(a.account_code)
-                                return next
-                              })
-                            }}
-                            className="rounded border-gray-300"
-                          />
-                        </td>
-                        <td className="text-gray-500 font-mono text-xs pl-2">{a.account_code}</td>
-                        <td className="font-medium">{a.account_name}</td>
-                        <td className="text-xs text-gray-400">{a.category_name || '미분류'}</td>
-                        <td className="amount">{fmt(a.debit_total)}</td>
-                        <td className="amount">{fmt(a.credit_total)}</td>
-                        <td className={`amount font-bold ${a.balance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{fmt(a.balance)}</td>
-                        <td className="text-right text-gray-500">{fmtNum(a.tx_count)}</td>
-                      </tr>
+                      <>
+                        <tr key={a.account_code} className={`cursor-pointer hover:bg-blue-50 ${checkedAccounts.has(a.account_code) ? 'bg-teal-50' : ''} ${expandedAccount === a.account_code ? 'bg-blue-50' : ''}`}
+                          onClick={() => {
+                            if (expandedAccount === a.account_code) {
+                              setExpandedAccount(null)
+                            } else {
+                              setExpandedAccount(a.account_code)
+                              setSelectedMonth(null)
+                            }
+                          }}>
+                          <td className="text-center" onClick={(e) => e.stopPropagation()}>
+                            <input type="checkbox"
+                              checked={checkedAccounts.has(a.account_code)}
+                              onChange={(e) => {
+                                setCheckedAccounts(prev => {
+                                  const next = new Set(prev)
+                                  if (e.target.checked) next.add(a.account_code)
+                                  else next.delete(a.account_code)
+                                  return next
+                                })
+                              }}
+                              className="rounded border-gray-300"
+                            />
+                          </td>
+                          <td className="text-gray-500 font-mono text-xs pl-2">{a.account_code}</td>
+                          <td className="font-medium">{a.account_name}</td>
+                          <td className="text-xs text-gray-400">{a.category_name || '미분류'}</td>
+                          <td className="amount">{fmt(a.debit_total)}</td>
+                          <td className="amount">{fmt(a.credit_total)}</td>
+                          <td className={`amount font-bold ${a.balance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{fmt(a.balance)}</td>
+                          <td className="text-right text-gray-500">{fmtNum(a.tx_count)}</td>
+                        </tr>
+                        {expandedAccount === a.account_code && monthlyData?.months && (
+                          <>
+                            {monthlyData.months
+                              .filter((m: any) => m.tx_count > 0)
+                              .map((m: any) => (
+                                <tr
+                                  key={`${a.account_code}-m${m.month}`}
+                                  className="bg-blue-50/50 hover:bg-blue-100 cursor-pointer text-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    setSelectedAccount(a.account_code)
+                                    setSelectedMonth(m.month)
+                                    setDetailPage(1)
+                                  }}
+                                >
+                                  <td className="px-3 py-2"></td>
+                                  <td className="px-3 py-2 pl-10 font-mono text-gray-500">└ {m.month}월</td>
+                                  <td className="px-3 py-2 text-gray-500">{a.account_name}</td>
+                                  <td className="px-3 py-2 text-gray-400">{a.category_name}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{m.debit_total?.toLocaleString() || '-'}</td>
+                                  <td className="px-3 py-2 text-right font-mono">{m.credit_total?.toLocaleString() || '-'}</td>
+                                  <td className="px-3 py-2 text-right font-mono font-medium">{m.balance?.toLocaleString() || '-'}</td>
+                                  <td className="px-3 py-2 text-right text-gray-500">{m.tx_count}</td>
+                                </tr>
+                              ))}
+                            <tr className="bg-blue-50/30">
+                              <td colSpan={8} className="px-3 py-2 text-center">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setTrendAccount(a.account_code) }}
+                                  className="text-xs text-blue-600 hover:text-blue-800 underline"
+                                >
+                                  {a.account_code} {a.account_name} 월별 추이 그래프 보기
+                                </button>
+                              </td>
+                            </tr>
+                          </>
+                        )}
+                      </>
                     ))}
                   </SectionGroup>
                 ))}
@@ -1147,9 +1211,53 @@ function TrialBalanceTab({ year }: { year: number }) {
           isLoading={detailLoading}
           page={detailPage}
           onPageChange={setDetailPage}
-          onClose={() => setSelectedAccount(null)}
+          onClose={() => { setSelectedAccount(null); setSelectedMonth(null) }}
+          year={year}
+          selectedMonth={selectedMonth}
         />
       )}
+
+      {trendAccount && accountTrendData && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setTrendAccount(null)}>
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-3xl w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-medium">{trendAccount} 월별 추이 ({year}년)</h3>
+              <button onClick={() => setTrendAccount(null)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+            </div>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={accountTrendData.data}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" tickFormatter={(v: string) => v.split('-')[1] + '월'} />
+                <YAxis tickFormatter={(v: number) => (v / 10000).toFixed(0) + '만'} />
+                <Tooltip formatter={(v: number) => v.toLocaleString() + '원'} />
+                <Legend />
+                <Bar dataKey="debit_total" name="차변" fill="#3B82F6" />
+                <Bar dataKey="credit_total" name="대변" fill="#EF4444" />
+              </BarChart>
+            </ResponsiveContainer>
+            <div className="mt-3 text-center">
+              <ResponsiveContainer width="100%" height={200}>
+                <LineChart data={accountTrendData.data}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" tickFormatter={(v: string) => v.split('-')[1] + '월'} />
+                  <YAxis tickFormatter={(v: number) => (v / 10000).toFixed(0) + '만'} />
+                  <Tooltip formatter={(v: number) => v.toLocaleString() + '원'} />
+                  <Line type="monotone" dataKey="net" name="잔액" stroke="#10B981" strokeWidth={2} dot />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @media print {
+          .no-print { display: none !important; }
+          body { font-size: 12px; }
+          table { page-break-inside: auto; }
+          tr { page-break-inside: avoid; }
+        }
+      `}</style>
     </div>
   )
 }
@@ -1157,9 +1265,10 @@ function TrialBalanceTab({ year }: { year: number }) {
 // ============================================================================
 // Detail Modal
 // ============================================================================
-function DetailModal({ accountCode, accountName, data, isLoading, page, onPageChange, onClose }: {
+function DetailModal({ accountCode, accountName, data, isLoading, page, onPageChange, onClose, year, selectedMonth }: {
   accountCode: string; accountName: string; data: any; isLoading: boolean
   page: number; onPageChange: (p: number) => void; onClose: () => void
+  year?: number; selectedMonth?: number | null
 }) {
   const items: any[] = data?.items || []
   const totalPages = data?.total_pages || 1
@@ -1170,12 +1279,40 @@ function DetailModal({ accountCode, accountName, data, isLoading, page, onPageCh
       <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[80vh] flex flex-col mx-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between p-5 border-b">
           <div>
-            <h3 className="text-lg font-bold">{accountCode} - {accountName}</h3>
+            <h3 className="text-lg font-bold">
+              {accountCode} - {accountName}
+              {selectedMonth && <span className="text-blue-600 ml-2 font-normal text-base">({selectedMonth}월)</span>}
+            </h3>
             <p className="text-sm text-gray-500">
               차변: {fmt(summary.debit_total || 0)} | 대변: {fmt(summary.credit_total || 0)} | 잔액: {fmt(summary.balance || 0)}
             </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><XMarkIcon className="h-6 w-6" /></button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                try {
+                  const res = await financialApi.exportAccountDetailExcel(accountCode, year, selectedMonth || undefined)
+                  const blob = new Blob([res.data])
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = `분개내역_${accountCode}_${year || 'all'}${selectedMonth ? '_' + selectedMonth + '월' : ''}.xlsx`
+                  a.click()
+                  URL.revokeObjectURL(url)
+                } catch { toast.error('엑셀 다운로드 실패') }
+              }}
+              className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+            >
+              엑셀 다운로드
+            </button>
+            <button
+              onClick={() => window.print()}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+            >
+              인쇄
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><XMarkIcon className="h-6 w-6" /></button>
+          </div>
         </div>
         <div className="flex-1 overflow-auto p-5">
           {isLoading ? <Loading /> : items.length > 0 ? (

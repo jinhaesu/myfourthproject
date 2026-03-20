@@ -585,8 +585,15 @@ export const financialApi = {
     api.get('/financial/balance-sheet', { params: { year } }),
   getMonthlyTrend: (year?: number, accountCode?: string) =>
     api.get('/financial/monthly-trend', { params: { year, account_code: accountCode } }),
-  getAccountDetail: (accountCode: string, year?: number, page?: number, size?: number) =>
-    api.get('/financial/account-detail', { params: { account_code: accountCode, year, page, size } }),
+  getAccountDetail: (accountCode: string, year?: number, page?: number, size?: number, month?: number) =>
+    api.get('/financial/account-detail', { params: { account_code: accountCode, year, page, size, month } }),
+  getAccountMonthly: (accountCode: string, year?: number) =>
+    api.get('/financial/account-monthly', { params: { account_code: accountCode, year } }),
+  exportAccountDetailExcel: (accountCode: string, year?: number, month?: number) =>
+    api.get('/financial/account-detail/export/excel', {
+      params: { account_code: accountCode, year, month },
+      responseType: 'blob'
+    }),
   backfillNames: (mappings: Array<{ code: string; name: string }>) =>
     api.post('/financial/backfill-names', { mappings }),
   getDebugData: () => api.get('/financial/debug-data'),
