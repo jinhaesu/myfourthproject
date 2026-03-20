@@ -465,12 +465,12 @@ export const aiClassificationApi = {
     })
   },
 
-  // 세금계산서 분류 — SSE 스트리밍 응답
-  classifyTaxInvoices: (files: File[]) => {
+  // 세금계산서 분류 — SSE 스트리밍 응답 (매입/매출 구분)
+  classifyTaxInvoices: (files: File[], taxDirection: 'purchase' | 'sales' = 'purchase') => {
     const formData = new FormData()
     files.forEach(file => formData.append('files', file))
     const token = useAuthStore.getState().accessToken
-    return fetch(`${API_BASE_URL}/ai-classification/classify-tax-invoices`, {
+    return fetch(`${API_BASE_URL}/ai-classification/classify-tax-invoices?tax_direction=${taxDirection}`, {
       method: 'POST',
       headers: token ? { 'Authorization': `Bearer ${token}` } : {},
       body: formData,

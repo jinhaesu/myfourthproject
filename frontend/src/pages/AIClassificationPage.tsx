@@ -127,6 +127,7 @@ export default function AIClassificationPage() {
   const [taxInvoiceFiles, setTaxInvoiceFiles] = useState<File[]>([])
   const [taxUploadProgress, setTaxUploadProgress] = useState<string | null>(null)
   const [taxDragOver, setTaxDragOver] = useState(false)
+  const [taxType, setTaxType] = useState<'purchase' | 'sales'>('purchase') // 매입/매출
 
   // 행 선택 상태 (장부 반영용)
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
@@ -653,7 +654,7 @@ export default function AIClassificationPage() {
     setTaxUploadProgress('파일 업로드 중...')
 
     try {
-      const response = await aiClassificationApi.classifyTaxInvoices(taxInvoiceFiles)
+      const response = await aiClassificationApi.classifyTaxInvoices(taxInvoiceFiles, taxType)
       if (!response.ok) {
         let errMsg = '분류 시작 실패'
         try {
@@ -696,6 +697,8 @@ export default function AIClassificationPage() {
 
       if (!resultData) throw new Error('결과를 받지 못했습니다.')
 
+      const isSales = taxType === 'sales'
+      const tagLabel = isSales ? '매출세금계산서' : '세금계산서'
       const converted = resultData.results.map((r: any, idx: number) => ({
         row_index: idx,
         description: `${r.vendor_name} - ${r.item_description}`,
@@ -710,8 +713,18 @@ export default function AIClassificationPage() {
         review_reasons: [],
         reasoning: r.reasoning || '',
         alternatives: [],
-        memo: `[세금계산서] ${r.vendor_name} / ${r.item_description}`,
-        journal_entry: r.journal_entry || {
+        memo: `[${tagLabel}] ${r.vendor_name} / ${r.item_description}`,
+        journal_entry: r.journal_entry || (isSales ? {
+          debit_account_code: r.predicted_account_code || '108',
+          debit_account_name: r.predicted_account_name || '외상매출금',
+          credit_account_code: r.credit_account_code || '401',
+          credit_account_name: r.credit_account_name || '상품매출',
+          debit_amount: r.supply_amount || 0,
+          credit_amount: r.supply_amount || 0,
+          vat_amount: r.vat_amount || 0,
+          supply_amount: r.supply_amount || 0,
+          is_balanced: true,
+        } : {
           debit_account_code: r.predicted_account_code,
           debit_account_name: r.predicted_account_name,
           credit_account_code: r.credit_account_code || '251',
@@ -721,7 +734,7 @@ export default function AIClassificationPage() {
           vat_amount: r.vat_amount || 0,
           supply_amount: r.supply_amount || 0,
           is_balanced: true,
-        }
+        })
       }))
       setBankResults(null)
       setClassificationResults(converted)
@@ -736,7 +749,7 @@ export default function AIClassificationPage() {
       setCurrentUploadId(resultData.upload_id || null)
       setActiveTab('results')
       refreshData()
-      showMessage('success', `세금계산서 ${converted.length}건 분류 완료`)
+      showMessage('success', `${tagLabel} ${converted.length}건 분류 완료`)
     } catch (error: any) {
       showMessage('error', error.message || '세금계산서 분류 실패')
     } finally {
@@ -1616,18 +1629,56 @@ export default function AIClassificationPage() {
             <h3 className="text-lg font-medium mb-2 flex items-center gap-2">
               <span>세금계산서 분류</span>
             </h3>
+
+            {/* 매입/매출 토글 */}
+            <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm w-fit mb-4">
+              <button
+                onClick={() => setTaxType('purchase')}
+                className={`px-5 py-2 font-medium transition-colors ${
+                  taxType === 'purchase'
+                    ? 'bg-orange-600 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                매입 (비용)
+              </button>
+              <button
+                onClick={() => setTaxType('sales')}
+                className={`px-5 py-2 font-medium border-l transition-colors ${
+                  taxType === 'sales'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                매출 (수익)
+              </button>
+            </div>
+
             <p className="text-sm text-gray-600 mb-4">
-              전자세금계산서(매입) 파일을 업로드하면 AI가 차변/대변 계정과목을 자동 분류합니다.
-              거래처와 거래 유형에 따라 외상매입금, 미지급금, 선급금 등 대변 계정도 AI가 판단합니다.
+              {taxType === 'purchase'
+                ? '전자세금계산서(매입) 파일을 업로드하면 AI가 차변(비용)/대변(매입채무) 계정을 자동 분류합니다.'
+                : '전자세금계산서(매출) 파일을 업로드하면 AI가 차변(매출채권)/대변(매출) 계정을 자동 분류합니다.'}
             </p>
 
-            <div className="mb-4 border rounded-lg p-3 border-orange-200 bg-orange-50/50">
-              <h4 className="font-medium mb-2 text-sm text-orange-700">전자세금계산서 형식</h4>
-              <ul className="text-xs text-gray-600 list-disc list-inside space-y-0.5">
-                <li><strong>일자</strong>, 거래처, 유형(과세/면세)</li>
-                <li><strong>품명</strong> → AI 분류 기준</li>
-                <li>공급가액, 부가세, 합계</li>
-              </ul>
+            <div className={`mb-4 border rounded-lg p-3 ${
+              taxType === 'purchase' ? 'border-orange-200 bg-orange-50/50' : 'border-emerald-200 bg-emerald-50/50'
+            }`}>
+              <h4 className={`font-medium mb-2 text-sm ${taxType === 'purchase' ? 'text-orange-700' : 'text-emerald-700'}`}>
+                {taxType === 'purchase' ? '매입 세금계산서' : '매출 세금계산서'} 분개 구조
+              </h4>
+              {taxType === 'purchase' ? (
+                <ul className="text-xs text-gray-600 list-disc list-inside space-y-0.5">
+                  <li><strong>차변</strong>: 원재료비, 소모품비, 지급수수료 등 (AI 분류)</li>
+                  <li><strong>대변</strong>: 외상매입금(251), 미지급금(253) 등 (AI 분류)</li>
+                  <li><strong>부가세</strong>: 매입부가세(135) 별도 처리</li>
+                </ul>
+              ) : (
+                <ul className="text-xs text-gray-600 list-disc list-inside space-y-0.5">
+                  <li><strong>차변</strong>: 외상매출금(108), 미수금(109) 등 (AI 분류)</li>
+                  <li><strong>대변</strong>: 상품매출(401), 제품매출(402) 등 (AI 분류)</li>
+                  <li><strong>부가세</strong>: 매출부가세(255) 별도 처리</li>
+                </ul>
+              )}
             </div>
 
             {/* Drag & Drop area */}
@@ -1645,7 +1696,13 @@ export default function AIClassificationPage() {
                 const droppedFiles = Array.from(e.dataTransfer.files).filter(
                   f => f.name.endsWith('.xls') || f.name.endsWith('.xlsx')
                 )
-                if (droppedFiles.length > 0) setTaxInvoiceFiles(prev => [...prev, ...droppedFiles].slice(0, 5))
+                if (droppedFiles.length > 0) {
+                  setTaxInvoiceFiles(prev => [...prev, ...droppedFiles].slice(0, 5))
+                  // 파일명으로 매입/매출 자동 감지
+                  const names = droppedFiles.map(f => f.name).join(' ')
+                  if (names.includes('매출')) setTaxType('sales')
+                  else if (names.includes('매입')) setTaxType('purchase')
+                }
               }}
               onClick={() => document.getElementById('tax-file-input')?.click()}
             >
@@ -1658,6 +1715,10 @@ export default function AIClassificationPage() {
                   const files = Array.from(e.target.files || [])
                   if (files.length > 0) {
                     setTaxInvoiceFiles(prev => [...prev, ...files].slice(0, 5))
+                    // 파일명으로 매입/매출 자동 감지
+                    const names = files.map(f => f.name).join(' ')
+                    if (names.includes('매출')) setTaxType('sales')
+                    else if (names.includes('매입')) setTaxType('purchase')
                   }
                   e.target.value = ''
                 }}
@@ -1710,9 +1771,11 @@ export default function AIClassificationPage() {
               <button
                 onClick={handleTaxInvoiceClassify}
                 disabled={loading || taxInvoiceFiles.length === 0}
-                className="w-full px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium"
+                className={`w-full px-4 py-3 text-white rounded-lg disabled:bg-gray-300 disabled:cursor-not-allowed font-medium ${
+                  taxType === 'purchase' ? 'bg-orange-600 hover:bg-orange-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
               >
-                {loading ? '분류 중...' : `세금계산서 분류 시작${taxInvoiceFiles.length > 0 ? ` (${taxInvoiceFiles.length}개 파일)` : ''}`}
+                {loading ? '분류 중...' : `세금계산서(${taxType === 'purchase' ? '매입' : '매출'}) 분류 시작${taxInvoiceFiles.length > 0 ? ` (${taxInvoiceFiles.length}개 파일)` : ''}`}
               </button>
             </div>
           </div>

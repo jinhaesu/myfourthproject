@@ -3251,6 +3251,35 @@ def _rule_classify_tax_invoice(txn: dict) -> Optional[dict]:
     return result
 
 
+def _rule_classify_tax_invoice_sales(txn: dict) -> Optional[dict]:
+    """
+    규칙 기반 매출 세금계산서 계정 분류.
+    매출: 대변=매출계정(AI분류), 차변=매출채권(AI분류)
+    account_code = 매출 계정, credit_account_code = 차변(매출채권)
+    """
+    vendor = (txn.get("vendor_name", "") or "").lower()
+    item = (txn.get("item_description", "") or "").lower()
+    combined = f"{vendor} {item}"
+
+    def _match(keywords):
+        return any(k in combined for k in keywords)
+
+    # 제품매출 (402) — 자사 제조 식품
+    if _match(["제품", "자사", "생산", "제조", "식품", "가공"]):
+        return {
+            "account_code": "402", "account_name": "제품매출",
+            "credit_account_code": "108", "credit_account_name": "외상매출금",
+            "confidence": 0.88, "reasoning": "규칙: 제품/제조/식품 → 제품매출",
+        }
+
+    # 상품매출 (401) — 기본값 (대부분의 매출)
+    return {
+        "account_code": "401", "account_name": "상품매출",
+        "credit_account_code": "108", "credit_account_name": "외상매출금",
+        "confidence": 0.85, "reasoning": "규칙: 일반 매출 → 상품매출/외상매출금",
+    }
+
+
 @router.get("/classify-tax-progress")
 async def get_tax_classify_progress(
     current_user: User = Depends(get_current_user)
@@ -3262,6 +3291,7 @@ async def get_tax_classify_progress(
 @router.post("/classify-tax-invoices")
 async def classify_tax_invoices(
     files: List[UploadFile] = File(...),
+    tax_direction: str = Query(default="purchase", description="purchase=매입, sales=매출"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -3269,8 +3299,10 @@ async def classify_tax_invoices(
     전자세금계산서 다중 파일 업로드 및 AI 분류 (SSE 스트리밍 응답)
 
     - 1~5개의 전자세금계산서 엑셀 파일(.xls/.xlsx) 동시 업로드
+    - tax_direction: "purchase"(매입) 또는 "sales"(매출)
     - Server-Sent Events로 진행 상태와 최종 결과를 스트리밍 반환
     """
+    is_sales = (tax_direction == "sales")
     global _tax_classify_progress
 
     # Validate file count
@@ -3301,7 +3333,7 @@ async def classify_tax_invoices(
             filenames = ", ".join(fd["filename"] for fd in file_data)
             async with async_session_factory() as pre_db:
                 pre_upload = AIDataUploadHistory(
-                    filename=f"세금계산서: {filenames}"[:500],
+                    filename=f"{'매출' if is_sales else '매입'}세금계산서: {filenames}"[:500],
                     file_size=sum(len(fd["content"]) for fd in file_data),
                     file_type="tax_invoice",
                     upload_type="classification",
@@ -3383,7 +3415,10 @@ async def classify_tax_invoices(
             rule_classified_count = 0
 
             for gi, txn in enumerate(all_transactions):
-                rule_result = _rule_classify_tax_invoice(txn)
+                rule_result = (
+                    _rule_classify_tax_invoice_sales(txn) if is_sales
+                    else _rule_classify_tax_invoice(txn)
+                )
                 if rule_result is not None:
                     classification_map[gi] = rule_result
                     rule_classified_count += 1
@@ -3447,7 +3482,34 @@ async def classify_tax_invoices(
                             )
                         txn_text = "\n".join(txn_lines)
 
-                        prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매입)의 차변/대변 계정과목을 분류하세요.
+                        if is_sales:
+                            prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매출)의 계정과목을 분류하세요.
+**반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
+
+## 계정과목 목록
+{account_list}
+
+## 매출 세금계산서 분류 기준
+- account_code = 대변(매출 계정): 상품매출(401), 제품매출(402), 기타매출(403) 등
+- credit_code = 차변(매출채권): 외상매출금(108), 미수금(109), 받을어음(110) 등
+
+## 대변(매출) 분류 기준
+- 자사 제조 식품/가공식품 판매: 제품매출(402)
+- 상품 판매/유통: 상품매출(401)
+- 기타(임대수입, 수수료 등): 기타매출(403) 또는 잡이익(901)
+
+## 차변(매출채권) 분류 기준
+- 일반 거래처 외상 판매: 외상매출금(108)
+- 미수금(용역/기타): 미수금(109)
+- 선수금 상계: 선수금(259)
+
+## 세금계산서 거래 ({len(batch_indices)}건)
+{txn_text}
+
+## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
+[{{"no":1,"account_code":"401","account_name":"상품매출","credit_code":"108","credit_name":"외상매출금","confidence":0.9,"reasoning":"식품 판매→상품매출/외상매출금"}},...]"""
+                        else:
+                            prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매입)의 차변/대변 계정과목을 분류하세요.
 **반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
 
 ## 계정과목 목록
@@ -3608,6 +3670,22 @@ async def classify_tax_invoices(
             results = []
             for i, txn in enumerate(all_transactions):
                 cls = classification_map.get(i)
+
+                if is_sales and cls:
+                    # 매출: 차변=매출채권(AI분류), 대변=매출계정(AI분류)
+                    debit_code = cls.get("credit_account_code", "108")
+                    debit_name = cls.get("credit_account_name", "외상매출금")
+                    credit_code = cls["account_code"]
+                    credit_name = cls["account_name"]
+                elif cls:
+                    # 매입: 차변=비용(AI분류), 대변=매입채무(AI분류)
+                    debit_code = cls["account_code"]
+                    debit_name = cls["account_name"]
+                    credit_code = cls.get("credit_account_code", "253")
+                    credit_name = cls.get("credit_account_name", "미지급금")
+                else:
+                    debit_code = debit_name = credit_code = credit_name = ""
+
                 result_item = {
                     "row_index": i,
                     "date": txn["date"],
@@ -3624,14 +3702,14 @@ async def classify_tax_invoices(
                     "reasoning": cls.get("reasoning", "") if cls else "",
                     "auto_confirm": cls["confidence"] >= 0.85 if cls else False,
                     "needs_review": cls["confidence"] < 0.85 if cls else True,
-                    "credit_account_code": cls.get("credit_account_code", "253") if cls else "",
-                    "credit_account_name": cls.get("credit_account_name", "미지급금") if cls else "",
+                    "credit_account_code": credit_code,
+                    "credit_account_name": credit_name,
                     "journal_entry": {
-                        "debit_account_code": cls["account_code"] if cls else "",
-                        "debit_account_name": cls["account_name"] if cls else "",
+                        "debit_account_code": debit_code,
+                        "debit_account_name": debit_name,
                         "debit_amount": txn["supply_amount"],
-                        "credit_account_code": cls.get("credit_account_code", "253") if cls else "253",
-                        "credit_account_name": cls.get("credit_account_name", "미지급금") if cls else "미지급금",
+                        "credit_account_code": credit_code,
+                        "credit_account_name": credit_name,
                         "credit_amount": txn["supply_amount"],
                         "vat_amount": txn["vat_amount"],
                         "supply_amount": txn["supply_amount"],
@@ -3695,7 +3773,7 @@ async def classify_tax_invoices(
                         # 사전 생성 실패했으면 새로 생성
                         filenames = ", ".join(fd["filename"] for fd in file_data)
                         new_upload = AIDataUploadHistory(
-                            filename=f"세금계산서: {filenames}"[:500],
+                            filename=f"{'매출' if is_sales else '매입'}세금계산서: {filenames}"[:500],
                             file_size=sum(len(fd["content"]) for fd in file_data),
                             file_type="tax_invoice",
                             upload_type="classification",
@@ -3745,6 +3823,8 @@ async def classify_tax_invoices(
                 "total_supply": total_supply_sum,
                 "total_vat": total_vat_sum,
                 "total_amount": total_amount_sum,
+                "is_tax_invoice": True,
+                "tax_direction": "sales" if is_sales else "purchase",
                 "results": results,
             }
             yield f"data: {json.dumps({'type': 'result', 'data': final_result}, ensure_ascii=False, default=str)}\n\n"
