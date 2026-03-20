@@ -3254,8 +3254,8 @@ def _rule_classify_tax_invoice(txn: dict) -> Optional[dict]:
 def _rule_classify_tax_invoice_sales(txn: dict) -> Optional[dict]:
     """
     규칙 기반 매출 세금계산서 계정 분류.
-    매출: 대변=매출계정(AI분류), 차변=매출채권(AI분류)
-    account_code = 매출 계정, credit_account_code = 차변(매출채권)
+    account_code = 매출 계정 (대변), credit_account_code = 매출채권 (차변)
+    불확실한 경우 None → LLM에 위임
     """
     vendor = (txn.get("vendor_name", "") or "").lower()
     item = (txn.get("item_description", "") or "").lower()
@@ -3264,20 +3264,84 @@ def _rule_classify_tax_invoice_sales(txn: dict) -> Optional[dict]:
     def _match(keywords):
         return any(k in combined for k in keywords)
 
-    # 제품매출 (402) — 자사 제조 식품
-    if _match(["제품", "자사", "생산", "제조", "식품", "가공"]):
+    # 임대/기타수입 → 기타매출
+    if _match(["임대", "임차", "수수료", "리베이트", "용역"]):
         return {
-            "account_code": "402", "account_name": "제품매출",
+            "account_code": "403", "account_name": "기타매출",
             "credit_account_code": "108", "credit_account_name": "외상매출금",
-            "confidence": 0.88, "reasoning": "규칙: 제품/제조/식품 → 제품매출",
+            "confidence": 0.85, "reasoning": "규칙: 임대/수수료/용역 → 기타매출",
         }
 
-    # 상품매출 (401) — 기본값 (대부분의 매출)
-    return {
-        "account_code": "401", "account_name": "상품매출",
-        "credit_account_code": "108", "credit_account_name": "외상매출금",
-        "confidence": 0.85, "reasoning": "규칙: 일반 매출 → 상품매출/외상매출금",
-    }
+    # 불확실 → LLM에 위임 (과거 데이터 우선 참조 후)
+    return None
+
+
+async def _lookup_vendor_history(vendor_name: str, is_sales: bool = False) -> Optional[dict]:
+    """
+    과거 분류 데이터에서 동일 거래처의 분류 이력을 조회.
+    가장 최근에 확정(장부 반영)된 분류를 우선 사용.
+    """
+    if not vendor_name or not async_session_factory:
+        return None
+
+    try:
+        from app.models.ai import AIRawTransactionData, AIDataUploadHistory
+        async with async_session_factory() as db:
+            # 확정된 장부 반영 이력에서 동일 거래처 검색
+            result = await db.execute(
+                select(AIRawTransactionData)
+                .join(AIDataUploadHistory,
+                      AIRawTransactionData.upload_id == AIDataUploadHistory.id)
+                .where(
+                    AIRawTransactionData.merchant_name.ilike(f"%{vendor_name[:20]}%"),
+                    AIDataUploadHistory.upload_type == "journal_entry",
+                )
+                .order_by(AIRawTransactionData.created_at.desc())
+                .limit(5)
+            )
+            rows = result.scalars().all()
+
+            if not rows:
+                return None
+
+            # 가장 많이 사용된 계정 코드 찾기
+            from collections import Counter
+            codes = Counter()
+            for r in rows:
+                if r.account_code and r.debit_amount > 0:
+                    codes[(r.account_code, r.account_name or "")] += 1
+
+            if not codes:
+                return None
+
+            (best_code, best_name), count = codes.most_common(1)[0]
+            confidence = min(0.92, 0.80 + count * 0.04)
+
+            if is_sales:
+                # 매출: 과거 데이터에서 찾은 계정은 대변(매출계정)
+                # 차변은 외상매출금이 기본
+                return {
+                    "account_code": best_code,
+                    "account_name": best_name,
+                    "credit_account_code": "108",
+                    "credit_account_name": "외상매출금",
+                    "confidence": confidence,
+                    "reasoning": f"과거 이력: {vendor_name} → {best_code} {best_name} ({count}건)",
+                }
+            else:
+                # 매입: 과거 데이터에서 찾은 계정은 차변(비용계정)
+                credit = _determine_credit_account_for_tax({}, best_code)
+                return {
+                    "account_code": best_code,
+                    "account_name": best_name,
+                    "credit_account_code": credit["credit_account_code"],
+                    "credit_account_name": credit["credit_account_name"],
+                    "confidence": confidence,
+                    "reasoning": f"과거 이력: {vendor_name} → {best_code} {best_name} ({count}건)",
+                }
+    except Exception as e:
+        logger.warning(f"[VendorHistory] 거래처 이력 조회 실패 ({vendor_name}): {e}")
+        return None
 
 
 @router.get("/classify-tax-progress")
@@ -3404,17 +3468,51 @@ async def classify_tax_invoices(
             # ===== Phase 2 & 3: Rule-based + LLM classification =====
             phase3_start = time.time()
 
+            # ===== Phase 2a: 과거 거래처 이력 조회 =====
             _tax_classify_progress.update({
-                "step": "규칙 분류", "progress": 15,
-                "message": "규칙 기반 분류 중...",
+                "step": "과거 이력 조회", "progress": 15,
+                "message": "과거 분류 데이터에서 거래처 이력을 확인하고 있습니다...",
             })
-            yield f"data: {json.dumps({'type': 'progress', 'step': '규칙 분류', 'progress': 15, 'message': '규칙 기반 분류 중...'}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'step': '과거 이력 조회', 'progress': 15, 'message': '과거 분류 데이터에서 거래처 이력을 확인하고 있습니다...'}, ensure_ascii=False)}\n\n"
 
             classification_map = {}  # global_idx -> cls_dict
+            history_classified_count = 0
+
+            # 거래처별 중복 조회 방지를 위한 캐시
+            vendor_history_cache: dict = {}
+            unique_vendors = set(txn.get("vendor_name", "") for txn in all_transactions)
+
+            for vendor_name in unique_vendors:
+                if not vendor_name:
+                    continue
+                hist = await _lookup_vendor_history(vendor_name, is_sales)
+                if hist:
+                    vendor_history_cache[vendor_name] = hist
+
+            logger.info(f"[TaxInvoice SSE] 과거 이력 캐시: {len(vendor_history_cache)}개 거래처 매칭")
+
+            # 과거 이력으로 먼저 분류
+            for gi, txn in enumerate(all_transactions):
+                vendor_name = txn.get("vendor_name", "")
+                if vendor_name in vendor_history_cache:
+                    classification_map[gi] = vendor_history_cache[vendor_name].copy()
+                    history_classified_count += 1
+
+            yield f"data: {json.dumps({'type': 'progress', 'step': '과거 이력', 'progress': 20, 'message': f'과거 이력으로 {history_classified_count:,}건 분류 완료'}, ensure_ascii=False)}\n\n"
+
+            # ===== Phase 2b: 규칙 기반 분류 (이력 없는 것만) =====
+            _tax_classify_progress.update({
+                "step": "규칙 분류", "progress": 22,
+                "message": "규칙 기반 분류 중...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '규칙 분류', 'progress': 22, 'message': '규칙 기반 분류 중...'}, ensure_ascii=False)}\n\n"
+
             llm_needed_indices = []
             rule_classified_count = 0
 
             for gi, txn in enumerate(all_transactions):
+                if gi in classification_map:
+                    continue  # 이미 과거 이력으로 분류됨
                 rule_result = (
                     _rule_classify_tax_invoice_sales(txn) if is_sales
                     else _rule_classify_tax_invoice(txn)
@@ -3426,13 +3524,13 @@ async def classify_tax_invoices(
                     llm_needed_indices.append(gi)
 
             logger.info(
-                f"[TaxInvoice SSE] 규칙 분류: {rule_classified_count}건, "
-                f"LLM 필요: {len(llm_needed_indices)}건 "
-                f"(전체 {total_transactions}건 중 {rule_classified_count/max(total_transactions,1)*100:.0f}% 규칙 처리)"
+                f"[TaxInvoice SSE] 과거이력: {history_classified_count}건, "
+                f"규칙: {rule_classified_count}건, LLM 필요: {len(llm_needed_indices)}건 "
+                f"(전체 {total_transactions}건)"
             )
 
             rule_msg = (
-                f"규칙 분류 {rule_classified_count:,}건 완료. "
+                f"과거이력 {history_classified_count:,}건 + 규칙 {rule_classified_count:,}건 완료. "
                 f"Claude AI로 나머지 {len(llm_needed_indices):,}건 분류 중..."
             )
             _tax_classify_progress.update({
@@ -3484,30 +3582,31 @@ async def classify_tax_invoices(
 
                         if is_sales:
                             prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매출)의 계정과목을 분류하세요.
+**조인앤조인은 식품 제조회사이므로 대부분의 매출은 제품매출(402)입니다.**
 **반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
 
 ## 계정과목 목록
 {account_list}
 
 ## 매출 세금계산서 분류 기준
-- account_code = 대변(매출 계정): 상품매출(401), 제품매출(402), 기타매출(403) 등
+- account_code = 대변(매출 계정): 제품매출(402), 상품매출(401), 기타매출(403) 등
 - credit_code = 차변(매출채권): 외상매출금(108), 미수금(109), 받을어음(110) 등
 
-## 대변(매출) 분류 기준
-- 자사 제조 식품/가공식품 판매: 제품매출(402)
-- 상품 판매/유통: 상품매출(401)
-- 기타(임대수입, 수수료 등): 기타매출(403) 또는 잡이익(901)
+## 대변(매출) 분류 기준 — 주의: 이 회사는 식품 제조업체입니다
+- 자사 제조 식품/가공식품 판매 (대부분): **제품매출(402)** ← 기본값
+- 외부 상품 단순 유통/리셀: 상품매출(401) — 드문 경우
+- 임대수입, 수수료, 용역: 기타매출(403) 또는 잡이익(901)
 
 ## 차변(매출채권) 분류 기준
-- 일반 거래처 외상 판매: 외상매출금(108)
-- 미수금(용역/기타): 미수금(109)
-- 선수금 상계: 선수금(259)
+- 일반 거래처 외상 판매 (대부분): 외상매출금(108)
+- 미수금(용역/기타 비정기): 미수금(109)
+- 선수금 상계(이미 선수금 받은 거래처): 선수금(259)
 
 ## 세금계산서 거래 ({len(batch_indices)}건)
 {txn_text}
 
 ## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
-[{{"no":1,"account_code":"401","account_name":"상품매출","credit_code":"108","credit_name":"외상매출금","confidence":0.9,"reasoning":"식품 판매→상품매출/외상매출금"}},...]"""
+[{{"no":1,"account_code":"402","account_name":"제품매출","credit_code":"108","credit_name":"외상매출금","confidence":0.9,"reasoning":"식품 제조 판매→제품매출/외상매출금"}},...]"""
                         else:
                             prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매입)의 차변/대변 계정과목을 분류하세요.
 **반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
