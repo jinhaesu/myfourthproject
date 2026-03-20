@@ -884,9 +884,9 @@ function TrialBalanceTab({ year }: { year: number }) {
   const [search, setSearch] = useState('')
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [detailPage, setDetailPage] = useState(1)
-  const [expandedAccount, setExpandedAccount] = useState<string | null>(null)
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null)
-  const [trendAccount, setTrendAccount] = useState<string | null>(null)
+  // 상단 고정 그래프용 계정
+  const [chartAccount, setChartAccount] = useState<string | null>(null)
   // AI 분개 점검용 체크박스 상태
   const [checkedAccounts, setCheckedAccounts] = useState<Set<string>>(new Set())
   const [checkLoading, setCheckLoading] = useState(false)
@@ -894,12 +894,14 @@ function TrialBalanceTab({ year }: { year: number }) {
   const [checkError, setCheckError] = useState('')
   const [checkElapsed, setCheckElapsed] = useState(0)
 
+  // 시산표 (월 선택 시 해당 월만 조회)
   const { data: trialData, isLoading } = useQuery({
-    queryKey: ['financialTrialBalance', year],
-    queryFn: () => financialApi.getTrialBalance(year).then((r) => r.data),
+    queryKey: ['financialTrialBalance', year, selectedMonth],
+    queryFn: () => financialApi.getTrialBalance(year, selectedMonth || undefined).then((r) => r.data),
     staleTime: 3 * 60 * 60 * 1000,
   })
 
+  // 선택된 계정의 상세 내역 (월 필터 포함)
   const { data: detailData, isLoading: detailLoading } = useQuery({
     queryKey: ['financialAccountDetail', year, selectedAccount, detailPage, selectedMonth],
     queryFn: () => financialApi.getAccountDetail(selectedAccount!, year, detailPage, 30, selectedMonth || undefined).then((r) => r.data),
@@ -907,17 +909,11 @@ function TrialBalanceTab({ year }: { year: number }) {
     staleTime: 3 * 60 * 60 * 1000,
   })
 
-  const { data: monthlyData } = useQuery({
-    queryKey: ['financialAccountMonthly', year, expandedAccount],
-    queryFn: () => financialApi.getAccountMonthly(expandedAccount!, year).then((r) => r.data),
-    enabled: !!expandedAccount,
-    staleTime: 3 * 60 * 60 * 1000,
-  })
-
-  const { data: accountTrendData } = useQuery({
-    queryKey: ['financialAccountTrend', year, trendAccount],
-    queryFn: () => financialApi.getMonthlyTrend(year, trendAccount!).then((r) => r.data),
-    enabled: !!trendAccount,
+  // 선택된 계정의 월별 추이 (상단 고정 그래프)
+  const { data: chartTrendData } = useQuery({
+    queryKey: ['financialAccountTrend', year, chartAccount],
+    queryFn: () => financialApi.getMonthlyTrend(year, chartAccount!).then((r) => r.data),
+    enabled: !!chartAccount,
     staleTime: 3 * 60 * 60 * 1000,
   })
 
@@ -969,18 +965,91 @@ function TrialBalanceTab({ year }: { year: number }) {
   if (isLoading) return <Loading />
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      {/* 검색 + 월 선택 바 */}
       <div className="card">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 mb-3">
           <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
           <input type="text" placeholder="계정코드, 계정명, 카테고리 검색..." value={search}
             onChange={(e) => setSearch(e.target.value)} className="input flex-1" />
         </div>
+        <div className="flex items-center gap-1 flex-wrap">
+          <span className="text-xs text-gray-500 mr-1">월:</span>
+          <button
+            onClick={() => setSelectedMonth(null)}
+            className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+              selectedMonth === null ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >전체</button>
+          {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+            <button
+              key={m}
+              onClick={() => setSelectedMonth(selectedMonth === m ? null : m)}
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                selectedMonth === m ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >{m}월</button>
+          ))}
+        </div>
       </div>
+
+      {/* 상단 고정 그래프: 선택한 계정의 월별 추이 */}
+      {chartAccount && chartTrendData?.data && (
+        <div className="card">
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="text-sm font-semibold text-gray-700">
+              {chartAccount} {items.find((a: any) => a.account_code === chartAccount)?.account_name || ''} — 월별 추이 ({year}년)
+            </h3>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await financialApi.exportAccountDetailExcel(chartAccount, year)
+                    const blob = new Blob([res.data])
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `분개내역_${chartAccount}_${year}.xlsx`
+                    a.click()
+                    URL.revokeObjectURL(url)
+                  } catch { toast.error('엑셀 다운로드 실패') }
+                }}
+                className="px-2.5 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+              >엑셀</button>
+              <button onClick={() => setChartAccount(null)} className="text-gray-400 hover:text-gray-600 text-sm">✕ 닫기</button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={chartTrendData.data}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" tickFormatter={(v: string) => v.split('-')[1] + '월'} tick={{ fontSize: 11 }} />
+                <YAxis tickFormatter={(v: number) => v >= 10000 ? (v / 10000).toFixed(0) + '만' : v.toLocaleString()} tick={{ fontSize: 10 }} />
+                <Tooltip formatter={(v: number) => v.toLocaleString() + '원'} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="debit_total" name="차변" fill="#3B82F6" />
+                <Bar dataKey="credit_total" name="대변" fill="#EF4444" />
+              </BarChart>
+            </ResponsiveContainer>
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={chartTrendData.data}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="month" tickFormatter={(v: string) => v.split('-')[1] + '월'} tick={{ fontSize: 11 }} />
+                <YAxis tickFormatter={(v: number) => v >= 10000 ? (v / 10000).toFixed(0) + '만' : v.toLocaleString()} tick={{ fontSize: 10 }} />
+                <Tooltip formatter={(v: number) => v.toLocaleString() + '원'} />
+                <Line type="monotone" dataKey="net" name="잔액" stroke="#10B981" strokeWidth={2} dot />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-gray-700">시산표 ({fmtNum(filtered.length)}개 계정)</h3>
+          <h3 className="text-sm font-semibold text-gray-700">
+            시산표 ({fmtNum(filtered.length)}개 계정)
+            {selectedMonth && <span className="text-blue-600 ml-1">— {selectedMonth}월</span>}
+          </h3>
           {checkedAccounts.size > 0 && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-teal-700 bg-teal-50 px-2 py-1 rounded">{checkedAccounts.size}개 계정 선택됨</span>
@@ -1045,14 +1114,11 @@ function TrialBalanceTab({ year }: { year: number }) {
                     </tr>
                     {group.items.map((a: any) => (
                       <>
-                        <tr key={a.account_code} className={`cursor-pointer hover:bg-blue-50 ${checkedAccounts.has(a.account_code) ? 'bg-teal-50' : ''} ${expandedAccount === a.account_code ? 'bg-blue-50' : ''}`}
+                        <tr key={a.account_code} className={`cursor-pointer hover:bg-blue-50 ${checkedAccounts.has(a.account_code) ? 'bg-teal-50' : ''} ${chartAccount === a.account_code ? 'bg-blue-50 ring-1 ring-blue-300' : ''}`}
                           onClick={() => {
-                            if (expandedAccount === a.account_code) {
-                              setExpandedAccount(null)
-                            } else {
-                              setExpandedAccount(a.account_code)
-                              setSelectedMonth(null)
-                            }
+                            setChartAccount(chartAccount === a.account_code ? null : a.account_code)
+                            setSelectedAccount(a.account_code)
+                            setDetailPage(1)
                           }}>
                           <td className="text-center" onClick={(e) => e.stopPropagation()}>
                             <input type="checkbox"
@@ -1076,43 +1142,6 @@ function TrialBalanceTab({ year }: { year: number }) {
                           <td className={`amount font-bold ${a.balance >= 0 ? 'text-blue-600' : 'text-red-600'}`}>{fmt(a.balance)}</td>
                           <td className="text-right text-gray-500">{fmtNum(a.tx_count)}</td>
                         </tr>
-                        {expandedAccount === a.account_code && monthlyData?.months && (
-                          <>
-                            {monthlyData.months
-                              .filter((m: any) => m.tx_count > 0)
-                              .map((m: any) => (
-                                <tr
-                                  key={`${a.account_code}-m${m.month}`}
-                                  className="bg-blue-50/50 hover:bg-blue-100 cursor-pointer text-sm"
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    setSelectedAccount(a.account_code)
-                                    setSelectedMonth(m.month)
-                                    setDetailPage(1)
-                                  }}
-                                >
-                                  <td className="px-3 py-2"></td>
-                                  <td className="px-3 py-2 pl-10 font-mono text-gray-500">└ {m.month}월</td>
-                                  <td className="px-3 py-2 text-gray-500">{a.account_name}</td>
-                                  <td className="px-3 py-2 text-gray-400">{a.category_name}</td>
-                                  <td className="px-3 py-2 text-right font-mono">{m.debit_total?.toLocaleString() || '-'}</td>
-                                  <td className="px-3 py-2 text-right font-mono">{m.credit_total?.toLocaleString() || '-'}</td>
-                                  <td className="px-3 py-2 text-right font-mono font-medium">{m.balance?.toLocaleString() || '-'}</td>
-                                  <td className="px-3 py-2 text-right text-gray-500">{m.tx_count}</td>
-                                </tr>
-                              ))}
-                            <tr className="bg-blue-50/30">
-                              <td colSpan={8} className="px-3 py-2 text-center">
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); setTrendAccount(a.account_code) }}
-                                  className="text-xs text-blue-600 hover:text-blue-800 underline"
-                                >
-                                  {a.account_code} {a.account_name} 월별 추이 그래프 보기
-                                </button>
-                              </td>
-                            </tr>
-                          </>
-                        )}
                       </>
                     ))}
                   </SectionGroup>
@@ -1217,38 +1246,6 @@ function TrialBalanceTab({ year }: { year: number }) {
         />
       )}
 
-      {trendAccount && accountTrendData && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setTrendAccount(null)}>
-          <div className="bg-white rounded-lg shadow-xl p-6 max-w-3xl w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-medium">{trendAccount} 월별 추이 ({year}년)</h3>
-              <button onClick={() => setTrendAccount(null)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
-            </div>
-            <ResponsiveContainer width="100%" height={350}>
-              <BarChart data={accountTrendData.data}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" tickFormatter={(v: string) => v.split('-')[1] + '월'} />
-                <YAxis tickFormatter={(v: number) => (v / 10000).toFixed(0) + '만'} />
-                <Tooltip formatter={(v: number) => v.toLocaleString() + '원'} />
-                <Legend />
-                <Bar dataKey="debit_total" name="차변" fill="#3B82F6" />
-                <Bar dataKey="credit_total" name="대변" fill="#EF4444" />
-              </BarChart>
-            </ResponsiveContainer>
-            <div className="mt-3 text-center">
-              <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={accountTrendData.data}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" tickFormatter={(v: string) => v.split('-')[1] + '월'} />
-                  <YAxis tickFormatter={(v: number) => (v / 10000).toFixed(0) + '만'} />
-                  <Tooltip formatter={(v: number) => v.toLocaleString() + '원'} />
-                  <Line type="monotone" dataKey="net" name="잔액" stroke="#10B981" strokeWidth={2} dot />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-      )}
 
       <style>{`
         @media print {

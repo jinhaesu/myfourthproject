@@ -577,8 +577,8 @@ export const financialApi = {
   getAvailableYears: () => api.get('/financial/available-years'),
   getSummary: (year?: number) =>
     api.get('/financial/summary', { params: { year } }),
-  getTrialBalance: (year?: number) =>
-    api.get('/financial/trial-balance', { params: { year } }),
+  getTrialBalance: (year?: number, month?: number) =>
+    api.get('/financial/trial-balance', { params: { year, month } }),
   getIncomeStatement: (year?: number, month?: number) =>
     api.get('/financial/income-statement', { params: { year, month } }),
   getBalanceSheet: (year?: number) =>

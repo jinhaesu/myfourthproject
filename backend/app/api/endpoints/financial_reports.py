@@ -319,12 +319,13 @@ async def get_financial_summary(
 @router.get("/trial-balance")
 async def get_trial_balance(
     year: Optional[int] = Query(None),
+    month: Optional[int] = Query(None, ge=1, le=12, description="월 필터 (1-12)"),
     upload_id: Optional[int] = Query(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """시산표 - 계정별 차변/대변 합계 (기간 기반, 더존 코드 분류)"""
-    filters = _date_filters(year, None) if year else []
+    filters = _date_filters(year, month) if (year or month) else []
     mode = await _detect_ledger_mode(db, filters)
     rows = await _get_account_balances(db, mode, filters)
 
@@ -353,6 +354,7 @@ async def get_trial_balance(
 
     return {
         "year": year,
+        "month": month,
         "items": items,
         "total_debit": total_debit,
         "total_credit": total_credit,
