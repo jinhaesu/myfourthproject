@@ -2979,3 +2979,741 @@ async def classify_bank_statements(
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAX INVOICE (세금계산서) CLASSIFICATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Thread pool for parallel LLM calls (3 workers)
+_tax_llm_executor = ThreadPoolExecutor(max_workers=3)
+
+# 세금계산서 분류 진행 상태 추적 (in-memory)
+_tax_classify_progress: dict = {
+    "status": "idle",
+    "step": "",
+    "progress": 0,
+    "message": "",
+    "total_rows": 0,
+    "processed_rows": 0,
+}
+
+
+def _parse_tax_invoice_xls(content: bytes, filename: str) -> dict:
+    """
+    전자세금계산서 엑셀 파일을 파싱한다.
+
+    컬럼: 일자, Code, 거래처, 유형, 품명, 공급가액, 부가세, 합계,
+           차변계정, 대변계정, 관리, 전표상태
+    헤더 행을 첫 5행에서 자동 탐지한다.
+    """
+    header_keywords = {"일자", "거래처", "공급가액", "부가세", "합계"}
+
+    xls_io = io.BytesIO(content)
+    try:
+        df_raw = pd.read_excel(xls_io, header=None, dtype=str)
+    except Exception:
+        xls_io.seek(0)
+        df_raw = pd.read_excel(xls_io, header=None, dtype=str, engine="xlrd")
+
+    # Detect header row in first 5 rows
+    header_row_idx = None
+    for row_i in range(min(5, len(df_raw))):
+        row_vals = set(str(v).strip() for v in df_raw.iloc[row_i] if pd.notna(v))
+        if len(header_keywords & row_vals) >= 3:
+            header_row_idx = row_i
+            break
+
+    if header_row_idx is None:
+        # Fall back: just use row 0
+        header_row_idx = 0
+
+    # Re-read with detected header
+    xls_io = io.BytesIO(content)
+    try:
+        df = pd.read_excel(xls_io, header=header_row_idx, dtype=str)
+    except Exception:
+        xls_io.seek(0)
+        df = pd.read_excel(xls_io, header=header_row_idx, dtype=str, engine="xlrd")
+
+    # Normalise column names (strip whitespace)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Column name mapping (handle slight variations)
+    col_map = {}
+    for col in df.columns:
+        cl = col.lower().replace(" ", "")
+        if "일자" in col:
+            col_map["date"] = col
+        elif col == "Code" or cl == "code" or "코드" in col:
+            col_map["vendor_code"] = col
+        elif "거래처" in col and "vendor_name" not in col_map:
+            col_map["vendor_name"] = col
+        elif "유형" in col:
+            col_map["tax_type"] = col
+        elif "품명" in col:
+            col_map["item_description"] = col
+        elif "공급가액" in col:
+            col_map["supply_amount"] = col
+        elif "부가세" in col:
+            col_map["vat_amount"] = col
+        elif "합계" in col and "total_amount" not in col_map:
+            col_map["total_amount"] = col
+        elif "차변" in col:
+            col_map["debit_account"] = col
+        elif "대변" in col:
+            col_map["credit_account"] = col
+        elif "관리" in col:
+            col_map["management"] = col
+        elif "전표" in col:
+            col_map["voucher_status"] = col
+
+    def _safe_float(val) -> float:
+        try:
+            if pd.isna(val):
+                return 0.0
+            s = str(val).replace(",", "").replace(" ", "").strip()
+            return float(s) if s else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    transactions = []
+    total_supply = 0.0
+    total_vat = 0.0
+    total_amount = 0.0
+
+    for _, row in df.iterrows():
+        # Skip rows that look like subtotals / totals (no vendor name)
+        vendor_name = str(row.get(col_map.get("vendor_name", ""), "") or "").strip()
+        if not vendor_name or vendor_name in ("nan", "None", "합계", "소계", "합 계"):
+            continue
+
+        supply = _safe_float(row.get(col_map.get("supply_amount", ""), 0))
+        vat = _safe_float(row.get(col_map.get("vat_amount", ""), 0))
+        total = _safe_float(row.get(col_map.get("total_amount", ""), 0))
+
+        # Skip zero-amount rows
+        if supply == 0 and total == 0:
+            continue
+
+        date_raw = str(row.get(col_map.get("date", ""), "") or "").strip()
+        if date_raw in ("nan", "None"):
+            date_raw = ""
+
+        txn = {
+            "date": date_raw,
+            "vendor_code": str(row.get(col_map.get("vendor_code", ""), "") or "").strip(),
+            "vendor_name": vendor_name,
+            "tax_type": str(row.get(col_map.get("tax_type", ""), "") or "").strip(),
+            "item_description": str(row.get(col_map.get("item_description", ""), "") or "").strip(),
+            "supply_amount": supply,
+            "vat_amount": vat,
+            "total_amount": total if total > 0 else (supply + vat),
+        }
+        transactions.append(txn)
+        total_supply += supply
+        total_vat += vat
+        total_amount += txn["total_amount"]
+
+    return {
+        "transactions": transactions,
+        "total_supply": total_supply,
+        "total_vat": total_vat,
+        "total_amount": total_amount,
+        "row_count": len(transactions),
+    }
+
+
+def _rule_classify_tax_invoice(txn: dict) -> Optional[dict]:
+    """
+    규칙 기반 세금계산서 계정 분류.
+    거래처명과 품명의 키워드로 판단하며,
+    확실한 경우에만 결과를 반환하고 불확실하면 None을 반환해 LLM에 위임한다.
+    """
+    vendor = (txn.get("vendor_name", "") or "").lower()
+    item = (txn.get("item_description", "") or "").lower()
+    combined = f"{vendor} {item}"
+
+    def _match(keywords):
+        return any(k in combined for k in keywords)
+
+    # 통신비 (523)
+    if _match(["통신", "전화", "인터넷", "kt", "skt", "lgu+", "엘지유플러스", "sk텔레콤", "케이티"]):
+        return {"account_code": "523", "account_name": "통신비",
+                "confidence": 0.90, "reasoning": "규칙: 통신/전화/인터넷 키워드"}
+
+    # 수도광열비 (522) — 전기
+    if _match(["전기", "전력", "한국전력", "한전", "kepco"]):
+        return {"account_code": "522", "account_name": "수도광열비",
+                "confidence": 0.92, "reasoning": "규칙: 전기/한전 키워드"}
+
+    # 수도광열비 (522) — 수도/가스
+    if _match(["수도", "상하수도", "도시가스", "가스", "lng", "lpg"]):
+        return {"account_code": "522", "account_name": "수도광열비",
+                "confidence": 0.90, "reasoning": "규칙: 수도/가스 키워드"}
+
+    # 임차료 (519)
+    if _match(["임대", "임차", "월세", "관리비", "임차료", "임대료"]):
+        return {"account_code": "519", "account_name": "임차료",
+                "confidence": 0.92, "reasoning": "규칙: 임대/임차/월세 키워드"}
+
+    # 보험료 (524)
+    if _match(["보험"]):
+        return {"account_code": "524", "account_name": "보험료",
+                "confidence": 0.90, "reasoning": "규칙: 보험 키워드"}
+
+    # 지급수수료 (518)
+    if _match(["세무", "회계", "법무", "컨설팅", "자문", "법인세", "세무사", "회계사"]):
+        return {"account_code": "518", "account_name": "지급수수료",
+                "confidence": 0.90, "reasoning": "규칙: 세무/회계/법무/컨설팅 키워드"}
+
+    # 운반비 (516)
+    if _match(["택배", "운송", "배송", "물류", "화물", "운반"]):
+        return {"account_code": "516", "account_name": "운반비",
+                "confidence": 0.90, "reasoning": "규칙: 택배/운송/배송 키워드"}
+
+    # 수선비 (521)
+    if _match(["수리", "유지", "보수", "정비", "수선"]):
+        return {"account_code": "521", "account_name": "수선비",
+                "confidence": 0.88, "reasoning": "규칙: 수리/유지/보수 키워드"}
+
+    # 소모품비 (514)
+    if _match(["소모품", "사무용품", "사무", "문구", "청소용품"]):
+        return {"account_code": "514", "account_name": "소모품비",
+                "confidence": 0.88, "reasoning": "규칙: 소모품/사무용품 키워드"}
+
+    # 포장비 (528)
+    if _match(["포장", "용기", "박스", "패키지", "케이스"]):
+        return {"account_code": "528", "account_name": "포장비",
+                "confidence": 0.88, "reasoning": "규칙: 포장/용기 키워드"}
+
+    # 광고선전비 (517)
+    if _match(["광고", "홍보", "마케팅", "촬영", "디자인", "인쇄"]):
+        return {"account_code": "517", "account_name": "광고선전비",
+                "confidence": 0.88, "reasoning": "규칙: 광고/홍보 키워드"}
+
+    # 차량유지비 (526)
+    if _match(["차량", "주유", "경유", "휘발유", "엔진오일", "자동차", "차량유지"]):
+        return {"account_code": "526", "account_name": "차량유지비",
+                "confidence": 0.90, "reasoning": "규칙: 차량/주유 키워드"}
+
+    # 교육훈련비 (530)
+    if _match(["교육", "연수", "훈련", "세미나", "강의"]):
+        return {"account_code": "530", "account_name": "교육훈련비",
+                "confidence": 0.88, "reasoning": "규칙: 교육/연수 키워드"}
+
+    # 원재료비 (451) — 식재료/식품 원료
+    if _match(["식재료", "원료", "원재료", "재료", "농산물", "축산물", "수산물"]):
+        return {"account_code": "451", "account_name": "원재료비",
+                "confidence": 0.85, "reasoning": "규칙: 식재료/원료 키워드"}
+
+    # 상품매입 (404) — 식품 완제품 매입
+    if _match(["식품", "가공식품", "완제품", "상품"]):
+        return {"account_code": "404", "account_name": "상품매입",
+                "confidence": 0.82, "reasoning": "규칙: 식품/상품 키워드"}
+
+    return None  # 불확실 → LLM 위임
+
+
+@router.get("/classify-tax-progress")
+async def get_tax_classify_progress(
+    current_user: User = Depends(get_current_user)
+):
+    """세금계산서 분류 진행 상태 조회"""
+    return _tax_classify_progress
+
+
+@router.post("/classify-tax-invoices")
+async def classify_tax_invoices(
+    files: List[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    전자세금계산서 다중 파일 업로드 및 AI 분류 (SSE 스트리밍 응답)
+
+    - 1~5개의 전자세금계산서 엑셀 파일(.xls/.xlsx) 동시 업로드
+    - Server-Sent Events로 진행 상태와 최종 결과를 스트리밍 반환
+    """
+    global _tax_classify_progress
+
+    # Validate file count
+    if len(files) < 1 or len(files) > 5:
+        raise HTTPException(status_code=400, detail="1~5개의 파일만 업로드 가능합니다.")
+
+    # Validate file types
+    for f in files:
+        if not f.filename.endswith(('.xls', '.xlsx')):
+            raise HTTPException(
+                status_code=400,
+                detail=f"엑셀 파일(.xls, .xlsx)만 업로드 가능합니다: {f.filename}"
+            )
+
+    # Read all file contents NOW (UploadFile objects expire after response starts)
+    file_data = []
+    for f in files:
+        content = await f.read()
+        file_data.append({"content": content, "filename": f.filename})
+
+    user_id = current_user.id
+
+    async def event_stream():
+        # SSE 시작 직후, 분류 이력 레코드를 먼저 생성 (status=processing)
+        pre_upload_id = None
+        try:
+            from app.models.ai import AIDataUploadHistory, UploadStatus
+            filenames = ", ".join(fd["filename"] for fd in file_data)
+            async with async_session_factory() as pre_db:
+                pre_upload = AIDataUploadHistory(
+                    filename=f"세금계산서: {filenames}"[:500],
+                    file_size=sum(len(fd["content"]) for fd in file_data),
+                    file_type="tax_invoice",
+                    upload_type="classification",
+                    uploaded_by=user_id,
+                    status=UploadStatus.PROCESSING,
+                    row_count=0,
+                    saved_count=0,
+                )
+                pre_db.add(pre_upload)
+                await pre_db.flush()
+                pre_upload_id = pre_upload.id
+                await pre_db.commit()
+            logger.info(f"[TaxInvoice SSE] 이력 레코드 사전 생성 (upload_id={pre_upload_id})")
+        except Exception as pre_err:
+            logger.error(f"[TaxInvoice SSE] 이력 사전 생성 실패: {pre_err}", exc_info=True)
+
+        try:
+            num_files = len(file_data)
+
+            _tax_classify_progress.update({
+                "status": "running", "step": "파일 파싱", "progress": 5,
+                "message": f"{num_files}개 파일 파싱 중...",
+                "total_rows": 0, "processed_rows": 0,
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '파일 파싱', 'progress': 5, 'message': f'{num_files}개 파일 파싱 중...'}, ensure_ascii=False)}\n\n"
+
+            # ===== Phase 1: Parse all files =====
+            files_info = []
+            all_transactions = []
+
+            for fd in file_data:
+                try:
+                    parsed = await asyncio.to_thread(
+                        _parse_tax_invoice_xls, fd["content"], fd["filename"]
+                    )
+                except Exception as parse_err:
+                    logger.error(f"[TaxInvoice SSE] 파싱 실패: {fd['filename']} - {parse_err}")
+                    err_msg = f"파일 파싱 실패 ({fd['filename']}): {str(parse_err)[:200]}"
+                    _tax_classify_progress.update({
+                        "status": "failed", "step": "오류",
+                        "message": err_msg,
+                    })
+                    yield f"data: {json.dumps({'type': 'error', 'message': err_msg}, ensure_ascii=False)}\n\n"
+                    return
+
+                file_info = {
+                    "filename": fd["filename"],
+                    "row_count": parsed["row_count"],
+                    "total_supply": parsed["total_supply"],
+                    "total_vat": parsed["total_vat"],
+                    "total_amount": parsed["total_amount"],
+                }
+                files_info.append(file_info)
+
+                for txn in parsed["transactions"]:
+                    txn["_filename"] = fd["filename"]
+                    all_transactions.append(txn)
+
+            total_transactions = len(all_transactions)
+            _tax_classify_progress.update({
+                "step": "파싱 완료", "progress": 15,
+                "message": f"{num_files}개 파일, {total_transactions:,}건 세금계산서 파싱 완료",
+                "total_rows": total_transactions,
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '파싱 완료', 'progress': 15, 'message': f'{num_files}개 파일, {total_transactions:,}건 세금계산서 파싱 완료'}, ensure_ascii=False)}\n\n"
+            logger.info(f"[TaxInvoice SSE] 파싱 완료: {num_files}개 파일, {total_transactions}건")
+
+            # ===== Phase 2 & 3: Rule-based + LLM classification =====
+            phase3_start = time.time()
+
+            _tax_classify_progress.update({
+                "step": "규칙 분류", "progress": 15,
+                "message": "규칙 기반 분류 중...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '규칙 분류', 'progress': 15, 'message': '규칙 기반 분류 중...'}, ensure_ascii=False)}\n\n"
+
+            classification_map = {}  # global_idx -> cls_dict
+            llm_needed_indices = []
+            rule_classified_count = 0
+
+            for gi, txn in enumerate(all_transactions):
+                rule_result = _rule_classify_tax_invoice(txn)
+                if rule_result is not None:
+                    classification_map[gi] = rule_result
+                    rule_classified_count += 1
+                else:
+                    llm_needed_indices.append(gi)
+
+            logger.info(
+                f"[TaxInvoice SSE] 규칙 분류: {rule_classified_count}건, "
+                f"LLM 필요: {len(llm_needed_indices)}건 "
+                f"(전체 {total_transactions}건 중 {rule_classified_count/max(total_transactions,1)*100:.0f}% 규칙 처리)"
+            )
+
+            rule_msg = (
+                f"규칙 분류 {rule_classified_count:,}건 완료. "
+                f"Claude AI로 나머지 {len(llm_needed_indices):,}건 분류 중..."
+            )
+            _tax_classify_progress.update({
+                "step": "AI 분류", "progress": 30,
+                "message": rule_msg,
+                "rule_classified": rule_classified_count,
+                "llm_classified": 0,
+                "total_to_classify": total_transactions,
+                "elapsed_seconds": round(time.time() - phase3_start, 1),
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류', 'progress': 30, 'message': rule_msg, 'rule_classified': rule_classified_count, 'llm_classified': 0}, ensure_ascii=False)}\n\n"
+
+            # -- LLM classification (batch=200, 3-way parallel) --
+            if llm_needed_indices and settings.ANTHROPIC_API_KEY:
+                try:
+                    from app.services.ai_classifier import STANDARD_ACCOUNTS
+
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+                    account_list = "\n".join(
+                        f"- {code}: {name}" for code, name in sorted(STANDARD_ACCOUNTS.items())
+                    )
+
+                    BATCH_SIZE = 200
+                    llm_classified_so_far = 0
+
+                    all_batches = []
+                    for batch_start in range(0, len(llm_needed_indices), BATCH_SIZE):
+                        batch_indices = llm_needed_indices[batch_start:batch_start + BATCH_SIZE]
+                        all_batches.append(batch_indices)
+
+                    total_batches = len(all_batches)
+                    LLM_MODEL = "claude-sonnet-4-20250514"
+
+                    def _call_llm_for_tax_batch(batch_indices, batch_num):
+                        """Synchronous LLM call for one tax invoice batch (runs in thread pool)."""
+                        txn_lines = []
+                        for i, gi in enumerate(batch_indices):
+                            txn = all_transactions[gi]
+                            txn_lines.append(
+                                f"{i+1}. 거래처: {txn['vendor_name']} | "
+                                f"품명: {txn['item_description']} | "
+                                f"유형: {txn['tax_type']} | "
+                                f"공급가액: {txn['supply_amount']:,.0f}원 | "
+                                f"부가세: {txn['vat_amount']:,.0f}원"
+                            )
+                        txn_text = "\n".join(txn_lines)
+
+                        prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매입)의 계정과목을 분류하세요.
+**반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
+
+## 계정과목 목록
+{account_list}
+
+## 세금계산서 분류 기준
+- 식재료/원료/부재료 구매: 원재료비(451) 또는 부재료비(502)
+- 완제품/상품 매입: 상품매입(404)
+- 포장재/용기: 포장비(528)
+- 소모품/사무용품: 소모품비(514)
+- 임대료/월세/관리비: 임차료(519)
+- 전기/수도/가스: 수도광열비(522)
+- 통신비(전화/인터넷): 통신비(523)
+- 보험료: 보험료(524)
+- 차량유지/주유: 차량유지비(526)
+- 수리/보수/유지: 수선비(521)
+- 운반/택배/물류: 운반비(516)
+- 광고/홍보/마케팅: 광고선전비(517)
+- 세무/회계/법무/컨설팅: 지급수수료(518)
+- 교육/연수: 교육훈련비(530)
+- 기타 경비: 거래처/품명으로 판단
+
+## 세금계산서 거래 ({len(batch_indices)}건)
+{txn_text}
+
+## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
+[{{"no":1,"account_code":"451","account_name":"원재료비","confidence":0.9,"reasoning":"식재료 매입"}},...]"""
+
+                        try:
+                            response = client.messages.create(
+                                model=LLM_MODEL,
+                                max_tokens=16000,
+                                messages=[{"role": "user", "content": prompt}],
+                            )
+
+                            text = response.content[0].text.strip()
+                            if "```" in text:
+                                text = text.split("```")[1]
+                                if text.startswith("json"):
+                                    text = text[4:]
+                                text = text.strip()
+
+                            batch_results = json.loads(text)
+
+                            mapped = {}
+                            for item_result in batch_results:
+                                no = item_result.get("no", 0) - 1
+                                if 0 <= no < len(batch_indices):
+                                    gi = batch_indices[no]
+                                    code = item_result.get("account_code", "")
+                                    name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+                                    conf = min(float(item_result.get("confidence", 0.8)), 0.95)
+                                    mapped[gi] = {
+                                        "account_code": code,
+                                        "account_name": name,
+                                        "confidence": conf,
+                                        "reasoning": item_result.get("reasoning", "AI 분석"),
+                                    }
+
+                            logger.info(f"[TaxInvoice LLM] 배치 {batch_num}/{total_batches} 완료 ({len(mapped)}건)")
+                            return mapped
+
+                        except Exception as llm_err:
+                            logger.warning(f"[TaxInvoice LLM] 배치 {batch_num} 실패: {llm_err}")
+                            return {}
+
+                    # Run batches in parallel groups of 3
+                    PARALLEL = 3
+                    loop = asyncio.get_running_loop()
+
+                    for group_start in range(0, total_batches, PARALLEL):
+                        group_end = min(group_start + PARALLEL, total_batches)
+                        group_tasks = []
+                        for b_idx in range(group_start, group_end):
+                            group_tasks.append(
+                                loop.run_in_executor(
+                                    _tax_llm_executor,
+                                    _call_llm_for_tax_batch,
+                                    all_batches[b_idx],
+                                    b_idx + 1,
+                                )
+                            )
+
+                        group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
+
+                        for res in group_results:
+                            if isinstance(res, dict):
+                                classification_map.update(res)
+                                llm_classified_so_far += len(res)
+                            elif isinstance(res, Exception):
+                                logger.warning(f"[TaxInvoice LLM] 병렬 배치 예외: {res}")
+
+                        # Update progress after each parallel group
+                        elapsed = time.time() - phase3_start
+                        done_batches = min(group_end, total_batches)
+                        remaining_batches = total_batches - done_batches
+                        avg_per_batch = elapsed / max(done_batches, 1)
+                        remaining_groups = (remaining_batches + PARALLEL - 1) // PARALLEL if remaining_batches > 0 else 0
+                        est_remaining = remaining_groups * avg_per_batch
+
+                        progress_pct = 30 + int(55 * (done_batches / max(total_batches, 1)))
+                        llm_msg = (
+                            f"AI 분류 중... 배치 {done_batches}/{total_batches} "
+                            f"(규칙: {rule_classified_count:,}, AI: {llm_classified_so_far:,}, "
+                            f"경과: {elapsed:.0f}초, 남은 예상: {est_remaining:.0f}초)"
+                        )
+                        _tax_classify_progress.update({
+                            "progress": progress_pct,
+                            "message": llm_msg,
+                            "processed_rows": rule_classified_count + llm_classified_so_far,
+                            "rule_classified": rule_classified_count,
+                            "llm_classified": llm_classified_so_far,
+                            "total_to_classify": total_transactions,
+                            "elapsed_seconds": round(elapsed, 1),
+                            "estimated_remaining": round(est_remaining, 1),
+                        })
+                        yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류', 'progress': progress_pct, 'message': llm_msg, 'rule_classified': rule_classified_count, 'llm_classified': llm_classified_so_far, 'elapsed_seconds': round(elapsed, 1), 'estimated_remaining': round(est_remaining, 1)}, ensure_ascii=False)}\n\n"
+
+                    logger.info(
+                        f"[TaxInvoice SSE] LLM 분류 완료: {llm_classified_so_far}건, "
+                        f"총 소요: {time.time() - phase3_start:.1f}초"
+                    )
+
+                except Exception as llm_setup_err:
+                    logger.warning(f"[TaxInvoice SSE] LLM 분류 실패: {llm_setup_err}")
+            elif llm_needed_indices and not settings.ANTHROPIC_API_KEY:
+                logger.warning("[TaxInvoice SSE] ANTHROPIC_API_KEY 미설정 — LLM 분류 생략")
+
+            phase3_elapsed = time.time() - phase3_start
+            logger.info(
+                f"[TaxInvoice SSE] Phase 3 총 소요: {phase3_elapsed:.1f}초 "
+                f"(규칙: {rule_classified_count}, LLM: {len(llm_needed_indices)}건)"
+            )
+
+            # ===== Phase 4: Build results =====
+            _tax_classify_progress.update({
+                "step": "결과 조립", "progress": 88,
+                "message": "결과를 정리하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '결과 조립', 'progress': 88, 'message': '결과를 정리하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+            results = []
+            for i, txn in enumerate(all_transactions):
+                cls = classification_map.get(i)
+                result_item = {
+                    "row_index": i,
+                    "date": txn["date"],
+                    "vendor_code": txn["vendor_code"],
+                    "vendor_name": txn["vendor_name"],
+                    "tax_type": txn["tax_type"],
+                    "item_description": txn["item_description"],
+                    "supply_amount": txn["supply_amount"],
+                    "vat_amount": txn["vat_amount"],
+                    "total_amount": txn["total_amount"],
+                    "predicted_account_code": cls["account_code"] if cls else "",
+                    "predicted_account_name": cls["account_name"] if cls else "",
+                    "confidence": cls["confidence"] if cls else 0.0,
+                    "reasoning": cls.get("reasoning", "") if cls else "",
+                    "auto_confirm": cls["confidence"] >= 0.85 if cls else False,
+                    "needs_review": cls["confidence"] < 0.85 if cls else True,
+                    "journal_entry": {
+                        "debit_account_code": cls["account_code"] if cls else "",
+                        "debit_account_name": cls["account_name"] if cls else "",
+                        "debit_amount": txn["supply_amount"],
+                        "credit_account_code": "253",
+                        "credit_account_name": "미지급금",
+                        "credit_amount": txn["supply_amount"],
+                        "vat_amount": txn["vat_amount"],
+                        "supply_amount": txn["supply_amount"],
+                        "is_balanced": True,
+                    } if cls else None,
+                }
+                results.append(result_item)
+
+            # ===== Phase 5: Save to DB and respond =====
+            _tax_classify_progress.update({
+                "step": "결과 저장", "progress": 92,
+                "message": "분류 결과를 저장하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '결과 저장', 'progress': 92, 'message': '분류 결과를 저장하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+            # Statistics
+            auto_confirm_count = sum(1 for r in results if r.get("auto_confirm"))
+            needs_review_count = sum(1 for r in results if r.get("needs_review"))
+            avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
+
+            total_supply_sum = sum(t["supply_amount"] for t in all_transactions)
+            total_vat_sum = sum(t["vat_amount"] for t in all_transactions)
+            total_amount_sum = sum(t["total_amount"] for t in all_transactions)
+
+            # Save to DB
+            upload_id = pre_upload_id
+            try:
+                from app.models.ai import AIDataUploadHistory, UploadStatus
+
+                result_json_str = json.dumps({
+                    "files": files_info,
+                    "results": results,
+                    "stats": {
+                        "total_transactions": total_transactions,
+                        "auto_confirmed": auto_confirm_count,
+                        "needs_review": needs_review_count,
+                        "average_confidence": round(avg_confidence, 4),
+                        "total_supply": total_supply_sum,
+                        "total_vat": total_vat_sum,
+                        "total_amount": total_amount_sum,
+                    }
+                }, ensure_ascii=False, default=str)
+
+                async with async_session_factory() as save_db:
+                    if pre_upload_id:
+                        # 사전 생성 레코드 업데이트
+                        upload_rec = await save_db.get(AIDataUploadHistory, pre_upload_id)
+                        if upload_rec:
+                            upload_rec.status = UploadStatus.COMPLETED
+                            upload_rec.row_count = total_transactions
+                            upload_rec.saved_count = total_transactions
+                            upload_rec.result_json = result_json_str
+                            upload_rec.error_message = None
+                            await save_db.commit()
+                            logger.info(f"[TaxInvoice SSE] 기존 레코드 업데이트 완료 (upload_id={pre_upload_id})")
+                        else:
+                            logger.warning(f"[TaxInvoice SSE] 사전 레코드 조회 실패, 새로 생성")
+                            pre_upload_id = None  # fallback to create new
+
+                    if not pre_upload_id:
+                        # 사전 생성 실패했으면 새로 생성
+                        filenames = ", ".join(fd["filename"] for fd in file_data)
+                        new_upload = AIDataUploadHistory(
+                            filename=f"세금계산서: {filenames}"[:500],
+                            file_size=sum(len(fd["content"]) for fd in file_data),
+                            file_type="tax_invoice",
+                            upload_type="classification",
+                            uploaded_by=user_id,
+                            status=UploadStatus.COMPLETED,
+                            row_count=total_transactions,
+                            saved_count=total_transactions,
+                            result_json=result_json_str,
+                        )
+                        save_db.add(new_upload)
+                        await save_db.flush()
+                        upload_id = new_upload.id
+                        await save_db.commit()
+                        logger.info(f"[TaxInvoice SSE] 새 레코드 생성 완료 (upload_id={upload_id})")
+
+            except Exception as save_err:
+                logger.error(f"[TaxInvoice SSE] DB 저장 실패: {save_err}", exc_info=True)
+                if pre_upload_id:
+                    try:
+                        async with async_session_factory() as fallback_db:
+                            upload_rec = await fallback_db.get(AIDataUploadHistory, pre_upload_id)
+                            if upload_rec:
+                                upload_rec.status = UploadStatus.COMPLETED
+                                upload_rec.row_count = total_transactions
+                                upload_rec.saved_count = total_transactions
+                                upload_rec.error_message = f"결과 JSON 저장 실패: {str(save_err)[:200]}"
+                                await fallback_db.commit()
+                                logger.info(f"[TaxInvoice SSE] 폴백: 이력만 저장 (result_json 없이)")
+                    except Exception as fb_err:
+                        logger.error(f"[TaxInvoice SSE] 폴백 저장도 실패: {fb_err}")
+
+            _tax_classify_progress.update({
+                "status": "completed", "step": "완료", "progress": 100,
+                "message": f"분류 완료! {total_transactions:,}건 (자동확정: {auto_confirm_count:,}, 검토필요: {needs_review_count:,})",
+                "processed_rows": total_transactions,
+            })
+
+            # Send final result
+            final_result = {
+                "status": "completed",
+                "upload_id": upload_id,
+                "files": files_info,
+                "total_transactions": total_transactions,
+                "auto_confirmed": auto_confirm_count,
+                "needs_review": needs_review_count,
+                "average_confidence": round(avg_confidence, 4),
+                "total_supply": total_supply_sum,
+                "total_vat": total_vat_sum,
+                "total_amount": total_amount_sum,
+                "results": results,
+            }
+            yield f"data: {json.dumps({'type': 'result', 'data': final_result}, ensure_ascii=False, default=str)}\n\n"
+            yield "data: {\"type\": \"done\"}\n\n"
+
+        except Exception as e:
+            logger.error(f"[TaxInvoice SSE] Error: {e}", exc_info=True)
+            _tax_classify_progress.update({
+                "status": "failed", "step": "오류",
+                "message": f"처리 오류: {str(e)[:200]}",
+            })
+            # 사전 생성 레코드를 실패 상태로 업데이트
+            if pre_upload_id:
+                try:
+                    from app.models.ai import AIDataUploadHistory, UploadStatus
+                    async with async_session_factory() as err_db:
+                        upload_rec = await err_db.get(AIDataUploadHistory, pre_upload_id)
+                        if upload_rec:
+                            upload_rec.status = UploadStatus.FAILED
+                            upload_rec.error_message = str(e)[:500]
+                            await err_db.commit()
+                except Exception:
+                    pass
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

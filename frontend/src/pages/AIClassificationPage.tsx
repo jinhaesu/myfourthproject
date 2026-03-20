@@ -114,12 +114,19 @@ export default function AIClassificationPage() {
   })
   const autoLoadAttempted = useRef(false)
 
+  // 분류 모드 (card / bank / tax)
+  const [classifyMode, setClassifyMode] = useState<'card' | 'bank' | 'tax'>('card')
+
   // 통장 일괄 분류 states
-  const [bankUploadMode, setBankUploadMode] = useState(false)
   const [bankFiles, setBankFiles] = useState<File[]>([])
   const [bankUploadProgress, setBankUploadProgress] = useState<string | null>(null)
   const [bankResults, setBankResults] = useState<any>(null)
   const [bankDragOver, setBankDragOver] = useState(false)
+
+  // 세금계산서 분류 states
+  const [taxInvoiceFiles, setTaxInvoiceFiles] = useState<File[]>([])
+  const [taxUploadProgress, setTaxUploadProgress] = useState<string | null>(null)
+  const [taxDragOver, setTaxDragOver] = useState(false)
 
   // 행 선택 상태 (장부 반영용)
   const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
@@ -639,6 +646,105 @@ export default function AIClassificationPage() {
     }
   }
 
+  // Handle tax invoice classification (세금계산서 분류) — SSE 스트리밍
+  const handleTaxInvoiceClassify = async () => {
+    if (taxInvoiceFiles.length === 0) return
+    setLoading(true)
+    setTaxUploadProgress('파일 업로드 중...')
+
+    try {
+      const response = await aiClassificationApi.classifyTaxInvoices(taxInvoiceFiles)
+      if (!response.ok) {
+        let errMsg = '분류 시작 실패'
+        try {
+          const err = await response.json()
+          errMsg = err.detail || errMsg
+        } catch { /* ignore parse error */ }
+        throw new Error(errMsg)
+      }
+
+      const reader = response.body!.getReader()
+      const decoder = new TextDecoder()
+      let resultData: any = null
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event = JSON.parse(line.slice(6))
+            if (event.type === 'progress') {
+              setTaxUploadProgress(`${event.step || '처리 중'} (${event.progress}%) — ${event.message}`)
+            } else if (event.type === 'result') {
+              resultData = event.data
+            } else if (event.type === 'error') {
+              throw new Error(event.message)
+            }
+          } catch (e) {
+            if (e instanceof Error && e.message !== 'Unexpected end of JSON input'
+                && !e.message.includes('Unexpected token')) throw e
+          }
+        }
+      }
+
+      if (!resultData) throw new Error('결과를 받지 못했습니다.')
+
+      const converted = resultData.results.map((r: any, idx: number) => ({
+        row_index: idx,
+        description: `${r.vendor_name} - ${r.item_description}`,
+        merchant_name: r.vendor_name,
+        amount: r.supply_amount || r.total_amount || 0,
+        transaction_date: r.date,
+        predicted_account_code: r.predicted_account_code,
+        predicted_account_name: r.predicted_account_name,
+        confidence: r.confidence,
+        auto_confirm: r.confidence > 0.8,
+        needs_review: r.confidence < 0.6,
+        review_reasons: [],
+        reasoning: r.reasoning || '',
+        alternatives: [],
+        memo: `[세금계산서] ${r.vendor_name} / ${r.item_description}`,
+        journal_entry: r.journal_entry || {
+          debit_account_code: r.predicted_account_code,
+          debit_account_name: r.predicted_account_name,
+          credit_account_code: '253',
+          credit_account_name: '미지급금',
+          debit_amount: r.supply_amount || 0,
+          credit_amount: r.supply_amount || 0,
+          vat_amount: r.vat_amount || 0,
+          supply_amount: r.supply_amount || 0,
+          is_balanced: true,
+        }
+      }))
+      setBankResults(null)
+      setClassificationResults(converted)
+      setSelectedRows(new Set())
+      setClassifyStats({
+        total: resultData.total_items || converted.length,
+        autoConfirmed: converted.filter((r: any) => r.auto_confirm).length,
+        needsReview: converted.filter((r: any) => r.needs_review).length,
+        avgConfidence: converted.length > 0 ? converted.reduce((s: number, r: any) => s + r.confidence, 0) / converted.length : 0,
+        totalAmount: converted.reduce((s: number, r: any) => s + r.amount, 0),
+      })
+      setCurrentUploadId(resultData.upload_id || null)
+      setActiveTab('results')
+      refreshData()
+      showMessage('success', `세금계산서 ${converted.length}건 분류 완료`)
+    } catch (error: any) {
+      showMessage('error', error.message || '세금계산서 분류 실패')
+    } finally {
+      setLoading(false)
+      setTaxUploadProgress(null)
+    }
+  }
+
   // Handle bank file drop
   const handleBankFileDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -800,6 +906,36 @@ export default function AIClassificationPage() {
           inter_bank_transfers: data.inter_bank_transfers || 0,
           total_transactions: data.total_rows || converted.length,
         })
+      } else if (data.is_tax_invoice && results.length > 0) {
+        const converted = results.map((r: any, idx: number) => ({
+          row_index: idx,
+          description: `${r.vendor_name || ''} - ${r.item_description || ''}`,
+          merchant_name: r.vendor_name || '',
+          amount: r.supply_amount || r.total_amount || 0,
+          transaction_date: r.date || '',
+          predicted_account_code: r.predicted_account_code || '',
+          predicted_account_name: r.predicted_account_name || '',
+          confidence: r.confidence || 0,
+          auto_confirm: (r.confidence || 0) > 0.8,
+          needs_review: (r.confidence || 0) < 0.6,
+          review_reasons: [],
+          reasoning: r.reasoning || '',
+          alternatives: [],
+          memo: `[세금계산서] ${r.vendor_name || ''} / ${r.item_description || ''}`,
+          journal_entry: r.journal_entry || {
+            debit_account_code: r.predicted_account_code || '',
+            debit_account_name: r.predicted_account_name || '',
+            credit_account_code: '253',
+            credit_account_name: '미지급금',
+            debit_amount: r.supply_amount || 0,
+            credit_amount: r.supply_amount || 0,
+            vat_amount: r.vat_amount || 0,
+            supply_amount: r.supply_amount || 0,
+            is_balanced: true,
+          }
+        }))
+        setClassificationResults(converted)
+        setBankResults(null)
       } else {
         setClassificationResults(results)
         setBankResults(null)
@@ -1222,32 +1358,42 @@ export default function AIClassificationPage() {
       {/* Classify Tab */}
       {activeTab === 'classify' && (
         <div className="space-y-6">
-          {/* Mode Toggle: 파일 분류 / 통장 일괄 분류 */}
+          {/* Mode Toggle: 카드 분류 / 통장 일괄 분류 / 세금계산서 분류 */}
           <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm w-fit">
             <button
-              onClick={() => setBankUploadMode(false)}
+              onClick={() => setClassifyMode('card')}
               className={`px-5 py-2.5 font-medium transition-colors ${
-                !bankUploadMode
+                classifyMode === 'card'
                   ? 'bg-blue-600 text-white'
                   : 'bg-white text-gray-600 hover:bg-gray-50'
               }`}
             >
-              파일 분류
+              카드 분류
             </button>
             <button
-              onClick={() => setBankUploadMode(true)}
+              onClick={() => setClassifyMode('bank')}
               className={`px-5 py-2.5 font-medium border-l transition-colors ${
-                bankUploadMode
+                classifyMode === 'bank'
                   ? 'bg-teal-600 text-white'
                   : 'bg-white text-gray-600 hover:bg-gray-50'
               }`}
             >
               통장 일괄 분류
             </button>
+            <button
+              onClick={() => setClassifyMode('tax')}
+              className={`px-5 py-2.5 font-medium border-l transition-colors ${
+                classifyMode === 'tax'
+                  ? 'bg-orange-600 text-white'
+                  : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              세금계산서 분류
+            </button>
           </div>
 
           {/* Single File Classification Mode */}
-          {!bankUploadMode && (
+          {classifyMode === 'card' && (
           <div className="bg-white p-6 rounded-lg shadow border">
             <h3 className="text-lg font-medium mb-4">미분류 데이터 자동 분류</h3>
             <p className="text-sm text-gray-600 mb-4">
@@ -1356,7 +1502,7 @@ export default function AIClassificationPage() {
           )}
 
           {/* Multi-Bank Upload Mode (통장 일괄 분류) */}
-          {bankUploadMode && (
+          {classifyMode === 'bank' && (
           <div className="bg-white p-6 rounded-lg shadow border">
             <h3 className="text-lg font-medium mb-2 flex items-center gap-2">
               <span>통장 일괄 분류</span>
@@ -1459,6 +1605,113 @@ export default function AIClassificationPage() {
                 className="px-6 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium transition-colors"
               >
                 {loading ? '분류 중...' : `통장 일괄 분류 시작${bankFiles.length > 0 ? ` (${bankFiles.length}개 파일)` : ''}`}
+              </button>
+            </div>
+          </div>
+          )}
+
+          {/* 세금계산서 분류 모드 */}
+          {classifyMode === 'tax' && (
+          <div className="bg-white p-6 rounded-lg shadow border">
+            <h3 className="text-lg font-medium mb-2 flex items-center gap-2">
+              <span>세금계산서 분류</span>
+            </h3>
+            <p className="text-sm text-gray-600 mb-4">
+              전자세금계산서(매입) 파일을 업로드하면 AI가 계정과목을 자동 분류합니다.
+              차변 계정(비용)을 AI가 추천하고, 대변은 미지급금(253)으로 자동 설정됩니다.
+            </p>
+
+            <div className="mb-4 border rounded-lg p-3 border-orange-200 bg-orange-50/50">
+              <h4 className="font-medium mb-2 text-sm text-orange-700">전자세금계산서 형식</h4>
+              <ul className="text-xs text-gray-600 list-disc list-inside space-y-0.5">
+                <li><strong>일자</strong>, 거래처, 유형(과세/면세)</li>
+                <li><strong>품명</strong> → AI 분류 기준</li>
+                <li>공급가액, 부가세, 합계</li>
+              </ul>
+            </div>
+
+            {/* Drag & Drop area */}
+            <div
+              className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+                taxDragOver
+                  ? 'border-orange-500 bg-orange-50'
+                  : 'border-gray-300 hover:border-orange-400 hover:bg-gray-50'
+              }`}
+              onDragOver={(e) => { e.preventDefault(); setTaxDragOver(true) }}
+              onDragLeave={(e) => { e.preventDefault(); setTaxDragOver(false) }}
+              onDrop={(e) => {
+                e.preventDefault()
+                setTaxDragOver(false)
+                const droppedFiles = Array.from(e.dataTransfer.files).filter(
+                  f => f.name.endsWith('.xls') || f.name.endsWith('.xlsx')
+                )
+                if (droppedFiles.length > 0) setTaxInvoiceFiles(prev => [...prev, ...droppedFiles].slice(0, 5))
+              }}
+              onClick={() => document.getElementById('tax-file-input')?.click()}
+            >
+              <input
+                id="tax-file-input"
+                type="file"
+                accept=".xlsx,.xls"
+                multiple
+                onChange={(e) => {
+                  if (e.target.files) {
+                    setTaxInvoiceFiles(prev => [...prev, ...Array.from(e.target.files!)].slice(0, 5))
+                  }
+                  e.target.value = ''
+                }}
+                className="hidden"
+              />
+              <div className="text-gray-500">
+                <svg className="mx-auto h-12 w-12 text-gray-400 mb-3" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                  <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <p className="text-sm font-medium">세금계산서 파일을 드래그하거나 클릭해서 선택</p>
+                <p className="text-xs text-gray-400 mt-1">.xls, .xlsx 형식 (최대 5개)</p>
+              </div>
+            </div>
+
+            {/* Selected files list */}
+            {taxInvoiceFiles.length > 0 && (
+              <div className="mt-4">
+                <p className="text-sm font-medium text-gray-700 mb-2">
+                  선택된 파일 ({taxInvoiceFiles.length}개):
+                </p>
+                <div className="space-y-2">
+                  {taxInvoiceFiles.map((file, idx) => (
+                    <div key={`${file.name}-${idx}`} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-2.5 border border-gray-200">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="text-lg flex-shrink-0">📄</span>
+                        <span className="text-sm font-medium text-gray-800 truncate">{file.name}</span>
+                        <span className="text-xs text-gray-400 flex-shrink-0">{(file.size / 1024).toFixed(0)}KB</span>
+                      </div>
+                      <button
+                        onClick={() => setTaxInvoiceFiles(prev => prev.filter((_, i) => i !== idx))}
+                        className="text-red-400 hover:text-red-600 ml-2 flex-shrink-0"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Progress */}
+            {taxUploadProgress && (
+              <div className="mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg">
+                <p className="text-sm text-orange-700">{taxUploadProgress}</p>
+              </div>
+            )}
+
+            {/* Submit button */}
+            <div className="mt-4">
+              <button
+                onClick={handleTaxInvoiceClassify}
+                disabled={loading || taxInvoiceFiles.length === 0}
+                className="w-full px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium"
+              >
+                {loading ? '분류 중...' : `세금계산서 분류 시작${taxInvoiceFiles.length > 0 ? ` (${taxInvoiceFiles.length}개 파일)` : ''}`}
               </button>
             </div>
           </div>
@@ -1941,6 +2194,7 @@ export default function AIClassificationPage() {
                   .filter(u => u.upload_type !== 'historical' && u.upload_type !== 'journal_entry')
                   .map(u => {
                     const isBank = u.upload_type === 'bank_classification' || (u.filename || '').includes('통장')
+                    const isTax = u.file_type === 'tax_invoice' || (u.filename || '').includes('세금계산서')
                     const isCurrent = currentUploadId === u.id
                     return (
                       <div
@@ -1951,7 +2205,9 @@ export default function AIClassificationPage() {
                         onClick={() => handleLoadClassifyResult(u.id)}
                       >
                         <div className="flex items-center gap-2 flex-1 min-w-0">
-                          {isBank ? (
+                          {isTax ? (
+                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-orange-100 text-orange-700 font-medium">세금계산서</span>
+                          ) : isBank ? (
                             <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-teal-100 text-teal-700 font-medium">통장</span>
                           ) : (
                             <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-purple-100 text-purple-700 font-medium">카드</span>

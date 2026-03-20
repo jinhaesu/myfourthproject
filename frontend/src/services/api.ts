@@ -465,6 +465,18 @@ export const aiClassificationApi = {
     })
   },
 
+  // 세금계산서 분류 — SSE 스트리밍 응답
+  classifyTaxInvoices: (files: File[]) => {
+    const formData = new FormData()
+    files.forEach(file => formData.append('files', file))
+    const token = useAuthStore.getState().accessToken
+    return fetch(`${API_BASE_URL}/ai-classification/classify-tax-invoices`, {
+      method: 'POST',
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+      body: formData,
+    })
+  },
+
   // 배치 업로드 (클라이언트 사이드 파싱 후)
   uploadHistoricalBatch: (data: {
     upload_id: number | null
