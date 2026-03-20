@@ -714,8 +714,8 @@ export default function AIClassificationPage() {
         journal_entry: r.journal_entry || {
           debit_account_code: r.predicted_account_code,
           debit_account_name: r.predicted_account_name,
-          credit_account_code: '253',
-          credit_account_name: '미지급금',
+          credit_account_code: r.credit_account_code || '251',
+          credit_account_name: r.credit_account_name || '외상매입금',
           debit_amount: r.supply_amount || 0,
           credit_amount: r.supply_amount || 0,
           vat_amount: r.vat_amount || 0,
@@ -925,8 +925,8 @@ export default function AIClassificationPage() {
           journal_entry: r.journal_entry || {
             debit_account_code: r.predicted_account_code || '',
             debit_account_name: r.predicted_account_name || '',
-            credit_account_code: '253',
-            credit_account_name: '미지급금',
+            credit_account_code: r.credit_account_code || '251',
+            credit_account_name: r.credit_account_name || '외상매입금',
             debit_amount: r.supply_amount || 0,
             credit_amount: r.supply_amount || 0,
             vat_amount: r.vat_amount || 0,
@@ -1617,8 +1617,8 @@ export default function AIClassificationPage() {
               <span>세금계산서 분류</span>
             </h3>
             <p className="text-sm text-gray-600 mb-4">
-              전자세금계산서(매입) 파일을 업로드하면 AI가 계정과목을 자동 분류합니다.
-              차변 계정(비용)을 AI가 추천하고, 대변은 미지급금(253)으로 자동 설정됩니다.
+              전자세금계산서(매입) 파일을 업로드하면 AI가 차변/대변 계정과목을 자동 분류합니다.
+              거래처와 거래 유형에 따라 외상매입금, 미지급금, 선급금 등 대변 계정도 AI가 판단합니다.
             </p>
 
             <div className="mb-4 border rounded-lg p-3 border-orange-200 bg-orange-50/50">
@@ -1655,8 +1655,9 @@ export default function AIClassificationPage() {
                 accept=".xlsx,.xls"
                 multiple
                 onChange={(e) => {
-                  if (e.target.files) {
-                    setTaxInvoiceFiles(prev => [...prev, ...Array.from(e.target.files!)].slice(0, 5))
+                  const files = Array.from(e.target.files || [])
+                  if (files.length > 0) {
+                    setTaxInvoiceFiles(prev => [...prev, ...files].slice(0, 5))
                   }
                   e.target.value = ''
                 }}

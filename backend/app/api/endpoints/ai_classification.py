@@ -1974,6 +1974,9 @@ async def get_classification_result(
             resp["banks"] = banks
             resp["inter_bank_transfers"] = stats.get("inter_bank_transfers", 0)
             resp["is_bank_statement"] = True
+        # 세금계산서 분류인 경우
+        if upload.file_type == "tax_invoice" or data.get("is_tax_invoice"):
+            resp["is_tax_invoice"] = True
         return resp
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"결과 파싱 실패: {str(e)[:200]}")
@@ -3124,9 +3127,33 @@ def _parse_tax_invoice_xls(content: bytes, filename: str) -> dict:
     }
 
 
+def _determine_credit_account_for_tax(txn: dict, debit_code: str) -> dict:
+    """
+    세금계산서 매입 거래의 대변 계정을 결정.
+    - 원재료/상품 매입 → 외상매입금(251)
+    - 일반 비용(판관비) → 미지급금(253)
+    - 선급금 상계 케이스는 LLM이 판단
+    """
+    # 매입 관련 차변 → 외상매입금
+    purchase_codes = {"451", "404", "402", "403", "405", "452", "453"}
+    if debit_code in purchase_codes:
+        return {"credit_account_code": "251", "credit_account_name": "외상매입금"}
+
+    # 판관비(5xx) → 미지급금
+    if debit_code.startswith("5"):
+        return {"credit_account_code": "253", "credit_account_name": "미지급금"}
+
+    # 자산(1xx) → 미지급금
+    if debit_code.startswith("1"):
+        return {"credit_account_code": "253", "credit_account_name": "미지급금"}
+
+    # 기본값
+    return {"credit_account_code": "253", "credit_account_name": "미지급금"}
+
+
 def _rule_classify_tax_invoice(txn: dict) -> Optional[dict]:
     """
-    규칙 기반 세금계산서 계정 분류.
+    규칙 기반 세금계산서 계정 분류 (차변 + 대변 모두).
     거래처명과 품명의 키워드로 판단하며,
     확실한 경우에만 결과를 반환하고 불확실하면 None을 반환해 LLM에 위임한다.
     """
@@ -3137,82 +3164,91 @@ def _rule_classify_tax_invoice(txn: dict) -> Optional[dict]:
     def _match(keywords):
         return any(k in combined for k in keywords)
 
+    result = None
+
     # 통신비 (523)
     if _match(["통신", "전화", "인터넷", "kt", "skt", "lgu+", "엘지유플러스", "sk텔레콤", "케이티"]):
-        return {"account_code": "523", "account_name": "통신비",
-                "confidence": 0.90, "reasoning": "규칙: 통신/전화/인터넷 키워드"}
+        result = {"account_code": "523", "account_name": "통신비",
+                  "confidence": 0.90, "reasoning": "규칙: 통신/전화/인터넷 키워드"}
 
     # 수도광열비 (522) — 전기
-    if _match(["전기", "전력", "한국전력", "한전", "kepco"]):
-        return {"account_code": "522", "account_name": "수도광열비",
-                "confidence": 0.92, "reasoning": "규칙: 전기/한전 키워드"}
+    elif _match(["전기", "전력", "한국전력", "한전", "kepco"]):
+        result = {"account_code": "522", "account_name": "수도광열비",
+                  "confidence": 0.92, "reasoning": "규칙: 전기/한전 키워드"}
 
     # 수도광열비 (522) — 수도/가스
-    if _match(["수도", "상하수도", "도시가스", "가스", "lng", "lpg"]):
-        return {"account_code": "522", "account_name": "수도광열비",
-                "confidence": 0.90, "reasoning": "규칙: 수도/가스 키워드"}
+    elif _match(["수도", "상하수도", "도시가스", "가스", "lng", "lpg"]):
+        result = {"account_code": "522", "account_name": "수도광열비",
+                  "confidence": 0.90, "reasoning": "규칙: 수도/가스 키워드"}
 
     # 임차료 (519)
-    if _match(["임대", "임차", "월세", "관리비", "임차료", "임대료"]):
-        return {"account_code": "519", "account_name": "임차료",
-                "confidence": 0.92, "reasoning": "규칙: 임대/임차/월세 키워드"}
+    elif _match(["임대", "임차", "월세", "관리비", "임차료", "임대료"]):
+        result = {"account_code": "519", "account_name": "임차료",
+                  "confidence": 0.92, "reasoning": "규칙: 임대/임차/월세 키워드"}
 
     # 보험료 (524)
-    if _match(["보험"]):
-        return {"account_code": "524", "account_name": "보험료",
-                "confidence": 0.90, "reasoning": "규칙: 보험 키워드"}
+    elif _match(["보험"]):
+        result = {"account_code": "524", "account_name": "보험료",
+                  "confidence": 0.90, "reasoning": "규칙: 보험 키워드"}
 
     # 지급수수료 (518)
-    if _match(["세무", "회계", "법무", "컨설팅", "자문", "법인세", "세무사", "회계사"]):
-        return {"account_code": "518", "account_name": "지급수수료",
-                "confidence": 0.90, "reasoning": "규칙: 세무/회계/법무/컨설팅 키워드"}
+    elif _match(["세무", "회계", "법무", "컨설팅", "자문", "법인세", "세무사", "회계사"]):
+        result = {"account_code": "518", "account_name": "지급수수료",
+                  "confidence": 0.90, "reasoning": "규칙: 세무/회계/법무/컨설팅 키워드"}
 
     # 운반비 (516)
-    if _match(["택배", "운송", "배송", "물류", "화물", "운반"]):
-        return {"account_code": "516", "account_name": "운반비",
-                "confidence": 0.90, "reasoning": "규칙: 택배/운송/배송 키워드"}
+    elif _match(["택배", "운송", "배송", "물류", "화물", "운반"]):
+        result = {"account_code": "516", "account_name": "운반비",
+                  "confidence": 0.90, "reasoning": "규칙: 택배/운송/배송 키워드"}
 
     # 수선비 (521)
-    if _match(["수리", "유지", "보수", "정비", "수선"]):
-        return {"account_code": "521", "account_name": "수선비",
-                "confidence": 0.88, "reasoning": "규칙: 수리/유지/보수 키워드"}
+    elif _match(["수리", "유지", "보수", "정비", "수선"]):
+        result = {"account_code": "521", "account_name": "수선비",
+                  "confidence": 0.88, "reasoning": "규칙: 수리/유지/보수 키워드"}
 
     # 소모품비 (514)
-    if _match(["소모품", "사무용품", "사무", "문구", "청소용품"]):
-        return {"account_code": "514", "account_name": "소모품비",
-                "confidence": 0.88, "reasoning": "규칙: 소모품/사무용품 키워드"}
+    elif _match(["소모품", "사무용품", "사무", "문구", "청소용품"]):
+        result = {"account_code": "514", "account_name": "소모품비",
+                  "confidence": 0.88, "reasoning": "규칙: 소모품/사무용품 키워드"}
 
     # 포장비 (528)
-    if _match(["포장", "용기", "박스", "패키지", "케이스"]):
-        return {"account_code": "528", "account_name": "포장비",
-                "confidence": 0.88, "reasoning": "규칙: 포장/용기 키워드"}
+    elif _match(["포장", "용기", "박스", "패키지", "케이스"]):
+        result = {"account_code": "528", "account_name": "포장비",
+                  "confidence": 0.88, "reasoning": "규칙: 포장/용기 키워드"}
 
     # 광고선전비 (517)
-    if _match(["광고", "홍보", "마케팅", "촬영", "디자인", "인쇄"]):
-        return {"account_code": "517", "account_name": "광고선전비",
-                "confidence": 0.88, "reasoning": "규칙: 광고/홍보 키워드"}
+    elif _match(["광고", "홍보", "마케팅", "촬영", "디자인", "인쇄"]):
+        result = {"account_code": "517", "account_name": "광고선전비",
+                  "confidence": 0.88, "reasoning": "규칙: 광고/홍보 키워드"}
 
     # 차량유지비 (526)
-    if _match(["차량", "주유", "경유", "휘발유", "엔진오일", "자동차", "차량유지"]):
-        return {"account_code": "526", "account_name": "차량유지비",
-                "confidence": 0.90, "reasoning": "규칙: 차량/주유 키워드"}
+    elif _match(["차량", "주유", "경유", "휘발유", "엔진오일", "자동차", "차량유지"]):
+        result = {"account_code": "526", "account_name": "차량유지비",
+                  "confidence": 0.90, "reasoning": "규칙: 차량/주유 키워드"}
 
     # 교육훈련비 (530)
-    if _match(["교육", "연수", "훈련", "세미나", "강의"]):
-        return {"account_code": "530", "account_name": "교육훈련비",
-                "confidence": 0.88, "reasoning": "규칙: 교육/연수 키워드"}
+    elif _match(["교육", "연수", "훈련", "세미나", "강의"]):
+        result = {"account_code": "530", "account_name": "교육훈련비",
+                  "confidence": 0.88, "reasoning": "규칙: 교육/연수 키워드"}
 
     # 원재료비 (451) — 식재료/식품 원료
-    if _match(["식재료", "원료", "원재료", "재료", "농산물", "축산물", "수산물"]):
-        return {"account_code": "451", "account_name": "원재료비",
-                "confidence": 0.85, "reasoning": "규칙: 식재료/원료 키워드"}
+    elif _match(["식재료", "원료", "원재료", "재료", "농산물", "축산물", "수산물"]):
+        result = {"account_code": "451", "account_name": "원재료비",
+                  "confidence": 0.85, "reasoning": "규칙: 식재료/원료 키워드"}
 
     # 상품매입 (404) — 식품 완제품 매입
-    if _match(["식품", "가공식품", "완제품", "상품"]):
-        return {"account_code": "404", "account_name": "상품매입",
-                "confidence": 0.82, "reasoning": "규칙: 식품/상품 키워드"}
+    elif _match(["식품", "가공식품", "완제품", "상품"]):
+        result = {"account_code": "404", "account_name": "상품매입",
+                  "confidence": 0.82, "reasoning": "규칙: 식품/상품 키워드"}
 
-    return None  # 불확실 → LLM 위임
+    if result is None:
+        return None  # 불확실 → LLM 위임
+
+    # 대변 계정도 차변 코드에 따라 결정
+    credit = _determine_credit_account_for_tax(txn, result["account_code"])
+    result["credit_account_code"] = credit["credit_account_code"]
+    result["credit_account_name"] = credit["credit_account_name"]
+    return result
 
 
 @router.get("/classify-tax-progress")
@@ -3411,13 +3447,13 @@ async def classify_tax_invoices(
                             )
                         txn_text = "\n".join(txn_lines)
 
-                        prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매입)의 계정과목을 분류하세요.
+                        prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매입)의 차변/대변 계정과목을 분류하세요.
 **반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
 
 ## 계정과목 목록
 {account_list}
 
-## 세금계산서 분류 기준
+## 차변(비용/자산) 분류 기준
 - 식재료/원료/부재료 구매: 원재료비(451) 또는 부재료비(502)
 - 완제품/상품 매입: 상품매입(404)
 - 포장재/용기: 포장비(528)
@@ -3432,13 +3468,20 @@ async def classify_tax_invoices(
 - 광고/홍보/마케팅: 광고선전비(517)
 - 세무/회계/법무/컨설팅: 지급수수료(518)
 - 교육/연수: 교육훈련비(530)
-- 기타 경비: 거래처/품명으로 판단
+
+## 대변(부채) 분류 기준 — 거래처와 거래 성격에 따라 판단
+- 원재료/상품 매입 거래: 외상매입금(251)
+- 일반 경비/판관비: 미지급금(253)
+- 선급금 상계(이미 선급 지급한 거래처): 선급금(131)
+- 외상매출금 상계: 외상매출금(108)
+- 미지급비용(미확정 비용): 미지급비용(259)
+- 확실하지 않으면 거래 유형에 따라 외상매입금(251) 또는 미지급금(253) 중 택1
 
 ## 세금계산서 거래 ({len(batch_indices)}건)
 {txn_text}
 
 ## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
-[{{"no":1,"account_code":"451","account_name":"원재료비","confidence":0.9,"reasoning":"식재료 매입"}},...]"""
+[{{"no":1,"account_code":"451","account_name":"원재료비","credit_code":"251","credit_name":"외상매입금","confidence":0.9,"reasoning":"식재료 매입→외상매입금"}},...]"""
 
                         try:
                             response = client.messages.create(
@@ -3470,6 +3513,15 @@ async def classify_tax_invoices(
                                         "confidence": conf,
                                         "reasoning": item_result.get("reasoning", "AI 분석"),
                                     }
+
+                            # 대변 계정도 포함
+                            for gi, m in mapped.items():
+                                if "credit_account_code" not in m:
+                                    credit_info = _determine_credit_account_for_tax(
+                                        all_transactions[gi], m["account_code"]
+                                    )
+                                    m["credit_account_code"] = credit_info["credit_account_code"]
+                                    m["credit_account_name"] = credit_info["credit_account_name"]
 
                             logger.info(f"[TaxInvoice LLM] 배치 {batch_num}/{total_batches} 완료 ({len(mapped)}건)")
                             return mapped
@@ -3572,12 +3624,14 @@ async def classify_tax_invoices(
                     "reasoning": cls.get("reasoning", "") if cls else "",
                     "auto_confirm": cls["confidence"] >= 0.85 if cls else False,
                     "needs_review": cls["confidence"] < 0.85 if cls else True,
+                    "credit_account_code": cls.get("credit_account_code", "253") if cls else "",
+                    "credit_account_name": cls.get("credit_account_name", "미지급금") if cls else "",
                     "journal_entry": {
                         "debit_account_code": cls["account_code"] if cls else "",
                         "debit_account_name": cls["account_name"] if cls else "",
                         "debit_amount": txn["supply_amount"],
-                        "credit_account_code": "253",
-                        "credit_account_name": "미지급금",
+                        "credit_account_code": cls.get("credit_account_code", "253") if cls else "253",
+                        "credit_account_name": cls.get("credit_account_name", "미지급금") if cls else "미지급금",
                         "credit_amount": txn["supply_amount"],
                         "vat_amount": txn["vat_amount"],
                         "supply_amount": txn["supply_amount"],
