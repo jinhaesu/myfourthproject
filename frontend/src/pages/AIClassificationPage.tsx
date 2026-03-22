@@ -326,7 +326,7 @@ export default function AIClassificationPage() {
   }
 
   // Handle reclassify single upload
-  const handleReclassifyUpload = async (uploadId: number, filename: string) => {
+  const handleReclassifyUpload = async (uploadId: number) => {
     setLoading(true)
     try {
       const response = await aiClassificationApi.reclassifyUpload(uploadId)
@@ -2332,7 +2332,7 @@ export default function AIClassificationPage() {
                           )}
                         </div>
                         <button
-                          onClick={(e) => { e.stopPropagation(); handleReclassifyUpload(u.id, u.filename) }}
+                          onClick={(e) => { e.stopPropagation(); handleReclassifyUpload(u.id) }}
                           disabled={loading}
                           className="text-xs text-indigo-500 hover:text-indigo-700 px-2 py-1 rounded hover:bg-indigo-50 flex-shrink-0"
                         >
