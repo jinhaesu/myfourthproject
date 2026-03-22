@@ -325,6 +325,41 @@ export default function AIClassificationPage() {
     }
   }
 
+  // Handle reclassify single upload
+  const handleReclassifyUpload = async (uploadId: number, filename: string) => {
+    setLoading(true)
+    try {
+      const response = await aiClassificationApi.reclassifyUpload(uploadId)
+      showMessage('success', response.data?.message || '재분류 완료')
+      refreshData()
+      // 현재 보고 있는 결과라면 다시 로드
+      if (currentUploadId === uploadId) {
+        handleLoadClassifyResult(uploadId)
+      }
+    } catch (error: any) {
+      showMessage('error', error.response?.data?.detail || '재분류 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Handle reclassify all uploads
+  const handleReclassifyAll = async () => {
+    setLoading(true)
+    try {
+      const response = await aiClassificationApi.reclassifyAll()
+      showMessage('success', response.data?.message || '일괄 재분류 완료')
+      refreshData()
+      if (currentUploadId) {
+        handleLoadClassifyResult(currentUploadId)
+      }
+    } catch (error: any) {
+      showMessage('error', error.response?.data?.detail || '일괄 재분류 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // Handle delete journal entry (장부 반영 취소)
   const handleDeleteJournal = async (uploadId: number, filename: string) => {
     if (!window.confirm(`"${filename}" 장부 반영을 취소하시겠습니까?\n반영된 분개가 모두 삭제됩니다. 재무보고서에서도 제외됩니다.`)) {
@@ -2248,9 +2283,18 @@ export default function AIClassificationPage() {
 
           {/* 분류 이력 목록 — 카드/통장 구분 */}
           <div className="bg-white rounded-lg shadow border">
-            <div className="p-4 border-b">
-              <h3 className="text-lg font-medium">분류 이력</h3>
-              <p className="text-sm text-gray-500 mt-1">클릭하면 해당 분류 결과를 다시 불러옵니다.</p>
+            <div className="p-4 border-b flex justify-between items-center">
+              <div>
+                <h3 className="text-lg font-medium">분류 이력</h3>
+                <p className="text-sm text-gray-500 mt-1">클릭하면 해당 분류 결과를 다시 불러옵니다.</p>
+              </div>
+              <button
+                onClick={handleReclassifyAll}
+                disabled={loading}
+                className="px-3 py-1.5 text-xs bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 font-medium"
+              >
+                {loading ? '재분류 중...' : '전체 재분류 (최신 규칙)'}
+              </button>
             </div>
             {uploadHistory && uploadHistory.filter(u => u.upload_type !== 'historical' && u.upload_type !== 'journal_entry').length > 0 ? (
               <div className="divide-y divide-gray-100">
@@ -2287,6 +2331,13 @@ export default function AIClassificationPage() {
                             <span className="flex-shrink-0 text-xs text-blue-600 font-medium bg-blue-100 px-1.5 py-0.5 rounded">보는 중</span>
                           )}
                         </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleReclassifyUpload(u.id, u.filename) }}
+                          disabled={loading}
+                          className="text-xs text-indigo-500 hover:text-indigo-700 px-2 py-1 rounded hover:bg-indigo-50 flex-shrink-0"
+                        >
+                          재분류
+                        </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDeleteUpload(u.id, u.filename) }}
                           disabled={loading}

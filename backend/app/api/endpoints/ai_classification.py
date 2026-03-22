@@ -4096,3 +4096,318 @@ async def classify_tax_invoices(
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/reclassify/{upload_id}")
+async def reclassify_upload(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    기존 분류 결과를 최신 규칙으로 재분류.
+    저장된 result_json의 각 항목을 규칙 기반으로 재분류하고 결과를 업데이트.
+    """
+    from app.models.ai import AIDataUploadHistory, UploadStatus
+
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="분류 이력을 찾을 수 없습니다.")
+    if not upload.result_json:
+        raise HTTPException(status_code=400, detail="저장된 분류 결과가 없습니다.")
+
+    try:
+        data = json.loads(upload.result_json)
+        results = data.get("results", [])
+        if not results:
+            raise HTTPException(status_code=400, detail="재분류할 항목이 없습니다.")
+
+        is_bank = upload.file_type == "bank_statement"
+        is_tax = upload.file_type == "tax_invoice"
+        is_sales = "매출" in (upload.filename or "")
+
+        reclassified_count = 0
+
+        for r in results:
+            # Build a transaction dict for rule-based classification
+            if is_tax:
+                txn = {
+                    "vendor_name": r.get("vendor_name", ""),
+                    "item_description": r.get("item_description", ""),
+                    "supply_amount": r.get("supply_amount", 0),
+                    "tax_type": r.get("tax_type", ""),
+                }
+                if is_sales:
+                    new_cls = _rule_classify_tax_invoice_sales(txn)
+                else:
+                    new_cls = _rule_classify_tax_invoice(txn)
+
+                # Also try vendor history lookup
+                if not new_cls:
+                    # Try vendor history (sync version - just try rules)
+                    pass
+
+            elif is_bank:
+                txn = {
+                    "description": r.get("description", ""),
+                    "content": r.get("content", ""),
+                    "deposit": r.get("deposit", 0),
+                    "withdrawal": r.get("withdrawal", 0),
+                    "counterparty": r.get("counterparty", ""),
+                    "_bank_name": r.get("bank_name", ""),
+                }
+                # Skip inter-bank transfers
+                if r.get("is_inter_bank_transfer"):
+                    continue
+                new_cls = _rule_classify_bank_txn(txn)
+            else:
+                # Card/generic - use description
+                txn = {
+                    "vendor_name": r.get("merchant_name", r.get("description", "")),
+                    "item_description": r.get("description", ""),
+                    "supply_amount": r.get("amount", 0),
+                    "tax_type": "과세",
+                }
+                new_cls = _rule_classify_tax_invoice(txn)
+
+            if new_cls:
+                # Validate the new classification
+                new_cls = _validate_classification(new_cls, txn)
+
+                # Update the result
+                r["predicted_account_code"] = new_cls.get("account_code", r.get("predicted_account_code", ""))
+                r["predicted_account_name"] = new_cls.get("account_name", r.get("predicted_account_name", ""))
+                r["confidence"] = new_cls.get("confidence", r.get("confidence", 0))
+                r["reasoning"] = new_cls.get("reasoning", "") + " [재분류]"
+                r["auto_confirm"] = new_cls.get("confidence", 0) >= 0.85 and not new_cls.get("needs_review")
+                r["needs_review"] = new_cls.get("needs_review", new_cls.get("confidence", 0) < 0.85)
+
+                if "credit_account_code" in new_cls:
+                    r["credit_account_code"] = new_cls["credit_account_code"]
+                    r["credit_account_name"] = new_cls["credit_account_name"]
+
+                # Update journal_entry if present
+                if is_tax and r.get("journal_entry"):
+                    je = r["journal_entry"]
+                    if is_sales:
+                        je["debit_account_code"] = new_cls.get("credit_account_code", "108")
+                        je["debit_account_name"] = new_cls.get("credit_account_name", "외상매출금")
+                        je["credit_account_code"] = new_cls["account_code"]
+                        je["credit_account_name"] = new_cls["account_name"]
+                    else:
+                        je["debit_account_code"] = new_cls["account_code"]
+                        je["debit_account_name"] = new_cls["account_name"]
+                        je["credit_account_code"] = new_cls.get("credit_account_code", "253")
+                        je["credit_account_name"] = new_cls.get("credit_account_name", "미지급금")
+                elif is_bank and r.get("journal_entry"):
+                    je = r["journal_entry"]
+                    if txn.get("withdrawal", 0) > 0:
+                        je["debit_account_code"] = new_cls["account_code"]
+                        je["debit_account_name"] = new_cls["account_name"]
+                    else:
+                        je["credit_account_code"] = new_cls["account_code"]
+                        je["credit_account_name"] = new_cls["account_name"]
+
+                # Add review_reasons if any
+                if new_cls.get("review_reasons"):
+                    r["review_reasons"] = new_cls["review_reasons"]
+
+                reclassified_count += 1
+            else:
+                # No rule match - run validation on existing classification
+                existing_cls = {
+                    "account_code": r.get("predicted_account_code", ""),
+                    "account_name": r.get("predicted_account_name", ""),
+                    "confidence": r.get("confidence", 0),
+                    "credit_account_code": r.get("credit_account_code", ""),
+                    "credit_account_name": r.get("credit_account_name", ""),
+                }
+                validated = _validate_classification(existing_cls, txn)
+                if validated.get("needs_review") or validated.get("account_code") != existing_cls["account_code"]:
+                    r["predicted_account_code"] = validated["account_code"]
+                    r["predicted_account_name"] = validated["account_name"]
+                    r["confidence"] = validated.get("confidence", r.get("confidence", 0))
+                    r["needs_review"] = validated.get("needs_review", False)
+                    if validated.get("review_reasons"):
+                        r["review_reasons"] = validated["review_reasons"]
+                    reclassified_count += 1
+
+        # Recalculate stats
+        auto_confirm_count = sum(1 for r in results if r.get("auto_confirm"))
+        needs_review_count = sum(1 for r in results if r.get("needs_review"))
+        avg_confidence = sum(r.get("confidence", 0) for r in results) / len(results) if results else 0
+
+        # Update stats in data
+        stats = data.get("stats", {})
+        stats["auto_confirmed"] = auto_confirm_count
+        stats["needs_review"] = needs_review_count
+        stats["average_confidence"] = round(avg_confidence, 4)
+        data["stats"] = stats
+        data["results"] = results
+
+        # Save back to DB
+        upload.result_json = json.dumps(data, ensure_ascii=False, default=str)
+        await db.flush()
+
+        logger.info(f"[Reclassify] upload_id={upload_id}: {reclassified_count}/{len(results)}건 재분류 완료")
+
+        return {
+            "message": f"{reclassified_count}건 재분류 완료 (전체 {len(results)}건)",
+            "upload_id": upload_id,
+            "total": len(results),
+            "reclassified": reclassified_count,
+            "auto_confirmed": auto_confirm_count,
+            "needs_review": needs_review_count,
+            "average_confidence": round(avg_confidence, 4),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Reclassify] 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"재분류 실패: {str(e)[:200]}")
+
+
+@router.post("/reclassify-all")
+async def reclassify_all_uploads(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """모든 분류 이력을 최신 규칙으로 일괄 재분류"""
+    from app.models.ai import AIDataUploadHistory
+
+    result = await db.execute(
+        select(AIDataUploadHistory)
+        .where(
+            AIDataUploadHistory.upload_type == "classification",
+            AIDataUploadHistory.result_json.isnot(None)
+        )
+        .order_by(AIDataUploadHistory.created_at.desc())
+    )
+    uploads = result.scalars().all()
+
+    if not uploads:
+        return {"message": "재분류할 이력이 없습니다.", "total": 0, "reclassified": 0}
+
+    total_reclassified = 0
+    total_items = 0
+    errors = []
+
+    for upload in uploads:
+        try:
+            # Reuse the single reclassify logic inline
+            data = json.loads(upload.result_json)
+            results_list = data.get("results", [])
+            if not results_list:
+                continue
+
+            is_bank = upload.file_type == "bank_statement"
+            is_tax = upload.file_type == "tax_invoice"
+            is_sales = "매출" in (upload.filename or "")
+
+            reclassified_count = 0
+            for r in results_list:
+                if is_tax:
+                    txn = {
+                        "vendor_name": r.get("vendor_name", ""),
+                        "item_description": r.get("item_description", ""),
+                        "supply_amount": r.get("supply_amount", 0),
+                        "tax_type": r.get("tax_type", ""),
+                    }
+                    new_cls = _rule_classify_tax_invoice_sales(txn) if is_sales else _rule_classify_tax_invoice(txn)
+                elif is_bank:
+                    if r.get("is_inter_bank_transfer"):
+                        continue
+                    txn = {
+                        "description": r.get("description", ""),
+                        "content": r.get("content", ""),
+                        "deposit": r.get("deposit", 0),
+                        "withdrawal": r.get("withdrawal", 0),
+                        "counterparty": r.get("counterparty", ""),
+                        "_bank_name": r.get("bank_name", ""),
+                    }
+                    new_cls = _rule_classify_bank_txn(txn)
+                else:
+                    txn = {
+                        "vendor_name": r.get("merchant_name", r.get("description", "")),
+                        "item_description": r.get("description", ""),
+                        "supply_amount": r.get("amount", 0),
+                        "tax_type": "과세",
+                    }
+                    new_cls = _rule_classify_tax_invoice(txn)
+
+                # Validate (existing or new)
+                existing = {
+                    "account_code": r.get("predicted_account_code", ""),
+                    "account_name": r.get("predicted_account_name", ""),
+                    "confidence": r.get("confidence", 0),
+                    "credit_account_code": r.get("credit_account_code", ""),
+                    "credit_account_name": r.get("credit_account_name", ""),
+                }
+                cls = new_cls if new_cls else existing
+                cls = _validate_classification(cls, txn)
+
+                if cls.get("account_code") != existing["account_code"] or cls.get("needs_review"):
+                    r["predicted_account_code"] = cls.get("account_code", "")
+                    r["predicted_account_name"] = cls.get("account_name", "")
+                    r["confidence"] = cls.get("confidence", 0)
+                    r["reasoning"] = cls.get("reasoning", "") + " [일괄재분류]"
+                    r["auto_confirm"] = cls.get("confidence", 0) >= 0.85 and not cls.get("needs_review")
+                    r["needs_review"] = cls.get("needs_review", cls.get("confidence", 0) < 0.85)
+                    if cls.get("review_reasons"):
+                        r["review_reasons"] = cls["review_reasons"]
+                    if cls.get("credit_account_code"):
+                        r["credit_account_code"] = cls["credit_account_code"]
+                        r["credit_account_name"] = cls.get("credit_account_name", "")
+
+                    # Update journal_entry
+                    if r.get("journal_entry"):
+                        je = r["journal_entry"]
+                        if is_tax and is_sales:
+                            je["debit_account_code"] = cls.get("credit_account_code", "108")
+                            je["debit_account_name"] = cls.get("credit_account_name", "외상매출금")
+                            je["credit_account_code"] = cls["account_code"]
+                            je["credit_account_name"] = cls["account_name"]
+                        elif is_tax:
+                            je["debit_account_code"] = cls["account_code"]
+                            je["debit_account_name"] = cls["account_name"]
+                            je["credit_account_code"] = cls.get("credit_account_code", "253")
+                            je["credit_account_name"] = cls.get("credit_account_name", "미지급금")
+                        elif is_bank:
+                            if r.get("withdrawal", 0) > 0 or txn.get("withdrawal", 0) > 0:
+                                je["debit_account_code"] = cls["account_code"]
+                                je["debit_account_name"] = cls["account_name"]
+                            else:
+                                je["credit_account_code"] = cls["account_code"]
+                                je["credit_account_name"] = cls["account_name"]
+
+                    reclassified_count += 1
+
+            # Update stats
+            stats = data.get("stats", {})
+            stats["auto_confirmed"] = sum(1 for rr in results_list if rr.get("auto_confirm"))
+            stats["needs_review"] = sum(1 for rr in results_list if rr.get("needs_review"))
+            avg_conf = sum(rr.get("confidence", 0) for rr in results_list) / len(results_list) if results_list else 0
+            stats["average_confidence"] = round(avg_conf, 4)
+            data["stats"] = stats
+            data["results"] = results_list
+
+            upload.result_json = json.dumps(data, ensure_ascii=False, default=str)
+            total_reclassified += reclassified_count
+            total_items += len(results_list)
+
+        except Exception as e:
+            errors.append(f"upload_id={upload.id}: {str(e)[:100]}")
+            logger.warning(f"[ReclassifyAll] upload_id={upload.id} 실패: {e}")
+
+    await db.flush()
+
+    logger.info(f"[ReclassifyAll] 완료: {len(uploads)}개 이력, {total_reclassified}/{total_items}건 재분류")
+
+    return {
+        "message": f"{len(uploads)}개 이력에서 {total_reclassified}건 재분류 완료",
+        "uploads_processed": len(uploads),
+        "total_items": total_items,
+        "total_reclassified": total_reclassified,
+        "errors": errors[:5] if errors else [],
+    }

@@ -445,6 +445,12 @@ export const aiClassificationApi = {
   deleteUpload: (uploadId: number) =>
     api.delete(`/ai-classification/upload/${uploadId}`),
 
+  // 재분류
+  reclassifyUpload: (uploadId: number) =>
+    api.post(`/ai-classification/reclassify/${uploadId}`),
+  reclassifyAll: () =>
+    api.post('/ai-classification/reclassify-all'),
+
   // 연도별 데이터 삭제
   deleteDataByYear: (year: number) =>
     api.delete(`/ai-classification/data-by-year/${year}`),
