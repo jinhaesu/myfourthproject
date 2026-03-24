@@ -1229,9 +1229,14 @@ async def classify_file(
             txn_date = ''
             if 'transaction_date' in df.columns and pd.notna(row.get('transaction_date')):
                 txn_date = str(row['transaction_date']).strip()
+            # 카드번호 추출 (피드백: 미지급금 거래처는 카드번호로 설정)
+            card_num = ''
+            if 'card_number' in df.columns and pd.notna(row.get('card_number')):
+                card_num = str(row['card_number']).strip()
             row_meta.append({
                 "idx": int(idx), "desc": desc, "merchant": merchant or desc,
                 "amount": amount, "vat": vat, "supply": supply, "txn_date": txn_date,
+                "card_number": card_num,
             })
 
         # ===== LLM(Claude) 기본 분류기 → ML fallback =====
@@ -1325,6 +1330,16 @@ async def classify_file(
 
             memo = f"{meta['desc']} 카드결제" if is_card_format else meta['desc']
 
+            # 피드백: 카드 사용건 미지급금 거래처는 업체가 아닌 카드번호로 설정
+            credit_code = "253"
+            credit_name = "미지급금"
+            if is_card_format:
+                card_num = meta.get("card_number", "")
+                if card_num:
+                    credit_name = f"미지급금({card_num})"
+                else:
+                    credit_name = "미지급금(신용카드)"
+
             result_item = {
                 "row_index": meta['idx'],
                 "description": meta['desc'],
@@ -1332,6 +1347,7 @@ async def classify_file(
                 "amount": meta['amount'],
                 "transaction_date": meta['txn_date'],
                 "memo": memo,
+                "card_number": meta.get("card_number", ""),
                 "predicted_account_code": debit_code,
                 "predicted_account_name": debit_name,
                 "confidence": confidence,
@@ -1344,8 +1360,8 @@ async def classify_file(
                     "debit_account_code": debit_code,
                     "debit_account_name": debit_name,
                     "debit_amount": meta['amount'],
-                    "credit_account_code": "253",
-                    "credit_account_name": "미지급금",
+                    "credit_account_code": credit_code,
+                    "credit_account_name": credit_name,
                     "credit_amount": meta['amount'],
                     "vat_amount": meta['vat'],
                     "supply_amount": meta['supply'] if meta['supply'] else meta['amount'] - meta['vat'],
@@ -2283,10 +2299,12 @@ def _rule_classify_bank_txn(txn: dict) -> Optional[dict]:
 
     # ---- 입금 (Deposits) ----
     if is_deposit:
-        # Interest income
+        # Interest income (피드백: 이자 수취 시 국세/지방세 동시 공제 후 수취)
         if any(k in combined for k in ["이자", "예금이자"]):
             return {"account_code": "901", "account_name": "이자수익",
-                    "confidence": 0.95, "reasoning": "규칙: 이자 키워드"}
+                    "confidence": 0.95, "reasoning": "규칙: 이자수익 (실수령액=이자-원천세-지방세)",
+                    "needs_review": True,
+                    "review_reasons": ["이자 수취 시 국세(14%)/지방세(1.4%) 원천징수 공제 확인 필요"]}
 
         # Loan disbursement
         if any(k in combined for k in ["대출", "여신실행", "한도대출"]):
@@ -2299,15 +2317,20 @@ def _rule_classify_bank_txn(txn: dict) -> Optional[dict]:
             return {"account_code": "108", "account_name": "외상매출금",
                     "confidence": 0.85, "reasoning": "규칙: 카드매출 입금"}
 
-        # Generic sales deposit (large amounts via bank transfer)
-        if txn.get("deposit", 0) >= 1000000 and content in [
+        # 피드백: 입금의 경우 대부분 매출채권(외상매출금) 입금
+        # 거래처 이체 입금 → 외상매출금(108) 회수 (상품매출 아님)
+        if txn.get("deposit", 0) >= 100000 and content in [
             "타행이체", "fb이체", "당행이체", "bz뱅크", "인터넷이체",
             "cms입금", "지로입금", "무통장입금",
         ]:
-            return {"account_code": "401", "account_name": "상품매출",
-                    "confidence": 0.70, "reasoning": "규칙: 거래처 입금 추정"}
+            return {"account_code": "108", "account_name": "외상매출금",
+                    "confidence": 0.75, "reasoning": "규칙: 거래처 입금 → 매출채권(108) 회수"}
 
-        return None  # Deposit not matched — send to LLM
+        # 기타 입금도 기본값은 매출채권 회수 (피드백: 입금 대부분 매출채권)
+        if txn.get("deposit", 0) > 0:
+            return {"account_code": "108", "account_name": "외상매출금",
+                    "confidence": 0.65, "reasoning": "규칙: 입금 기본값 → 매출채권(108) 회수 추정",
+                    "needs_review": True}
 
     # ---- 출금 (Withdrawals) ----
     # Interest expense
@@ -2399,14 +2422,19 @@ def _rule_classify_bank_txn(txn: dict) -> Optional[dict]:
         return {"account_code": "824", "account_name": "운반비",
                 "confidence": 0.90, "reasoning": "규칙: 운반/택배 키워드"}
 
-    # Generic purchase payment (large amounts via bank transfer)
-    if txn.get("withdrawal", 0) >= 1000000 and content in [
+    # 피드백: 출금의 경우 대부분 매입채무(외상매입금, 미지급금) 지급
+    # 거래처 이체 출금 → 외상매입금(251) 지급
+    if txn.get("withdrawal", 0) >= 100000 and content in [
         "타행이체", "fb이체", "당행이체", "bz뱅크", "인터넷이체",
     ]:
         return {"account_code": "251", "account_name": "외상매입금",
-                "confidence": 0.65, "reasoning": "규칙: 거래처 지급 추정"}
+                "confidence": 0.70, "reasoning": "규칙: 거래처 지급 → 매입채무(251) 결제"}
 
-    return None  # Can't determine — send to LLM
+    # 기타 출금도 기본값은 매입채무 지급 (피드백: 출금 대부분 매입채무)
+    if txn.get("withdrawal", 0) > 0:
+        return {"account_code": "253", "account_name": "미지급금",
+                "confidence": 0.60, "reasoning": "규칙: 출금 기본값 → 미지급금(253) 지급 추정",
+                "needs_review": True}
 
 
 # Thread pool for parallel LLM calls (3 workers)
@@ -2672,7 +2700,7 @@ async def classify_bank_statements(
 - 채권회수(입금): 외상매출금(108) 회수, 미수금(109) 회수 등
 - 채무지급(출금): 외상매입금(251) 지급, 미지급금(253) 지급 등
 - 세금계산서 발행/수취 기반으로 대금결제를 구분해야 함
-- 차변과 대변이 같은 계정코드가 되면 안 됨
+- **절대 금지: 차변과 대변이 같은 계정코드가 되면 안 됨 (차대변 동일 = 100% 오류)**
 
 ## 통장 거래 분류 기준
 - 입금(매출대금 회수): 외상매출금(108) — 거래처 대금 입금
@@ -3152,8 +3180,8 @@ def _determine_credit_account_for_tax(txn: dict, debit_code: str) -> dict:
     - 자산 구매(1xx) → 미지급금(253)
     - 선급금 상계 케이스는 LLM이 판단
     """
-    # 원재료/부재료/포장재 매입 관련 → 외상매입금
-    purchase_codes = {"152", "153", "154", "402", "403", "405"}
+    # 원재료/부재료/재고자산 매입 관련 → 외상매입금
+    purchase_codes = {"152", "153", "162", "146", "150"}
     if debit_code in purchase_codes:
         return {"credit_account_code": "251", "credit_account_name": "외상매입금"}
 
@@ -3182,11 +3210,17 @@ def _validate_classification(cls: dict, txn: dict = None) -> dict:
     if not cls:
         return cls
 
-    # --- Rule 1: 금지 계정 교정 (원재료비451, 부재료비502, 상품매입404) ---
+    # --- Rule 1: 금지 계정 교정 ---
+    # 원재료비(501)/부재료비(502) = 결산조정 계정 → 사용 금지
+    # 상품매입(404) = 미사용 계정
+    # 상품매출(401) = 결산조정용 → 매출 세금계산서에서 사용 금지 (제품매출 402 사용)
+    # 상품매출원가(451) = 결산조정 계정
     forbidden_map = {
-        "451": ("152", "원재료", "원재료비(451)→원재료(152)로 변경 (결산조정 계정)"),
-        "502": ("152", "원재료", "부재료비(502)→원재료(152)로 변경 (결산조정 계정)"),
+        "501": ("152", "원재료", "원재료비(501)→원재료(152)로 변경 (결산조정 계정)"),
+        "502": ("162", "부재료", "부재료비(502)→부재료(162)로 변경 (결산조정 계정)"),
         "404": ("152", "원재료", "상품매입(404)→원재료(152)로 변경 (미사용 계정)"),
+        "401": ("402", "제품매출", "상품매출(401)→제품매출(402)로 변경 (결산조정용, 99%는 제품매출)"),
+        "451": ("455", "제품매출원가", "상품매출원가(451)→제품매출원가(455)로 변경 (결산조정 계정)"),
     }
 
     acct_code = cls.get("account_code", "")
@@ -3197,28 +3231,89 @@ def _validate_classification(cls: dict, txn: dict = None) -> dict:
         cls["needs_review"] = True
         cls["confidence"] = min(cls.get("confidence", 0), 0.5)
         cls.setdefault("review_reasons", []).append(reason)
-        # 원재료 매입이면 대변은 외상매입금
-        cls["credit_account_code"] = "251"
-        cls["credit_account_name"] = "외상매입금"
+        # 교정된 계정에 맞는 대변 계정 설정
+        if new_code in ("152", "162"):
+            # 원재료/부재료 매입 → 외상매입금(251)
+            cls["credit_account_code"] = "251"
+            cls["credit_account_name"] = "외상매입금"
+        elif new_code == "402":
+            # 제품매출 → 외상매출금(108)
+            cls["credit_account_code"] = "108"
+            cls["credit_account_name"] = "외상매출금"
+        elif new_code == "455":
+            # 제품매출원가 → 기존 대변 유지
+            pass
+        else:
+            cls["credit_account_code"] = "253"
+            cls["credit_account_name"] = "미지급금"
 
-    # --- Rule 2: 차변/대변 동일 계정 오류 검사 ---
+    # --- Rule 1b: 유형자산 본계정 직접 분류 방지 → 건설중인자산(214) 경유 강제 ---
+    # 피드백: 기계장치(206), 차량운반구(208), 비품(212), 시설장치(219) 등
+    # 본계정으로 바로 분류하면 오류 → 건설중인자산(214)이나 선급금(131) 경유 필요
+    fixed_asset_accounts = {"206", "208", "212", "219"}
+    acct_code = cls.get("account_code", "")
+    if acct_code in fixed_asset_accounts:
+        old_name = cls.get("account_name", "")
+        cls["account_code"] = "214"
+        cls["account_name"] = "건설중인자산"
+        cls["needs_review"] = True
+        cls["confidence"] = min(cls.get("confidence", 0), 0.5)
+        cls.setdefault("review_reasons", []).append(
+            f"{old_name}({acct_code})→건설중인자산(214)로 변경 (가계정 경유 필수)"
+        )
+        cls["credit_account_code"] = "253"
+        cls["credit_account_name"] = "미지급금"
+
+    # --- Rule 2: 차변/대변 동일 계정 오류 검사 + 자동 교정 ---
+    # 피드백: 차대변 계정이 같은 것들이 전부 오류 — 플래그뿐 아니라 실제 교정 수행
     debit = cls.get("account_code", "")
     credit = cls.get("credit_account_code", "")
 
-    # journal_entry가 있으면 그것도 확인
+    def _fix_same_debit_credit(d_code, c_code, target_dict, d_key="account_code", c_key="credit_account_code"):
+        """차대변 동일 시 대변을 적절한 계정으로 자동 교정"""
+        if not d_code or not c_code or d_code != c_code:
+            return
+        target_dict["needs_review"] = True
+        target_dict["confidence"] = min(target_dict.get("confidence", 0), 0.3)
+        target_dict.setdefault("review_reasons", []).append(
+            f"차대변 계정 동일 오류 ({d_code}) — 대변 자동 교정됨"
+        )
+        # 차변 기준으로 대변 교정
+        if d_code.startswith("1"):
+            # 자산 매입 → 대변은 외상매입금
+            target_dict[c_key] = "251"
+            if c_key + ".replace" not in target_dict:
+                # credit name도 있으면 업데이트
+                name_key = c_key.replace("_code", "_name")
+                if name_key in target_dict:
+                    target_dict[name_key] = "외상매입금"
+        elif d_code.startswith("4"):
+            # 매출 계정 → 대변은 외상매출금
+            target_dict[c_key] = "108"
+            name_key = c_key.replace("_code", "_name")
+            if name_key in target_dict:
+                target_dict[name_key] = "외상매출금"
+        elif d_code.startswith(("5", "8")):
+            # 비용 계정 → 대변은 미지급금
+            target_dict[c_key] = "253"
+            name_key = c_key.replace("_code", "_name")
+            if name_key in target_dict:
+                target_dict[name_key] = "미지급금"
+        else:
+            # 기타 → 미지급금
+            target_dict[c_key] = "253"
+            name_key = c_key.replace("_code", "_name")
+            if name_key in target_dict:
+                target_dict[name_key] = "미지급금"
+
+    # journal_entry가 있으면 그것도 확인/교정
     je = cls.get("journal_entry")
     if je:
         je_debit = je.get("debit_account_code", "")
         je_credit = je.get("credit_account_code", "")
-        if je_debit and je_credit and je_debit == je_credit:
-            cls["needs_review"] = True
-            cls["confidence"] = min(cls.get("confidence", 0), 0.3)
-            cls.setdefault("review_reasons", []).append("차대변 계정 동일 오류")
+        _fix_same_debit_credit(je_debit, je_credit, je, "debit_account_code", "credit_account_code")
 
-    if debit and credit and debit == credit:
-        cls["needs_review"] = True
-        cls["confidence"] = min(cls.get("confidence", 0), 0.3)
-        cls.setdefault("review_reasons", []).append("차대변 계정 동일 오류")
+    _fix_same_debit_credit(debit, credit, cls)
 
     # --- Rule 3: 고액(100만원 이상) 설비/기계/장비 구매 → 유형자산 확인 필요 ---
     if txn:
@@ -3259,19 +3354,33 @@ def _rule_classify_tax_invoice(txn: dict) -> Optional[dict]:
         result = {"account_code": "152", "account_name": "원재료",
                   "confidence": 0.90, "reasoning": "규칙: 식재료/원료 → 원재료(152) 자산계정"}
 
+    # ========== 부재료 구매 → 부재료(162, 자산계정) ==========
+    elif _match(["부재료", "부자재", "첨가물", "첨가제", "향료", "색소", "보존료",
+                 "유화제", "안정제", "증점제"]):
+        result = {"account_code": "162", "account_name": "부재료",
+                  "confidence": 0.90, "reasoning": "규칙: 부재료/첨가물 → 부재료(162) 자산계정"}
+
     # ========== 포장재 → 소모품비(813, 제조경비) ==========
     elif _match(["포장", "용기", "박스", "패키지", "케이스", "포장재", "포장지"]):
         result = {"account_code": "813", "account_name": "소모품비",
                   "confidence": 0.88, "reasoning": "규칙: 포장재 → 소모품비(813, 제조경비)"}
 
-    # ========== 설비/기계/장비 구매 → 건설중인자산(176) ==========
+    # ========== 설비/기계/장비 구매 → 건설중인자산(214) ==========
+    # 피드백: 유형자산은 반드시 가계정(건설중인자산/선급금)을 거쳐야 함
+    # 본계정(206 기계장치, 219 시설장치 등)으로 직접 분류 금지
     elif _match(["설비", "기계", "장비", "기기", "시설", "컨베이어", "냉동기", "보일러"]):
         supply_amount = txn.get("supply_amount", 0) or 0
-        result = {"account_code": "176", "account_name": "건설중인자산",
-                  "confidence": 0.82, "reasoning": "규칙: 설비/기계 구매 → 건설중인자산(176)",
-                  "needs_review": True}
-        if supply_amount >= 1000000:
-            result.setdefault("review_reasons", []).append("유형자산 여부 확인 필요")
+        # 소액(100만원 미만)이면 소모품비, 고액이면 건설중인자산
+        if supply_amount < 1000000 and supply_amount > 0:
+            result = {"account_code": "530", "account_name": "소모품비",
+                      "confidence": 0.75, "reasoning": "규칙: 소액 설비/장비 → 소모품비(530, 제조경비)",
+                      "needs_review": True}
+            result.setdefault("review_reasons", []).append("소액 설비 — 자산/비용 구분 확인 필요")
+        else:
+            result = {"account_code": "214", "account_name": "건설중인자산",
+                      "confidence": 0.82, "reasoning": "규칙: 설비/기계 구매 → 건설중인자산(214) 가계정 경유",
+                      "needs_review": True}
+            result.setdefault("review_reasons", []).append("유형자산 — 건설중인자산(214)→본계정 대체 필요")
 
     # ========== 통신비 → 판관비 823 ==========
     elif _match(["통신", "전화", "인터넷", "kt", "skt", "lgu+", "엘지유플러스", "sk텔레콤", "케이티"]):
@@ -3387,11 +3496,16 @@ def _rule_classify_tax_invoice_sales(txn: dict) -> Optional[dict]:
         return {
             "account_code": "402", "account_name": "제품매출",
             "credit_account_code": "108", "credit_account_name": "외상매출금",
-            "confidence": 0.88, "reasoning": "규칙: 식품제조회사 자사 제품 판매 → 제품매출(402)",
+            "confidence": 0.92, "reasoning": "규칙: 식품제조회사 자사 제품 판매 → 제품매출(402)",
         }
 
-    # 불확실 → LLM에 위임 (과거 데이터 우선 참조 후)
-    return None
+    # 피드백: 매출 세금계산서 99%는 제품매출(402)/외상매출금(108)/부가세예수금(255)
+    # 불확실한 경우에도 기본값은 제품매출(402)로 설정 (LLM 위임 대신)
+    return {
+        "account_code": "402", "account_name": "제품매출",
+        "credit_account_code": "108", "credit_account_name": "외상매출금",
+        "confidence": 0.85, "reasoning": "규칙: 매출 세금계산서 기본값 → 제품매출(402) (99% 적용)",
+    }
 
 
 async def _lookup_vendor_history(vendor_name: str, is_sales: bool = False) -> Optional[dict]:
@@ -3710,7 +3824,7 @@ async def classify_tax_invoices(
 - 이 회사(조인앤조인)는 식품 제조회사이므로 자사 제조품 판매는 제품매출(402)
 - 외부에서 구매하여 리셀하는 것만 상품매출(401) (크림빵, 에너지드링크 등 확인 필요)
 - 업체별 출고 품목을 확인하여 제품/상품 구분
-- 차변과 대변이 같은 계정코드가 되면 안 됨
+- **절대 금지: 차변과 대변이 같은 계정코드가 되면 안 됨 (차대변 동일 = 100% 오류)**
 
 ## 매출 세금계산서 분류 기준
 - account_code = 대변(매출 계정): 제품매출(402), 상품매출(401), 기타매출(403) 등
@@ -3739,17 +3853,18 @@ async def classify_tax_invoices(
 {account_list}
 
 ## 중요 회계 규칙
-- 원재료비(451)/부재료비(502)는 결산조정 계정으로 일반 분류에 사용 금지
-- 원재료 구매: 원재료(152) 사용 (자산계정)
-- 상품매입(404) 계정은 사용하지 않음
+- 원재료비(501)/부재료비(502)/상품매출원가(451)는 결산조정 계정으로 일반 분류에 절대 사용 금지
+- 원재료 구매: 원재료(152) 사용 (자산계정), 부재료 구매: 부재료(162) 사용 (자산계정)
+- 상품매입(404) 계정은 사용하지 않음, 상품매출(401)도 사용하지 않음 (제품매출 402 사용)
 - 제조경비(5xx)와 판관비(8xx)를 구분할 것
   - 공장/생산 관련 비용 → 제조경비 (예: 수도광열비 522, 수선비 521, 운반비 516)
   - 사무/관리 관련 비용 → 판관비 (예: 통신비 823, 지급수수료 818, 광고선전비 817)
-- 설비/기계/장비 등 유형자산 구매: 건설중인자산(176) 또는 선급금(131)
-- 차변과 대변이 같은 계정코드가 되면 안 됨
+- 설비/기계/장비 등 유형자산 구매: 건설중인자산(214) 또는 선급금(131) — 본계정(206,208,212,219) 직접 분류 금지
+- **절대 금지: 차변과 대변이 같은 계정코드가 되면 안 됨 (차대변 동일 = 100% 오류)**
 
 ## 차변(비용/자산) 분류 기준
-- 식재료/원료/부재료 구매: **원재료(152)** (자산계정, 451/502 사용 금지)
+- 식재료/원료 구매: **원재료(152)** (자산계정, 501 사용 금지)
+- 부재료/첨가물/부자재 구매: **부재료(162)** (자산계정, 502 사용 금지)
 - 포장재/용기: 소모품비(813, 제조경비)
 - 소모품(공장): 소모품비(813, 제조경비)
 - 사무용품: 소모품비(826, 판관비)
@@ -3766,7 +3881,7 @@ async def classify_tax_invoices(
 - 광고/홍보/마케팅: 광고선전비(817, 판관비)
 - 세무/회계/법무/컨설팅: 지급수수료(818, 판관비)
 - 교육/연수: 교육훈련비(830, 판관비)
-- 설비/기계/장비 구매: 건설중인자산(176)
+- 설비/기계/장비 구매: 건설중인자산(214) — 본계정(206 기계장치 등) 직접 분류 금지
 
 ## 대변(부채) 분류 기준 — 거래처와 거래 성격에 따라 판단
 - 원재료 매입(152): 외상매입금(251)
