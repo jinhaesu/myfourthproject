@@ -1356,17 +1356,11 @@ async def classify_file(
                 "review_reasons": review_reasons,
                 "reasoning": reasoning,
                 "alternatives": [],
-                "journal_entry": {
-                    "debit_account_code": debit_code,
-                    "debit_account_name": debit_name,
-                    "debit_amount": meta['amount'],
-                    "credit_account_code": credit_code,
-                    "credit_account_name": credit_name,
-                    "credit_amount": meta['amount'],
-                    "vat_amount": meta['vat'],
-                    "supply_amount": meta['supply'] if meta['supply'] else meta['amount'] - meta['vat'],
-                    "is_balanced": True,
-                },
+                "journal_entry": _build_card_journal_entry(
+                    debit_code, debit_name, credit_code, credit_name,
+                    meta['amount'], meta['vat'],
+                    meta['supply'] if meta['supply'] else meta['amount'] - meta['vat'],
+                ),
             }
             results.append(result_item)
 
@@ -1509,7 +1503,7 @@ async def confirm_journal_entries(
             upload_type="journal_entry",
             uploaded_by=current_user.id,
             status=UploadStatus.COMPLETED,
-            row_count=len(entries_to_save) * 2,
+            row_count=0,  # 동적 업데이트 (VAT 있으면 3줄, 없으면 2줄)
             saved_count=0,
         )
         db.add(upload_history)
@@ -1517,45 +1511,113 @@ async def confirm_journal_entries(
         upload_id = upload_history.id
 
         saved_count = 0
+        row_counter = 1
         for i, entry in enumerate(entries_to_save):
-            row_base = i * 2 + 1
+            desc = entry.memo or entry.description
+            merchant = entry.merchant_name or entry.description
+            vat = Decimal(str(entry.vat_amount)) if entry.vat_amount else Decimal("0")
+            supply = Decimal(str(entry.supply_amount)) if entry.supply_amount else Decimal(str(entry.amount))
+            total = supply + vat if vat > 0 else Decimal(str(entry.amount))
 
-            # 차변 (비용 계정)
-            debit_row = AIRawTransactionData(
-                upload_id=upload_id,
-                row_number=row_base,
-                original_description=entry.memo or entry.description,
-                merchant_name=entry.merchant_name or entry.description,
-                amount=Decimal(str(entry.amount)),
-                debit_amount=Decimal(str(entry.amount)),
-                credit_amount=Decimal("0"),
-                transaction_date=entry.transaction_date,
-                account_code=entry.debit_account_code,
-                account_name=entry.debit_account_name,
-                source_account_code=entry.credit_account_code,
-                source_account_name=entry.credit_account_name,
-            )
-            db.add(debit_row)
+            # 매출 여부 판단: 대변이 매출계정(4xx)이면 매출
+            is_sales_entry = entry.credit_account_code.startswith("4") if entry.credit_account_code else False
 
-            # 대변 (미지급금)
-            credit_row = AIRawTransactionData(
-                upload_id=upload_id,
-                row_number=row_base + 1,
-                original_description=entry.memo or entry.description,
-                merchant_name=entry.merchant_name or entry.description,
-                amount=Decimal(str(entry.amount)),
-                debit_amount=Decimal("0"),
-                credit_amount=Decimal(str(entry.amount)),
-                transaction_date=entry.transaction_date,
-                account_code=entry.credit_account_code,
-                account_name=entry.credit_account_name,
-                source_account_code=entry.debit_account_code,
-                source_account_name=entry.debit_account_name,
-            )
-            db.add(credit_row)
-            saved_count += 2
+            if vat > 0 and is_sales_entry:
+                # === 매출 3줄 분개 ===
+                # 차변: 매출채권(총액)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=total, debit_amount=total, credit_amount=Decimal("0"),
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.debit_account_code, account_name=entry.debit_account_name,
+                    source_account_code=entry.credit_account_code, source_account_name=entry.credit_account_name,
+                ))
+                row_counter += 1
+                # 대변: 매출계정(공급가)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=supply, debit_amount=Decimal("0"), credit_amount=supply,
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.credit_account_code, account_name=entry.credit_account_name,
+                    source_account_code=entry.debit_account_code, source_account_name=entry.debit_account_name,
+                ))
+                row_counter += 1
+                # 대변: 부가세예수금(세액)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=vat, debit_amount=Decimal("0"), credit_amount=vat,
+                    transaction_date=entry.transaction_date,
+                    account_code="255", account_name="부가세예수금",
+                    source_account_code=entry.debit_account_code, source_account_name=entry.debit_account_name,
+                ))
+                row_counter += 1
+                saved_count += 3
+
+            elif vat > 0 and not is_sales_entry:
+                # === 매입/카드 3줄 분개 ===
+                # 차변: 비용/자산계정(공급가)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=supply, debit_amount=supply, credit_amount=Decimal("0"),
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.debit_account_code, account_name=entry.debit_account_name,
+                    source_account_code=entry.credit_account_code, source_account_name=entry.credit_account_name,
+                ))
+                row_counter += 1
+                # 차변: 부가세대급금(세액)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=vat, debit_amount=vat, credit_amount=Decimal("0"),
+                    transaction_date=entry.transaction_date,
+                    account_code="135", account_name="부가세대급금",
+                    source_account_code=entry.credit_account_code, source_account_name=entry.credit_account_name,
+                ))
+                row_counter += 1
+                # 대변: 외상매입금/미지급금(총액)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=total, debit_amount=Decimal("0"), credit_amount=total,
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.credit_account_code, account_name=entry.credit_account_name,
+                    source_account_code=entry.debit_account_code, source_account_name=entry.debit_account_name,
+                ))
+                row_counter += 1
+                saved_count += 3
+
+            else:
+                # === VAT 없음: 기존 2줄 분개 ===
+                # 차변
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=Decimal(str(entry.amount)),
+                    debit_amount=Decimal(str(entry.amount)), credit_amount=Decimal("0"),
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.debit_account_code, account_name=entry.debit_account_name,
+                    source_account_code=entry.credit_account_code, source_account_name=entry.credit_account_name,
+                ))
+                row_counter += 1
+                # 대변
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=Decimal(str(entry.amount)),
+                    debit_amount=Decimal("0"), credit_amount=Decimal(str(entry.amount)),
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.credit_account_code, account_name=entry.credit_account_name,
+                    source_account_code=entry.debit_account_code, source_account_name=entry.debit_account_name,
+                ))
+                row_counter += 1
+                saved_count += 2
 
         upload_history.saved_count = saved_count
+        upload_history.row_count = saved_count
 
         # AI 학습 데이터 자동 저장 (확정된 분개 = 정답 데이터)
         from app.models.ai import AITrainingData
@@ -3171,6 +3233,108 @@ def _parse_tax_invoice_xls(content: bytes, filename: str) -> dict:
     }
 
 
+def _build_card_journal_entry(
+    debit_code: str, debit_name: str,
+    credit_code: str, credit_name: str,
+    total_amount: float, vat_amount: float, supply_amount: float,
+) -> dict:
+    """
+    카드 분개 생성.
+    - 차변: 비용계정(공급가) + 부가세대급금(세액)  ← 매입세금계산서와 동일 구조
+    - 대변: 미지급금(카드번호) = 총액
+    """
+    lines = [
+        {"type": "debit", "account_code": debit_code, "account_name": debit_name,
+         "amount": supply_amount},
+    ]
+    if vat_amount > 0:
+        lines.append(
+            {"type": "debit", "account_code": "135", "account_name": "부가세대급금",
+             "amount": vat_amount}
+        )
+    lines.append(
+        {"type": "credit", "account_code": credit_code, "account_name": credit_name,
+         "amount": total_amount}
+    )
+
+    return {
+        "debit_account_code": debit_code,
+        "debit_account_name": debit_name,
+        "debit_amount": supply_amount,
+        "credit_account_code": credit_code,
+        "credit_account_name": credit_name,
+        "credit_amount": total_amount,
+        "vat_amount": vat_amount,
+        "supply_amount": supply_amount,
+        "total_amount": total_amount,
+        "is_balanced": True,
+        "lines": lines,
+    }
+
+
+def _build_tax_journal_entry(
+    is_sales: bool,
+    debit_code: str, debit_name: str,
+    credit_code: str, credit_name: str,
+    supply_amount: float, vat_amount: float, total_amount: float,
+) -> dict:
+    """
+    세금계산서 3줄 T계정 분개 생성 (피드백 반영).
+
+    매출 T계정:
+      차변: 매출채권(108) = 총액 (공급가+세액)
+      대변: 제품매출(402) = 공급가액
+      대변: 부가세예수금(255) = 세액
+
+    매입 T계정:
+      차변: 원재료(152) 등 = 공급가액
+      차변: 부가세대급금(135) = 세액
+      대변: 외상매입금(251) 등 = 총액 (공급가+세액)
+    """
+    if is_sales:
+        lines = [
+            {"type": "debit", "account_code": debit_code, "account_name": debit_name,
+             "amount": total_amount},
+            {"type": "credit", "account_code": credit_code, "account_name": credit_name,
+             "amount": supply_amount},
+        ]
+        if vat_amount > 0:
+            lines.append(
+                {"type": "credit", "account_code": "255", "account_name": "부가세예수금",
+                 "amount": vat_amount}
+            )
+    else:
+        lines = [
+            {"type": "debit", "account_code": debit_code, "account_name": debit_name,
+             "amount": supply_amount},
+        ]
+        if vat_amount > 0:
+            lines.append(
+                {"type": "debit", "account_code": "135", "account_name": "부가세대급금",
+                 "amount": vat_amount}
+            )
+        lines.append(
+            {"type": "credit", "account_code": credit_code, "account_name": credit_name,
+             "amount": total_amount}
+        )
+
+    return {
+        # 기존 flat 구조 유지 (하위호환)
+        "debit_account_code": debit_code,
+        "debit_account_name": debit_name,
+        "debit_amount": total_amount if is_sales else supply_amount,
+        "credit_account_code": credit_code,
+        "credit_account_name": credit_name,
+        "credit_amount": supply_amount if is_sales else total_amount,
+        "vat_amount": vat_amount,
+        "supply_amount": supply_amount,
+        "total_amount": total_amount,
+        "is_balanced": True,
+        # 3줄 T계정 분개 (신규)
+        "lines": lines,
+    }
+
+
 def _determine_credit_account_for_tax(txn: dict, debit_code: str) -> dict:
     """
     세금계산서 매입 거래의 대변 계정을 결정.
@@ -4027,13 +4191,19 @@ async def classify_tax_invoices(
                     cls = _validate_classification(cls, txn)
 
                 if is_sales and cls:
-                    # 매출: 차변=매출채권(AI분류), 대변=매출계정(AI분류)
+                    # 매출 T계정 (피드백 3줄 분개):
+                    #   차변: 매출채권(108) = 총액(공급가+세액)
+                    #   대변: 제품매출(402) = 공급가액
+                    #   대변: 부가세예수금(255) = 세액
                     debit_code = cls.get("credit_account_code", "108")
                     debit_name = cls.get("credit_account_name", "외상매출금")
                     credit_code = cls["account_code"]
                     credit_name = cls["account_name"]
                 elif cls:
-                    # 매입: 차변=비용(AI분류), 대변=매입채무(AI분류)
+                    # 매입 T계정 (피드백 3줄 분개):
+                    #   차변: 원재료(152) 등 = 공급가액
+                    #   차변: 부가세대급금(135) = 세액
+                    #   대변: 외상매입금(251) 등 = 총액(공급가+세액)
                     debit_code = cls["account_code"]
                     debit_name = cls["account_name"]
                     credit_code = cls.get("credit_account_code", "253")
@@ -4064,17 +4234,10 @@ async def classify_tax_invoices(
                     "review_reasons": cls_review_reasons,
                     "credit_account_code": credit_code,
                     "credit_account_name": credit_name,
-                    "journal_entry": {
-                        "debit_account_code": debit_code,
-                        "debit_account_name": debit_name,
-                        "debit_amount": txn["supply_amount"],
-                        "credit_account_code": credit_code,
-                        "credit_account_name": credit_name,
-                        "credit_amount": txn["supply_amount"],
-                        "vat_amount": txn["vat_amount"],
-                        "supply_amount": txn["supply_amount"],
-                        "is_balanced": True,
-                    } if cls else None,
+                    "journal_entry": _build_tax_journal_entry(
+                        is_sales, debit_code, debit_name, credit_code, credit_name,
+                        txn["supply_amount"], txn["vat_amount"], txn["total_amount"],
+                    ) if cls else None,
                 }
                 results.append(result_item)
 

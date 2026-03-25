@@ -70,6 +70,7 @@ interface ClassificationResult {
   actual_account_code?: string
   memo?: string
   transaction_date?: string
+  card_number?: string
   journal_entry?: {
     debit_account_code: string
     debit_account_name: string
@@ -79,7 +80,14 @@ interface ClassificationResult {
     credit_amount: number
     vat_amount: number
     supply_amount: number
+    total_amount?: number
     is_balanced: boolean
+    lines?: Array<{
+      type: 'debit' | 'credit'
+      account_code: string
+      account_name: string
+      amount: number
+    }>
   }
   alternatives: Array<{
     account_code: string
@@ -738,37 +746,51 @@ export default function AIClassificationPage() {
         row_index: idx,
         description: `${r.vendor_name} - ${r.item_description}`,
         merchant_name: r.vendor_name,
-        amount: r.supply_amount || r.total_amount || 0,
+        amount: r.total_amount || r.supply_amount || 0,
         transaction_date: r.date,
         predicted_account_code: r.predicted_account_code,
         predicted_account_name: r.predicted_account_name,
         confidence: r.confidence,
-        auto_confirm: r.confidence > 0.8,
-        needs_review: r.confidence < 0.6,
-        review_reasons: [],
+        auto_confirm: r.auto_confirm ?? r.confidence > 0.8,
+        needs_review: r.needs_review ?? r.confidence < 0.6,
+        review_reasons: r.review_reasons || [],
         reasoning: r.reasoning || '',
         alternatives: [],
         memo: `[${tagLabel}] ${r.vendor_name} / ${r.item_description}`,
         journal_entry: r.journal_entry || (isSales ? {
-          debit_account_code: r.predicted_account_code || '108',
-          debit_account_name: r.predicted_account_name || '외상매출금',
-          credit_account_code: r.credit_account_code || '401',
-          credit_account_name: r.credit_account_name || '상품매출',
-          debit_amount: r.supply_amount || 0,
+          // 매출 T계정: 차변 매출채권(총액) / 대변 제품매출(공급가) + 부가세예수금(세액)
+          debit_account_code: '108',
+          debit_account_name: '외상매출금',
+          credit_account_code: r.credit_account_code || '402',
+          credit_account_name: r.credit_account_name || '제품매출',
+          debit_amount: r.total_amount || r.supply_amount || 0,
           credit_amount: r.supply_amount || 0,
           vat_amount: r.vat_amount || 0,
           supply_amount: r.supply_amount || 0,
+          total_amount: r.total_amount || 0,
           is_balanced: true,
+          lines: [
+            { type: 'debit' as const, account_code: '108', account_name: '외상매출금', amount: r.total_amount || r.supply_amount || 0 },
+            { type: 'credit' as const, account_code: r.credit_account_code || '402', account_name: r.credit_account_name || '제품매출', amount: r.supply_amount || 0 },
+            ...(r.vat_amount > 0 ? [{ type: 'credit' as const, account_code: '255', account_name: '부가세예수금', amount: r.vat_amount }] : []),
+          ],
         } : {
+          // 매입 T계정: 차변 비용/자산(공급가) + 부가세대급금(세액) / 대변 외상매입금(총액)
           debit_account_code: r.predicted_account_code,
           debit_account_name: r.predicted_account_name,
           credit_account_code: r.credit_account_code || '251',
           credit_account_name: r.credit_account_name || '외상매입금',
           debit_amount: r.supply_amount || 0,
-          credit_amount: r.supply_amount || 0,
+          credit_amount: r.total_amount || r.supply_amount || 0,
           vat_amount: r.vat_amount || 0,
           supply_amount: r.supply_amount || 0,
+          total_amount: r.total_amount || 0,
           is_balanced: true,
+          lines: [
+            { type: 'debit' as const, account_code: r.predicted_account_code, account_name: r.predicted_account_name, amount: r.supply_amount || 0 },
+            ...(r.vat_amount > 0 ? [{ type: 'debit' as const, account_code: '135', account_name: '부가세대급금', amount: r.vat_amount }] : []),
+            { type: 'credit' as const, account_code: r.credit_account_code || '251', account_name: r.credit_account_name || '외상매입금', amount: r.total_amount || r.supply_amount || 0 },
+          ],
         })
       }))
       setBankResults(null)
@@ -959,14 +981,14 @@ export default function AIClassificationPage() {
           row_index: idx,
           description: `${r.vendor_name || ''} - ${r.item_description || ''}`,
           merchant_name: r.vendor_name || '',
-          amount: r.supply_amount || r.total_amount || 0,
+          amount: r.total_amount || r.supply_amount || 0,
           transaction_date: r.date || '',
           predicted_account_code: r.predicted_account_code || '',
           predicted_account_name: r.predicted_account_name || '',
           confidence: r.confidence || 0,
-          auto_confirm: (r.confidence || 0) > 0.8,
-          needs_review: (r.confidence || 0) < 0.6,
-          review_reasons: [],
+          auto_confirm: r.auto_confirm ?? (r.confidence || 0) > 0.8,
+          needs_review: r.needs_review ?? (r.confidence || 0) < 0.6,
+          review_reasons: r.review_reasons || [],
           reasoning: r.reasoning || '',
           alternatives: [],
           memo: `[세금계산서] ${r.vendor_name || ''} / ${r.item_description || ''}`,
@@ -976,9 +998,10 @@ export default function AIClassificationPage() {
             credit_account_code: r.credit_account_code || '251',
             credit_account_name: r.credit_account_name || '외상매입금',
             debit_amount: r.supply_amount || 0,
-            credit_amount: r.supply_amount || 0,
+            credit_amount: r.total_amount || r.supply_amount || 0,
             vat_amount: r.vat_amount || 0,
             supply_amount: r.supply_amount || 0,
+            total_amount: r.total_amount || 0,
             is_balanced: true,
           }
         }))
@@ -2146,7 +2169,23 @@ export default function AIClassificationPage() {
                         </td>
 
                         <td className="px-2 py-2 text-sm text-right font-mono bg-blue-50/50 text-blue-700">
-                          {result.amount?.toLocaleString()}
+                          {(() => {
+                            const je = result.journal_entry
+                            const debitLines = je?.lines?.filter(l => l.type === 'debit')
+                            if (debitLines && debitLines.length > 1) {
+                              return (
+                                <div className="space-y-0.5">
+                                  {debitLines.map((l, li) => (
+                                    <div key={li} className="flex justify-between gap-1">
+                                      <span className="text-xs text-gray-400 truncate">{l.account_name}</span>
+                                      <span>{l.amount?.toLocaleString()}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )
+                            }
+                            return result.amount?.toLocaleString()
+                          })()}
                         </td>
 
                         {/* 대변 (지급 계정) — 클릭하여 인라인 수정 */}
@@ -2198,7 +2237,23 @@ export default function AIClassificationPage() {
                         </td>
 
                         <td className="px-2 py-2 text-sm text-right font-mono bg-red-50/50 text-red-600">
-                          {result.amount?.toLocaleString()}
+                          {(() => {
+                            const je = result.journal_entry
+                            const creditLines = je?.lines?.filter(l => l.type === 'credit')
+                            if (creditLines && creditLines.length > 1) {
+                              return (
+                                <div className="space-y-0.5">
+                                  {creditLines.map((l, li) => (
+                                    <div key={li} className="flex justify-between gap-1">
+                                      <span className="text-xs text-gray-400 truncate">{l.account_name}</span>
+                                      <span>{l.amount?.toLocaleString()}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )
+                            }
+                            return result.amount?.toLocaleString()
+                          })()}
                         </td>
 
                         {/* 신뢰도 */}
