@@ -4464,27 +4464,53 @@ async def reclassify_upload(
                     r["credit_account_code"] = new_cls["credit_account_code"]
                     r["credit_account_name"] = new_cls["credit_account_name"]
 
-                # Update journal_entry if present
-                if is_tax and r.get("journal_entry"):
-                    je = r["journal_entry"]
-                    if is_sales:
-                        je["debit_account_code"] = new_cls.get("credit_account_code", "108")
-                        je["debit_account_name"] = new_cls.get("credit_account_name", "외상매출금")
-                        je["credit_account_code"] = new_cls["account_code"]
-                        je["credit_account_name"] = new_cls["account_name"]
+                # Update journal_entry — 3줄 T계정 분개 재생성
+                supply_amt = r.get("supply_amount", 0) or 0
+                vat_amt = r.get("vat_amount", 0) or 0
+                total_amt = r.get("total_amount", 0) or r.get("amount", 0) or (supply_amt + vat_amt)
+
+                if is_tax:
+                    debit_c = new_cls.get("credit_account_code", "108") if is_sales else new_cls["account_code"]
+                    debit_n = new_cls.get("credit_account_name", "외상매출금") if is_sales else new_cls["account_name"]
+                    credit_c = new_cls["account_code"] if is_sales else new_cls.get("credit_account_code", "253")
+                    credit_n = new_cls["account_name"] if is_sales else new_cls.get("credit_account_name", "미지급금")
+                    r["journal_entry"] = _build_tax_journal_entry(
+                        is_sales, debit_c, debit_n, credit_c, credit_n,
+                        supply_amt, vat_amt, total_amt,
+                    )
+                elif is_bank:
+                    bank_name = r.get("bank_name", txn.get("_bank_name", ""))
+                    is_withdrawal = txn.get("withdrawal", 0) > 0
+                    amount = r.get("withdrawal", 0) or r.get("deposit", 0) or r.get("amount", 0)
+                    if is_withdrawal:
+                        r["journal_entry"] = {
+                            "debit_account_code": new_cls["account_code"],
+                            "debit_account_name": new_cls["account_name"],
+                            "debit_amount": amount,
+                            "credit_account_code": "103",
+                            "credit_account_name": f"보통예금({bank_name})",
+                            "credit_amount": amount,
+                            "is_balanced": True,
+                        }
                     else:
-                        je["debit_account_code"] = new_cls["account_code"]
-                        je["debit_account_name"] = new_cls["account_name"]
-                        je["credit_account_code"] = new_cls.get("credit_account_code", "253")
-                        je["credit_account_name"] = new_cls.get("credit_account_name", "미지급금")
-                elif is_bank and r.get("journal_entry"):
-                    je = r["journal_entry"]
-                    if txn.get("withdrawal", 0) > 0:
-                        je["debit_account_code"] = new_cls["account_code"]
-                        je["debit_account_name"] = new_cls["account_name"]
-                    else:
-                        je["credit_account_code"] = new_cls["account_code"]
-                        je["credit_account_name"] = new_cls["account_name"]
+                        r["journal_entry"] = {
+                            "debit_account_code": "103",
+                            "debit_account_name": f"보통예금({bank_name})",
+                            "debit_amount": amount,
+                            "credit_account_code": new_cls["account_code"],
+                            "credit_account_name": new_cls["account_name"],
+                            "credit_amount": amount,
+                            "is_balanced": True,
+                        }
+                else:
+                    # 카드 — 3줄 분개
+                    credit_c = new_cls.get("credit_account_code", "253")
+                    credit_n = new_cls.get("credit_account_name", "미지급금")
+                    r["journal_entry"] = _build_card_journal_entry(
+                        new_cls["account_code"], new_cls["account_name"],
+                        credit_c, credit_n,
+                        total_amt, vat_amt, supply_amt,
+                    )
 
                 # Add review_reasons if any
                 if new_cls.get("review_reasons"):
@@ -4554,10 +4580,11 @@ async def reclassify_all_uploads(
     """모든 분류 이력을 최신 규칙으로 일괄 재분류"""
     from app.models.ai import AIDataUploadHistory
 
+    # 모든 분류 이력 조회 (카드/세금계산서=classification, 통장=bank_classification)
     result = await db.execute(
         select(AIDataUploadHistory)
         .where(
-            AIDataUploadHistory.upload_type == "classification",
+            AIDataUploadHistory.upload_type.in_(["classification", "bank_classification"]),
             AIDataUploadHistory.result_json.isnot(None)
         )
         .order_by(AIDataUploadHistory.created_at.desc())
@@ -4638,26 +4665,53 @@ async def reclassify_all_uploads(
                         r["credit_account_code"] = cls["credit_account_code"]
                         r["credit_account_name"] = cls.get("credit_account_name", "")
 
-                    # Update journal_entry
-                    if r.get("journal_entry"):
-                        je = r["journal_entry"]
-                        if is_tax and is_sales:
-                            je["debit_account_code"] = cls.get("credit_account_code", "108")
-                            je["debit_account_name"] = cls.get("credit_account_name", "외상매출금")
-                            je["credit_account_code"] = cls["account_code"]
-                            je["credit_account_name"] = cls["account_name"]
-                        elif is_tax:
-                            je["debit_account_code"] = cls["account_code"]
-                            je["debit_account_name"] = cls["account_name"]
-                            je["credit_account_code"] = cls.get("credit_account_code", "253")
-                            je["credit_account_name"] = cls.get("credit_account_name", "미지급금")
-                        elif is_bank:
-                            if r.get("withdrawal", 0) > 0 or txn.get("withdrawal", 0) > 0:
-                                je["debit_account_code"] = cls["account_code"]
-                                je["debit_account_name"] = cls["account_name"]
-                            else:
-                                je["credit_account_code"] = cls["account_code"]
-                                je["credit_account_name"] = cls["account_name"]
+                    # Update journal_entry — 3줄 T계정 분개 재생성
+                    supply_amt = r.get("supply_amount", 0) or 0
+                    vat_amt = r.get("vat_amount", 0) or 0
+                    total_amt = r.get("total_amount", 0) or r.get("amount", 0) or (supply_amt + vat_amt)
+
+                    if is_tax:
+                        debit_c = cls.get("credit_account_code", "108") if is_sales else cls["account_code"]
+                        debit_n = cls.get("credit_account_name", "외상매출금") if is_sales else cls["account_name"]
+                        credit_c = cls["account_code"] if is_sales else cls.get("credit_account_code", "253")
+                        credit_n = cls["account_name"] if is_sales else cls.get("credit_account_name", "미지급금")
+                        r["journal_entry"] = _build_tax_journal_entry(
+                            is_sales, debit_c, debit_n, credit_c, credit_n,
+                            supply_amt, vat_amt, total_amt,
+                        )
+                    elif is_bank:
+                        bank_name = r.get("bank_name", txn.get("_bank_name", ""))
+                        is_withdrawal = r.get("withdrawal", 0) > 0 or txn.get("withdrawal", 0) > 0
+                        amount = r.get("withdrawal", 0) or r.get("deposit", 0) or r.get("amount", 0)
+                        if is_withdrawal:
+                            r["journal_entry"] = {
+                                "debit_account_code": cls["account_code"],
+                                "debit_account_name": cls["account_name"],
+                                "debit_amount": amount,
+                                "credit_account_code": "103",
+                                "credit_account_name": f"보통예금({bank_name})",
+                                "credit_amount": amount,
+                                "is_balanced": True,
+                            }
+                        else:
+                            r["journal_entry"] = {
+                                "debit_account_code": "103",
+                                "debit_account_name": f"보통예금({bank_name})",
+                                "debit_amount": amount,
+                                "credit_account_code": cls["account_code"],
+                                "credit_account_name": cls["account_name"],
+                                "credit_amount": amount,
+                                "is_balanced": True,
+                            }
+                    else:
+                        # 카드 — 3줄 분개
+                        credit_c = cls.get("credit_account_code", "253")
+                        credit_n = cls.get("credit_account_name", "미지급금")
+                        r["journal_entry"] = _build_card_journal_entry(
+                            cls["account_code"], cls["account_name"],
+                            credit_c, credit_n,
+                            total_amt, vat_amt, supply_amt,
+                        )
 
                     reclassified_count += 1
 
