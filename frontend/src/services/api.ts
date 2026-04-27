@@ -578,6 +578,267 @@ export const dataApi = {
   },
 }
 
+// ==================== 통합 데이터 실시간 조회 ====================
+export const unifiedApi = {
+  getSummary: (params?: { from_date?: string; to_date?: string }) =>
+    api.get('/unified/summary', { params }),
+
+  listTransactions: (params?: {
+    from_date?: string
+    to_date?: string
+    sources?: string[]
+    direction?: 'inbound' | 'outbound'
+    counterparty?: string
+    min_amount?: number
+    max_amount?: number
+    search?: string
+    only_unclassified?: boolean
+    page?: number
+    size?: number
+  }) => api.get('/unified/transactions', { params }),
+
+  listSources: () => api.get('/unified/sources'),
+
+  createSource: (data: {
+    type: 'bank' | 'card' | 'tax_invoice'
+    institution: string
+    credential_token: string
+    name?: string
+  }) => api.post('/unified/sources', data),
+
+  triggerSync: (sourceId: number) => api.post(`/unified/sources/${sourceId}/sync`),
+
+  removeSource: (sourceId: number) => api.delete(`/unified/sources/${sourceId}`),
+}
+
+// ==================== 실시간 자금일보 ====================
+export const dailyReportApi = {
+  getToday: () => api.get('/daily-report/today'),
+  getByDate: (reportDate: string) =>
+    api.get('/daily-report/by-date', { params: { report_date: reportDate } }),
+  sendNow: (reportDate?: string) =>
+    api.post('/daily-report/send-now', null, { params: { report_date: reportDate } }),
+  listSubscriptions: () => api.get('/daily-report/subscriptions'),
+  createSubscription: (
+    data: {
+      delivery_method: 'email' | 'kakao' | 'slack'
+      delivery_target: string
+      schedule_time?: string
+      include_attachments?: boolean
+    },
+    userId: number
+  ) => api.post('/daily-report/subscriptions', data, { params: { user_id: userId } }),
+  deleteSubscription: (subId: number) => api.delete(`/daily-report/subscriptions/${subId}`),
+  getHistory: (limit = 30) => api.get('/daily-report/history', { params: { limit } }),
+}
+
+// ==================== 현금주의 손익 분석 ====================
+export const cashPLApi = {
+  getCashPL: (data: {
+    from_date: string
+    to_date: string
+    basis?: 'cash' | 'accrual'
+    period_type?: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly'
+    department_id?: number
+    project_tag?: string
+  }) => api.post('/cash-pl/', data),
+
+  getComparison: (fromDate: string, toDate: string) =>
+    api.get('/cash-pl/comparison', { params: { from_date: fromDate, to_date: toDate } }),
+
+  getSnapshot: () => api.get('/cash-pl/snapshot'),
+}
+
+// ==================== 매출·매입·거래처 정산 ====================
+export const settlementApi = {
+  list: (params?: {
+    counterparty_type?: 'customer' | 'vendor' | 'both'
+    status?: string
+    only_overdue?: boolean
+    search?: string
+    sort_by?: string
+    page?: number
+    size?: number
+  }) => api.get('/settlement/', { params }),
+
+  getDetail: (counterpartyId: number, params?: { from_date?: string; to_date?: string }) =>
+    api.get(`/settlement/${counterpartyId}`, { params }),
+
+  createOffset: (
+    data: {
+      counterparty_id: number
+      receivable_ids: number[]
+      payable_ids: number[]
+      offset_amount: number
+      note?: string
+    },
+    userId: number
+  ) => api.post('/settlement/offset', data, { params: { user_id: userId } }),
+
+  sendStatement: (counterpartyId: number, deliveryMethod: 'email' | 'kakao' | 'sms') =>
+    api.post(`/settlement/${counterpartyId}/send-statement`, null, {
+      params: { delivery_method: deliveryMethod },
+    }),
+
+  getAging: (counterpartyId: number) => api.get(`/settlement/${counterpartyId}/aging`),
+}
+
+// ==================== 세금계산서 ====================
+export const taxInvoiceApi = {
+  issue: (data: any, userId: number) =>
+    api.post('/tax-invoices/', data, { params: { user_id: userId } }),
+
+  list: (params?: {
+    direction?: 'sales' | 'purchase'
+    status?: string
+    counterparty_business_number?: string
+    from_date?: string
+    to_date?: string
+    page?: number
+    size?: number
+  }) => api.get('/tax-invoices/', { params }),
+
+  get: (invoiceId: number) => api.get(`/tax-invoices/${invoiceId}`),
+
+  cancel: (invoiceId: number, data: { reason: string; cancel_date: string }, userId: number) =>
+    api.post(`/tax-invoices/${invoiceId}/cancel`, data, { params: { user_id: userId } }),
+
+  send: (invoiceId: number, deliveryMethod: 'email' | 'kakao') =>
+    api.post(`/tax-invoices/${invoiceId}/send`, null, {
+      params: { delivery_method: deliveryMethod },
+    }),
+
+  getPdf: (invoiceId: number) => api.get(`/tax-invoices/${invoiceId}/pdf`),
+
+  listTemplates: () => api.get('/tax-invoices/templates/counterparties'),
+
+  createTemplate: (nickname: string, party: any) =>
+    api.post('/tax-invoices/templates/counterparties', party, { params: { nickname } }),
+}
+
+// ==================== 계좌 이체 ====================
+export const transferApi = {
+  create: (data: any, userId: number) =>
+    api.post('/transfers/', data, { params: { user_id: userId } }),
+
+  createBulk: (data: any, userId: number) =>
+    api.post('/transfers/bulk', data, { params: { user_id: userId } }),
+
+  list: (params?: {
+    status?: string
+    from_bank_account_id?: number
+    from_date?: string
+    to_date?: string
+    counterparty_search?: string
+    page?: number
+    size?: number
+  }) => api.get('/transfers/', { params }),
+
+  get: (transferId: number) => api.get(`/transfers/${transferId}`),
+
+  requestOtp: (transferId: number) => api.post(`/transfers/${transferId}/request-otp`),
+
+  execute: (transferId: number, otpCode: string, userId: number) =>
+    api.post(
+      `/transfers/${transferId}/execute`,
+      { transfer_id: transferId, otp_code: otpCode },
+      { params: { user_id: userId } }
+    ),
+
+  cancel: (transferId: number, reason: string, userId: number) =>
+    api.post(`/transfers/${transferId}/cancel`, null, {
+      params: { reason, user_id: userId },
+    }),
+
+  listBookmarks: () => api.get('/transfers/bookmarks/'),
+
+  createBookmark: (data: {
+    nickname: string
+    bank_code: string
+    account_number: string
+    account_holder: string
+  }) => api.post('/transfers/bookmarks/', data),
+
+  deleteBookmark: (bookmarkId: number) => api.delete(`/transfers/bookmarks/${bookmarkId}`),
+}
+
+// ==================== 클로브커넥트 (세무대리인) ====================
+export const connectApi = {
+  // 수임고객
+  listClients: (params?: {
+    client_status?: string
+    collection_status?: string
+    only_pending_review?: boolean
+    search?: string
+    page?: number
+    size?: number
+  }) => api.get('/connect/clients', { params }),
+
+  getClient: (clientId: number) => api.get(`/connect/clients/${clientId}`),
+
+  createClient: (data: any) => api.post('/connect/clients', data),
+
+  updateClient: (clientId: number, data: any) =>
+    api.patch(`/connect/clients/${clientId}`, data),
+
+  deleteClient: (clientId: number) => api.delete(`/connect/clients/${clientId}`),
+
+  // 자동 수집
+  getCollectionStatus: (clientId: number) =>
+    api.get(`/connect/clients/${clientId}/collection`),
+
+  triggerCollection: (clientId: number, sourceId?: number) =>
+    api.post(`/connect/clients/${clientId}/collection/trigger`, null, {
+      params: { source_id: sourceId },
+    }),
+
+  // 검토 대기 전표
+  listPendingVouchers: (clientId: number, params?: {
+    only_low_confidence?: boolean
+    page?: number
+    size?: number
+  }) => api.get(`/connect/clients/${clientId}/pending-vouchers`, { params }),
+
+  approveVoucher: (voucherId: number, userId: number) =>
+    api.post(`/connect/vouchers/${voucherId}/approve`, null, { params: { user_id: userId } }),
+
+  reclassifyVoucher: (voucherId: number, newAccountCode: string, userId: number) =>
+    api.post(`/connect/vouchers/${voucherId}/reclassify`, null, {
+      params: { new_account_code: newAccountCode, user_id: userId },
+    }),
+
+  // 결산
+  listClosingPeriods: (clientId: number, params?: { fiscal_year?: number; status?: string }) =>
+    api.get(`/connect/clients/${clientId}/closing-periods`, { params }),
+
+  startClosing: (
+    data: {
+      client_id: number
+      fiscal_year: number
+      period_type: 'monthly' | 'quarterly' | 'yearly'
+      period_start: string
+      period_end: string
+    },
+    userId: number
+  ) => api.post('/connect/closing', data, { params: { user_id: userId } }),
+
+  completeClosing: (closingId: number, notes: string | undefined, userId: number) =>
+    api.post(
+      `/connect/closing/${closingId}/complete`,
+      { closing_period_id: closingId, notes },
+      { params: { user_id: userId } }
+    ),
+
+  exportToWehago: (closingId: number, data: {
+    client_id: number
+    closing_period_id: number
+    file_format?: 'wehago_csv' | 'wehago_xlsx' | 'wehago_xml'
+    include_attachments?: boolean
+  }) => api.post(`/connect/closing/${closingId}/wehago-export`, data),
+
+  listExports: (closingId: number) => api.get(`/connect/closing/${closingId}/exports`),
+}
+
 // Financial Reports API (기간 기반 재무보고서)
 export const financialApi = {
   getAvailableYears: () => api.get('/financial/available-years'),

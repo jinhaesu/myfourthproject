@@ -18,11 +18,32 @@ import {
   CpuChipIcon,
   PresentationChartBarIcon,
   TableCellsIcon,
+  Squares2X2Icon,
+  SunIcon,
+  ScaleIcon,
+  ArrowsRightLeftIcon,
+  PaperAirplaneIcon,
+  ReceiptPercentIcon,
+  ArchiveBoxArrowDownIcon,
 } from '@heroicons/react/24/outline'
 
-const baseNavigation = [
+type NavItem =
+  | { name: string; href: string; icon: any; section?: never; children?: never }
+  | { name: string; section: true; children?: never }
+
+const baseNavigation: NavItem[] = [
   { name: '대시보드', href: '/dashboard', icon: HomeIcon },
+
+  { name: '실시간 자금관리', section: true },
+  { name: '통합 조회', href: '/unified', icon: Squares2X2Icon },
+  { name: '자금일보', href: '/daily-report', icon: SunIcon },
+  { name: '계좌 이체', href: '/transfers', icon: PaperAirplaneIcon },
+  { name: '세금계산서', href: '/tax-invoices', icon: ReceiptPercentIcon },
+  { name: '거래처 정산', href: '/settlement', icon: ArrowsRightLeftIcon },
+
+  { name: '회계 / 분석', section: true },
   { name: 'AI 분류', href: '/ai-classification', icon: CpuChipIcon },
+  { name: '현금주의 손익', href: '/cash-pl', icon: ScaleIcon },
   { name: '재무보고서', href: '/financial', icon: TableCellsIcon },
   { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
   { name: '결재함', href: '/approvals', icon: ClipboardDocumentCheckIcon },
@@ -31,10 +52,16 @@ const baseNavigation = [
   { name: '매출 자동화', href: '/sales', icon: PresentationChartBarIcon },
   { name: '예측/시뮬레이션', href: '/forecast', icon: ChartBarIcon },
   { name: '보고서', href: '/reports', icon: DocumentChartBarIcon },
+
+  { name: '세무대리인', section: true },
+  { name: '수임고객 관리', href: '/connect/clients', icon: UsersIcon },
+  { name: '결산 자동화', href: '/connect/closing', icon: ArchiveBoxArrowDownIcon },
+
+  { name: '시스템', section: true },
   { name: '설정', href: '/settings', icon: Cog6ToothIcon },
 ]
 
-const adminNavItem = { name: '관리자', href: '/admin', icon: UsersIcon }
+const adminNavItem: NavItem = { name: '관리자', href: '/admin', icon: UsersIcon }
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -42,7 +69,7 @@ export default function Layout() {
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
   const isAdmin = user?.roleName === 'admin' || user?.roleName === 'super_admin'
-  const navigation = isAdmin ? [...baseNavigation, adminNavItem] : baseNavigation
+  const navigation: NavItem[] = isAdmin ? [...baseNavigation, adminNavItem] : baseNavigation
 
   const handleLogout = () => {
     logout()
@@ -64,8 +91,19 @@ export default function Layout() {
             </button>
           </div>
           <nav className="flex-1 overflow-y-auto py-4">
-            {navigation.map((item) => {
+            {navigation.map((item, idx) => {
+              if ('section' in item && item.section) {
+                return (
+                  <div
+                    key={`sec-${idx}`}
+                    className="px-4 mt-4 mb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider"
+                  >
+                    {item.name}
+                  </div>
+                )
+              }
               const isActive = location.pathname.startsWith(item.href)
+              const Icon = item.icon
               return (
                 <Link
                   key={item.name}
@@ -77,7 +115,7 @@ export default function Layout() {
                       : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                   }`}
                 >
-                  <item.icon className="mr-3 h-5 w-5 flex-shrink-0" />
+                  <Icon className="mr-3 h-5 w-5 flex-shrink-0" />
                   {item.name}
                 </Link>
               )
@@ -93,8 +131,19 @@ export default function Layout() {
             <span className="text-xl font-bold text-primary-600">Smart Finance</span>
           </div>
           <nav className="flex-1 overflow-y-auto py-4">
-            {navigation.map((item) => {
+            {navigation.map((item, idx) => {
+              if ('section' in item && item.section) {
+                return (
+                  <div
+                    key={`sec-${idx}`}
+                    className="px-4 mt-4 mb-1 text-xs font-semibold text-gray-400 uppercase tracking-wider"
+                  >
+                    {item.name}
+                  </div>
+                )
+              }
               const isActive = location.pathname.startsWith(item.href)
+              const Icon = item.icon
               return (
                 <Link
                   key={item.name}
@@ -105,7 +154,7 @@ export default function Layout() {
                       : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                   }`}
                 >
-                  <item.icon className="mr-3 h-5 w-5 flex-shrink-0" />
+                  <Icon className="mr-3 h-5 w-5 flex-shrink-0" />
                   {item.name}
                 </Link>
               )

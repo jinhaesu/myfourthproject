@@ -19,6 +19,13 @@ from app.api.endpoints import (
     ai_classification,
     sales,
     financial_reports,
+    unified,
+    daily_report,
+    cash_pl,
+    settlement,
+    tax_invoice,
+    transfer,
+    connect,
 )
 
 api_router = APIRouter()
@@ -118,4 +125,53 @@ api_router.include_router(
     financial_reports.router,
     prefix="/financial",
     tags=["재무제표"]
+)
+
+# 통합 데이터 실시간 조회 (계좌·카드·세금계산서)
+api_router.include_router(
+    unified.router,
+    prefix="/unified",
+    tags=["통합조회"]
+)
+
+# 실시간 자금일보
+api_router.include_router(
+    daily_report.router,
+    prefix="/daily-report",
+    tags=["자금일보"]
+)
+
+# 현금주의 손익 분석
+api_router.include_router(
+    cash_pl.router,
+    prefix="/cash-pl",
+    tags=["현금주의손익"]
+)
+
+# 매출·매입·거래처 정산
+api_router.include_router(
+    settlement.router,
+    prefix="/settlement",
+    tags=["거래처정산"]
+)
+
+# 세금계산서 발행/조회
+api_router.include_router(
+    tax_invoice.router,
+    prefix="/tax-invoices",
+    tags=["세금계산서"]
+)
+
+# 계좌 이체
+api_router.include_router(
+    transfer.router,
+    prefix="/transfers",
+    tags=["계좌이체"]
+)
+
+# 클로브커넥트 (세무대리인 전용)
+api_router.include_router(
+    connect.router,
+    prefix="/connect",
+    tags=["세무대리인"]
 )

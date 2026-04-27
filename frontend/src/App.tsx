@@ -15,6 +15,14 @@ import AdminPage from '@/pages/AdminPage'
 import AIClassificationPage from '@/pages/AIClassificationPage'
 import SalesAutomationPage from '@/pages/SalesAutomationPage'
 import FinancialReportsPage from '@/pages/FinancialReportsPage'
+import UnifiedViewPage from '@/pages/UnifiedViewPage'
+import DailyReportPage from '@/pages/DailyReportPage'
+import CashPLPage from '@/pages/CashPLPage'
+import SettlementPage from '@/pages/SettlementPage'
+import TaxInvoicePage from '@/pages/TaxInvoicePage'
+import TransferPage from '@/pages/TransferPage'
+import ConnectClientsPage from '@/pages/ConnectClientsPage'
+import ConnectClosingPage from '@/pages/ConnectClosingPage'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -36,6 +44,12 @@ function App() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="unified" element={<UnifiedViewPage />} />
+        <Route path="daily-report" element={<DailyReportPage />} />
+        <Route path="cash-pl" element={<CashPLPage />} />
+        <Route path="settlement" element={<SettlementPage />} />
+        <Route path="tax-invoices" element={<TaxInvoicePage />} />
+        <Route path="transfers" element={<TransferPage />} />
         <Route path="vouchers" element={<VouchersPage />} />
         <Route path="vouchers/:id" element={<VoucherDetailPage />} />
         <Route path="approvals" element={<ApprovalsPage />} />
@@ -43,11 +57,13 @@ function App() {
         <Route path="budget" element={<BudgetPage />} />
         <Route path="forecast" element={<ForecastPage />} />
         <Route path="reports" element={<ReportsPage />} />
-        <Route path="settings" element={<SettingsPage />} />
-        <Route path="admin" element={<AdminPage />} />
         <Route path="ai-classification" element={<AIClassificationPage />} />
         <Route path="sales" element={<SalesAutomationPage />} />
         <Route path="financial" element={<FinancialReportsPage />} />
+        <Route path="connect/clients" element={<ConnectClientsPage />} />
+        <Route path="connect/closing" element={<ConnectClosingPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+        <Route path="admin" element={<AdminPage />} />
       </Route>
     </Routes>
   )
