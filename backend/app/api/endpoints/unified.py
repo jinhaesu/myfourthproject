@@ -1,16 +1,20 @@
 """
 Unified View API — 통합 데이터 실시간 조회
-계좌·법인카드·세금계산서를 동일 모델로 한 화면에서 조회
+AI 분류 메뉴(ai_raw_transaction_data)에 업로드된 모든 거래를 한 화면에서 조회.
+좌측 source(계좌/카드 등) 필터, 우측 시간순 통합 거래.
 
-NOTE: 본 파일은 라우트 스켈레톤. 비즈니스 로직은 별도 작업.
+데이터 소스: ai_raw_transaction_data + ai_data_upload_history
 """
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Optional, List, Literal
+from fastapi import APIRouter, Depends, Query, HTTPException, status
+from sqlalchemy import select, func, and_, or_, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.models.ai import AIRawTransactionData, AIDataUploadHistory
 from app.schemas.unified import (
     UnifiedListResponse,
     UnifiedTransactionItem,
@@ -24,51 +28,51 @@ from app.schemas.unified import (
 router = APIRouter()
 
 
-def _mock_summary() -> UnifiedSummary:
-    """TODO: 실제 DB 집계로 대체"""
-    return UnifiedSummary(
-        total_balance=Decimal("327540000"),
-        bank_count=4,
-        card_count=3,
-        tax_invoice_count=128,
-        inbound_total=Decimal("89400000"),
-        outbound_total=Decimal("62100000"),
-        last_sync_at=datetime.utcnow(),
-        unclassified_count=12,
-    )
+# source_account_name 키워드로 source type 추정
+def _guess_source(name: Optional[str], code: Optional[str]) -> SourceType:
+    txt = (name or '').lower()
+    if any(k in txt for k in ('카드', 'card', '신용', '체크')):
+        return 'card'
+    if any(k in txt for k in ('세금계산서', '계산서', '매출', '매입', 'tax')):
+        return 'tax_invoice'
+    return 'bank'
 
 
-def _mock_items(size: int = 50) -> List[UnifiedTransactionItem]:
-    """TODO: bank_transactions + card_transactions + tax_invoices UNION 쿼리로 대체"""
-    base = datetime.utcnow().date()
-    samples = [
-        ("bank", "신한은행 운영계좌", "inbound", 12000000, "스마트로 PG 정산", "스마트로", "매출"),
-        ("card", "삼성카드 4342", "outbound", 87000, "쿠팡 사무용품", "쿠팡", "소모품비"),
-        ("tax_invoice", "전자세금계산서 매출", "inbound", 5500000, "(주)이마트 식자재 납품", "이마트", "매출"),
-        ("bank", "국민은행 결제계좌", "outbound", 3200000, "임대료 송금", "강남빌딩", "임차료"),
-        ("card", "현대카드 8821", "outbound", 25400, "스타벅스 강남점", "스타벅스", "복리후생비"),
-    ]
-    items: List[UnifiedTransactionItem] = []
-    for i in range(min(size, 50)):
-        s = samples[i % len(samples)]
-        items.append(
-            UnifiedTransactionItem(
-                id=f"{s[0]}-{i+1}",
-                source=s[0],  # type: ignore[arg-type]
-                source_label=s[1],
-                transaction_date=base - timedelta(days=i // 5),
-                transaction_time=f"{9 + (i % 8):02d}:{(i * 13) % 60:02d}",
-                direction=s[2],  # type: ignore[arg-type]
-                amount=Decimal(str(s[3])),
-                description=s[4],
-                counterparty=s[5],
-                category=s[6],
-                is_classified=(i % 4 != 0),
-                memo=None,
-            )
-        )
-    return items
+def _date_to_iso(s: Optional[str]) -> Optional[str]:
+    if not s:
+        return None
+    s = s.strip()
+    m = re.match(r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})', s)
+    if m:
+        y, mo, d = m.groups()
+        return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+    return None
 
+
+def _direction_of(debit: Decimal, credit: Decimal) -> DirectionType:
+    return 'inbound' if debit >= credit else 'outbound'
+
+
+def _date_filters(period_start: Optional[date], period_end: Optional[date]):
+    filters = []
+    if period_start:
+        s = period_start.strftime('%Y-%m-%d')
+        s2 = period_start.strftime('%Y.%m.%d')
+        filters.append(or_(
+            AIRawTransactionData.transaction_date >= s,
+            AIRawTransactionData.transaction_date >= s2,
+        ))
+    if period_end:
+        e_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
+        e_next2 = (period_end + timedelta(days=1)).strftime('%Y.%m.%d')
+        filters.append(or_(
+            AIRawTransactionData.transaction_date < e_next,
+            AIRawTransactionData.transaction_date < e_next2,
+        ))
+    return filters
+
+
+# ============ Summary ============
 
 @router.get("/summary", response_model=UnifiedSummary)
 async def get_unified_summary(
@@ -77,15 +81,75 @@ async def get_unified_summary(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    통합 요약 카드
-    - 전체 계좌 잔액 합
-    - 연동된 소스 수
-    - 기간 내 입출금 합계
-    - 미분류 건수
+    통합 요약 카드 — ai_raw_transaction_data 기반
+    - 차변 합계(inbound) / 대변 합계(outbound)
+    - 분류된/미분류 건수
+    - 연동된 source 종류 수
     """
-    # TODO: 실제 집계 쿼리
-    return _mock_summary()
+    filters = _date_filters(from_date, to_date)
 
+    base_q = select(
+        func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+        func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+        func.count(AIRawTransactionData.id).label('cnt'),
+    )
+    if filters:
+        base_q = base_q.where(and_(*filters))
+    row = (await db.execute(base_q)).one()
+
+    # source 분류 카운트 (source_account_name 키워드 기반)
+    source_q = select(
+        AIRawTransactionData.source_account_code,
+        AIRawTransactionData.source_account_name,
+    ).where(
+        AIRawTransactionData.source_account_code.isnot(None),
+        AIRawTransactionData.source_account_code != '',
+    ).distinct()
+    if filters:
+        source_q = source_q.where(*filters)
+    sources = (await db.execute(source_q)).all()
+
+    bank, card, tax = 0, 0, 0
+    for s in sources:
+        t = _guess_source(s.source_account_name, s.source_account_code)
+        if t == 'card':
+            card += 1
+        elif t == 'tax_invoice':
+            tax += 1
+        else:
+            bank += 1
+
+    # 미분류: account_code 없거나 비어있는 건수
+    unclassified_q = select(func.count(AIRawTransactionData.id)).where(
+        or_(
+            AIRawTransactionData.account_code.is_(None),
+            AIRawTransactionData.account_code == '',
+        )
+    )
+    if filters:
+        unclassified_q = unclassified_q.where(*filters)
+    unclassified = await db.scalar(unclassified_q) or 0
+
+    # 마지막 동기화 시간 = 가장 최근 업로드
+    last_upload = await db.scalar(
+        select(func.max(AIDataUploadHistory.created_at))
+    )
+
+    debit = Decimal(str(row.debit or 0))
+    credit = Decimal(str(row.credit or 0))
+    return UnifiedSummary(
+        total_balance=debit - credit,  # 단순 net (실제 잔액은 ledger summary 참조)
+        bank_count=bank,
+        card_count=card,
+        tax_invoice_count=tax,
+        inbound_total=debit,
+        outbound_total=credit,
+        last_sync_at=last_upload,
+        unclassified_count=unclassified,
+    )
+
+
+# ============ Transactions ============
 
 @router.get("/transactions", response_model=UnifiedListResponse)
 async def list_unified_transactions(
@@ -103,37 +167,131 @@ async def list_unified_transactions(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    통합 거래 내역 조회
-    bank_transactions + card_transactions + tax_invoices를 단일 모델로 합쳐 반환
+    통합 거래 목록 — ai_raw_transaction_data 시간순.
+    source 필터는 source_account_name 키워드로 추정.
     """
-    # TODO: UNION ALL 쿼리로 대체. 현재는 목 데이터 반환.
-    items = _mock_items(size)
+    filters = _date_filters(from_date, to_date)
+
+    if counterparty:
+        filters.append(AIRawTransactionData.merchant_name.ilike(f"%{counterparty}%"))
+    if min_amount is not None:
+        filters.append(or_(
+            AIRawTransactionData.debit_amount >= min_amount,
+            AIRawTransactionData.credit_amount >= min_amount,
+        ))
+    if max_amount is not None:
+        filters.append(or_(
+            AIRawTransactionData.debit_amount <= max_amount,
+            AIRawTransactionData.credit_amount <= max_amount,
+        ))
+    if search:
+        like = f"%{search}%"
+        filters.append(or_(
+            AIRawTransactionData.original_description.ilike(like),
+            AIRawTransactionData.merchant_name.ilike(like),
+            AIRawTransactionData.source_account_name.ilike(like),
+            AIRawTransactionData.account_name.ilike(like),
+        ))
+    if only_unclassified:
+        filters.append(or_(
+            AIRawTransactionData.account_code.is_(None),
+            AIRawTransactionData.account_code == '',
+        ))
+
+    base_filter = and_(*filters) if filters else True
+
+    total = await db.scalar(
+        select(func.count(AIRawTransactionData.id)).where(base_filter)
+    ) or 0
+
+    rows = (await db.execute(
+        select(AIRawTransactionData)
+        .where(base_filter)
+        .order_by(
+            AIRawTransactionData.transaction_date.desc(),
+            AIRawTransactionData.row_number.desc(),
+            AIRawTransactionData.id.desc(),
+        )
+        .offset((page - 1) * size)
+        .limit(size)
+    )).scalars().all()
+
+    items: List[UnifiedTransactionItem] = []
+    for r in rows:
+        src = _guess_source(r.source_account_name, r.source_account_code)
+        if sources and src not in sources:
+            continue
+        debit = Decimal(str(r.debit_amount or 0))
+        credit = Decimal(str(r.credit_amount or 0))
+        amount = debit if debit >= credit else credit
+        dir_ = _direction_of(debit, credit)
+        if direction and dir_ != direction:
+            continue
+        iso_date = _date_to_iso(r.transaction_date)
+        items.append(UnifiedTransactionItem(
+            id=f"raw-{r.id}",
+            source=src,
+            source_label=r.source_account_name or f"계정 {r.source_account_code or '-'}",
+            transaction_date=date.fromisoformat(iso_date) if iso_date else date.today(),
+            transaction_time=None,
+            direction=dir_,
+            amount=amount,
+            description=r.original_description or '',
+            counterparty=r.merchant_name,
+            category=r.account_name,
+            is_classified=bool(r.account_code),
+            memo=None,
+        ))
+
+    summary = await get_unified_summary(from_date=from_date, to_date=to_date, db=db)
     return UnifiedListResponse(
         items=items,
-        total=len(items),
+        total=total,
         page=page,
         size=size,
-        summary=_mock_summary(),
+        summary=summary,
     )
 
+
+# ============ Sources (연동된 데이터 소스) ============
 
 @router.get("/sources", response_model=List[DataSource])
 async def list_data_sources(
     db: AsyncSession = Depends(get_db),
 ):
-    """연동된 데이터 소스 목록 (계좌·카드·홈택스)"""
-    # TODO: 실제 데이터 소스 조회
-    now = datetime.utcnow()
-    return [
-        DataSource(id=1, type="bank", name="신한은행 운영계좌", institution="신한은행",
-                   last_sync_at=now, sync_status="ok", is_active=True),
-        DataSource(id=2, type="bank", name="국민은행 결제계좌", institution="국민은행",
-                   last_sync_at=now, sync_status="ok", is_active=True),
-        DataSource(id=3, type="card", name="삼성카드 4342", institution="삼성카드",
-                   last_sync_at=now, sync_status="ok", is_active=True),
-        DataSource(id=4, type="tax_invoice", name="홈택스 전자세금계산서", institution="국세청 홈택스",
-                   last_sync_at=now, sync_status="ok", is_active=True),
-    ]
+    """
+    연동된 데이터 소스 목록.
+    AI 분류 메뉴에서 업로드한 source_account_code별 그룹.
+    """
+    rows = (await db.execute(
+        select(
+            AIRawTransactionData.source_account_code,
+            func.max(AIRawTransactionData.source_account_name).label('name'),
+            func.count(AIRawTransactionData.id).label('cnt'),
+            func.max(AIRawTransactionData.created_at).label('last_synced'),
+        )
+        .where(
+            AIRawTransactionData.source_account_code.isnot(None),
+            AIRawTransactionData.source_account_code != '',
+        )
+        .group_by(AIRawTransactionData.source_account_code)
+        .order_by(AIRawTransactionData.source_account_code)
+    )).all()
+
+    sources: List[DataSource] = []
+    for idx, r in enumerate(rows, start=1):
+        src_type = _guess_source(r.name, r.source_account_code)
+        sources.append(DataSource(
+            id=idx,
+            type=src_type,
+            name=r.name or f"계정 {r.source_account_code}",
+            institution=r.name or f"계정 {r.source_account_code}",
+            last_sync_at=r.last_synced,
+            sync_status="ok",
+            error_message=None,
+            is_active=True,
+        ))
+    return sources
 
 
 @router.post("/sources", response_model=DataSource, status_code=status.HTTP_201_CREATED)
@@ -141,8 +299,12 @@ async def create_data_source(
     source: DataSourceCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    """신규 데이터 소스 연동 (스크래핑/오픈뱅킹 OAuth)"""
-    # TODO: 실제 연동 처리. 외부 인증 토큰 검증 + 초기 동기화 큐잉.
+    """
+    신규 데이터 소스 연동.
+    - bank/card: 그랜터(Granter) 서비스 OAuth
+    - tax_invoice: 홈택스 직접 연동
+    """
+    # TODO: source.type에 따라 그랜터/홈택스 분기. credential_token 검증 + 초기 동기화 큐잉.
     return DataSource(
         id=999,
         type=source.type,
@@ -159,8 +321,8 @@ async def trigger_sync(
     source_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    """특정 소스 즉시 동기화"""
-    # TODO: 백그라운드 태스크 큐잉
+    """소스 즉시 동기화 (그랜터/홈택스 webhook trigger)"""
+    # TODO: 그랜터 sync API 호출 또는 홈택스 스케줄러 트리거
     return {"source_id": source_id, "status": "syncing", "queued_at": datetime.utcnow().isoformat()}
 
 
@@ -170,5 +332,5 @@ async def remove_data_source(
     db: AsyncSession = Depends(get_db),
 ):
     """소스 연동 해제 (실제 거래 데이터는 유지)"""
-    # TODO: source.is_active=False 처리
+    # TODO: 그랜터 토큰 폐기 + source 비활성화
     return
