@@ -1,14 +1,15 @@
 import { ReactNode } from 'react'
+import Sparkline from './Sparkline'
 
 type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'neutral' | 'mint'
 
-const toneClasses: Record<Tone, { bg: string; text: string; ring: string }> = {
-  primary: { bg: 'bg-primary-50', text: 'text-primary-700', ring: 'ring-primary-100' },
-  success: { bg: 'bg-emerald-50', text: 'text-emerald-700', ring: 'ring-emerald-100' },
-  warning: { bg: 'bg-amber-50', text: 'text-amber-700', ring: 'ring-amber-100' },
-  danger: { bg: 'bg-rose-50', text: 'text-rose-700', ring: 'ring-rose-100' },
-  neutral: { bg: 'bg-gray-50', text: 'text-gray-700', ring: 'ring-gray-100' },
-  mint: { bg: 'bg-teal-50', text: 'text-teal-700', ring: 'ring-teal-100' },
+const toneClasses: Record<Tone, { dot: string; text: string }> = {
+  primary: { dot: 'bg-primary-500', text: 'text-primary-700' },
+  success: { dot: 'bg-emerald-500', text: 'text-emerald-700' },
+  warning: { dot: 'bg-amber-500', text: 'text-amber-700' },
+  danger: { dot: 'bg-rose-500', text: 'text-rose-700' },
+  neutral: { dot: 'bg-ink-400', text: 'text-ink-700' },
+  mint: { dot: 'bg-primary-500', text: 'text-primary-700' },
 }
 
 interface StatCardProps {
@@ -19,32 +20,79 @@ interface StatCardProps {
   delta?: { value: string; positive?: boolean }
   icon?: ReactNode
   tone?: Tone
+  trend?: number[]
+  loading?: boolean
 }
 
-export default function StatCard({ label, value, unit, hint, delta, icon, tone = 'primary' }: StatCardProps) {
-  const classes = toneClasses[tone]
+export default function StatCard({
+  label,
+  value,
+  unit,
+  hint,
+  delta,
+  icon,
+  tone = 'neutral',
+  trend,
+  loading = false,
+}: StatCardProps) {
+  const t = toneClasses[tone]
+
+  if (loading) {
+    return (
+      <div className="card animate-pulse">
+        <div className="h-3 bg-ink-100 rounded w-20" />
+        <div className="h-7 bg-ink-100 rounded mt-3 w-32" />
+        <div className="h-2.5 bg-ink-100 rounded mt-2 w-24" />
+      </div>
+    )
+  }
+
+  const sparkColors: Record<Tone, { stroke: string; fill: string }> = {
+    primary: { stroke: '#0d8e88', fill: 'rgba(13,142,136,0.10)' },
+    mint:    { stroke: '#0d8e88', fill: 'rgba(13,142,136,0.10)' },
+    success: { stroke: '#10b981', fill: 'rgba(16,185,129,0.10)' },
+    warning: { stroke: '#f59e0b', fill: 'rgba(245,158,11,0.10)' },
+    danger:  { stroke: '#ef4444', fill: 'rgba(239,68,68,0.10)' },
+    neutral: { stroke: '#71717a', fill: 'rgba(113,113,122,0.10)' },
+  }
+  const spark = sparkColors[tone]
+
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-5">
-      <div className="flex items-start justify-between">
-        <div className="text-sm text-gray-500">{label}</div>
-        {icon && (
-          <div className={`p-2 rounded-md ${classes.bg} ${classes.text} ring-1 ${classes.ring}`}>{icon}</div>
-        )}
+    <div className="card hover:border-ink-300 transition-colors duration-150">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className={`w-1 h-1 rounded-full ${t.dot} flex-shrink-0`} />
+          <span className="text-2xs font-medium text-ink-500 uppercase tracking-wider truncate">
+            {label}
+          </span>
+        </div>
+        {icon && <span className={`${t.text} flex-shrink-0`}>{icon}</span>}
       </div>
-      <div className="mt-2 flex items-baseline gap-1">
-        <div className="text-2xl font-bold text-gray-900 tabular-nums">{value}</div>
-        {unit && <div className="text-sm text-gray-500">{unit}</div>}
+
+      <div className="mt-2.5 flex items-baseline gap-1">
+        <span className="text-xl font-semibold text-ink-900 tabular-nums tracking-tightish">
+          {value}
+        </span>
+        {unit && <span className="text-xs text-ink-400 font-medium">{unit}</span>}
       </div>
-      {(hint || delta) && (
-        <div className="mt-2 flex items-center gap-2 text-xs">
+
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-2xs min-w-0">
           {delta && (
-            <span className={delta.positive ? 'text-emerald-600 font-medium' : 'text-rose-600 font-medium'}>
-              {delta.positive ? '▲' : '▼'} {delta.value}
+            <span
+              className={`font-semibold tabular-nums flex-shrink-0 ${
+                delta.positive ? 'text-emerald-600' : 'text-rose-600'
+              }`}
+            >
+              {delta.positive ? '↑' : '↓'} {delta.value}
             </span>
           )}
-          {hint && <span className="text-gray-400">{hint}</span>}
+          {hint && <span className="text-ink-400 truncate">{hint}</span>}
         </div>
-      )}
+        {trend && trend.length > 1 && (
+          <Sparkline values={trend} width={56} height={18} stroke={spark.stroke} fill={spark.fill} />
+        )}
+      </div>
     </div>
   )
 }

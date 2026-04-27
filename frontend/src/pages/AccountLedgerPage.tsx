@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AgGridReact } from 'ag-grid-react'
 import 'ag-grid-community/styles/ag-grid.css'
@@ -8,19 +8,24 @@ import {
   ArrowDownTrayIcon,
   ArrowPathIcon,
   CalendarDaysIcon,
-  TagIcon,
+  BookOpenIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
 } from '@heroicons/react/24/outline'
 import { ledgerApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, formatDate } from '@/utils/format'
+import EmptyState from '@/components/common/EmptyState'
 
-const CATEGORY_META: Record<string, { label: string; color: string; chip: string }> = {
-  asset: { label: '자산', color: 'text-blue-700', chip: 'bg-blue-50 text-blue-700' },
-  liability: { label: '부채', color: 'text-rose-700', chip: 'bg-rose-50 text-rose-700' },
-  equity: { label: '자본', color: 'text-purple-700', chip: 'bg-purple-50 text-purple-700' },
-  revenue: { label: '수익', color: 'text-emerald-700', chip: 'bg-emerald-50 text-emerald-700' },
-  expense: { label: '비용', color: 'text-amber-700', chip: 'bg-amber-50 text-amber-700' },
-  non_operating: { label: '영업외', color: 'text-gray-700', chip: 'bg-gray-100 text-gray-700' },
+const CATEGORY_META: Record<string, { label: string; dot: string; chip: string }> = {
+  asset: { label: '자산', dot: 'bg-blue-500', chip: 'bg-blue-50 text-blue-700 border-blue-200' },
+  liability: { label: '부채', dot: 'bg-rose-500', chip: 'bg-rose-50 text-rose-700 border-rose-200' },
+  equity: { label: '자본', dot: 'bg-purple-500', chip: 'bg-purple-50 text-purple-700 border-purple-200' },
+  revenue: { label: '수익', dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  expense: { label: '비용', dot: 'bg-amber-500', chip: 'bg-amber-50 text-amber-700 border-amber-200' },
+  non_operating: { label: '영업외', dot: 'bg-ink-400', chip: 'bg-ink-50 text-ink-700 border-ink-200' },
 }
+
+const CATEGORY_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expense', 'non_operating']
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10)
@@ -40,6 +45,8 @@ export default function AccountLedgerPage() {
   const [onlyActivity, setOnlyActivity] = useState(true)
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
   const [entrySearch, setEntrySearch] = useState('')
+  const [collapsedCats, setCollapsedCats] = useState<Set<string>>(new Set())
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
 
   const fiscalYear = new Date(periodEnd).getFullYear()
 
@@ -76,12 +83,25 @@ export default function AccountLedgerPage() {
   const entries: any[] = entriesQuery.data?.entries || []
   const summary = entriesQuery.data?.summary
 
-  // 자동으로 첫 번째 계정 선택
-  if (!selectedCode && accounts.length > 0) {
-    setSelectedCode(accounts[0].account_code)
-  }
+  // Auto-select first account when list loads
+  useEffect(() => {
+    if (!selectedCode && accounts.length > 0) {
+      setSelectedCode(accounts[0].account_code)
+    }
+  }, [accounts, selectedCode])
 
-  // 카테고리별로 그룹핑
+  // Cmd/Ctrl-K to focus account search
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const groupedAccounts = useMemo(() => {
     const groups: Record<string, any[]> = {}
     for (const a of accounts) {
@@ -91,21 +111,23 @@ export default function AccountLedgerPage() {
     return groups
   }, [accounts])
 
+  const totalCount = accounts.reduce((s, a) => s + (a.transaction_count || 0), 0)
+
   const columnDefs = useMemo(
     () => [
       {
         headerName: '날짜',
         field: 'transaction_date',
-        width: 110,
+        width: 100,
         pinned: 'left' as const,
         valueFormatter: (p: any) => formatDate(p.value),
       },
       {
-        headerName: '전표번호',
+        headerName: '#',
         field: 'transaction_number',
-        width: 150,
+        width: 70,
         pinned: 'left' as const,
-        cellClass: 'font-mono text-xs',
+        cellClass: 'font-mono text-ink-400 text-xs',
       },
       {
         headerName: '거래처',
@@ -117,7 +139,7 @@ export default function AccountLedgerPage() {
         headerName: '적요',
         field: 'description',
         flex: 1,
-        minWidth: 250,
+        minWidth: 240,
         editable: true,
       },
       {
@@ -154,35 +176,23 @@ export default function AccountLedgerPage() {
       {
         headerName: '상대 계정',
         field: 'counterparty_account_name',
-        width: 140,
+        width: 150,
         cellRenderer: (p: any) =>
-          p.data?.counterparty_account_code
-            ? `${p.value} (${p.data.counterparty_account_code})`
-            : '-',
-      },
-      {
-        headerName: '부서',
-        field: 'department_name',
-        width: 110,
-      },
-      {
-        headerName: '프로젝트',
-        field: 'project_tag',
-        width: 130,
-        editable: true,
-        cellRenderer: (p: any) =>
-          p.value ? (
-            <span className="badge bg-primary-50 text-primary-700">
-              {p.value}
+          p.data?.counterparty_account_code ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="font-mono text-ink-400 text-2xs">
+                {p.data.counterparty_account_code}
+              </span>
+              <span>{p.value}</span>
             </span>
           ) : (
-            <span className="text-gray-300">-</span>
+            <span className="text-ink-300">-</span>
           ),
       },
       {
         headerName: '메모',
         field: 'memo',
-        width: 180,
+        width: 200,
         editable: true,
       },
     ],
@@ -199,167 +209,235 @@ export default function AccountLedgerPage() {
     []
   )
 
+  const toggleCat = (cat: string) => {
+    const next = new Set(collapsedCats)
+    if (next.has(cat)) next.delete(cat)
+    else next.add(cat)
+    setCollapsedCats(next)
+  }
+
   return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="space-y-3">
+      {/* Compact header */}
+      <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
-          <h1>계정별 원장</h1>
-          <p className="text-gray-500 mt-1.5">
-            좌측 계정과목에서 선택하면 우측에서 거래 내역을 엑셀처럼 편집할 수 있습니다.
+          <h1 className="flex items-center gap-2">
+            <BookOpenIcon className="h-5 w-5 text-ink-500" />
+            계정별 원장
+          </h1>
+          <p className="text-xs text-ink-500 mt-1">
+            {accountsQuery.isLoading
+              ? '불러오는 중…'
+              : `${accounts.length}개 계정 · ${totalCount.toLocaleString('ko-KR')}건의 거래`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <CalendarDaysIcon className="h-5 w-5 text-gray-400" />
-          <input
-            type="date"
-            value={periodStart}
-            onChange={(e) => setPeriodStart(e.target.value)}
-            className="input w-40"
-          />
-          <span className="text-gray-400">~</span>
-          <input
-            type="date"
-            value={periodEnd}
-            onChange={(e) => setPeriodEnd(e.target.value)}
-            className="input w-40"
-          />
+        <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
+            <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
+            <input
+              type="date"
+              value={periodStart}
+              onChange={(e) => setPeriodStart(e.target.value)}
+              className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28"
+            />
+            <span className="text-ink-300">→</span>
+            <input
+              type="date"
+              value={periodEnd}
+              onChange={(e) => setPeriodEnd(e.target.value)}
+              className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28"
+            />
+          </div>
           <button
             onClick={() => qc.invalidateQueries({ queryKey: ['ledger-accounts'] })}
             className="btn-secondary"
             title="새로고침"
           >
-            <ArrowPathIcon className="h-5 w-5" />
+            <ArrowPathIcon className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Master-detail shell */}
+      {/* Master-detail */}
       <div className="ledger-shell">
-        {/* Sidebar — accounts */}
+        {/* Sidebar */}
         <aside className="ledger-sidebar">
-          <div className="p-3 border-b border-gray-200 space-y-2">
+          <div className="p-2.5 border-b border-ink-200 space-y-2">
             <div className="relative">
-              <MagnifyingGlassIcon className="h-4 w-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <MagnifyingGlassIcon className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-ink-400" />
               <input
+                ref={searchInputRef}
                 value={searchAcc}
                 onChange={(e) => setSearchAcc(e.target.value)}
                 placeholder="계정 검색"
-                className="pl-8 input"
+                className="pl-7 pr-12 input text-xs"
               />
+              <kbd className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1 py-0.5 rounded border border-ink-200 bg-canvas-50 text-2xs text-ink-400 font-mono">
+                ⌘K
+              </kbd>
             </div>
-            <div className="flex gap-1 overflow-x-auto pb-1">
+            <div className="flex flex-wrap gap-1">
               <button
                 onClick={() => setCategoryFilter(undefined)}
-                className={`whitespace-nowrap px-2.5 py-1 rounded-md text-xs font-semibold ${
-                  !categoryFilter ? 'bg-primary-600 text-white' : 'bg-white text-gray-700 border border-gray-200'
+                className={`px-2 py-0.5 rounded text-2xs font-semibold transition ${
+                  !categoryFilter
+                    ? 'bg-ink-900 text-white'
+                    : 'bg-white text-ink-600 border border-ink-200 hover:border-ink-300'
                 }`}
               >
                 전체
               </button>
-              {Object.entries(CATEGORY_META).map(([k, v]) => (
-                <button
-                  key={k}
-                  onClick={() => setCategoryFilter(k)}
-                  className={`whitespace-nowrap px-2.5 py-1 rounded-md text-xs font-semibold ${
-                    categoryFilter === k
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-white text-gray-700 border border-gray-200'
-                  }`}
-                >
-                  {v.label}
-                </button>
-              ))}
+              {CATEGORY_ORDER.map((k) => {
+                const v = CATEGORY_META[k]
+                const isActive = categoryFilter === k
+                return (
+                  <button
+                    key={k}
+                    onClick={() => setCategoryFilter(isActive ? undefined : k)}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-semibold transition ${
+                      isActive
+                        ? 'bg-ink-900 text-white'
+                        : 'bg-white text-ink-600 border border-ink-200 hover:border-ink-300'
+                    }`}
+                  >
+                    <span className={`w-1 h-1 rounded-full ${v.dot}`} />
+                    {v.label}
+                  </button>
+                )
+              })}
             </div>
-            <label className="flex items-center gap-2 text-xs text-gray-600">
+            <label className="flex items-center gap-1.5 text-2xs text-ink-500 select-none cursor-pointer">
               <input
                 type="checkbox"
                 checked={onlyActivity}
                 onChange={(e) => setOnlyActivity(e.target.checked)}
-                className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3"
               />
               거래 있는 계정만
             </label>
           </div>
 
-          <div className="flex-1 overflow-y-auto py-2">
+          <div className="flex-1 overflow-y-auto py-1">
             {accountsQuery.isLoading && (
-              <div className="text-center text-gray-400 text-sm py-8">불러오는 중…</div>
+              <div className="px-3 py-4 space-y-2">
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <div key={i} className="h-7 bg-ink-100 rounded animate-pulse" />
+                ))}
+              </div>
             )}
-            {Object.entries(groupedAccounts).map(([cat, group]) => {
-              const meta = CATEGORY_META[cat] || CATEGORY_META.expense
-              return (
-                <div key={cat} className="mb-3">
-                  <div className="px-4 py-1.5 text-xs font-bold uppercase tracking-wider text-gray-500">
-                    {meta.label}
-                  </div>
-                  {group.map((a) => {
-                    const isActive = selectedCode === a.account_code
-                    return (
-                      <button
-                        key={a.account_code}
-                        onClick={() => setSelectedCode(a.account_code)}
-                        className={`ledger-account-row ${isActive ? 'active' : ''}`}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-mono text-gray-400">{a.account_code}</span>
-                            <span className={`text-sm font-medium truncate ${isActive ? 'text-gray-900' : 'text-gray-700'}`}>
-                              {a.account_name}
-                            </span>
-                          </div>
-                          <div className="text-xs text-gray-400 mt-0.5">
-                            {a.transaction_count}건
-                          </div>
-                        </div>
-                        <div className="text-right flex-shrink-0">
-                          <div
-                            className={`text-sm font-mono tabular-nums font-semibold ${
-                              Number(a.closing_balance) >= 0 ? 'text-gray-900' : 'text-rose-600'
-                            }`}
+
+            {!accountsQuery.isLoading &&
+              CATEGORY_ORDER.filter((c) => groupedAccounts[c]).map((cat) => {
+                const meta = CATEGORY_META[cat]
+                const group = groupedAccounts[cat]
+                const collapsed = collapsedCats.has(cat)
+                const groupTotal = group.reduce(
+                  (s: number, a: any) => s + Number(a.closing_balance || 0),
+                  0
+                )
+                return (
+                  <div key={cat} className="mb-1.5">
+                    <button
+                      onClick={() => toggleCat(cat)}
+                      className="w-full px-3 py-1 flex items-center justify-between text-2xs font-semibold uppercase tracking-wider text-ink-500 hover:text-ink-900"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {collapsed ? (
+                          <ChevronRightIcon className="h-3 w-3" />
+                        ) : (
+                          <ChevronDownIcon className="h-3 w-3" />
+                        )}
+                        <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
+                        {meta.label}
+                        <span className="text-ink-300 font-normal">{group.length}</span>
+                      </span>
+                      <span className="font-mono text-2xs text-ink-400 normal-case tracking-normal">
+                        {formatCompactWon(groupTotal)}
+                      </span>
+                    </button>
+                    {!collapsed &&
+                      group.map((a) => {
+                        const isActive = selectedCode === a.account_code
+                        return (
+                          <button
+                            key={a.account_code}
+                            onClick={() => setSelectedCode(a.account_code)}
+                            className={`ledger-account-row group ${isActive ? 'active' : ''}`}
                           >
-                            {formatCompactWon(a.closing_balance)}
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              )
-            })}
-            {accounts.length === 0 && !accountsQuery.isLoading && (
-              <div className="text-center text-gray-400 text-sm py-8">계정이 없습니다.</div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-2xs font-mono text-ink-400 flex-shrink-0">
+                                  {a.account_code}
+                                </span>
+                                <span
+                                  className={`text-xs truncate ${
+                                    isActive ? 'font-semibold text-ink-900' : 'font-medium text-ink-700'
+                                  }`}
+                                >
+                                  {a.account_name}
+                                </span>
+                              </div>
+                              <div className="text-2xs text-ink-400 mt-0.5">
+                                {a.transaction_count.toLocaleString('ko-KR')}건
+                              </div>
+                            </div>
+                            <div className="text-right flex-shrink-0 ml-2">
+                              <div
+                                className={`text-xs font-mono tabular-nums font-semibold ${
+                                  Number(a.closing_balance) >= 0 ? 'text-ink-900' : 'text-rose-600'
+                                }`}
+                              >
+                                {formatCompactWon(a.closing_balance)}
+                              </div>
+                            </div>
+                          </button>
+                        )
+                      })}
+                  </div>
+                )
+              })}
+
+            {!accountsQuery.isLoading && accounts.length === 0 && (
+              <div className="px-4 py-8 text-center">
+                <p className="text-xs text-ink-500">조건에 맞는 계정이 없습니다.</p>
+              </div>
             )}
           </div>
         </aside>
 
-        {/* Main — selected account ledger */}
+        {/* Main */}
         <main className="ledger-main">
           {summary ? (
             <>
-              {/* Summary header */}
-              <div className="px-6 py-4 border-b border-gray-200 bg-canvas-50">
+              {/* Account header */}
+              <div className="px-5 py-3.5 border-b border-ink-200 bg-white">
                 <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-mono text-gray-500">{summary.account_code}</span>
-                      <h2 className="text-2xl font-bold text-gray-900">{summary.account_name}</h2>
+                      <span className="text-xs font-mono text-ink-400">{summary.account_code}</span>
+                      <h2 className="text-lg font-semibold text-ink-900 tracking-crisp">
+                        {summary.account_name}
+                      </h2>
                       <span className={`badge ${CATEGORY_META[summary.category]?.chip}`}>
+                        <span className={`w-1 h-1 rounded-full ${CATEGORY_META[summary.category]?.dot} mr-1`} />
                         {CATEGORY_META[summary.category]?.label}
                       </span>
                     </div>
-                    <div className="text-sm text-gray-500 mt-1">
-                      {formatDate(summary.period_start)} ~ {formatDate(summary.period_end)} · 거래 {summary.transaction_count}건
+                    <div className="text-2xs text-ink-500 mt-0.5">
+                      {formatDate(summary.period_start)} – {formatDate(summary.period_end)} ·{' '}
+                      <span className="font-medium text-ink-700">
+                        {summary.transaction_count.toLocaleString('ko-KR')}건
+                      </span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
                     <div className="relative">
-                      <MagnifyingGlassIcon className="h-4 w-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <MagnifyingGlassIcon className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-ink-400" />
                       <input
                         value={entrySearch}
                         onChange={(e) => setEntrySearch(e.target.value)}
                         placeholder="거래 검색"
-                        className="pl-8 input w-56"
+                        className="pl-7 input w-44 text-xs"
                       />
                     </div>
                     <button
@@ -372,21 +450,31 @@ export default function AccountLedgerPage() {
                       }
                       className="btn-secondary"
                     >
-                      <ArrowDownTrayIcon className="h-5 w-5 mr-1" />
+                      <ArrowDownTrayIcon className="h-3.5 w-3.5 mr-1" />
                       엑셀
                     </button>
                   </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <SummaryStat label="기초 잔액" value={summary.opening_balance} />
-                  <SummaryStat label="차변 합계" value={summary.period_debit} tone="primary" />
-                  <SummaryStat label="대변 합계" value={summary.period_credit} tone="danger" />
-                  <SummaryStat
+                {/* KPI strip — 4 stats horizontally */}
+                <div className="mt-3.5 grid grid-cols-4 divide-x divide-ink-100 border border-ink-200 rounded-md bg-canvas-50">
+                  <KPIBlock label="기초 잔액" value={summary.opening_balance} />
+                  <KPIBlock label="차변" value={summary.period_debit} accent="primary" />
+                  <KPIBlock label="대변" value={summary.period_credit} accent="danger" />
+                  <KPIBlock
                     label="기말 잔액"
                     value={summary.closing_balance}
-                    tone={Number(summary.closing_balance) >= 0 ? 'success' : 'danger'}
-                    big
+                    accent={Number(summary.closing_balance) >= 0 ? 'success' : 'danger'}
+                    bold
+                    delta={
+                      summary.opening_balance && Number(summary.opening_balance) !== 0
+                        ? {
+                            value: `${(((Number(summary.closing_balance) - Number(summary.opening_balance)) / Math.abs(Number(summary.opening_balance))) * 100).toFixed(1)}%`,
+                            positive:
+                              Number(summary.closing_balance) - Number(summary.opening_balance) >= 0,
+                          }
+                        : undefined
+                    }
                   />
                 </div>
               </div>
@@ -400,22 +488,26 @@ export default function AccountLedgerPage() {
                   animateRows
                   enableCellTextSelection
                   ensureDomOrder
-                  rowHeight={38}
-                  headerHeight={42}
-                  suppressMovableColumns={false}
+                  rowHeight={32}
+                  headerHeight={34}
                   pagination
-                  paginationPageSize={50}
+                  paginationPageSize={100}
                   paginationPageSizeSelector={[50, 100, 200, 500]}
+                  noRowsOverlayComponent={() => (
+                    <div className="text-xs text-ink-400 p-4">
+                      이 기간에 해당 계정의 거래가 없습니다.
+                    </div>
+                  )}
                 />
               </div>
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-gray-400">
-              <div className="text-center">
-                <TagIcon className="h-12 w-12 mx-auto text-gray-300" />
-                <div className="mt-3 text-base">좌측에서 계정과목을 선택하세요.</div>
-              </div>
-            </div>
+            <EmptyState
+              icon={<BookOpenIcon className="h-6 w-6" />}
+              title="계정을 선택하세요"
+              description="좌측에서 계정과목을 클릭하면 해당 계정의 거래 내역을 엑셀처럼 편집·조회할 수 있습니다."
+              shortcut="⌘K"
+            />
           )}
         </main>
       </div>
@@ -423,33 +515,40 @@ export default function AccountLedgerPage() {
   )
 }
 
-function SummaryStat({
+function KPIBlock({
   label,
   value,
-  tone = 'neutral',
-  big = false,
+  accent = 'neutral',
+  bold = false,
+  delta,
 }: {
   label: string
   value: number | string
-  tone?: 'neutral' | 'primary' | 'success' | 'danger'
-  big?: boolean
+  accent?: 'neutral' | 'primary' | 'success' | 'danger'
+  bold?: boolean
+  delta?: { value: string; positive: boolean }
 }) {
-  const toneClass: Record<string, string> = {
-    neutral: 'text-gray-900',
+  const accentClass: Record<string, string> = {
+    neutral: 'text-ink-900',
     primary: 'text-primary-700',
     success: 'text-emerald-700',
     danger: 'text-rose-700',
   }
   return (
-    <div className="bg-white rounded-lg border border-gray-200/80 px-4 py-3">
-      <div className="text-xs text-gray-500">{label}</div>
+    <div className="px-3.5 py-2.5">
+      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">{label}</div>
       <div
-        className={`mt-1 font-mono tabular-nums font-bold ${toneClass[tone]} ${
-          big ? 'text-xl' : 'text-base'
-        }`}
+        className={`mt-1 font-mono tabular-nums ${
+          bold ? 'text-base font-bold' : 'text-sm font-semibold'
+        } ${accentClass[accent]}`}
       >
         {formatCurrency(value, false)}
       </div>
+      {delta && (
+        <div className={`text-2xs font-medium mt-0.5 ${delta.positive ? 'text-emerald-600' : 'text-rose-600'}`}>
+          {delta.positive ? '↑' : '↓'} {delta.value}
+        </div>
+      )}
     </div>
   )
 }
