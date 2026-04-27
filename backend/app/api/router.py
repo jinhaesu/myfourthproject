@@ -26,6 +26,7 @@ from app.api.endpoints import (
     tax_invoice,
     transfer,
     connect,
+    ledger,
 )
 
 api_router = APIRouter()
@@ -174,4 +175,11 @@ api_router.include_router(
     connect.router,
     prefix="/connect",
     tags=["세무대리인"]
+)
+
+# 계정별 원장 (총계정원장)
+api_router.include_router(
+    ledger.router,
+    prefix="/ledger",
+    tags=["계정원장"]
 )

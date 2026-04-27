@@ -839,6 +839,52 @@ export const connectApi = {
   listExports: (closingId: number) => api.get(`/connect/closing/${closingId}/exports`),
 }
 
+// ==================== 계정별 원장 ====================
+export const ledgerApi = {
+  listAccounts: (params: {
+    fiscal_year: number
+    period_start?: string
+    period_end?: string
+    category?: string
+    only_with_activity?: boolean
+    search?: string
+  }) => api.get('/ledger/accounts', { params }),
+
+  getTree: (params: { fiscal_year: number; period_start?: string; period_end?: string }) =>
+    api.get('/ledger/accounts/tree', { params }),
+
+  getSummary: (accountCode: string, periodStart: string, periodEnd: string) =>
+    api.get(`/ledger/accounts/${accountCode}/summary`, {
+      params: { period_start: periodStart, period_end: periodEnd },
+    }),
+
+  getEntries: (
+    accountCode: string,
+    params: {
+      period_start: string
+      period_end: string
+      counterparty?: string
+      direction?: 'debit' | 'credit'
+      min_amount?: number
+      max_amount?: number
+      search?: string
+      page?: number
+      size?: number
+    }
+  ) => api.get(`/ledger/accounts/${accountCode}/entries`, { params }),
+
+  updateEntry: (
+    entryId: number,
+    data: { description?: string; memo?: string; project_tag?: string; counterparty?: string },
+    userId: number
+  ) => api.patch(`/ledger/entries/${entryId}`, data, { params: { user_id: userId } }),
+
+  exportExcel: (accountCode: string, periodStart: string, periodEnd: string) =>
+    api.get(`/ledger/accounts/${accountCode}/export`, {
+      params: { period_start: periodStart, period_end: periodEnd },
+    }),
+}
+
 // Financial Reports API (기간 기반 재무보고서)
 export const financialApi = {
   getAvailableYears: () => api.get('/financial/available-years'),

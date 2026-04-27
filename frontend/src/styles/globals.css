@@ -5,16 +5,29 @@
 @layer base {
   html {
     font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+    color: #272b27;
   }
 
   body {
-    @apply bg-gray-50 text-gray-900;
+    @apply bg-canvas-100 text-gray-900;
+  }
+
+  h1 {
+    @apply text-3xl font-bold tracking-tight text-gray-900;
+  }
+
+  h2 {
+    @apply text-xl font-semibold text-gray-900;
+  }
+
+  h3 {
+    @apply text-lg font-semibold text-gray-900;
   }
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium transition-colors duration-150;
+    @apply inline-flex items-center justify-center px-5 py-2.5 border border-transparent rounded-lg shadow-soft text-sm font-semibold transition-colors duration-150;
   }
 
   .btn-primary {
@@ -26,47 +39,51 @@
   }
 
   .btn-danger {
-    @apply btn bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500;
+    @apply btn bg-rose-600 text-white hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500;
   }
 
   .btn-success {
-    @apply btn bg-green-600 text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500;
+    @apply btn bg-emerald-600 text-white hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500;
   }
 
   .input {
-    @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm;
+    @apply block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 text-sm;
   }
 
   .label {
-    @apply block text-sm font-medium text-gray-700;
+    @apply block text-sm font-medium text-gray-700 mb-1.5;
   }
 
   .card {
-    @apply bg-white rounded-lg shadow-sm border border-gray-200 p-6;
+    @apply bg-white rounded-xl shadow-card border border-gray-200/70 p-7;
+  }
+
+  .card-tight {
+    @apply bg-white rounded-xl shadow-card border border-gray-200/70 p-5;
   }
 
   .card-header {
-    @apply text-lg font-semibold text-gray-900 mb-4;
+    @apply text-xl font-semibold text-gray-900 mb-5;
   }
 
   .badge {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+    @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold;
   }
 
   .badge-success {
-    @apply badge bg-green-100 text-green-800;
+    @apply badge bg-emerald-100 text-emerald-800;
   }
 
   .badge-warning {
-    @apply badge bg-yellow-100 text-yellow-800;
+    @apply badge bg-amber-100 text-amber-800;
   }
 
   .badge-danger {
-    @apply badge bg-red-100 text-red-800;
+    @apply badge bg-rose-100 text-rose-800;
   }
 
   .badge-info {
-    @apply badge bg-blue-100 text-blue-800;
+    @apply badge bg-primary-100 text-primary-800;
   }
 
   .badge-gray {
@@ -75,7 +92,7 @@
 
   /* Table styles */
   .table-container {
-    @apply overflow-x-auto rounded-lg border border-gray-200;
+    @apply overflow-x-auto rounded-xl border border-gray-200;
   }
 
   .table {
@@ -83,23 +100,23 @@
   }
 
   .table-header {
-    @apply bg-gray-50;
+    @apply bg-canvas-50;
   }
 
   .table-header th {
-    @apply px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider;
+    @apply px-5 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider;
   }
 
   .table-body {
-    @apply bg-white divide-y divide-gray-200;
+    @apply bg-white divide-y divide-gray-100;
   }
 
   .table-body td {
-    @apply px-6 py-4 whitespace-nowrap text-sm text-gray-900;
+    @apply px-5 py-3.5 whitespace-nowrap text-sm text-gray-900;
   }
 
   .table-body tr:hover {
-    @apply bg-gray-50;
+    @apply bg-canvas-50;
   }
 
   /* Financial numbers */
@@ -121,40 +138,66 @@
   }
 
   .status-pending {
-    @apply badge bg-yellow-100 text-yellow-800;
+    @apply badge bg-amber-100 text-amber-800;
   }
 
   .status-approved {
-    @apply badge bg-green-100 text-green-800;
+    @apply badge bg-emerald-100 text-emerald-800;
   }
 
   .status-rejected {
-    @apply badge bg-red-100 text-red-800;
+    @apply badge bg-rose-100 text-rose-800;
   }
 
   .status-confirmed {
-    @apply badge bg-blue-100 text-blue-800;
+    @apply badge bg-primary-100 text-primary-800;
   }
 
   /* AI confidence indicator */
   .confidence-high {
-    @apply text-green-600;
+    @apply text-emerald-600;
   }
 
   .confidence-medium {
-    @apply text-yellow-600;
+    @apply text-amber-600;
   }
 
   .confidence-low {
-    @apply text-red-600;
+    @apply text-rose-600;
+  }
+
+  /* Master-detail layout */
+  .ledger-shell {
+    @apply flex h-[calc(100vh-9rem)] bg-white rounded-xl shadow-card border border-gray-200/70 overflow-hidden;
+  }
+
+  .ledger-sidebar {
+    @apply w-80 flex-shrink-0 border-r border-gray-200 flex flex-col bg-canvas-50;
+  }
+
+  .ledger-main {
+    @apply flex-1 flex flex-col min-w-0;
+  }
+
+  .ledger-account-row {
+    @apply w-full text-left px-4 py-2.5 flex items-center justify-between gap-2 hover:bg-white transition cursor-pointer border-l-2 border-transparent;
+  }
+
+  .ledger-account-row.active {
+    @apply bg-white border-l-primary-500 shadow-soft;
   }
 }
 
-/* AG Grid custom styles */
+/* AG Grid custom styles — warm mint accent */
 .ag-theme-alpine {
-  --ag-header-background-color: #f9fafb;
+  --ag-header-background-color: #faf9f7;
   --ag-border-color: #e5e7eb;
-  --ag-row-hover-color: #f3f4f6;
+  --ag-row-hover-color: #f0fbfa;
+  --ag-selected-row-background-color: #ccf3ef;
+  --ag-font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --ag-font-size: 14px;
+  --ag-header-foreground-color: #6b7280;
+  --ag-header-cell-hover-background-color: #f4f3f1;
 }
 
 /* 인쇄(PDF) 시 불필요한 요소 숨기기 */

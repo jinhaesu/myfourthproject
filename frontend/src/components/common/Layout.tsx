@@ -25,6 +25,7 @@ import {
   PaperAirplaneIcon,
   ReceiptPercentIcon,
   ArchiveBoxArrowDownIcon,
+  BookOpenIcon,
 } from '@heroicons/react/24/outline'
 
 type NavItem =
@@ -43,6 +44,7 @@ const baseNavigation: NavItem[] = [
 
   { name: '회계 / 분석', section: true },
   { name: 'AI 분류', href: '/ai-classification', icon: CpuChipIcon },
+  { name: '계정별 원장', href: '/ledger', icon: BookOpenIcon },
   { name: '현금주의 손익', href: '/cash-pl', icon: ScaleIcon },
   { name: '재무보고서', href: '/financial', icon: TableCellsIcon },
   { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },

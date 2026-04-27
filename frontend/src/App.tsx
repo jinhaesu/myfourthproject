@@ -23,6 +23,7 @@ import TaxInvoicePage from '@/pages/TaxInvoicePage'
 import TransferPage from '@/pages/TransferPage'
 import ConnectClientsPage from '@/pages/ConnectClientsPage'
 import ConnectClosingPage from '@/pages/ConnectClosingPage'
+import AccountLedgerPage from '@/pages/AccountLedgerPage'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -58,6 +59,7 @@ function App() {
         <Route path="forecast" element={<ForecastPage />} />
         <Route path="reports" element={<ReportsPage />} />
         <Route path="ai-classification" element={<AIClassificationPage />} />
+        <Route path="ledger" element={<AccountLedgerPage />} />
         <Route path="sales" element={<SalesAutomationPage />} />
         <Route path="financial" element={<FinancialReportsPage />} />
         <Route path="connect/clients" element={<ConnectClientsPage />} />
