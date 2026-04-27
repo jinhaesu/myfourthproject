@@ -30,16 +30,40 @@ const CATEGORY_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expense', 'n
 function todayISO() {
   return new Date().toISOString().slice(0, 10)
 }
-function startOfYearISO() {
-  const d = new Date()
-  d.setMonth(0, 1)
-  return d.toISOString().slice(0, 10)
+function isoYearStart(year: number) {
+  return `${year}-01-01`
+}
+function isoYearEnd(year: number) {
+  return `${year}-12-31`
 }
 
 export default function AccountLedgerPage() {
   const qc = useQueryClient()
-  const [periodStart, setPeriodStart] = useState(startOfYearISO())
-  const [periodEnd, setPeriodEnd] = useState(todayISO())
+
+  // 가용 년도 조회 — 데이터의 가장 최신 년도를 자동으로 default로
+  const yearsQuery = useQuery({
+    queryKey: ['ledger-years'],
+    queryFn: () => ledgerApi.getAvailableYears().then((r) => r.data),
+  })
+
+  const availableYears: number[] = yearsQuery.data?.years || []
+  const latestYear: number | null = yearsQuery.data?.latest ?? null
+
+  const [periodStart, setPeriodStart] = useState<string>('')
+  const [periodEnd, setPeriodEnd] = useState<string>('')
+
+  // 가용 년도 로드 후 기본 기간 자동 설정 (가장 최신 년도 1.1 ~ 12.31)
+  useEffect(() => {
+    if (latestYear && (!periodStart || !periodEnd)) {
+      setPeriodStart(isoYearStart(latestYear))
+      setPeriodEnd(isoYearEnd(latestYear))
+    } else if (!latestYear && yearsQuery.isFetched && (!periodStart || !periodEnd)) {
+      // fallback: 데이터 없으면 올해
+      const y = new Date().getFullYear()
+      setPeriodStart(isoYearStart(y))
+      setPeriodEnd(todayISO())
+    }
+  }, [latestYear, yearsQuery.isFetched]) // eslint-disable-line react-hooks/exhaustive-deps
   const [searchAcc, setSearchAcc] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<string | undefined>(undefined)
   const [onlyActivity, setOnlyActivity] = useState(true)
@@ -48,7 +72,8 @@ export default function AccountLedgerPage() {
   const [collapsedCats, setCollapsedCats] = useState<Set<string>>(new Set())
   const searchInputRef = useRef<HTMLInputElement | null>(null)
 
-  const fiscalYear = new Date(periodEnd).getFullYear()
+  const fiscalYear = periodEnd ? new Date(periodEnd).getFullYear() : new Date().getFullYear()
+  const periodReady = Boolean(periodStart && periodEnd)
 
   const accountsQuery = useQuery({
     queryKey: ['ledger-accounts', fiscalYear, periodStart, periodEnd, categoryFilter, onlyActivity, searchAcc],
@@ -63,6 +88,7 @@ export default function AccountLedgerPage() {
           search: searchAcc || undefined,
         })
         .then((r) => r.data),
+    enabled: periodReady,
   })
 
   const entriesQuery = useQuery({
@@ -76,7 +102,7 @@ export default function AccountLedgerPage() {
           size: 1000,
         })
         .then((r) => r.data),
-    enabled: !!selectedCode,
+    enabled: !!selectedCode && periodReady,
   })
 
   const accounts: any[] = accountsQuery.data || []
@@ -231,7 +257,31 @@ export default function AccountLedgerPage() {
               : `${accounts.length}개 계정 · ${totalCount.toLocaleString('ko-KR')}건의 거래`}
           </p>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {/* 가용 년도 빠른 선택 */}
+          {availableYears.length > 0 && (
+            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+              {availableYears.slice(0, 5).map((y) => {
+                const isActive = periodStart === isoYearStart(y) && periodEnd === isoYearEnd(y)
+                return (
+                  <button
+                    key={y}
+                    onClick={() => {
+                      setPeriodStart(isoYearStart(y))
+                      setPeriodEnd(isoYearEnd(y))
+                    }}
+                    className={`px-2 py-1 rounded text-2xs font-semibold transition ${
+                      isActive
+                        ? 'bg-ink-900 text-white'
+                        : 'text-ink-600 hover:bg-ink-50 hover:text-ink-900'
+                    }`}
+                  >
+                    {y}
+                  </button>
+                )
+              })}
+            </div>
+          )}
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
             <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
             <input
@@ -398,8 +448,27 @@ export default function AccountLedgerPage() {
               })}
 
             {!accountsQuery.isLoading && accounts.length === 0 && (
-              <div className="px-4 py-8 text-center">
-                <p className="text-xs text-ink-500">조건에 맞는 계정이 없습니다.</p>
+              <div className="px-4 py-6 text-center">
+                <p className="text-xs text-ink-500">이 기간에 거래가 없습니다.</p>
+                {availableYears.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-2xs text-ink-400 mb-1.5">데이터가 있는 년도</p>
+                    <div className="flex flex-wrap justify-center gap-1">
+                      {availableYears.map((y) => (
+                        <button
+                          key={y}
+                          onClick={() => {
+                            setPeriodStart(isoYearStart(y))
+                            setPeriodEnd(isoYearEnd(y))
+                          }}
+                          className="px-2 py-0.5 rounded text-2xs font-semibold bg-white border border-ink-200 text-ink-700 hover:bg-ink-50 hover:border-ink-300"
+                        >
+                          {y}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

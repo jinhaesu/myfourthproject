@@ -841,6 +841,10 @@ export const connectApi = {
 
 // ==================== 계정별 원장 ====================
 export const ledgerApi = {
+  diag: () => api.get('/ledger/diag'),
+
+  getAvailableYears: () => api.get('/ledger/years'),
+
   listAccounts: (params: {
     fiscal_year: number
     period_start?: string

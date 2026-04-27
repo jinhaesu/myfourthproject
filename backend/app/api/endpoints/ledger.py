@@ -30,6 +30,70 @@ from app.schemas.ledger import (
 router = APIRouter()
 
 
+# ============ 진단용 ============
+
+@router.get("/diag")
+async def diagnose(db: AsyncSession = Depends(get_db)):
+    """
+    원장 데이터 상태 진단 — 페이지에 데이터가 안 보일 때 빠른 확인용.
+    """
+    total = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
+    with_source = await db.scalar(
+        select(func.count(AIRawTransactionData.id)).where(
+            AIRawTransactionData.source_account_code.isnot(None),
+            AIRawTransactionData.source_account_code != '',
+        )
+    ) or 0
+    distinct_accounts = await db.scalar(
+        select(func.count(func.distinct(AIRawTransactionData.source_account_code))).where(
+            AIRawTransactionData.source_account_code.isnot(None),
+            AIRawTransactionData.source_account_code != '',
+        )
+    ) or 0
+    min_date = await db.scalar(select(func.min(AIRawTransactionData.transaction_date)))
+    max_date = await db.scalar(select(func.max(AIRawTransactionData.transaction_date)))
+
+    return {
+        "total_rows": total,
+        "rows_with_source_account": with_source,
+        "distinct_source_accounts": distinct_accounts,
+        "earliest_transaction_date": min_date,
+        "latest_transaction_date": max_date,
+    }
+
+
+@router.get("/years")
+async def get_available_years(db: AsyncSession = Depends(get_db)):
+    """
+    데이터에 존재하는 회계연도 목록.
+    프론트에서 가장 최신 년도를 default로 사용하도록 활용.
+    """
+    rows = (await db.execute(
+        select(AIRawTransactionData.transaction_date)
+        .where(
+            AIRawTransactionData.transaction_date.isnot(None),
+            AIRawTransactionData.transaction_date != '',
+        )
+        .distinct()
+    )).all()
+
+    years: set = set()
+    for r in rows:
+        s = r[0] or ''
+        m = re.match(r'(\d{4})', s)
+        if m:
+            try:
+                years.add(int(m.group(1)))
+            except ValueError:
+                pass
+
+    years_list = sorted(years, reverse=True)
+    return {
+        "years": years_list,
+        "latest": years_list[0] if years_list else None,
+    }
+
+
 # ============ 더존 6자리 코드 분류 (financial_reports와 동일) ============
 DOUZONE_CATEGORY: dict = {
     '1': 'asset',
