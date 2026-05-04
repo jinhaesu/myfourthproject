@@ -1,562 +1,255 @@
 """
-Granter API 라우터
-- 연동/거래/잔액/환율 조회
-- 세금계산서·현금영수증 발행/취소
-- 거래 내역 sync (그랜터 → ai_raw_transaction_data)
+Granter Public API 라우터
+공식 가이드(granter-public-api): https://app.granter.biz/api/public-docs/
 
-API 키는 GRANTER_API_KEY 환경변수에서 자동 로드.
+주요 엔드포인트:
+- /granter/tickets : 거래(카드·계좌·세금계산서·현금영수증) 통합 조회
+- /granter/assets : 연동 자산
+- /granter/balances : 잔액 시계열
+- /granter/daily-report : 일일 재무 리포트
+- /granter/exchange-rates : 환율
+- /granter/tax-invoices/issue|modify|cancel : 세금계산서 발행/수정/취소
+- /granter/cash-receipts/issue|cancel : 현금영수증 발행/취소
+- /granter/tags, /granter/categories : 분류 기준
 """
 import logging
-import re
-from datetime import date, datetime
-from decimal import Decimal
-from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional, Dict, Any
+from fastapi import APIRouter, Body, HTTPException, Query
+from pydantic import BaseModel
 
-from app.core.database import get_db
-from app.models.ai import AIRawTransactionData, AIDataUploadHistory
-from app.services.granter_client import (
-    get_granter_client,
-    GranterClient,
-    GranterAPIError,
-)
+from app.services.granter_client import get_granter_client, GranterAPIError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ============ 진단 / 상태 ============
+def _err(e: GranterAPIError):
+    return HTTPException(status_code=e.status_code or 502, detail={"error": str(e), "body": e.body})
 
-@router.get("/probe")
-async def probe_endpoints():
-    """
-    그랜터 API의 정확한 host + path 자동 탐색.
-    여러 후보 조합으로 GET 요청해서 어느 것이 JSON 응답을 주는지 확인.
 
-    호출 후 응답에서 'matched' 항목 보면 정확한 base_url과 path를 알 수 있음.
-    """
-    import httpx as _httpx
-    client = get_granter_client()
-    if not client.is_configured:
-        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
-
-    bases = [
-        "https://app.granter.biz",
-        "https://api.granter.biz",
-        "https://openapi.granter.biz",
-        "https://api.granter.io",
-        "https://openapi.granter.io",
-    ]
-    paths = [
-        "/api/v1/connections",
-        "/api/v1/accounts",
-        "/api/connections",
-        "/api/accounts",
-        "/v1/connections",
-        "/v1/accounts",
-        "/openapi/v1/connections",
-        "/open/v1/connections",
-        "/api-docs.json",
-        "/openapi.json",
-    ]
-
-    auth_variants = [
-        (client.auth_header, f"{client.auth_prefix}{client.api_key}"),
-        ("x-api-key", client.api_key),
-        ("X-API-Key", client.api_key),
-        ("api-key", client.api_key),
-    ]
-
-    results = []
-    matched = []
-
-    async with _httpx.AsyncClient(timeout=8.0) as ac:
-        for base in bases:
-            for path in paths:
-                full_url = base + path
-                # 첫 시도는 현재 설정된 헤더만
-                for auth_name, auth_value in auth_variants[:1]:
-                    try:
-                        r = await ac.get(full_url, headers={auth_name: auth_value, "Accept": "application/json"})
-                    except Exception as e:
-                        results.append({
-                            "url": full_url, "auth": auth_name,
-                            "error": str(e)[:120],
-                        })
-                        continue
-
-                    ct = r.headers.get("content-type", "")
-                    is_json = "json" in ct.lower()
-                    body_preview = ""
-                    try:
-                        if is_json:
-                            body_preview = str(r.json())[:200]
-                        else:
-                            body_preview = r.text[:120]
-                    except Exception:
-                        body_preview = r.text[:120]
-
-                    entry = {
-                        "url": full_url,
-                        "auth": auth_name,
-                        "status": r.status_code,
-                        "is_json": is_json,
-                        "content_type": ct,
-                        "body_preview": body_preview,
-                    }
-                    results.append(entry)
-
-                    # 200 + JSON이면 강력한 후보. 401/403도 path는 맞다는 신호.
-                    if (r.status_code == 200 and is_json) or r.status_code in (401, 403):
-                        matched.append(entry)
-
-    return {
-        "current_base_url": client.base_url,
-        "matched_likely": matched,
-        "all_attempts": results,
-        "next_step": (
-            "matched_likely가 있으면 그 url의 base와 path를 GRANTER_BASE_URL과 클라이언트 코드에 반영. "
-            "401/403이면 path는 맞지만 인증 형식이 다름 → GRANTER_AUTH_HEADER/PREFIX 조정. "
-            "전부 SPA HTML이면 그랜터 docs에서 정확한 endpoint 다시 확인 필요."
-        ),
-    }
-
+# ============ 진단 ============
 
 @router.get("/health")
 async def granter_health():
-    """그랜터 API 설정 상태 (실제 호출 없이 환경변수만 점검)"""
     client = get_granter_client()
-    masked_prefix = client.auth_prefix + (client.api_key[:8] + "..." if client.api_key else "")
+    masked = (client.api_key[:8] + "...") if client.api_key else ""
     return {
         "configured": client.is_configured,
         "base_url": client.base_url,
-        "timeout_seconds": client.timeout,
-        "auth_header": client.auth_header,
-        "auth_prefix": client.auth_prefix,
-        "masked_auth_value": masked_prefix,
+        "masked_api_key": masked,
+        "auth_method": "HTTP Basic (BASE64(API_KEY:))",
     }
 
 
 @router.get("/ping")
 async def granter_ping():
-    """실제 그랜터 서버 연결 테스트 (가벼운 GET) — 상세 에러 정보 포함"""
+    """간단한 호출 — assets 1건만 시도"""
     client = get_granter_client()
     try:
-        result = await client.list_connections()
-        return {
-            "ok": True,
-            "base_url": client.base_url,
-            "connections_count": len(result) if isinstance(result, list) else "unknown",
-            "sample": (result[:1] if isinstance(result, list) else result),
-        }
+        result = await client.list_assets({"limit": 1})
+        return {"ok": True, "base_url": client.base_url, "sample": result}
     except GranterAPIError as e:
-        # 사용자가 직접 진단할 수 있게 상세 정보 노출
         return {
             "ok": False,
             "base_url": client.base_url,
-            "configured": client.is_configured,
             "status_code": e.status_code,
-            "error": str(e),
+            "error": str(e)[:300],
             "response_body": e.body,
-            "hints": [
-                "1. Railway 대시보드에 GRANTER_API_KEY가 정확히 등록됐는지 확인",
-                "2. GRANTER_BASE_URL이 그랜터 공식 API 호스트와 일치하는지 확인",
-                "   (현재: " + client.base_url + ")",
-                "3. 그랜터 문서에서 인증 헤더 형식 확인 (Bearer vs ApiKey 등)",
-                "4. 401/403이면 API 키 권한 문제, 404면 베이스 URL/경로 문제",
-            ],
         }
 
 
-# ============ 연동 데이터 ============
+# ============ 거래 (tickets) ============
 
-@router.get("/connections")
-async def list_connections():
-    """연동된 금융 자산 (계좌/카드/홈택스/PG/오픈마켓)"""
-    client = get_granter_client()
-    try:
-        return await client.list_connections()
-    except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-@router.get("/accounts")
-async def list_accounts():
-    """연동된 계좌 목록"""
-    client = get_granter_client()
-    try:
-        return await client.list_accounts()
-    except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-@router.get("/cards")
-async def list_cards():
-    """연동된 카드 목록"""
-    client = get_granter_client()
-    try:
-        return await client.list_cards()
-    except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-# ============ 잔액 / 환율 ============
-
-@router.get("/balances")
-async def get_balances(account_id: Optional[str] = None):
-    """계좌별 잔액"""
-    client = get_granter_client()
-    try:
-        return await client.get_balances(account_id)
-    except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-@router.get("/balances/history")
-async def get_cash_history(
-    from_date: Optional[date] = None,
-    to_date: Optional[date] = None,
-):
-    """현금 추이 (시계열 잔액)"""
-    client = get_granter_client()
-    try:
-        return await client.get_cash_history(from_date, to_date)
-    except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-@router.get("/exchange-rates")
-async def get_exchange_rate(
-    currency: str = Query(..., description="조회할 통화 (예: USD, JPY, EUR)"),
-    target_date: Optional[date] = None,
-):
-    """기준 날짜의 환율"""
-    client = get_granter_client()
-    try:
-        return await client.get_exchange_rate(currency, target_date)
-    except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-# ============ 거래 내역 ============
-
-@router.get("/transactions")
-async def list_transactions(
-    from_date: Optional[date] = None,
-    to_date: Optional[date] = None,
-    kind: Optional[str] = Query(
-        None,
-        description="account | card | tax_invoice | cash_receipt | approval",
-    ),
-    connection_id: Optional[str] = None,
-    cursor: Optional[str] = None,
-    limit: int = Query(100, ge=1, le=500),
-):
-    """거래 내역 통합 조회 (그랜터 직접 응답)"""
-    client = get_granter_client()
-    try:
-        return await client.list_transactions(
-            from_date=from_date,
-            to_date=to_date,
-            kind=kind,
-            connection_id=connection_id,
-            cursor=cursor,
-            limit=limit,
-        )
-    except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-# ============ 거래 sync (그랜터 → DB) ============
-
-class SyncResult(BaseModel):
-    inserted: int
-    skipped: int
-    pages_fetched: int
-    upload_id: Optional[int] = None
-    earliest: Optional[str] = None
-    latest: Optional[str] = None
-    errors: List[str] = []
-
-
-def _coerce_decimal(v: Any) -> Decimal:
-    if v is None or v == "":
-        return Decimal("0")
-    try:
-        return Decimal(str(v))
-    except Exception:
-        return Decimal("0")
-
-
-def _normalize_date(v: Any) -> Optional[str]:
-    if not v:
-        return None
-    s = str(v)
-    m = re.match(r"(\d{4})[.\-/T](\d{1,2})[.\-/T](\d{1,2})", s)
-    if m:
-        y, mo, d = m.groups()
-        return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
-    return s
-
-
-@router.post("/sync", response_model=SyncResult)
-async def sync_transactions(
-    from_date: date = Query(..., description="시작일"),
-    to_date: date = Query(..., description="종료일"),
-    kind: Optional[str] = Query(None, description="account | card | tax_invoice | cash_receipt"),
-    user_id: int = Query(1),
-    db: AsyncSession = Depends(get_db),
-):
+@router.post("/tickets")
+async def list_tickets(payload: Dict[str, Any] = Body(default_factory=dict)):
     """
-    그랜터에서 기간 내 거래를 가져와서 ai_raw_transaction_data로 적재.
+    카드·계좌·세금계산서·현금영수증·결재 등 모든 거래/증빙 통합 조회.
 
-    중복 방지: (transaction_date, original_description, debit, credit, source_account_code)
-    동일 키 발견 시 skip.
+    예시 payload:
+    {
+      "fromDate": "2026-04-01",
+      "toDate": "2026-04-30",
+      "ticketTypes": ["CARD_TICKET","BANK_TICKET","TAX_INVOICE_TICKET","CASH_RECEIPT_TICKET"],
+      "limit": 100
+    }
+    실제 필드는 그랜터 가이드의 Request Fields 참조.
     """
     client = get_granter_client()
-    if not client.is_configured:
-        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
-
-    # upload 이력 1건 생성
-    upload = AIDataUploadHistory(
-        filename=f"granter-sync-{from_date}-{to_date}-{kind or 'all'}.json",
-        file_size=0,
-        file_type="json",
-        upload_type="granter_sync",
-        row_count=0,
-        saved_count=0,
-        error_count=0,
-        uploaded_by=user_id,
-    )
-    db.add(upload)
-    await db.commit()
-    await db.refresh(upload)
-
-    inserted = 0
-    skipped = 0
-    pages = 0
-    cursor: Optional[str] = None
-    errors: List[str] = []
-    earliest: Optional[str] = None
-    latest: Optional[str] = None
-    row_no = 1
-
     try:
-        while True:
-            try:
-                resp = await client.list_transactions(
-                    from_date=from_date,
-                    to_date=to_date,
-                    kind=kind,
-                    cursor=cursor,
-                    limit=200,
-                )
-            except GranterAPIError as e:
-                errors.append(f"page {pages}: {e}")
-                break
+        return await client.list_tickets(payload)
+    except GranterAPIError as e:
+        raise _err(e)
 
-            pages += 1
-            items = resp.get("data") if isinstance(resp, dict) else resp
-            if not items:
-                break
 
-            for it in items:
-                try:
-                    tx_date = _normalize_date(
-                        it.get("transaction_date")
-                        or it.get("date")
-                        or it.get("timestamp")
-                    )
-                    desc = str(
-                        it.get("description")
-                        or it.get("memo")
-                        or it.get("merchant_name")
-                        or ""
-                    ).strip()
-                    merchant = it.get("merchant_name") or it.get("counterparty") or it.get("vendor")
-                    debit = _coerce_decimal(
-                        it.get("debit_amount") or it.get("inbound") or it.get("deposit") or 0
-                    )
-                    credit = _coerce_decimal(
-                        it.get("credit_amount") or it.get("outbound") or it.get("withdraw") or 0
-                    )
-                    # 그랜터가 amount + direction 형태로 줄 수도 있음
-                    if debit == 0 and credit == 0:
-                        amt = _coerce_decimal(it.get("amount", 0))
-                        direction = (it.get("direction") or it.get("type") or "").lower()
-                        if direction in ("inbound", "deposit", "in", "+", "income"):
-                            debit = amt
-                        elif direction in ("outbound", "withdraw", "out", "-", "expense"):
-                            credit = amt
+@router.post("/tickets/bulk-update")
+async def bulk_update_tickets(payload: Dict[str, Any] = Body(...)):
+    """거래 일괄 수정 (분류/태그/메모)"""
+    client = get_granter_client()
+    try:
+        return await client.bulk_update_tickets(payload)
+    except GranterAPIError as e:
+        raise _err(e)
 
-                    src_code = str(
-                        it.get("source_account_code")
-                        or it.get("ledger_account_code")
-                        or ""
-                    )
-                    src_name = str(
-                        it.get("source_account_name") or it.get("ledger_account_name") or ""
-                    )
-                    cp_code = str(it.get("account_code") or it.get("category_code") or "")
-                    cp_name = str(it.get("account_name") or it.get("category") or "")
 
-                    # 그랜터 kind로 source 추정 fallback
-                    if not src_code:
-                        if kind == "card" or it.get("kind") == "card":
-                            src_code = "253"
-                            src_name = src_name or "미지급금(카드)"
-                        elif kind == "account" or it.get("kind") == "account":
-                            src_code = "103"
-                            src_name = src_name or "보통예금"
+# ============ 자산 (assets) ============
 
-                    if not desc:
-                        skipped += 1
-                        continue
+@router.post("/assets")
+async def list_assets(payload: Dict[str, Any] = Body(default_factory=dict)):
+    """
+    연동 자산 목록 (카드/계좌/홈택스/PG/오픈마켓).
 
-                    row = AIRawTransactionData(
-                        upload_id=upload.id,
-                        row_number=row_no,
-                        original_description=desc[:500],
-                        merchant_name=(merchant or None) and str(merchant)[:200],
-                        amount=max(debit, credit),
-                        debit_amount=debit,
-                        credit_amount=credit,
-                        transaction_date=tx_date,
-                        account_code=cp_code[:20] if cp_code else "",
-                        account_name=cp_name[:100] if cp_name else None,
-                        source_account_code=src_code[:20] if src_code else None,
-                        source_account_name=src_name[:100] if src_name else None,
-                    )
-                    db.add(row)
-                    row_no += 1
-                    inserted += 1
-                    if tx_date:
-                        if earliest is None or tx_date < earliest:
-                            earliest = tx_date
-                        if latest is None or tx_date > latest:
-                            latest = tx_date
-                except Exception as e:
-                    errors.append(f"row error: {e}")
+    예시: {"assetType": "BANK_ACCOUNT"} 또는 {"assetType": "CARD"} 등.
+    """
+    client = get_granter_client()
+    try:
+        return await client.list_assets(payload)
+    except GranterAPIError as e:
+        raise _err(e)
 
-            # 1000건마다 commit (대량 처리)
-            if inserted % 1000 == 0:
-                await db.commit()
 
-            cursor = resp.get("next_cursor") if isinstance(resp, dict) else None
-            if not cursor:
-                break
+# ============ 잔액 / 일일 리포트 / 환율 ============
 
-        upload.row_count = inserted + skipped
-        upload.saved_count = inserted
-        upload.error_count = len(errors)
-        upload.status = "completed" if not errors else "completed_with_errors"
-        await db.commit()
+@router.post("/balances")
+async def list_balances(payload: Dict[str, Any] = Body(...)):
+    """계좌별 잔액 시계열"""
+    client = get_granter_client()
+    try:
+        return await client.list_balances(payload)
+    except GranterAPIError as e:
+        raise _err(e)
 
-    except Exception as e:
-        logger.exception("Granter sync failed")
-        upload.status = "failed"
-        upload.error_message = str(e)
-        await db.commit()
-        raise HTTPException(status_code=500, detail=f"sync 실패: {e}")
 
-    return SyncResult(
-        inserted=inserted,
-        skipped=skipped,
-        pages_fetched=pages,
-        upload_id=upload.id,
-        earliest=earliest,
-        latest=latest,
-        errors=errors[:10],
-    )
+@router.post("/daily-report")
+async def get_daily_report(payload: Dict[str, Any] = Body(...)):
+    """일일 재무 리포트"""
+    client = get_granter_client()
+    try:
+        return await client.get_daily_financial_report(payload)
+    except GranterAPIError as e:
+        raise _err(e)
+
+
+@router.post("/exchange-rates")
+async def get_exchange_rates(payload: Dict[str, Any] = Body(...)):
+    """환율"""
+    client = get_granter_client()
+    try:
+        return await client.get_exchange_rates(payload)
+    except GranterAPIError as e:
+        raise _err(e)
 
 
 # ============ 세금계산서 ============
 
-class TaxInvoiceIssue(BaseModel):
-    payload: Dict[str, Any] = Field(
-        ..., description="그랜터 형식의 세금계산서 페이로드 (그랜터 문서 참조)"
-    )
-
-
 @router.post("/tax-invoices/issue")
-async def issue_tax_invoice(req: TaxInvoiceIssue):
-    """세금계산서 발행"""
+async def issue_tax_invoice(
+    payload: Dict[str, Any] = Body(...),
+    idempotency_key: Optional[str] = Query(None),
+):
+    """세금계산서 즉시발행/예약발행/반복발행"""
     client = get_granter_client()
     try:
-        return await client.issue_tax_invoice(req.payload)
+        return await client.issue_tax_invoice(payload, idempotency_key=idempotency_key)
     except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+        raise _err(e)
 
 
-@router.post("/tax-invoices/{invoice_id}/amend")
-async def amend_tax_invoice(invoice_id: str, req: TaxInvoiceIssue):
+@router.post("/tax-invoices/modify")
+async def modify_tax_invoice(
+    payload: Dict[str, Any] = Body(...),
+    idempotency_key: Optional[str] = Query(None),
+):
     """세금계산서 수정발행"""
     client = get_granter_client()
     try:
-        return await client.amend_tax_invoice(invoice_id, req.payload)
+        return await client.modify_tax_invoice(payload, idempotency_key=idempotency_key)
     except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+        raise _err(e)
 
 
-@router.post("/tax-invoices/{invoice_id}/cancel")
+@router.post("/tax-invoices/cancel")
 async def cancel_tax_invoice(
-    invoice_id: str,
-    reason: str = Query(..., min_length=1),
+    payload: Dict[str, Any] = Body(...),
+    idempotency_key: Optional[str] = Query(None),
 ):
     """세금계산서 취소발행"""
     client = get_granter_client()
     try:
-        return await client.cancel_tax_invoice(invoice_id, reason)
+        return await client.cancel_tax_invoice(payload, idempotency_key=idempotency_key)
     except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
-
-
-@router.get("/tax-invoices/{invoice_id}")
-async def get_tax_invoice(invoice_id: str):
-    client = get_granter_client()
-    try:
-        return await client.get_tax_invoice(invoice_id)
-    except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+        raise _err(e)
 
 
 # ============ 현금영수증 ============
 
-class CashReceiptIssue(BaseModel):
-    payload: Dict[str, Any] = Field(
-        ..., description="그랜터 형식의 현금영수증 페이로드"
-    )
-
-
 @router.post("/cash-receipts/issue")
-async def issue_cash_receipt(req: CashReceiptIssue):
+async def issue_cash_receipt(
+    payload: Dict[str, Any] = Body(...),
+    idempotency_key: Optional[str] = Query(None),
+):
     """현금영수증 발행"""
     client = get_granter_client()
     try:
-        return await client.issue_cash_receipt(req.payload)
+        return await client.issue_cash_receipt(payload, idempotency_key=idempotency_key)
     except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+        raise _err(e)
 
 
-@router.post("/cash-receipts/{receipt_id}/cancel")
+@router.post("/cash-receipts/cancel")
 async def cancel_cash_receipt(
-    receipt_id: str,
-    reason: Optional[str] = None,
+    payload: Dict[str, Any] = Body(...),
+    idempotency_key: Optional[str] = Query(None),
 ):
     """현금영수증 취소발행"""
     client = get_granter_client()
     try:
-        return await client.cancel_cash_receipt(receipt_id, reason)
+        return await client.cancel_cash_receipt(payload, idempotency_key=idempotency_key)
     except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+        raise _err(e)
 
 
-@router.get("/cash-receipts/{receipt_id}")
-async def get_cash_receipt(receipt_id: str):
+# ============ 분류 기준 (tags / categories) ============
+
+@router.get("/tags")
+async def list_tags():
     client = get_granter_client()
     try:
-        return await client.get_cash_receipt(receipt_id)
+        return await client.list_tags()
     except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+        raise _err(e)
+
+
+@router.post("/tags")
+async def create_tag(payload: Dict[str, Any] = Body(...)):
+    client = get_granter_client()
+    try:
+        return await client.create_tag(payload)
+    except GranterAPIError as e:
+        raise _err(e)
+
+
+@router.put("/tags")
+async def update_tag(payload: Dict[str, Any] = Body(...)):
+    client = get_granter_client()
+    try:
+        return await client.update_tag(payload)
+    except GranterAPIError as e:
+        raise _err(e)
+
+
+@router.get("/tag-details")
+async def list_tag_details():
+    client = get_granter_client()
+    try:
+        return await client.list_tag_details()
+    except GranterAPIError as e:
+        raise _err(e)
+
+
+@router.get("/categories")
+async def list_categories():
+    client = get_granter_client()
+    try:
+        return await client.list_categories()
+    except GranterAPIError as e:
+        raise _err(e)

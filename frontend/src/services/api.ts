@@ -668,43 +668,43 @@ export const cashPLApi = {
   }) => api.post('/cash-pl/by-account-cross-tab', data),
 }
 
-// ==================== Granter 외부 API ====================
+// ==================== Granter Public API ====================
+// 가이드: granter-public-api / Base: app.granter.biz/api/public-docs / Auth: HTTP Basic
 export const granterApi = {
   health: () => api.get('/granter/health'),
   ping: () => api.get('/granter/ping'),
-  listConnections: () => api.get('/granter/connections'),
-  listAccounts: () => api.get('/granter/accounts'),
-  listCards: () => api.get('/granter/cards'),
-  getBalances: (accountId?: string) =>
-    api.get('/granter/balances', { params: { account_id: accountId } }),
-  getCashHistory: (params?: { from_date?: string; to_date?: string }) =>
-    api.get('/granter/balances/history', { params }),
-  getExchangeRate: (currency: string, targetDate?: string) =>
-    api.get('/granter/exchange-rates', { params: { currency, target_date: targetDate } }),
-  listTransactions: (params?: {
-    from_date?: string
-    to_date?: string
-    kind?: string
-    connection_id?: string
-    cursor?: string
-    limit?: number
-  }) => api.get('/granter/transactions', { params }),
-  syncTransactions: (params: {
-    from_date: string
-    to_date: string
-    kind?: string
-    user_id?: number
-  }) => api.post('/granter/sync', null, { params }),
-  issueTaxInvoice: (payload: any) =>
-    api.post('/granter/tax-invoices/issue', { payload }),
-  amendTaxInvoice: (invoiceId: string, payload: any) =>
-    api.post(`/granter/tax-invoices/${invoiceId}/amend`, { payload }),
-  cancelTaxInvoice: (invoiceId: string, reason: string) =>
-    api.post(`/granter/tax-invoices/${invoiceId}/cancel`, null, { params: { reason } }),
-  issueCashReceipt: (payload: any) =>
-    api.post('/granter/cash-receipts/issue', { payload }),
-  cancelCashReceipt: (receiptId: string, reason?: string) =>
-    api.post(`/granter/cash-receipts/${receiptId}/cancel`, null, { params: { reason } }),
+
+  listTickets: (payload: any) => api.post('/granter/tickets', payload),
+  bulkUpdateTickets: (payload: any) => api.post('/granter/tickets/bulk-update', payload),
+
+  listAssets: (payload?: any) => api.post('/granter/assets', payload || {}),
+  listBalances: (payload: any) => api.post('/granter/balances', payload),
+  getDailyReport: (payload: any) => api.post('/granter/daily-report', payload),
+  getExchangeRates: (payload: any) => api.post('/granter/exchange-rates', payload),
+
+  issueTaxInvoice: (payload: any, idempotencyKey?: string) =>
+    api.post('/granter/tax-invoices/issue', payload, {
+      params: { idempotency_key: idempotencyKey },
+    }),
+  modifyTaxInvoice: (payload: any, idempotencyKey?: string) =>
+    api.post('/granter/tax-invoices/modify', payload, {
+      params: { idempotency_key: idempotencyKey },
+    }),
+  cancelTaxInvoice: (payload: any, idempotencyKey?: string) =>
+    api.post('/granter/tax-invoices/cancel', payload, {
+      params: { idempotency_key: idempotencyKey },
+    }),
+  issueCashReceipt: (payload: any, idempotencyKey?: string) =>
+    api.post('/granter/cash-receipts/issue', payload, {
+      params: { idempotency_key: idempotencyKey },
+    }),
+  cancelCashReceipt: (payload: any, idempotencyKey?: string) =>
+    api.post('/granter/cash-receipts/cancel', payload, {
+      params: { idempotency_key: idempotencyKey },
+    }),
+
+  listTags: () => api.get('/granter/tags'),
+  listCategories: () => api.get('/granter/categories'),
 }
 
 // ==================== 매출·매입·거래처 정산 ====================
