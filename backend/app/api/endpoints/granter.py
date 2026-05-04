@@ -29,6 +29,101 @@ router = APIRouter()
 
 # ============ 진단 / 상태 ============
 
+@router.get("/probe")
+async def probe_endpoints():
+    """
+    그랜터 API의 정확한 host + path 자동 탐색.
+    여러 후보 조합으로 GET 요청해서 어느 것이 JSON 응답을 주는지 확인.
+
+    호출 후 응답에서 'matched' 항목 보면 정확한 base_url과 path를 알 수 있음.
+    """
+    import httpx as _httpx
+    client = get_granter_client()
+    if not client.is_configured:
+        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
+
+    bases = [
+        "https://app.granter.biz",
+        "https://api.granter.biz",
+        "https://openapi.granter.biz",
+        "https://api.granter.io",
+        "https://openapi.granter.io",
+    ]
+    paths = [
+        "/api/v1/connections",
+        "/api/v1/accounts",
+        "/api/connections",
+        "/api/accounts",
+        "/v1/connections",
+        "/v1/accounts",
+        "/openapi/v1/connections",
+        "/open/v1/connections",
+        "/api-docs.json",
+        "/openapi.json",
+    ]
+
+    auth_variants = [
+        (client.auth_header, f"{client.auth_prefix}{client.api_key}"),
+        ("x-api-key", client.api_key),
+        ("X-API-Key", client.api_key),
+        ("api-key", client.api_key),
+    ]
+
+    results = []
+    matched = []
+
+    async with _httpx.AsyncClient(timeout=8.0) as ac:
+        for base in bases:
+            for path in paths:
+                full_url = base + path
+                # 첫 시도는 현재 설정된 헤더만
+                for auth_name, auth_value in auth_variants[:1]:
+                    try:
+                        r = await ac.get(full_url, headers={auth_name: auth_value, "Accept": "application/json"})
+                    except Exception as e:
+                        results.append({
+                            "url": full_url, "auth": auth_name,
+                            "error": str(e)[:120],
+                        })
+                        continue
+
+                    ct = r.headers.get("content-type", "")
+                    is_json = "json" in ct.lower()
+                    body_preview = ""
+                    try:
+                        if is_json:
+                            body_preview = str(r.json())[:200]
+                        else:
+                            body_preview = r.text[:120]
+                    except Exception:
+                        body_preview = r.text[:120]
+
+                    entry = {
+                        "url": full_url,
+                        "auth": auth_name,
+                        "status": r.status_code,
+                        "is_json": is_json,
+                        "content_type": ct,
+                        "body_preview": body_preview,
+                    }
+                    results.append(entry)
+
+                    # 200 + JSON이면 강력한 후보. 401/403도 path는 맞다는 신호.
+                    if (r.status_code == 200 and is_json) or r.status_code in (401, 403):
+                        matched.append(entry)
+
+    return {
+        "current_base_url": client.base_url,
+        "matched_likely": matched,
+        "all_attempts": results,
+        "next_step": (
+            "matched_likely가 있으면 그 url의 base와 path를 GRANTER_BASE_URL과 클라이언트 코드에 반영. "
+            "401/403이면 path는 맞지만 인증 형식이 다름 → GRANTER_AUTH_HEADER/PREFIX 조정. "
+            "전부 SPA HTML이면 그랜터 docs에서 정확한 endpoint 다시 확인 필요."
+        ),
+    }
+
+
 @router.get("/health")
 async def granter_health():
     """그랜터 API 설정 상태 (실제 호출 없이 환경변수만 점검)"""
