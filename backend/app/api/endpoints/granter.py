@@ -43,11 +43,12 @@ async def granter_health():
 
 @router.get("/ping")
 async def granter_ping():
-    """간단한 호출 — assets 1건만 시도"""
+    """간단한 호출 — BANK_ACCOUNT 자산 조회로 인증 확인"""
     client = get_granter_client()
     try:
-        result = await client.list_assets({"limit": 1})
-        return {"ok": True, "base_url": client.base_url, "sample": result}
+        result = await client.list_assets({"assetType": "BANK_ACCOUNT"})
+        count = len(result) if isinstance(result, list) else "unknown"
+        return {"ok": True, "base_url": client.base_url, "bank_assets_count": count}
     except GranterAPIError as e:
         return {
             "ok": False,
@@ -56,6 +57,16 @@ async def granter_ping():
             "error": str(e)[:300],
             "response_body": e.body,
         }
+
+
+@router.get("/assets/all")
+async def list_all_assets():
+    """모든 자산 타입을 한 번에 (CARD/BANK/HOME_TAX 등 병렬 호출)"""
+    client = get_granter_client()
+    try:
+        return await client.list_all_assets()
+    except GranterAPIError as e:
+        raise _err(e)
 
 
 # ============ 거래 (tickets) ============

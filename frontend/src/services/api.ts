@@ -677,7 +677,8 @@ export const granterApi = {
   listTickets: (payload: any) => api.post('/granter/tickets', payload),
   bulkUpdateTickets: (payload: any) => api.post('/granter/tickets/bulk-update', payload),
 
-  listAssets: (payload?: any) => api.post('/granter/assets', payload || {}),
+  listAssets: (payload: { assetType: string }) => api.post('/granter/assets', payload),
+  listAllAssets: () => api.get('/granter/assets/all'),
   listBalances: (payload: any) => api.post('/granter/balances', payload),
   getDailyReport: (payload: any) => api.post('/granter/daily-report', payload),
   getExchangeRates: (payload: any) => api.post('/granter/exchange-rates', payload),

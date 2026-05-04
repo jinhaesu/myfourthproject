@@ -103,10 +103,10 @@ export default function UnifiedViewPage() {
   })
   const isConfigured = healthQuery.data?.configured
 
-  // 자산 목록 (계좌/카드/홈택스)
+  // 자산 목록 (모든 타입 한 번에)
   const assetsQuery = useQuery({
-    queryKey: ['granter-assets'],
-    queryFn: () => granterApi.listAssets({}).then((r) => r.data),
+    queryKey: ['granter-assets-all'],
+    queryFn: () => granterApi.listAllAssets().then((r) => r.data),
     enabled: !!isConfigured,
     retry: false,
   })
@@ -139,24 +139,11 @@ export default function UnifiedViewPage() {
     retry: false,
   })
 
-  const assetsData = assetsQuery.data
-  const assets: any[] = useMemo(() => {
-    if (Array.isArray(assetsData)) return assetsData
-    return assetsData?.data || assetsData?.assets || []
-  }, [assetsData])
-
-  const bankAssets = useMemo(
-    () => assets.filter((a) => str(a, 'assetType', 'type').includes('BANK')),
-    [assets]
-  )
-  const cardAssets = useMemo(
-    () => assets.filter((a) => str(a, 'assetType', 'type').includes('CARD')),
-    [assets]
-  )
-  const homeTaxAssets = useMemo(
-    () => assets.filter((a) => str(a, 'assetType', 'type').includes('HOME_TAX')),
-    [assets]
-  )
+  // /assets/all 응답: { CARD: [...], BANK_ACCOUNT: [...], HOME_TAX_ACCOUNT: [...], ... }
+  const assetsData = assetsQuery.data || {}
+  const bankAssets: any[] = useMemo(() => assetsData?.BANK_ACCOUNT || [], [assetsData])
+  const cardAssets: any[] = useMemo(() => assetsData?.CARD || [], [assetsData])
+  const homeTaxAssets: any[] = useMemo(() => assetsData?.HOME_TAX_ACCOUNT || [], [assetsData])
 
   // 잔액 합계
   const balances: any[] = useMemo(() => {
@@ -600,14 +587,20 @@ function Section({
 function SettingsModal({ onClose }: { onClose: () => void }) {
   const assetsQuery = useQuery({
     queryKey: ['granter-assets-settings'],
-    queryFn: () => granterApi.listAssets({}).then((r) => r.data),
+    queryFn: () => granterApi.listAllAssets().then((r) => r.data),
     retry: false,
   })
 
   const assets: any[] = useMemo(() => {
-    const d = assetsQuery.data
-    if (Array.isArray(d)) return d
-    return d?.data || []
+    const d = assetsQuery.data || {}
+    return [
+      ...(d.BANK_ACCOUNT || []),
+      ...(d.CARD || []),
+      ...(d.HOME_TAX_ACCOUNT || []),
+      ...(d.SECURITIES_ACCOUNT || []),
+      ...(d.ECOMMERCE || []),
+      ...(d.MERCHANT_GROUP || []),
+    ]
   }, [assetsQuery.data])
 
   return (

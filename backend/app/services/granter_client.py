@@ -126,9 +126,36 @@ class GranterClient:
 
     # ============ 자산 (Assets) ============
 
-    async def list_assets(self, payload: Optional[Dict[str, Any]] = None) -> Any:
-        """연동된 자산 목록 (카드/계좌/홈택스/PG/오픈마켓)"""
-        return await self._request("POST", "/assets", json=payload or {})
+    async def list_assets(self, payload: Dict[str, Any]) -> Any:
+        """
+        특정 assetType의 자산 목록.
+        payload에 assetType 필수 (enum: CARD, BANK_ACCOUNT, HOME_TAX_ACCOUNT, CUSTOM,
+        MERCHANT_GROUP, SECURITIES_ACCOUNT, ECOMMERCE, MANUAL).
+        """
+        return await self._request("POST", "/assets", json=payload)
+
+    async def list_all_assets(self) -> Dict[str, Any]:
+        """
+        모든 assetType별로 병렬 호출해 합친 결과.
+        Returns: { "CARD": [...], "BANK_ACCOUNT": [...], ... }
+        """
+        import asyncio
+
+        asset_types = [
+            "CARD", "BANK_ACCOUNT", "HOME_TAX_ACCOUNT",
+            "SECURITIES_ACCOUNT", "ECOMMERCE", "MERCHANT_GROUP",
+        ]
+
+        async def _fetch(t: str):
+            try:
+                r = await self.list_assets({"assetType": t})
+                items = r if isinstance(r, list) else r.get("data", []) if isinstance(r, dict) else []
+                return t, items
+            except GranterAPIError:
+                return t, []
+
+        results = await asyncio.gather(*[_fetch(t) for t in asset_types])
+        return dict(results)
 
     # ============ 잔액 / 일일 리포트 / 환율 ============
 
