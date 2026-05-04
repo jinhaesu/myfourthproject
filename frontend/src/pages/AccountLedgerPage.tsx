@@ -564,8 +564,8 @@ export default function AccountLedgerPage() {
                   animateRows
                   enableCellTextSelection
                   ensureDomOrder
-                  rowHeight={32}
-                  headerHeight={34}
+                  rowHeight={28}
+                  headerHeight={30}
                   pagination
                   paginationPageSize={100}
                   paginationPageSizeSelector={[50, 100, 200, 500]}

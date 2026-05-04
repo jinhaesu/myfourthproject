@@ -52,16 +52,16 @@ export default {
         mono: ['JetBrains Mono', 'SF Mono', 'Consolas', 'monospace'],
       },
       fontSize: {
-        // Linear-style compact scale (base ~13px)
-        '2xs': ['0.6875rem', { lineHeight: '0.95rem', letterSpacing: '0.005em' }], // 11px
-        xs:  ['0.75rem',   { lineHeight: '1rem',     letterSpacing: '0.005em' }], // 12px
-        sm:  ['0.8125rem', { lineHeight: '1.15rem',  letterSpacing: '-0.005em' }],// 13px (default body)
-        base:['0.875rem',  { lineHeight: '1.3rem',   letterSpacing: '-0.005em' }],// 14px
-        lg:  ['0.9375rem', { lineHeight: '1.4rem',   letterSpacing: '-0.01em' }], // 15px
-        xl:  ['1.0625rem', { lineHeight: '1.5rem',   letterSpacing: '-0.01em' }], // 17px
-        '2xl': ['1.25rem', { lineHeight: '1.625rem', letterSpacing: '-0.015em' }],// 20px
-        '3xl': ['1.5rem',  { lineHeight: '1.875rem', letterSpacing: '-0.02em' }], // 24px
-        '4xl': ['1.875rem',{ lineHeight: '2.25rem',  letterSpacing: '-0.025em' }],// 30px
+        // Tighter pro scale — 1px down across the board
+        '2xs': ['0.625rem',  { lineHeight: '0.85rem',  letterSpacing: '0.01em' }],  // 10px
+        xs:   ['0.6875rem', { lineHeight: '0.95rem',  letterSpacing: '0.005em' }], // 11px
+        sm:   ['0.75rem',   { lineHeight: '1.05rem',  letterSpacing: '-0.005em' }],// 12px (default body)
+        base: ['0.8125rem', { lineHeight: '1.15rem',  letterSpacing: '-0.005em' }],// 13px
+        lg:   ['0.875rem',  { lineHeight: '1.25rem',  letterSpacing: '-0.01em' }], // 14px
+        xl:   ['1rem',      { lineHeight: '1.4rem',   letterSpacing: '-0.01em' }], // 16px
+        '2xl':['1.125rem',  { lineHeight: '1.5rem',   letterSpacing: '-0.015em' }],// 18px
+        '3xl':['1.375rem',  { lineHeight: '1.75rem',  letterSpacing: '-0.02em' }], // 22px
+        '4xl':['1.625rem',  { lineHeight: '2rem',     letterSpacing: '-0.025em' }],// 26px
       },
       letterSpacing: {
         tightish: '-0.01em',

@@ -33,9 +33,15 @@ router = APIRouter()
 # ============ 진단용 ============
 
 @router.get("/diag")
-async def diagnose(db: AsyncSession = Depends(get_db)):
+async def diagnose(
+    sample_account_code: Optional[str] = None,
+    sample_size: int = 5,
+    db: AsyncSession = Depends(get_db),
+):
     """
-    원장 데이터 상태 진단 — 페이지에 데이터가 안 보일 때 빠른 확인용.
+    원장 데이터 상태 진단 — 차변/대변 mismatch 등 검증용.
+
+    sample_account_code 지정 시 해당 계정의 raw 데이터 5건 반환 (더존 화면과 직접 비교).
     """
     total = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
     with_source = await db.scalar(
@@ -53,12 +59,61 @@ async def diagnose(db: AsyncSession = Depends(get_db)):
     min_date = await db.scalar(select(func.min(AIRawTransactionData.transaction_date)))
     max_date = await db.scalar(select(func.max(AIRawTransactionData.transaction_date)))
 
+    # 샘플 row (DB raw 그대로 — 더존 원본과 직접 비교용)
+    sample_q = select(AIRawTransactionData)
+    if sample_account_code:
+        sample_q = sample_q.where(
+            AIRawTransactionData.source_account_code == sample_account_code
+        )
+    sample_q = sample_q.order_by(AIRawTransactionData.id.asc()).limit(sample_size)
+    sample_rows = (await db.execute(sample_q)).scalars().all()
+
+    samples = [
+        {
+            "id": r.id,
+            "row_number": r.row_number,
+            "transaction_date": r.transaction_date,
+            "description": r.original_description,
+            "merchant_name": r.merchant_name,
+            "source_account_code": r.source_account_code,
+            "source_account_name": r.source_account_name,
+            "account_code": r.account_code,
+            "account_name": r.account_name,
+            "debit_amount": float(r.debit_amount or 0),
+            "credit_amount": float(r.credit_amount or 0),
+            "amount": float(r.amount or 0),
+        }
+        for r in sample_rows
+    ]
+
+    # source_account_code별 row 수 (상위 20개)
+    by_account = (await db.execute(
+        select(
+            AIRawTransactionData.source_account_code,
+            func.max(AIRawTransactionData.source_account_name).label('name'),
+            func.count(AIRawTransactionData.id).label('cnt'),
+        )
+        .where(
+            AIRawTransactionData.source_account_code.isnot(None),
+            AIRawTransactionData.source_account_code != '',
+        )
+        .group_by(AIRawTransactionData.source_account_code)
+        .order_by(func.count(AIRawTransactionData.id).desc())
+        .limit(20)
+    )).all()
+
     return {
         "total_rows": total,
         "rows_with_source_account": with_source,
         "distinct_source_accounts": distinct_accounts,
         "earliest_transaction_date": min_date,
         "latest_transaction_date": max_date,
+        "top_accounts_by_volume": [
+            {"code": a.source_account_code, "name": a.name, "count": a.cnt}
+            for a in by_account
+        ],
+        "samples": samples,
+        "samples_for_account": sample_account_code,
     }
 
 
