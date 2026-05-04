@@ -30,13 +30,21 @@ class GranterAPIError(Exception):
 class GranterClient:
     """그랜터 API 비동기 클라이언트 (싱글톤 권장)"""
 
-    DEFAULT_BASE_URL = "https://api.granter.io"
+    DEFAULT_BASE_URL = "https://app.granter.biz"
     DEFAULT_TIMEOUT = 30.0
+    DEFAULT_AUTH_HEADER = "Authorization"
+    DEFAULT_AUTH_PREFIX = "Bearer "  # 끝에 공백 — prefix + key 결합
 
     def __init__(self):
         self.api_key = os.getenv("GRANTER_API_KEY", "").strip()
         self.base_url = os.getenv("GRANTER_BASE_URL", self.DEFAULT_BASE_URL).rstrip("/")
         self.timeout = float(os.getenv("GRANTER_TIMEOUT", str(self.DEFAULT_TIMEOUT)))
+        # 인증 헤더 형식 환경변수로 조정 가능
+        # 예: GRANTER_AUTH_HEADER=x-api-key, GRANTER_AUTH_PREFIX="" (prefix 없음)
+        self.auth_header = os.getenv("GRANTER_AUTH_HEADER", self.DEFAULT_AUTH_HEADER)
+        # AUTH_PREFIX는 빈 문자열도 허용해야 하므로 None과 빈 문자열 구분
+        prefix_env = os.getenv("GRANTER_AUTH_PREFIX")
+        self.auth_prefix = self.DEFAULT_AUTH_PREFIX if prefix_env is None else prefix_env
         self._client: Optional[httpx.AsyncClient] = None
 
     @property
@@ -48,7 +56,7 @@ class GranterClient:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    self.auth_header: f"{self.auth_prefix}{self.api_key}",
                     "Content-Type": "application/json",
                     "Accept": "application/json",
                     "User-Agent": "smart-finance-core/1.0",

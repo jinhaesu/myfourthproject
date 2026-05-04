@@ -31,12 +31,16 @@ router = APIRouter()
 
 @router.get("/health")
 async def granter_health():
-    """그랜터 API 키 설정 상태 확인 (실제 호출은 안 함)"""
+    """그랜터 API 설정 상태 (실제 호출 없이 환경변수만 점검)"""
     client = get_granter_client()
+    masked_prefix = client.auth_prefix + (client.api_key[:8] + "..." if client.api_key else "")
     return {
         "configured": client.is_configured,
         "base_url": client.base_url,
         "timeout_seconds": client.timeout,
+        "auth_header": client.auth_header,
+        "auth_prefix": client.auth_prefix,
+        "masked_auth_value": masked_prefix,
     }
 
 
