@@ -27,6 +27,7 @@ from app.api.endpoints import (
     transfer,
     connect,
     ledger,
+    granter,
 )
 
 api_router = APIRouter()
@@ -182,4 +183,11 @@ api_router.include_router(
     ledger.router,
     prefix="/ledger",
     tags=["계정원장"]
+)
+
+# 그랜터(Granter) 외부 API 연동
+api_router.include_router(
+    granter.router,
+    prefix="/granter",
+    tags=["Granter"]
 )

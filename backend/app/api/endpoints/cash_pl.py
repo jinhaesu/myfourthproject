@@ -10,7 +10,7 @@ import re
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -330,6 +330,158 @@ async def get_cash_pl(
         cash_vs_accrual_diff=None,
         generated_at=date.today(),
     )
+
+
+# ============ 계정별 기간 cross-tab (재무보고서 펼치기용) ============
+
+async def _aggregate_by_account_in_period(
+    db: AsyncSession,
+    period_start: date,
+    period_end: date,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    기간 내 source_account_code별 합계.
+    Returns: { code: { name, category, amount } }
+    amount: 카테고리에 따라 부호 적용된 값
+    """
+    rows = (await db.execute(
+        select(
+            AIRawTransactionData.source_account_code,
+            func.max(AIRawTransactionData.source_account_name).label('name'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+        )
+        .where(
+            AIRawTransactionData.source_account_code.isnot(None),
+            AIRawTransactionData.source_account_code != '',
+            *_date_filters(period_start, period_end),
+        )
+        .group_by(AIRawTransactionData.source_account_code)
+    )).all()
+
+    out = {}
+    for r in rows:
+        cat = _category_of(r.source_account_code)
+        if cat in ('asset', 'liability', 'equity'):
+            continue
+        debit = Decimal(str(r.debit or 0))
+        credit = Decimal(str(r.credit or 0))
+        if cat == 'revenue':
+            amt = credit - debit
+        else:
+            amt = debit - credit
+        out[r.source_account_code] = {
+            "code": r.source_account_code,
+            "name": r.name or f"계정 {_strip_code(r.source_account_code)}",
+            "category": cat,
+            "amount": amt,
+        }
+    return out
+
+
+@router.post("/by-account-cross-tab")
+async def get_by_account_cross_tab(req: CashPLRequest, db: AsyncSession = Depends(get_db)):
+    """
+    재무보고서 판관비 등 펼치기용 — 계정 × 기간 cross-tab.
+
+    Returns:
+    {
+      "periods": [{label, start, end}, ...],
+      "accounts": {
+        "revenue":   [{code, name, values: [...], total}],
+        "cogs":      [...],
+        "opex":      [...],   # 판관비 — 펼치기 대상
+        "non_operating": [...],
+      }
+    }
+    """
+    # 기간 분할 (monthly 기본)
+    periods: List[Dict[str, Any]] = []
+
+    if req.period_type == 'monthly':
+        cur = req.from_date.replace(day=1)
+        while cur <= req.to_date:
+            next_month = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+            period_end = min(next_month - timedelta(days=1), req.to_date)
+            periods.append({
+                "label": cur.strftime('%Y-%m'),
+                "start": cur,
+                "end": period_end,
+            })
+            cur = next_month
+    elif req.period_type == 'quarterly':
+        q_month = ((req.from_date.month - 1) // 3) * 3 + 1
+        cur = date(req.from_date.year, q_month, 1)
+        while cur <= req.to_date:
+            q_end = (date(cur.year, q_month + 2, 28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            period_end = min(q_end, req.to_date)
+            periods.append({
+                "label": f"{cur.year}-Q{(q_month - 1) // 3 + 1}",
+                "start": cur,
+                "end": period_end,
+            })
+            q_month += 3
+            if q_month > 12:
+                q_month = 1
+                cur = date(cur.year + 1, 1, 1)
+            else:
+                cur = date(cur.year, q_month, 1)
+    elif req.period_type == 'yearly':
+        cur = date(req.from_date.year, 1, 1)
+        while cur <= req.to_date:
+            year_end = date(cur.year, 12, 31)
+            periods.append({
+                "label": str(cur.year),
+                "start": cur,
+                "end": min(year_end, req.to_date),
+            })
+            cur = date(cur.year + 1, 1, 1)
+    else:
+        periods.append({
+            "label": f"{req.from_date} ~ {req.to_date}",
+            "start": req.from_date,
+            "end": req.to_date,
+        })
+
+    # 각 기간별로 계정 합계 집계
+    by_account_period: Dict[str, Dict[str, Decimal]] = {}  # {code: {period_label: amount}}
+    account_meta: Dict[str, Dict[str, Any]] = {}  # {code: {name, category}}
+
+    for p in periods:
+        agg = await _aggregate_by_account_in_period(db, p["start"], p["end"])
+        for code, info in agg.items():
+            account_meta.setdefault(code, {"name": info["name"], "category": info["category"]})
+            by_account_period.setdefault(code, {})[p["label"]] = info["amount"]
+
+    # 카테고리별로 그룹핑
+    grouped: Dict[str, List[Dict[str, Any]]] = {
+        "revenue": [],
+        "cogs": [],
+        "opex": [],
+        "non_operating": [],
+    }
+    for code, meta in account_meta.items():
+        cat = meta["category"]
+        if cat not in grouped:
+            continue
+        values = [
+            float(by_account_period.get(code, {}).get(p["label"], Decimal("0")))
+            for p in periods
+        ]
+        total = sum(values)
+        grouped[cat].append({
+            "code": code,
+            "name": meta["name"],
+            "values": values,
+            "total": total,
+        })
+        # 큰 금액 순으로 정렬
+        grouped[cat].sort(key=lambda x: -abs(x["total"]))
+
+    return {
+        "periods": [{"label": p["label"], "start": p["start"].isoformat(), "end": p["end"].isoformat()} for p in periods],
+        "accounts": grouped,
+    }
 
 
 # ============ Comparison (현금주의 vs 발생주의) ============

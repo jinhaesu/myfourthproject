@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Cog6ToothIcon,
@@ -10,9 +10,11 @@ import {
   ArrowUpRightIcon,
   XMarkIcon,
   ArrowPathIcon,
-  PlusIcon,
+  ExclamationTriangleIcon,
+  CheckCircleIcon,
+  CloudArrowDownIcon,
 } from '@heroicons/react/24/outline'
-import { unifiedApi, ledgerApi } from '@/services/api'
+import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon } from '@/utils/format'
 
 type PeriodPreset = 'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
@@ -26,35 +28,26 @@ const PRESET_LABEL: Record<PeriodPreset, string> = {
   custom: '사용자',
 }
 
-function periodForPreset(preset: PeriodPreset, refYear?: number): { start: string; end: string } {
+function periodForPreset(preset: PeriodPreset): { start: string; end: string } {
   const today = new Date()
-  if (refYear && (preset === 'this_year' || preset === 'this_quarter' || preset === 'this_month')) {
-    today.setFullYear(refYear)
-  }
   const y = today.getFullYear()
   const m = today.getMonth()
   const d = today.getDate()
-
+  const iso = (dt: Date) => dt.toISOString().slice(0, 10)
   switch (preset) {
     case 'today':
-      return { start: today.toISOString().slice(0, 10), end: today.toISOString().slice(0, 10) }
+      return { start: iso(today), end: iso(today) }
     case 'this_week': {
       const dayOfWeek = today.getDay() || 7
       const monday = new Date(today)
       monday.setDate(d - dayOfWeek + 1)
-      return { start: monday.toISOString().slice(0, 10), end: today.toISOString().slice(0, 10) }
+      return { start: iso(monday), end: iso(today) }
     }
     case 'this_month':
-      return {
-        start: new Date(y, m, 1).toISOString().slice(0, 10),
-        end: today.toISOString().slice(0, 10),
-      }
+      return { start: iso(new Date(y, m, 1)), end: iso(today) }
     case 'this_quarter': {
       const qStart = Math.floor(m / 3) * 3
-      return {
-        start: new Date(y, qStart, 1).toISOString().slice(0, 10),
-        end: today.toISOString().slice(0, 10),
-      }
+      return { start: iso(new Date(y, qStart, 1)), end: iso(today) }
     }
     case 'this_year':
       return { start: `${y}-01-01`, end: `${y}-12-31` }
@@ -64,67 +57,148 @@ function periodForPreset(preset: PeriodPreset, refYear?: number): { start: strin
 }
 
 interface SelectedSource {
-  type: 'cash' | 'bank' | 'card' | 'tax_sales' | 'tax_purchase'
-  source_account_code?: string
-  merchant_name?: string
+  type: 'all' | 'account' | 'card' | 'tax_sales' | 'tax_purchase' | 'cash_receipt'
+  id?: string
   label: string
+  kind?: string  // granter transactions kind 필터
+}
+
+function fieldNum(obj: any, ...keys: string[]): number {
+  for (const k of keys) {
+    const v = obj?.[k]
+    if (v !== undefined && v !== null && v !== '') return Number(v) || 0
+  }
+  return 0
+}
+
+function fieldStr(obj: any, ...keys: string[]): string {
+  for (const k of keys) {
+    const v = obj?.[k]
+    if (v !== undefined && v !== null && v !== '') return String(v)
+  }
+  return ''
 }
 
 export default function UnifiedViewPage() {
-  // 가용 년도 자동 감지 — 데이터에 맞게 default
-  const yearsQuery = useQuery({
-    queryKey: ['ledger-years'],
-    queryFn: () => ledgerApi.getAvailableYears().then((r) => r.data),
-  })
-  const latestYear: number | null = yearsQuery.data?.latest ?? null
-
-  const [preset, setPreset] = useState<PeriodPreset>('this_year')
+  const [preset, setPreset] = useState<PeriodPreset>('this_month')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [showSettings, setShowSettings] = useState(false)
-  const [selected, setSelected] = useState<SelectedSource | null>(null)
+  const [selected, setSelected] = useState<SelectedSource>({ type: 'all', label: '전체 거래' })
 
   useEffect(() => {
-    if (latestYear && (!from || !to)) {
-      setFrom(`${latestYear}-01-01`)
-      setTo(`${latestYear}-12-31`)
-      setPreset('this_year')
-    }
-  }, [latestYear]) // eslint-disable-line react-hooks/exhaustive-deps
+    const r = periodForPreset('this_month')
+    setFrom(r.start)
+    setTo(r.end)
+  }, [])
 
   const ready = Boolean(from && to)
 
-  const dashboardQuery = useQuery({
-    queryKey: ['unified-dashboard', from, to],
+  // 그랜터 상태 확인
+  const healthQuery = useQuery({
+    queryKey: ['granter-health'],
+    queryFn: () => granterApi.health().then((r) => r.data),
+    retry: false,
+  })
+  const isConfigured = healthQuery.data?.configured
+
+  // 그랜터 데이터들
+  const accountsQuery = useQuery({
+    queryKey: ['granter-accounts'],
+    queryFn: () => granterApi.listAccounts().then((r) => r.data),
+    enabled: !!isConfigured,
+    retry: false,
+  })
+  const cardsQuery = useQuery({
+    queryKey: ['granter-cards'],
+    queryFn: () => granterApi.listCards().then((r) => r.data),
+    enabled: !!isConfigured,
+    retry: false,
+  })
+  const balancesQuery = useQuery({
+    queryKey: ['granter-balances'],
+    queryFn: () => granterApi.getBalances().then((r) => r.data),
+    enabled: !!isConfigured,
+    retry: false,
+  })
+  const taxSalesQuery = useQuery({
+    queryKey: ['granter-tax-sales', from, to],
     queryFn: () =>
-      unifiedApi.getDashboard({ period_start: from, period_end: to }).then((r) => r.data),
-    enabled: ready,
+      granterApi
+        .listTransactions({ from_date: from, to_date: to, kind: 'tax_invoice', limit: 200 })
+        .then((r) => r.data),
+    enabled: !!isConfigured && ready,
+    retry: false,
   })
 
   const txQuery = useQuery({
-    queryKey: ['unified-source-tx', selected, from, to],
+    queryKey: ['granter-tx', selected, from, to],
     queryFn: () =>
-      unifiedApi
-        .getSourceTransactions({
-          source_account_code: selected?.source_account_code,
-          merchant_name: selected?.merchant_name,
-          period_start: from,
-          period_end: to,
-          size: 200,
+      granterApi
+        .listTransactions({
+          from_date: from,
+          to_date: to,
+          kind: selected.kind,
+          connection_id: selected.id,
+          limit: 200,
         })
         .then((r) => r.data),
-    enabled: ready && !!selected,
+    enabled: !!isConfigured && ready,
+    retry: false,
   })
 
-  const dash = dashboardQuery.data
-  const tx = txQuery.data
+  const accounts: any[] = useMemo(
+    () => (Array.isArray(accountsQuery.data) ? accountsQuery.data : accountsQuery.data?.data || []),
+    [accountsQuery.data]
+  )
+  const cards: any[] = useMemo(
+    () => (Array.isArray(cardsQuery.data) ? cardsQuery.data : cardsQuery.data?.data || []),
+    [cardsQuery.data]
+  )
+  const balances: any[] = useMemo(() => {
+    const d = balancesQuery.data
+    if (Array.isArray(d)) return d
+    return d?.data || d?.balances || []
+  }, [balancesQuery.data])
+
+  const totalCash = useMemo(
+    () => balances.reduce((s, b: any) => s + fieldNum(b, 'balance', 'amount', 'available'), 0),
+    [balances]
+  )
+
+  const txItems: any[] = useMemo(() => {
+    const d = txQuery.data
+    if (Array.isArray(d)) return d
+    return d?.data || []
+  }, [txQuery.data])
+
+  const taxSalesItems: any[] = useMemo(() => {
+    const d = taxSalesQuery.data
+    if (Array.isArray(d)) return d
+    return d?.data || []
+  }, [taxSalesQuery.data])
+
+  const taxSalesSum = useMemo(
+    () =>
+      taxSalesItems
+        .filter((t: any) => fieldStr(t, 'direction', 'type', 'kind').toLowerCase().includes('sale') || Number(fieldNum(t, 'amount')) > 0)
+        .reduce((s, t: any) => s + fieldNum(t, 'amount', 'total', 'supply_amount'), 0),
+    [taxSalesItems]
+  )
+  const taxPurchaseSum = useMemo(
+    () =>
+      taxSalesItems
+        .filter((t: any) => fieldStr(t, 'direction', 'type', 'kind').toLowerCase().includes('purchase'))
+        .reduce((s, t: any) => s + fieldNum(t, 'amount', 'total', 'supply_amount'), 0),
+    [taxSalesItems]
+  )
 
   const handlePreset = (p: PeriodPreset) => {
     setPreset(p)
     if (p !== 'custom') {
-      const r = periodForPreset(p, latestYear || undefined)
-      if (r.start) setFrom(r.start)
-      if (r.end) setTo(r.end)
+      const r = periodForPreset(p)
+      setFrom(r.start)
+      setTo(r.end)
     }
   }
 
@@ -135,24 +209,24 @@ export default function UnifiedViewPage() {
         <div>
           <h1>통합 조회</h1>
           <p className="text-2xs text-ink-500 mt-0.5">
-            가용자금 · 입출금 · 카드 · 세금계산서를 한 화면에서
+            그랜터에서 실시간으로 받아오는 계좌·카드·세금계산서 거래 — 엑셀 업로드 데이터와 분리
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
-            {(['today', 'this_week', 'this_month', 'this_quarter', 'this_year'] as PeriodPreset[]).map((p) => (
-              <button
-                key={p}
-                onClick={() => handlePreset(p)}
-                className={`px-2 py-1 rounded text-2xs font-semibold transition ${
-                  preset === p
-                    ? 'bg-ink-900 text-white'
-                    : 'text-ink-600 hover:bg-ink-50'
-                }`}
-              >
-                {PRESET_LABEL[p]}
-              </button>
-            ))}
+            {(['today', 'this_week', 'this_month', 'this_quarter', 'this_year'] as PeriodPreset[]).map(
+              (p) => (
+                <button
+                  key={p}
+                  onClick={() => handlePreset(p)}
+                  className={`px-2 py-1 rounded text-2xs font-semibold transition ${
+                    preset === p ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+                  }`}
+                >
+                  {PRESET_LABEL[p]}
+                </button>
+              )
+            )}
           </div>
           <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-white border border-ink-200">
             <input
@@ -175,7 +249,7 @@ export default function UnifiedViewPage() {
               className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
             />
           </div>
-          <button onClick={() => dashboardQuery.refetch()} className="btn-secondary" title="새로고침">
+          <button onClick={() => txQuery.refetch()} className="btn-secondary" title="새로고침">
             <ArrowPathIcon className="h-3 w-3" />
           </button>
           <button onClick={() => setShowSettings(true)} className="btn-secondary">
@@ -185,150 +259,168 @@ export default function UnifiedViewPage() {
         </div>
       </div>
 
+      {/* Granter status banner */}
+      {healthQuery.isLoading ? (
+        <div className="panel px-3 py-2 text-2xs text-ink-500">그랜터 상태 확인 중…</div>
+      ) : !isConfigured ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div className="flex-1 text-2xs">
+            <div className="font-semibold text-amber-900">그랜터 API 키 미설정</div>
+            <div className="text-amber-800 mt-0.5">
+              Railway 대시보드 → Variables 에서 <code className="font-mono bg-white px-1 rounded">GRANTER_API_KEY</code>를
+              등록하면 실제 계좌·카드 거래가 자동으로 여기 표시됩니다.
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 flex items-center gap-2">
+          <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
+          <div className="text-2xs text-emerald-800">
+            그랜터 연결됨 · 실시간 거래 데이터 활성화
+          </div>
+        </div>
+      )}
+
       {/* 2-pane layout */}
-      <div className="grid grid-cols-12 gap-3 min-h-[calc(100vh-9rem)]">
-        {/* Left — sidebar cards */}
+      <div className="grid grid-cols-12 gap-3 min-h-[calc(100vh-12rem)]">
+        {/* Left — sidebar */}
         <aside className="col-span-12 lg:col-span-5 xl:col-span-4 space-y-3 overflow-y-auto">
-          {/* 가용자금 (큰 카드) */}
+          {/* 가용자금 */}
           <div className="panel p-4">
             <div className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">
               가용자금
             </div>
             <div className="mt-1 text-2xl font-bold text-ink-900 tabular-nums tracking-crisp">
-              {formatCurrency(dash?.available_cash?.total || 0, false)}
+              {formatCurrency(totalCash, false)}
               <span className="text-xs text-ink-400 font-medium ml-1">원</span>
             </div>
-            {dash?.available_cash?.breakdown?.length > 0 && (
-              <div className="mt-3 space-y-1.5">
-                {dash.available_cash.breakdown.map((b: any) => {
-                  const isActive =
-                    selected?.type === 'cash' && selected?.source_account_code === b.code
-                  return (
-                    <button
-                      key={b.code}
-                      onClick={() =>
-                        setSelected({
-                          type: 'cash',
-                          source_account_code: b.code,
-                          label: `${b.name} (${b.code})`,
-                        })
-                      }
-                      className={`w-full flex items-center justify-between px-2 py-1 rounded text-2xs transition ${
-                        isActive ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
-                      }`}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <span className="font-mono text-ink-400">{b.code}</span>
-                        <span className={isActive ? 'font-semibold' : 'text-ink-700'}>
-                          {b.name}
-                        </span>
-                      </span>
-                      <span className="font-mono tabular-nums font-semibold">
-                        {formatCompactWon(b.balance)}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
+            <div className="text-2xs text-ink-400 mt-0.5">
+              그랜터 잔액 합계 · {balances.length}개 계좌
+            </div>
           </div>
 
-          {/* 통장별 */}
+          {/* 계좌 */}
           <Section
-            title="입출금 통장"
+            title="입출금 계좌"
             icon={<BuildingLibraryIcon className="h-3.5 w-3.5" />}
-            count={dash?.bank_accounts?.length || 0}
+            count={accounts.length}
+            onClickAll={() =>
+              setSelected({ type: 'all', label: '계좌 전체', kind: 'account' })
+            }
+            allLabel="계좌 전체"
+            isAllActive={selected.type === 'all' && selected.kind === 'account'}
           >
-            {(dash?.bank_accounts || []).slice(0, 12).map((b: any, idx: number) => {
-              const isActive =
-                selected?.type === 'bank' &&
-                selected?.merchant_name === b.merchant_name &&
-                selected?.source_account_code === b.source_code
-              return (
-                <button
-                  key={`${b.merchant_name}-${idx}`}
-                  onClick={() =>
-                    setSelected({
-                      type: 'bank',
-                      source_account_code: b.source_code,
-                      merchant_name: b.merchant_name,
-                      label: b.merchant_name,
-                    })
-                  }
-                  className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition ${
-                    isActive
-                      ? 'bg-ink-900 text-white'
-                      : 'hover:bg-ink-50 border-l-2 border-transparent'
-                  }`}
-                >
-                  <div className="text-left min-w-0 flex-1">
-                    <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'}`}>
-                      {b.merchant_name || '-'}
-                    </div>
-                    <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'}`}>
-                      {b.count.toLocaleString('ko-KR')}건
-                    </div>
-                  </div>
-                  <div className="text-right ml-2 flex-shrink-0">
-                    <div className={`font-mono tabular-nums font-semibold ${
-                      isActive ? '' : Number(b.balance) >= 0 ? 'text-ink-900' : 'text-rose-600'
-                    }`}>
-                      {formatCompactWon(b.balance)}
-                    </div>
-                  </div>
-                </button>
-              )
-            })}
-            {(dash?.bank_accounts || []).length === 0 && (
-              <div className="text-2xs text-ink-400 px-2 py-2">통장 데이터 없음</div>
+            {accounts.length === 0 && !accountsQuery.isLoading && (
+              <div className="text-2xs text-ink-400 px-2 py-3 text-center">
+                {isConfigured ? '연동된 계좌 없음' : '그랜터 미설정'}
+              </div>
             )}
-          </Section>
-
-          {/* 카드 */}
-          <Section
-            title="신용카드 사용"
-            icon={<CreditCardIcon className="h-3.5 w-3.5" />}
-            count={dash?.cards?.length || 0}
-          >
-            {(dash?.cards || []).slice(0, 12).map((c: any, idx: number) => {
-              const isActive =
-                selected?.type === 'card' &&
-                selected?.merchant_name === c.merchant_name &&
-                selected?.source_account_code === c.source_code
+            {accounts.map((a: any, idx: number) => {
+              const id = fieldStr(a, 'id', 'account_id', 'connection_id')
+              const name =
+                fieldStr(a, 'alias', 'name', 'institution', 'bank_name') ||
+                fieldStr(a, 'account_number') ||
+                `계좌 ${idx + 1}`
+              const balance = fieldNum(a, 'balance', 'available', 'amount')
+              const isActive = selected.type === 'account' && selected.id === id
               return (
                 <button
-                  key={`${c.merchant_name}-${idx}`}
+                  key={id || idx}
                   onClick={() =>
-                    setSelected({
-                      type: 'card',
-                      source_account_code: c.source_code,
-                      merchant_name: c.merchant_name,
-                      label: c.merchant_name,
-                    })
+                    setSelected({ type: 'account', id, label: name, kind: 'account' })
                   }
                   className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition ${
                     isActive ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
                   }`}
                 >
                   <div className="text-left min-w-0 flex-1">
-                    <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'}`}>
-                      {c.merchant_name || '-'}
+                    <div
+                      className={`truncate ${
+                        isActive ? 'font-semibold' : 'text-ink-700 font-medium'
+                      }`}
+                    >
+                      {name}
                     </div>
-                    <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'}`}>
-                      {c.count.toLocaleString('ko-KR')}건 · 미결제 {formatCompactWon(c.outstanding)}
+                    <div
+                      className={`text-2xs ${
+                        isActive ? 'text-ink-300' : 'text-ink-400'
+                      } truncate font-mono`}
+                    >
+                      {fieldStr(a, 'account_number', 'masked_number') || '-'}
                     </div>
                   </div>
                   <div className="text-right ml-2 flex-shrink-0">
-                    <div className="font-mono tabular-nums font-semibold">
-                      {formatCompactWon(c.usage)}
+                    <div
+                      className={`font-mono tabular-nums font-semibold ${
+                        isActive ? '' : balance >= 0 ? 'text-ink-900' : 'text-rose-600'
+                      }`}
+                    >
+                      {formatCompactWon(balance)}
                     </div>
                   </div>
                 </button>
               )
             })}
-            {(dash?.cards || []).length === 0 && (
-              <div className="text-2xs text-ink-400 px-2 py-2">카드 데이터 없음</div>
+          </Section>
+
+          {/* 카드 */}
+          <Section
+            title="신용카드"
+            icon={<CreditCardIcon className="h-3.5 w-3.5" />}
+            count={cards.length}
+            onClickAll={() =>
+              setSelected({ type: 'all', label: '카드 전체', kind: 'card' })
+            }
+            allLabel="카드 전체"
+            isAllActive={selected.type === 'all' && selected.kind === 'card'}
+          >
+            {cards.length === 0 && !cardsQuery.isLoading && (
+              <div className="text-2xs text-ink-400 px-2 py-3 text-center">
+                {isConfigured ? '연동된 카드 없음' : '그랜터 미설정'}
+              </div>
             )}
+            {cards.map((c: any, idx: number) => {
+              const id = fieldStr(c, 'id', 'card_id', 'connection_id')
+              const name =
+                fieldStr(c, 'alias', 'name', 'issuer', 'card_company') ||
+                `카드 ${idx + 1}`
+              const usage = fieldNum(c, 'usage', 'this_month_usage', 'current_balance')
+              const isActive = selected.type === 'card' && selected.id === id
+              return (
+                <button
+                  key={id || idx}
+                  onClick={() =>
+                    setSelected({ type: 'card', id, label: name, kind: 'card' })
+                  }
+                  className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition ${
+                    isActive ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+                  }`}
+                >
+                  <div className="text-left min-w-0 flex-1">
+                    <div
+                      className={`truncate ${
+                        isActive ? 'font-semibold' : 'text-ink-700 font-medium'
+                      }`}
+                    >
+                      {name}
+                    </div>
+                    <div
+                      className={`text-2xs ${
+                        isActive ? 'text-ink-300' : 'text-ink-400'
+                      } truncate font-mono`}
+                    >
+                      {fieldStr(c, 'masked_number', 'card_number') || '-'}
+                    </div>
+                  </div>
+                  <div className="text-right ml-2 flex-shrink-0">
+                    <div className="font-mono tabular-nums font-semibold">
+                      {formatCompactWon(usage)}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
           </Section>
 
           {/* 세금계산서 요약 */}
@@ -340,61 +432,81 @@ export default function UnifiedViewPage() {
               onClick={() =>
                 setSelected({
                   type: 'tax_sales',
-                  source_account_code: '108',
                   label: '매출 세금계산서',
+                  kind: 'tax_invoice',
                 })
               }
               className={`w-full flex items-center justify-between px-2 py-2 rounded text-2xs transition ${
-                selected?.type === 'tax_sales' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+                selected.type === 'tax_sales' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
               }`}
             >
               <div className="text-left">
-                <div className={selected?.type === 'tax_sales' ? 'font-semibold' : 'text-ink-700 font-medium'}>
-                  매출 (외상매출금)
+                <div
+                  className={
+                    selected.type === 'tax_sales' ? 'font-semibold' : 'text-ink-700 font-medium'
+                  }
+                >
+                  매출
                 </div>
-                <div className={`text-2xs ${selected?.type === 'tax_sales' ? 'text-ink-300' : 'text-ink-400'}`}>
-                  {dash?.tax_invoice?.sales?.count?.toLocaleString('ko-KR') || 0}건
+                <div
+                  className={`text-2xs ${
+                    selected.type === 'tax_sales' ? 'text-ink-300' : 'text-ink-400'
+                  }`}
+                >
+                  발행 합계
                 </div>
               </div>
-              <div className="text-right">
-                <div className="font-mono tabular-nums font-semibold text-emerald-700">
-                  {formatCompactWon(dash?.tax_invoice?.sales?.outstanding)}
-                </div>
-                <div className={`text-2xs ${selected?.type === 'tax_sales' ? 'text-ink-300' : 'text-ink-400'}`}>
-                  미회수
-                </div>
+              <div className="font-mono tabular-nums font-semibold text-emerald-700">
+                {formatCompactWon(taxSalesSum)}
               </div>
             </button>
             <button
               onClick={() =>
                 setSelected({
                   type: 'tax_purchase',
-                  source_account_code: '251',
                   label: '매입 세금계산서',
+                  kind: 'tax_invoice',
                 })
               }
               className={`w-full flex items-center justify-between px-2 py-2 rounded text-2xs transition ${
-                selected?.type === 'tax_purchase' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+                selected.type === 'tax_purchase'
+                  ? 'bg-ink-900 text-white'
+                  : 'hover:bg-ink-50'
               }`}
             >
               <div className="text-left">
-                <div className={selected?.type === 'tax_purchase' ? 'font-semibold' : 'text-ink-700 font-medium'}>
-                  매입 (외상매입금)
+                <div
+                  className={
+                    selected.type === 'tax_purchase'
+                      ? 'font-semibold'
+                      : 'text-ink-700 font-medium'
+                  }
+                >
+                  매입
                 </div>
-                <div className={`text-2xs ${selected?.type === 'tax_purchase' ? 'text-ink-300' : 'text-ink-400'}`}>
-                  {dash?.tax_invoice?.purchase?.count?.toLocaleString('ko-KR') || 0}건
+                <div
+                  className={`text-2xs ${
+                    selected.type === 'tax_purchase' ? 'text-ink-300' : 'text-ink-400'
+                  }`}
+                >
+                  수취 합계
                 </div>
               </div>
-              <div className="text-right">
-                <div className="font-mono tabular-nums font-semibold text-rose-700">
-                  {formatCompactWon(dash?.tax_invoice?.purchase?.outstanding)}
-                </div>
-                <div className={`text-2xs ${selected?.type === 'tax_purchase' ? 'text-ink-300' : 'text-ink-400'}`}>
-                  미지급
-                </div>
+              <div className="font-mono tabular-nums font-semibold text-rose-700">
+                {formatCompactWon(taxPurchaseSum)}
               </div>
             </button>
           </Section>
+
+          {/* 엑셀로 적재 (선택사항) */}
+          <div className="rounded-md border border-ink-200 bg-canvas-50 px-3 py-2">
+            <div className="flex items-start gap-2">
+              <CloudArrowDownIcon className="h-3.5 w-3.5 text-ink-500 flex-shrink-0 mt-0.5" />
+              <div className="text-2xs text-ink-600 leading-relaxed">
+                여기 보이는 그랜터 거래는 <strong>실시간 raw 데이터</strong>입니다. 회계 처리(전표/원장/재무) 는 AI 분류 메뉴에서 업로드한 엑셀 데이터로 진행하세요.
+              </div>
+            </div>
+          </div>
         </aside>
 
         {/* Right — selected source's transactions */}
@@ -403,22 +515,30 @@ export default function UnifiedViewPage() {
             <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
               <div className="flex items-center gap-2 min-w-0">
                 <ArrowsRightLeftIcon className="h-3.5 w-3.5 text-ink-500" />
-                <h2 className="text-sm">{selected?.label || '거래 내역'}</h2>
-                {tx && (
+                <h2 className="text-sm">{selected.label}</h2>
+                {txItems.length > 0 && (
                   <span className="text-2xs text-ink-400">
-                    · {tx.total?.toLocaleString('ko-KR')}건
+                    · {txItems.length.toLocaleString('ko-KR')}건
                   </span>
                 )}
               </div>
             </div>
 
-            {!selected ? (
+            {!isConfigured ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400 p-6 text-center">
-                좌측에서 통장·카드·세금계산서를 클릭하면 거래 내역이 여기 표시됩니다.
+                그랜터 API 키 등록 후 실시간 거래가 표시됩니다.
               </div>
             ) : txQuery.isLoading ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400">
                 불러오는 중…
+              </div>
+            ) : txQuery.isError ? (
+              <div className="flex-1 flex items-center justify-center text-2xs text-rose-500 p-6 text-center">
+                그랜터 API 호출 실패. 잠시 후 다시 시도해 주세요.
+              </div>
+            ) : txItems.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center text-2xs text-ink-400">
+                이 기간에 거래가 없습니다.
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto">
@@ -426,78 +546,87 @@ export default function UnifiedViewPage() {
                   <thead className="bg-canvas-50 sticky top-0 z-10">
                     <tr>
                       <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        날짜
+                        일시
                       </th>
                       <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        적요
+                        유형
                       </th>
                       <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        상대 계정
+                        거래처/적요
                       </th>
                       <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
                         <span className="inline-flex items-center gap-0.5">
-                          <ArrowDownLeftIcon className="h-2.5 w-2.5 text-primary-500" />
-                          차변
+                          <ArrowDownLeftIcon className="h-2.5 w-2.5 text-emerald-500" />
+                          입금/매출
                         </span>
                       </th>
                       <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
                         <span className="inline-flex items-center gap-0.5">
                           <ArrowUpRightIcon className="h-2.5 w-2.5 text-rose-500" />
-                          대변
+                          출금/매입
                         </span>
                       </th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-100">
-                    {(tx?.items || []).map((it: any) => (
-                      <tr key={it.id} className="hover:bg-canvas-50">
-                        <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
-                          {it.transaction_date}
-                        </td>
-                        <td className="px-3 py-1.5 text-xs text-ink-900">
-                          {it.description}
-                        </td>
-                        <td className="px-3 py-1.5 whitespace-nowrap">
-                          {it.counterparty_account_code ? (
-                            <span className="inline-flex items-center gap-1 text-2xs">
-                              <span className="font-mono text-ink-400">
-                                {it.counterparty_account_code}
+                    {txItems.map((t: any, idx: number) => {
+                      const inbound = fieldNum(t, 'inbound', 'deposit', 'debit_amount')
+                      const outbound = fieldNum(t, 'outbound', 'withdraw', 'credit_amount')
+                      const amount = fieldNum(t, 'amount')
+                      // amount + direction fallback
+                      const dir = fieldStr(t, 'direction', 'type').toLowerCase()
+                      const finalIn =
+                        inbound > 0
+                          ? inbound
+                          : dir.includes('inbound') || dir.includes('deposit') || dir.includes('income')
+                          ? amount
+                          : 0
+                      const finalOut =
+                        outbound > 0
+                          ? outbound
+                          : dir.includes('outbound') || dir.includes('withdraw') || dir.includes('expense')
+                          ? amount
+                          : 0
+                      return (
+                        <tr key={t.id || idx} className="hover:bg-canvas-50">
+                          <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
+                            {fieldStr(t, 'transaction_date', 'date', 'timestamp').slice(0, 16)}
+                          </td>
+                          <td className="px-3 py-1.5 whitespace-nowrap">
+                            <span className="badge bg-ink-50 text-ink-700 border-ink-200">
+                              {fieldStr(t, 'kind', 'type', 'category') || '-'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-1.5 text-xs text-ink-900">
+                            <div className="font-medium">
+                              {fieldStr(t, 'merchant_name', 'counterparty', 'vendor', 'description') ||
+                                '-'}
+                            </div>
+                            <div className="text-2xs text-ink-500 truncate max-w-md">
+                              {fieldStr(t, 'description', 'memo')}
+                            </div>
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap">
+                            {finalIn > 0 ? (
+                              <span className="text-emerald-700 font-semibold">
+                                {formatCurrency(finalIn, false)}
                               </span>
-                              <span className="text-ink-700">
-                                {it.counterparty_account_name}
+                            ) : (
+                              <span className="text-ink-200">-</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap">
+                            {finalOut > 0 ? (
+                              <span className="text-rose-700 font-semibold">
+                                {formatCurrency(finalOut, false)}
                               </span>
-                            </span>
-                          ) : (
-                            <span className="text-ink-300 text-2xs">-</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap">
-                          {Number(it.debit) > 0 ? (
-                            <span className="text-primary-700 font-semibold">
-                              {formatCurrency(it.debit, false)}
-                            </span>
-                          ) : (
-                            <span className="text-ink-200">-</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap">
-                          {Number(it.credit) > 0 ? (
-                            <span className="text-rose-700 font-semibold">
-                              {formatCurrency(it.credit, false)}
-                            </span>
-                          ) : (
-                            <span className="text-ink-200">-</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                    {tx?.items?.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="px-3 py-6 text-center text-2xs text-ink-400">
-                          이 기간에 거래 내역이 없습니다.
-                        </td>
-                      </tr>
-                    )}
+                            ) : (
+                              <span className="text-ink-200">-</span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -516,11 +645,17 @@ function Section({
   icon,
   count,
   children,
+  onClickAll,
+  allLabel,
+  isAllActive,
 }: {
   title: string
   icon: React.ReactNode
   count?: number
   children: React.ReactNode
+  onClickAll?: () => void
+  allLabel?: string
+  isAllActive?: boolean
 }) {
   return (
     <div className="panel">
@@ -529,9 +664,21 @@ function Section({
           {icon}
           <span>{title}</span>
         </div>
-        {count !== undefined && count > 0 && (
-          <span className="text-2xs text-ink-400 font-mono">{count}</span>
-        )}
+        <div className="flex items-center gap-2">
+          {onClickAll && (
+            <button
+              onClick={onClickAll}
+              className={`text-2xs font-semibold ${
+                isAllActive ? 'text-ink-900' : 'text-ink-400 hover:text-ink-700'
+              }`}
+            >
+              {allLabel || '전체'}
+            </button>
+          )}
+          {count !== undefined && count > 0 && (
+            <span className="text-2xs text-ink-400 font-mono">{count}</span>
+          )}
+        </div>
       </div>
       <div className="p-1.5 space-y-0.5">{children}</div>
     </div>
@@ -539,55 +686,55 @@ function Section({
 }
 
 function SettingsModal({ onClose }: { onClose: () => void }) {
-  const sourcesQuery = useQuery({
-    queryKey: ['unified-sources'],
-    queryFn: () => unifiedApi.listSources().then((r) => r.data),
+  const connectionsQuery = useQuery({
+    queryKey: ['granter-connections'],
+    queryFn: () => granterApi.listConnections().then((r) => r.data),
+    retry: false,
   })
+
+  const conns: any[] = useMemo(() => {
+    const d = connectionsQuery.data
+    if (Array.isArray(d)) return d
+    return d?.data || []
+  }, [connectionsQuery.data])
 
   return (
     <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
       <div className="bg-white rounded-lg shadow-pop w-full max-w-2xl max-h-[80vh] overflow-y-auto border border-ink-200">
         <div className="sticky top-0 bg-white border-b border-ink-200 px-4 py-2.5 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink-900">데이터 소스 연동 관리</h3>
+          <h3 className="text-sm font-semibold text-ink-900">데이터 소스 (그랜터 연동)</h3>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
             <XMarkIcon className="h-4 w-4" />
           </button>
         </div>
 
         <div className="p-4 space-y-3">
-          <div className="text-2xs text-ink-500">
-            연동된 통장/카드/세금계산서 소스 목록입니다. 통장·카드는 그랜터, 세금계산서는 홈택스 직결로 수집됩니다.
+          <div className="rounded-md bg-canvas-50 border border-ink-200 px-3 py-2 text-2xs text-ink-600 leading-relaxed">
+            그랜터에서 연동된 자산(계좌·카드·홈택스·PG·오픈마켓) 목록입니다. 새 연결은 그랜터 대시보드에서 추가하세요.
           </div>
           <div className="space-y-1.5">
-            {(sourcesQuery.data || []).map((s: any) => (
+            {conns.map((c: any, idx: number) => (
               <div
-                key={s.id}
+                key={c.id || idx}
                 className="flex items-center justify-between px-3 py-2 border border-ink-200 rounded"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-medium text-ink-900 truncate">{s.name}</div>
+                  <div className="text-xs font-medium text-ink-900 truncate">
+                    {fieldStr(c, 'alias', 'name', 'institution') || `연결 ${idx + 1}`}
+                  </div>
                   <div className="text-2xs text-ink-500">
-                    {s.institution} ·{' '}
-                    <span className={s.sync_status === 'ok' ? 'text-emerald-600' : 'text-rose-600'}>
-                      {s.sync_status === 'ok' ? '정상' : s.sync_status}
-                    </span>
+                    {fieldStr(c, 'kind', 'type', 'category')} ·{' '}
+                    {fieldStr(c, 'status', 'sync_status') || 'unknown'}
                   </div>
                 </div>
-                <button className="btn-secondary text-2xs">
-                  <ArrowPathIcon className="h-3 w-3" />
-                </button>
               </div>
             ))}
-            {(sourcesQuery.data || []).length === 0 && (
+            {conns.length === 0 && (
               <div className="text-center text-2xs text-ink-400 py-6">
                 연동된 소스가 없습니다.
               </div>
             )}
           </div>
-          <button className="btn-primary w-full justify-center">
-            <PlusIcon className="h-3 w-3 mr-1" />
-            소스 추가
-          </button>
         </div>
       </div>
     </div>

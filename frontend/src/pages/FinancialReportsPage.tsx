@@ -5,6 +5,8 @@ import {
   ArrowDownTrayIcon,
   TableCellsIcon,
   ArrowPathIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
 } from '@heroicons/react/24/outline'
 import { cashPLApi, ledgerApi } from '@/services/api'
 import { formatCurrency, formatPct } from '@/utils/format'
@@ -41,16 +43,17 @@ type RowKind = 'header' | 'data' | 'subtotal' | 'ratio' | 'spacer'
 interface RowDef {
   kind: RowKind
   label: string
-  level?: number  // 0 root, 1 sub, 2 subsub
-  pick: (s: Summary) => number  // 해당 기간의 값
+  level?: number
+  pick: (s: Summary) => number
   isPct?: boolean
   emphasize?: boolean
+  expandKey?: 'revenue' | 'cogs' | 'opex' | 'non_operating'  // 펼치기 가능한 행
 }
 
 const ROW_DEFS: RowDef[] = [
-  { kind: 'header', label: 'I. 매출액', level: 0, pick: (s) => Number(s.revenue) },
+  { kind: 'header', label: 'I. 매출액', level: 0, pick: (s) => Number(s.revenue), expandKey: 'revenue' },
 
-  { kind: 'header', label: 'II. 매출원가', level: 0, pick: (s) => Number(s.cogs) },
+  { kind: 'header', label: 'II. 매출원가', level: 0, pick: (s) => Number(s.cogs), expandKey: 'cogs' },
   { kind: 'ratio', label: '   매출원가율', level: 1, pick: (s) => (Number(s.revenue) ? (Number(s.cogs) / Number(s.revenue)) * 100 : 0), isPct: true },
 
   { kind: 'subtotal', label: 'III. 매출총이익 (I − II)', level: 0, pick: (s) => Number(s.gross_profit), emphasize: true },
@@ -58,7 +61,7 @@ const ROW_DEFS: RowDef[] = [
 
   { kind: 'spacer', label: '', pick: () => 0 },
 
-  { kind: 'header', label: 'IV. 판매비와관리비', level: 0, pick: (s) => Number(s.opex) },
+  { kind: 'header', label: 'IV. 판매비와관리비', level: 0, pick: (s) => Number(s.opex), expandKey: 'opex' },
   { kind: 'ratio', label: '   판관비율', level: 1, pick: (s) => (Number(s.revenue) ? (Number(s.opex) / Number(s.revenue)) * 100 : 0), isPct: true },
 
   { kind: 'subtotal', label: 'V. 영업이익 (III − IV)', level: 0, pick: (s) => Number(s.operating_profit), emphasize: true },
@@ -66,10 +69,9 @@ const ROW_DEFS: RowDef[] = [
 
   { kind: 'spacer', label: '', pick: () => 0 },
 
-  { kind: 'header', label: 'VI. 영업외수익', level: 0, pick: (s) => Number(s.non_operating_income) },
-  { kind: 'header', label: 'VII. 영업외비용', level: 0, pick: (s) => Number(s.non_operating_expense) },
+  { kind: 'header', label: 'VI. 영업외 (수익/비용)', level: 0, pick: (s) => Number(s.non_operating_income) - Number(s.non_operating_expense), expandKey: 'non_operating' },
 
-  { kind: 'subtotal', label: 'VIII. 당기순이익', level: 0, pick: (s) => Number(s.net_profit), emphasize: true },
+  { kind: 'subtotal', label: 'VII. 당기순이익', level: 0, pick: (s) => Number(s.net_profit), emphasize: true },
   { kind: 'ratio', label: '   순이익률', level: 1, pick: (s) => Number(s.net_margin_pct), isPct: true },
 ]
 
@@ -110,7 +112,25 @@ export default function FinancialReportsPage() {
     enabled: ready,
   })
 
+  const breakdownQuery = useQuery({
+    queryKey: ['financial-breakdown', periodType, fromDate, toDate],
+    queryFn: () =>
+      cashPLApi
+        .getByAccountCrossTab({ from_date: fromDate, to_date: toDate, basis: 'cash', period_type: periodType })
+        .then((r) => r.data),
+    enabled: ready,
+  })
+
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(['opex']))
+  const toggle = (key: string) => {
+    const next = new Set(expanded)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    setExpanded(next)
+  }
+
   const summaries: Summary[] = useMemo(() => plQuery.data?.summaries || [], [plQuery.data])
+  const breakdown: any = breakdownQuery.data
 
   // 합계 컬럼 (전 기간 합산)
   const totals: Summary | null = useMemo(() => {
@@ -246,56 +266,112 @@ export default function FinancialReportsPage() {
                   const isSubtotal = row.kind === 'subtotal'
                   const isHeader = row.kind === 'header'
                   const isRatio = row.kind === 'ratio'
+                  const expandable = !!row.expandKey
+                  const isExpanded = expandable && expanded.has(row.expandKey!)
+                  const subAccounts: any[] = expandable && breakdown?.accounts?.[row.expandKey!]
+                    ? breakdown.accounts[row.expandKey!]
+                    : []
 
                   return (
-                    <tr
-                      key={`row-${idx}`}
-                      className={
-                        isSubtotal
-                          ? 'bg-canvas-50 border-y border-ink-200'
-                          : isRatio
-                          ? 'bg-white'
-                          : 'hover:bg-canvas-50/50'
-                      }
-                    >
-                      <td
-                        className={`sticky left-0 z-10 px-3 py-1.5 border-r border-ink-200 whitespace-nowrap ${
+                    <>
+                      <tr
+                        key={`row-${idx}`}
+                        className={
                           isSubtotal
-                            ? 'bg-canvas-50 font-bold text-ink-900'
+                            ? 'bg-canvas-50 border-y border-ink-200'
                             : isRatio
-                            ? 'bg-white text-ink-500 font-medium pl-6'
-                            : isHeader
-                            ? 'bg-white text-ink-700 font-semibold'
-                            : 'bg-white text-ink-700'
-                        }`}
+                            ? 'bg-white'
+                            : expandable
+                            ? 'hover:bg-canvas-50/50 cursor-pointer'
+                            : 'hover:bg-canvas-50/50'
+                        }
+                        onClick={() => expandable && toggle(row.expandKey!)}
                       >
-                        {row.label}
-                      </td>
-                      {allColumns.map((col, ci) => {
-                        const v = row.pick(col)
-                        const isTotalCol = ci === allColumns.length - 1
+                        <td
+                          className={`sticky left-0 z-10 px-3 py-1.5 border-r border-ink-200 whitespace-nowrap ${
+                            isSubtotal
+                              ? 'bg-canvas-50 font-bold text-ink-900'
+                              : isRatio
+                              ? 'bg-white text-ink-500 font-medium pl-6'
+                              : isHeader
+                              ? 'bg-white text-ink-700 font-semibold'
+                              : 'bg-white text-ink-700'
+                          }`}
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            {expandable && (
+                              <span className="text-ink-400">
+                                {isExpanded ? (
+                                  <ChevronDownIcon className="h-3 w-3" />
+                                ) : (
+                                  <ChevronRightIcon className="h-3 w-3" />
+                                )}
+                              </span>
+                            )}
+                            {row.label}
+                            {expandable && subAccounts.length > 0 && (
+                              <span className="text-2xs text-ink-400 font-normal ml-0.5">
+                                ({subAccounts.length})
+                              </span>
+                            )}
+                          </span>
+                        </td>
+                        {allColumns.map((col, ci) => {
+                          const v = row.pick(col)
+                          const isTotalCol = ci === allColumns.length - 1
+                          return (
+                            <td
+                              key={`${row.label}-${col.period_label}`}
+                              className={`px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap ${
+                                isTotalCol
+                                  ? 'bg-ink-50 font-bold text-ink-900'
+                                  : isSubtotal
+                                  ? 'bg-canvas-50 font-semibold text-ink-900'
+                                  : isRatio
+                                  ? 'text-ink-500 text-2xs italic'
+                                  : 'text-ink-700'
+                              }`}
+                            >
+                              {row.isPct
+                                ? formatPct(v, 1)
+                                : v === 0
+                                ? <span className="text-ink-300">-</span>
+                                : (v < 0 ? <span className="text-rose-600">({formatCurrency(Math.abs(v), false)})</span> : formatCurrency(v, false))}
+                            </td>
+                          )
+                        })}
+                      </tr>
+
+                      {/* Sub-rows: 펼쳐진 카테고리의 계정과목별 */}
+                      {expandable && isExpanded && subAccounts.map((acc: any) => {
+                        const totalForRow = acc.values.reduce((a: number, b: number) => a + b, 0)
                         return (
-                          <td
-                            key={`${row.label}-${col.period_label}`}
-                            className={`px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap ${
-                              isTotalCol
-                                ? 'bg-ink-50 font-bold text-ink-900'
-                                : isSubtotal
-                                ? 'bg-canvas-50 font-semibold text-ink-900'
-                                : isRatio
-                                ? 'text-ink-500 text-2xs italic'
-                                : 'text-ink-700'
-                            }`}
-                          >
-                            {row.isPct
-                              ? formatPct(v, 1)
-                              : v === 0
-                              ? <span className="text-ink-300">-</span>
-                              : (v < 0 ? <span className="text-rose-600">({formatCurrency(Math.abs(v), false)})</span> : formatCurrency(v, false))}
-                          </td>
+                          <tr key={`${row.expandKey}-${acc.code}`} className="bg-white hover:bg-canvas-50/30">
+                            <td className="sticky left-0 z-10 px-3 py-1 pl-9 border-r border-ink-200 bg-white whitespace-nowrap text-2xs">
+                              <span className="font-mono text-ink-400 mr-1.5">{acc.code}</span>
+                              <span className="text-ink-700">{acc.name}</span>
+                            </td>
+                            {acc.values.map((v: number, vi: number) => (
+                              <td
+                                key={`${acc.code}-${vi}`}
+                                className="px-3 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs text-ink-600"
+                              >
+                                {v === 0 ? (
+                                  <span className="text-ink-200">-</span>
+                                ) : v < 0 ? (
+                                  <span className="text-rose-600">({formatCurrency(Math.abs(v), false)})</span>
+                                ) : (
+                                  formatCurrency(v, false)
+                                )}
+                              </td>
+                            ))}
+                            <td className="px-3 py-1 text-right font-mono tabular-nums bg-ink-50 text-2xs font-semibold text-ink-900 whitespace-nowrap">
+                              {formatCurrency(totalForRow, false)}
+                            </td>
+                          </tr>
                         )
                       })}
-                    </tr>
+                    </>
                   )
                 })}
               </tbody>
