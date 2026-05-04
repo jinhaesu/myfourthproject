@@ -226,14 +226,60 @@ async def get_cash_pl(
     if req.period_type == 'monthly':
         cur = req.from_date.replace(day=1)
         while cur <= req.to_date:
-            # 이 달의 마지막 날
             next_month = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
-            month_end = min(next_month - timedelta(days=1), req.to_date)
-            totals = await _aggregate_by_category(db, cur, month_end)
-            summaries.append(_build_summary(cur, month_end, cur.strftime('%Y-%m'), totals))
+            period_end = min(next_month - timedelta(days=1), req.to_date)
+            totals = await _aggregate_by_category(db, cur, period_end)
+            summaries.append(_build_summary(cur, period_end, cur.strftime('%Y-%m'), totals))
             cur = next_month
+
+    elif req.period_type == 'quarterly':
+        # 분기 시작월 (1, 4, 7, 10)
+        q_month = ((req.from_date.month - 1) // 3) * 3 + 1
+        cur = date(req.from_date.year, q_month, 1)
+        while cur <= req.to_date:
+            q_end_month = q_month + 2
+            q_end = (date(cur.year, q_end_month, 28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+            period_end = min(q_end, req.to_date)
+            totals = await _aggregate_by_category(db, cur, period_end)
+            q_label = f"{cur.year}-Q{(q_month - 1) // 3 + 1}"
+            summaries.append(_build_summary(cur, period_end, q_label, totals))
+            # 다음 분기
+            q_month += 3
+            if q_month > 12:
+                q_month = 1
+                cur = date(cur.year + 1, 1, 1)
+            else:
+                cur = date(cur.year, q_month, 1)
+
+    elif req.period_type == 'yearly':
+        cur = date(req.from_date.year, 1, 1)
+        while cur <= req.to_date:
+            year_end = date(cur.year, 12, 31)
+            period_end = min(year_end, req.to_date)
+            totals = await _aggregate_by_category(db, cur, period_end)
+            summaries.append(_build_summary(cur, period_end, str(cur.year), totals))
+            cur = date(cur.year + 1, 1, 1)
+
+    elif req.period_type == 'weekly':
+        # 월요일 시작 주
+        cur = req.from_date - timedelta(days=req.from_date.weekday())
+        while cur <= req.to_date:
+            week_end = cur + timedelta(days=6)
+            period_end = min(week_end, req.to_date)
+            iso = cur.isocalendar()
+            label = f"{iso[0]}-W{iso[1]:02d}"
+            totals = await _aggregate_by_category(db, cur, period_end)
+            summaries.append(_build_summary(cur, period_end, label, totals))
+            cur = cur + timedelta(days=7)
+
+    elif req.period_type == 'daily':
+        cur = req.from_date
+        while cur <= req.to_date:
+            totals = await _aggregate_by_category(db, cur, cur)
+            summaries.append(_build_summary(cur, cur, cur.strftime('%m-%d'), totals))
+            cur = cur + timedelta(days=1)
+
     else:
-        # 단일 기간 합계
         totals = await _aggregate_by_category(db, req.from_date, req.to_date)
         summaries.append(_build_summary(
             req.from_date, req.to_date, f"{req.from_date} ~ {req.to_date}", totals

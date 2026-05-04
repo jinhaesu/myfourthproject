@@ -4,7 +4,6 @@ import { useAuthStore } from '@/store/authStore'
 import {
   HomeIcon,
   DocumentTextIcon,
-  ClipboardDocumentCheckIcon,
   BanknotesIcon,
   CalculatorIcon,
   ChartBarIcon,
@@ -21,7 +20,6 @@ import {
   SunIcon,
   ScaleIcon,
   ArrowsRightLeftIcon,
-  PaperAirplaneIcon,
   ReceiptPercentIcon,
   ArchiveBoxArrowDownIcon,
   BookOpenIcon,
@@ -37,7 +35,6 @@ const baseNavigation: NavItem[] = [
   { name: '실시간 자금관리', section: true },
   { name: '통합 조회', href: '/unified', icon: Squares2X2Icon },
   { name: '자금일보', href: '/daily-report', icon: SunIcon },
-  { name: '계좌 이체', href: '/transfers', icon: PaperAirplaneIcon },
   { name: '세금계산서', href: '/tax-invoices', icon: ReceiptPercentIcon },
   { name: '거래처 정산', href: '/settlement', icon: ArrowsRightLeftIcon },
 
@@ -47,7 +44,6 @@ const baseNavigation: NavItem[] = [
   { name: '현금주의 손익', href: '/cash-pl', icon: ScaleIcon },
   { name: '재무보고서', href: '/financial', icon: TableCellsIcon },
   { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
-  { name: '결재함', href: '/approvals', icon: ClipboardDocumentCheckIcon },
   { name: '자금관리', href: '/treasury', icon: BanknotesIcon },
   { name: '예산관리', href: '/budget', icon: CalculatorIcon },
   { name: '매출 자동화', href: '/sales', icon: PresentationChartBarIcon },

@@ -5,7 +5,6 @@ import LoginPage from '@/pages/LoginPage'
 import DashboardPage from '@/pages/DashboardPage'
 import VouchersPage from '@/pages/VouchersPage'
 import VoucherDetailPage from '@/pages/VoucherDetailPage'
-import ApprovalsPage from '@/pages/ApprovalsPage'
 import TreasuryPage from '@/pages/TreasuryPage'
 import BudgetPage from '@/pages/BudgetPage'
 import ForecastPage from '@/pages/ForecastPage'
@@ -20,7 +19,6 @@ import DailyReportPage from '@/pages/DailyReportPage'
 import CashPLPage from '@/pages/CashPLPage'
 import SettlementPage from '@/pages/SettlementPage'
 import TaxInvoicePage from '@/pages/TaxInvoicePage'
-import TransferPage from '@/pages/TransferPage'
 import ConnectClientsPage from '@/pages/ConnectClientsPage'
 import ConnectClosingPage from '@/pages/ConnectClosingPage'
 import AccountLedgerPage from '@/pages/AccountLedgerPage'
@@ -50,10 +48,8 @@ function App() {
         <Route path="cash-pl" element={<CashPLPage />} />
         <Route path="settlement" element={<SettlementPage />} />
         <Route path="tax-invoices" element={<TaxInvoicePage />} />
-        <Route path="transfers" element={<TransferPage />} />
         <Route path="vouchers" element={<VouchersPage />} />
         <Route path="vouchers/:id" element={<VoucherDetailPage />} />
-        <Route path="approvals" element={<ApprovalsPage />} />
         <Route path="treasury" element={<TreasuryPage />} />
         <Route path="budget" element={<BudgetPage />} />
         <Route path="forecast" element={<ForecastPage />} />

@@ -609,6 +609,18 @@ export const unifiedApi = {
   triggerSync: (sourceId: number) => api.post(`/unified/sources/${sourceId}/sync`),
 
   removeSource: (sourceId: number) => api.delete(`/unified/sources/${sourceId}`),
+
+  getDashboard: (params: { period_start?: string; period_end?: string }) =>
+    api.get('/unified/dashboard', { params }),
+
+  getSourceTransactions: (params: {
+    source_account_code?: string
+    merchant_name?: string
+    period_start?: string
+    period_end?: string
+    page?: number
+    size?: number
+  }) => api.get('/unified/source-transactions', { params }),
 }
 
 // ==================== 실시간 자금일보 ====================

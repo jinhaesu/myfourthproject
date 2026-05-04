@@ -334,3 +334,269 @@ async def remove_data_source(
     """소스 연동 해제 (실제 거래 데이터는 유지)"""
     # TODO: 그랜터 토큰 폐기 + source 비활성화
     return
+
+
+# ============ Dashboard (사이드바 카드용 종합 데이터) ============
+
+# 카테고리 코드 추정 (더존 6자리 또는 표준 3자리 기준)
+_CASH_CODES = ('101', '102', '103', '104')  # 현금성 자산
+_AR_CODES = ('108', '120')  # 외상매출금/매출채권
+_AP_CODES = ('251',)  # 외상매입금
+_PAYABLE_CODES = ('253',)  # 미지급금 (카드 결제대금)
+_VAT_OUT = ('255',)  # 부가세예수금
+_VAT_IN = ('135',)  # 부가세대급금
+
+
+def _strip(code):
+    if not code:
+        return ''
+    return code.lstrip('0') or '0'
+
+
+def _is_cash_code(code: Optional[str]) -> bool:
+    return _strip(code) in _CASH_CODES
+
+
+def _signed(code: Optional[str], debit: Decimal, credit: Decimal) -> Decimal:
+    """카테고리별 부호: 자산은 debit-credit, 부채/자본/수익은 credit-debit"""
+    s = _strip(code)
+    first = s[0] if s else '0'
+    if first in ('1', '5', '6', '7', '8'):  # 자산/비용
+        return debit - credit
+    return credit - debit
+
+
+@router.get("/dashboard")
+async def get_unified_dashboard(
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    통합 조회 좌측 사이드바용 종합 데이터.
+    가용자금 / 통장별 / 카드사별 / 세금계산서 요약 한 번에 반환.
+    """
+    filters = _date_filters(period_start, period_end)
+
+    # 1) 가용자금 (현금성 자산: 101~104)
+    cash_rows = (await db.execute(
+        select(
+            AIRawTransactionData.source_account_code,
+            func.max(AIRawTransactionData.source_account_name).label('name'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+            func.count(AIRawTransactionData.id).label('cnt'),
+        )
+        .where(
+            AIRawTransactionData.source_account_code.isnot(None),
+            *filters,
+        )
+        .group_by(AIRawTransactionData.source_account_code)
+    )).all()
+
+    cash_breakdown = []
+    cash_total = Decimal('0')
+    bank_accounts = []  # 통장별 (merchant_name)
+    for r in cash_rows:
+        if not _is_cash_code(r.source_account_code):
+            continue
+        debit = Decimal(str(r.debit or 0))
+        credit = Decimal(str(r.credit or 0))
+        balance = debit - credit
+        cash_total += balance
+        cash_breakdown.append({
+            "code": r.source_account_code,
+            "name": r.name or '',
+            "balance": float(balance),
+            "debit_total": float(debit),
+            "credit_total": float(credit),
+            "count": r.cnt,
+        })
+
+    # 통장별: source_account_code가 cash 계열인 행에서 merchant_name별 그룹
+    if filters:
+        bank_q = select(
+            AIRawTransactionData.merchant_name,
+            AIRawTransactionData.source_account_code,
+            func.max(AIRawTransactionData.source_account_name).label('source_name'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+            func.count(AIRawTransactionData.id).label('cnt'),
+        ).where(
+            AIRawTransactionData.source_account_code.in_(_CASH_CODES),
+            AIRawTransactionData.merchant_name.isnot(None),
+            *filters,
+        ).group_by(
+            AIRawTransactionData.merchant_name,
+            AIRawTransactionData.source_account_code,
+        ).order_by(func.count(AIRawTransactionData.id).desc()).limit(20)
+    else:
+        bank_q = select(
+            AIRawTransactionData.merchant_name,
+            AIRawTransactionData.source_account_code,
+            func.max(AIRawTransactionData.source_account_name).label('source_name'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+            func.count(AIRawTransactionData.id).label('cnt'),
+        ).where(
+            AIRawTransactionData.source_account_code.in_(_CASH_CODES),
+            AIRawTransactionData.merchant_name.isnot(None),
+        ).group_by(
+            AIRawTransactionData.merchant_name,
+            AIRawTransactionData.source_account_code,
+        ).order_by(func.count(AIRawTransactionData.id).desc()).limit(20)
+
+    bank_rows = (await db.execute(bank_q)).all()
+    for r in bank_rows:
+        debit = Decimal(str(r.debit or 0))
+        credit = Decimal(str(r.credit or 0))
+        bank_accounts.append({
+            "merchant_name": r.merchant_name,
+            "source_code": r.source_account_code,
+            "source_name": r.source_name,
+            "balance": float(debit - credit),
+            "debit_total": float(debit),
+            "credit_total": float(credit),
+            "count": r.cnt,
+        })
+
+    # 2) 카드 (미지급금 253 — merchant_name별)
+    card_q = select(
+        AIRawTransactionData.merchant_name,
+        AIRawTransactionData.source_account_code,
+        func.max(AIRawTransactionData.source_account_name).label('source_name'),
+        func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+        func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+        func.count(AIRawTransactionData.id).label('cnt'),
+    ).where(
+        AIRawTransactionData.source_account_code.in_(_PAYABLE_CODES),
+        AIRawTransactionData.merchant_name.isnot(None),
+        *filters,
+    ).group_by(
+        AIRawTransactionData.merchant_name,
+        AIRawTransactionData.source_account_code,
+    ).order_by(func.count(AIRawTransactionData.id).desc()).limit(20)
+
+    card_rows = (await db.execute(card_q)).all()
+    cards = []
+    for r in card_rows:
+        debit = Decimal(str(r.debit or 0))
+        credit = Decimal(str(r.credit or 0))
+        # 미지급금은 부채 — 사용액 = credit (대변에 발생), 결제 = debit (차변)
+        usage = credit
+        payment = debit
+        cards.append({
+            "merchant_name": r.merchant_name,
+            "source_code": r.source_account_code,
+            "source_name": r.source_name,
+            "usage": float(usage),
+            "payment": float(payment),
+            "outstanding": float(usage - payment),
+            "count": r.cnt,
+        })
+
+    # 3) 세금계산서 매출/매입 요약
+    # 매출: 외상매출금(108) credit (회수) + debit (발생)
+    # 매입: 외상매입금(251) debit (지급) + credit (발생)
+    async def _agg(codes: tuple):
+        return (await db.execute(
+            select(
+                func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+                func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+                func.count(AIRawTransactionData.id).label('cnt'),
+            )
+            .where(
+                AIRawTransactionData.source_account_code.in_(codes),
+                *filters,
+            )
+        )).one()
+
+    ar = await _agg(_AR_CODES)
+    ap = await _agg(_AP_CODES)
+    vat_out = await _agg(_VAT_OUT)
+    vat_in = await _agg(_VAT_IN)
+
+    return {
+        "period": {
+            "start": period_start.isoformat() if period_start else None,
+            "end": period_end.isoformat() if period_end else None,
+        },
+        "available_cash": {
+            "total": float(cash_total),
+            "breakdown": cash_breakdown,
+        },
+        "bank_accounts": bank_accounts,
+        "cards": cards,
+        "tax_invoice": {
+            "sales": {
+                "issued": float(ar.debit or 0),  # 외상매출금 발생 (차변)
+                "collected": float(ar.credit or 0),  # 회수 (대변)
+                "outstanding": float((ar.debit or 0) - (ar.credit or 0)),
+                "count": ar.cnt,
+                "vat": float(vat_out.credit or 0),
+            },
+            "purchase": {
+                "received": float(ap.credit or 0),  # 외상매입금 발생 (대변)
+                "paid": float(ap.debit or 0),  # 지급 (차변)
+                "outstanding": float((ap.credit or 0) - (ap.debit or 0)),
+                "count": ap.cnt,
+                "vat": float(vat_in.debit or 0),
+            },
+        },
+    }
+
+
+@router.get("/source-transactions")
+async def get_source_transactions(
+    source_account_code: Optional[str] = None,
+    merchant_name: Optional[str] = None,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    page: int = Query(1, ge=1),
+    size: int = Query(100, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    통합 조회 우측 패널용 — 특정 통장/카드의 거래 내역.
+    """
+    filters = _date_filters(period_start, period_end)
+    if source_account_code:
+        filters.append(AIRawTransactionData.source_account_code == source_account_code)
+    if merchant_name:
+        filters.append(AIRawTransactionData.merchant_name == merchant_name)
+
+    base_filter = and_(*filters) if filters else True
+
+    total = await db.scalar(
+        select(func.count(AIRawTransactionData.id)).where(base_filter)
+    ) or 0
+
+    rows = (await db.execute(
+        select(AIRawTransactionData)
+        .where(base_filter)
+        .order_by(
+            AIRawTransactionData.transaction_date.desc(),
+            AIRawTransactionData.id.desc(),
+        )
+        .offset((page - 1) * size)
+        .limit(size)
+    )).scalars().all()
+
+    return {
+        "total": total,
+        "page": page,
+        "size": size,
+        "items": [
+            {
+                "id": r.id,
+                "transaction_date": _date_to_iso(r.transaction_date) or r.transaction_date,
+                "description": r.original_description,
+                "merchant_name": r.merchant_name,
+                "counterparty_account_code": r.account_code,
+                "counterparty_account_name": r.account_name,
+                "debit": float(r.debit_amount or 0),
+                "credit": float(r.credit_amount or 0),
+            }
+            for r in rows
+        ],
+    }
