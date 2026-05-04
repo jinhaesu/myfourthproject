@@ -37,34 +37,25 @@ function isoYearStart(year: number) {
 function isoYearEnd(year: number) {
   return `${year}-12-31`
 }
+function thisMonthStart() {
+  const d = new Date()
+  d.setDate(1)
+  return d.toISOString().slice(0, 10)
+}
 
 export default function AccountLedgerPage() {
   const qc = useQueryClient()
 
-  // 가용 년도 조회 — 데이터의 가장 최신 년도를 자동으로 default로
+  // 가용 년도 조회 — 빈 결과 시 사용자가 빠르게 다른 년도로 이동할 수 있게
   const yearsQuery = useQuery({
     queryKey: ['ledger-years'],
     queryFn: () => ledgerApi.getAvailableYears().then((r) => r.data),
   })
-
   const availableYears: number[] = yearsQuery.data?.years || []
-  const latestYear: number | null = yearsQuery.data?.latest ?? null
 
-  const [periodStart, setPeriodStart] = useState<string>('')
-  const [periodEnd, setPeriodEnd] = useState<string>('')
-
-  // 가용 년도 로드 후 기본 기간 자동 설정 (가장 최신 년도 1.1 ~ 12.31)
-  useEffect(() => {
-    if (latestYear && (!periodStart || !periodEnd)) {
-      setPeriodStart(isoYearStart(latestYear))
-      setPeriodEnd(isoYearEnd(latestYear))
-    } else if (!latestYear && yearsQuery.isFetched && (!periodStart || !periodEnd)) {
-      // fallback: 데이터 없으면 올해
-      const y = new Date().getFullYear()
-      setPeriodStart(isoYearStart(y))
-      setPeriodEnd(todayISO())
-    }
-  }, [latestYear, yearsQuery.isFetched]) // eslint-disable-line react-hooks/exhaustive-deps
+  // 기본 기간: 이번달 (사용자가 직접 변경 가능)
+  const [periodStart, setPeriodStart] = useState<string>(thisMonthStart())
+  const [periodEnd, setPeriodEnd] = useState<string>(todayISO())
   const [searchAcc, setSearchAcc] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<string | undefined>(undefined)
   const [onlyActivity, setOnlyActivity] = useState(true)

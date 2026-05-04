@@ -42,13 +42,33 @@ async def granter_health():
 
 @router.get("/ping")
 async def granter_ping():
-    """실제 그랜터 서버 연결 테스트 (가벼운 GET)"""
+    """실제 그랜터 서버 연결 테스트 (가벼운 GET) — 상세 에러 정보 포함"""
     client = get_granter_client()
     try:
         result = await client.list_connections()
-        return {"ok": True, "connections": len(result) if isinstance(result, list) else "unknown"}
+        return {
+            "ok": True,
+            "base_url": client.base_url,
+            "connections_count": len(result) if isinstance(result, list) else "unknown",
+            "sample": (result[:1] if isinstance(result, list) else result),
+        }
     except GranterAPIError as e:
-        raise HTTPException(status_code=e.status_code or 502, detail=str(e))
+        # 사용자가 직접 진단할 수 있게 상세 정보 노출
+        return {
+            "ok": False,
+            "base_url": client.base_url,
+            "configured": client.is_configured,
+            "status_code": e.status_code,
+            "error": str(e),
+            "response_body": e.body,
+            "hints": [
+                "1. Railway 대시보드에 GRANTER_API_KEY가 정확히 등록됐는지 확인",
+                "2. GRANTER_BASE_URL이 그랜터 공식 API 호스트와 일치하는지 확인",
+                "   (현재: " + client.base_url + ")",
+                "3. 그랜터 문서에서 인증 헤더 형식 확인 (Bearer vs ApiKey 등)",
+                "4. 401/403이면 API 키 권한 문제, 404면 베이스 URL/경로 문제",
+            ],
+        }
 
 
 # ============ 연동 데이터 ============

@@ -27,12 +27,13 @@ export default function VouchersPage() {
     queryKey: ['ledger-years'],
     queryFn: () => ledgerApi.getAvailableYears().then((r) => r.data),
   })
-  const latestYear: number | null = yearsQuery.data?.latest ?? null
   const availableYears: number[] = yearsQuery.data?.years || []
 
+  // 기본: 이번달 (오늘 기준), 사용자가 직접 변경 가능
+  const _today = new Date()
   const [viewMode, setViewMode] = useState<ViewMode>('monthly')
-  const [year, setYear] = useState<number | null>(null)
-  const [month, setMonth] = useState<number>(1)
+  const [year, setYear] = useState<number>(_today.getFullYear())
+  const [month, setMonth] = useState<number>(_today.getMonth() + 1)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [direction, setDirection] = useState<Direction>('all')
@@ -40,14 +41,7 @@ export default function VouchersPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
 
   useEffect(() => {
-    if (latestYear && !year) {
-      setYear(latestYear)
-      setMonth(1)
-    }
-  }, [latestYear]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (viewMode === 'monthly' && year) {
+    if (viewMode === 'monthly') {
       const m = String(month).padStart(2, '0')
       const lastDay = new Date(year, month, 0).getDate()
       setFrom(`${year}-${m}-01`)
@@ -131,15 +125,19 @@ export default function VouchersPage() {
         {viewMode === 'monthly' ? (
           <>
             <select
-              value={year || ''}
+              value={year}
               onChange={(e) => setYear(Number(e.target.value))}
               className="input w-24"
             >
-              {availableYears.map((y) => (
-                <option key={y} value={y}>
-                  {y}년
-                </option>
-              ))}
+              {Array.from(
+                new Set([_today.getFullYear(), ...availableYears])
+              )
+                .sort((a, b) => b - a)
+                .map((y) => (
+                  <option key={y} value={y}>
+                    {y}년
+                  </option>
+                ))}
             </select>
             <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200">
               {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
@@ -287,7 +285,21 @@ export default function VouchersPage() {
               {!txQuery.isLoading && items.length === 0 && (
                 <tr>
                   <td colSpan={9} className="text-center text-2xs text-ink-400 py-6">
-                    이 기간에 전표가 없습니다.
+                    <div>이 기간에 전표가 없습니다.</div>
+                    {availableYears.length > 0 && (
+                      <div className="mt-2 inline-flex items-center gap-1.5">
+                        <span className="text-2xs text-ink-400">데이터 있는 년도:</span>
+                        {availableYears.slice(0, 5).map((y) => (
+                          <button
+                            key={y}
+                            onClick={() => setYear(y)}
+                            className="px-1.5 py-0.5 rounded border border-ink-200 bg-white text-ink-700 hover:bg-ink-50 text-2xs font-semibold"
+                          >
+                            {y}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </td>
                 </tr>
               )}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   CalendarDaysIcon,
@@ -83,23 +83,20 @@ function endOfYearISO(year: number) {
 }
 
 export default function FinancialReportsPage() {
-  // 가용 년도 자동 감지 (ledger와 동일)
+  // 가용 년도 (빈 결과 시 빠른 이동용 — 데이터 있는 년도 안내)
   const yearsQuery = useQuery({
     queryKey: ['ledger-years'],
     queryFn: () => ledgerApi.getAvailableYears().then((r) => r.data),
   })
-  const latestYear: number | null = yearsQuery.data?.latest ?? null
 
+  // 기본: 이번 회계연도 (오늘 기준 1.1 ~ 12.31), 사용자가 직접 변경 가능
   const [periodType, setPeriodType] = useState<PeriodType>('monthly')
-  const [fromDate, setFromDate] = useState('')
-  const [toDate, setToDate] = useState('')
+  const _today = new Date()
+  const _thisYear = _today.getFullYear()
+  const [fromDate, setFromDate] = useState(startOfYearISO(_thisYear))
+  const [toDate, setToDate] = useState(endOfYearISO(_thisYear))
 
-  useEffect(() => {
-    if (latestYear && (!fromDate || !toDate)) {
-      setFromDate(startOfYearISO(latestYear))
-      setToDate(endOfYearISO(latestYear))
-    }
-  }, [latestYear]) // eslint-disable-line react-hooks/exhaustive-deps
+  const availableYears: number[] = yearsQuery.data?.years || []
 
   const ready = Boolean(fromDate && toDate)
 
@@ -230,7 +227,24 @@ export default function FinancialReportsPage() {
           </div>
         ) : summaries.length === 0 ? (
           <div className="p-8 text-center text-2xs text-ink-400">
-            이 기간에 데이터가 없습니다.
+            <div>이 기간에 데이터가 없습니다.</div>
+            {availableYears.length > 0 && (
+              <div className="mt-3 inline-flex items-center gap-1.5">
+                <span>데이터 있는 년도:</span>
+                {availableYears.slice(0, 5).map((y) => (
+                  <button
+                    key={y}
+                    onClick={() => {
+                      setFromDate(startOfYearISO(y))
+                      setToDate(endOfYearISO(y))
+                    }}
+                    className="px-2 py-0.5 rounded border border-ink-200 bg-white text-ink-700 hover:bg-ink-50 font-semibold"
+                  >
+                    {y}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
