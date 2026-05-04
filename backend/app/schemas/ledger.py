@@ -106,11 +106,27 @@ class LedgerEntriesResponse(BaseModel):
 
 
 class LedgerEntryUpdate(BaseModel):
-    """원장 거래 수정 (적요·메모·태그)"""
+    """원장 거래 수정 — 구분(차/대), 금액, 계정코드, 거래처, 적요까지 한 번에"""
+    # 적요
     description: Optional[str] = None
+    # 차변/대변 구분 ('debit' 또는 'credit') — 지정 시 amount와 함께 적용
+    direction: Optional[Literal["debit", "credit"]] = None
+    amount: Optional[Decimal] = None
+    # 직접 차변/대변 금액 (direction/amount 미사용 시)
+    debit_amount: Optional[Decimal] = None
+    credit_amount: Optional[Decimal] = None
+    # 원장 계정 (이 거래가 속한 계정) — 변경 시 다른 원장으로 이동됨
+    source_account_code: Optional[str] = None
+    source_account_name: Optional[str] = None
+    # 상대 계정
+    account_code: Optional[str] = None
+    account_name: Optional[str] = None
+    # 거래처
+    counterparty: Optional[str] = None
+    counterparty_code: Optional[str] = None  # 거래처 코드(별도 필드, 메모 컬럼에 임시 보관)
+    # 보조
     memo: Optional[str] = None
     project_tag: Optional[str] = None
-    counterparty: Optional[str] = None
 
 
 # Forward reference resolution

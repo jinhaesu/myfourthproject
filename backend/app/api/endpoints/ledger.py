@@ -513,16 +513,60 @@ async def update_entry(
     user_id: int = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    """원장 거래 수정 (적요/거래처 등 — raw 데이터 직접 수정)"""
+    """
+    원장 거래 수정 — 구분/금액/계정/거래처/적요까지 한 번에.
+    - direction='debit' + amount=N → debit_amount=N, credit_amount=0
+    - direction='credit' + amount=N → debit_amount=0, credit_amount=N
+    - 또는 debit_amount/credit_amount 직접 지정
+    """
     row = await db.get(AIRawTransactionData, entry_id)
     if not row:
         raise HTTPException(status_code=404, detail="거래를 찾을 수 없습니다.")
 
+    # 1) 적요
     if update.description is not None:
         row.original_description = update.description
+
+    # 2) 거래처
     if update.counterparty is not None:
         row.merchant_name = update.counterparty
-    # memo, project_tag는 raw 테이블에 컬럼 없음 — TODO: 별도 ledger_entry_meta 테이블
+
+    # 3) 원장 계정 (source) — 변경 시 다른 원장으로 이동됨
+    if update.source_account_code is not None:
+        row.source_account_code = update.source_account_code
+    if update.source_account_name is not None:
+        row.source_account_name = update.source_account_name
+
+    # 4) 상대 계정
+    if update.account_code is not None:
+        row.account_code = update.account_code
+    if update.account_name is not None:
+        row.account_name = update.account_name
+
+    # 5) 차변/대변 — direction + amount 우선 적용
+    if update.direction and update.amount is not None:
+        amt = update.amount
+        if update.direction == 'debit':
+            row.debit_amount = amt
+            row.credit_amount = Decimal('0')
+        else:
+            row.debit_amount = Decimal('0')
+            row.credit_amount = amt
+    else:
+        if update.debit_amount is not None:
+            row.debit_amount = update.debit_amount
+        if update.credit_amount is not None:
+            row.credit_amount = update.credit_amount
+
+    # amount 동기화 (raw 데이터의 amount 컬럼)
+    if (
+        update.direction and update.amount is not None
+    ) or update.debit_amount is not None or update.credit_amount is not None:
+        row.amount = max(row.debit_amount or Decimal('0'), row.credit_amount or Decimal('0'))
+
+    # 6) 거래처 코드 / 메모 / 프로젝트 태그
+    # raw 테이블엔 별도 컬럼 없음 — TODO: ledger_entry_meta 테이블 추가 후 분리 저장
+    # 현재는 무시 (프론트엔드 전용 임시 저장 가능)
 
     await db.commit()
     await db.refresh(row)

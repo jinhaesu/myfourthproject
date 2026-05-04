@@ -879,7 +879,21 @@ export const ledgerApi = {
 
   updateEntry: (
     entryId: number,
-    data: { description?: string; memo?: string; project_tag?: string; counterparty?: string },
+    data: {
+      description?: string
+      direction?: 'debit' | 'credit'
+      amount?: number
+      debit_amount?: number
+      credit_amount?: number
+      source_account_code?: string
+      source_account_name?: string
+      account_code?: string
+      account_name?: string
+      counterparty?: string
+      counterparty_code?: string
+      memo?: string
+      project_tag?: string
+    },
     userId: number
   ) => api.patch(`/ledger/entries/${entryId}`, data, { params: { user_id: userId } }),
 

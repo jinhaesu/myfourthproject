@@ -15,6 +15,7 @@ import {
 import { ledgerApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, formatDate } from '@/utils/format'
 import EmptyState from '@/components/common/EmptyState'
+import LedgerEntryDetailPanel from './LedgerEntryDetailPanel'
 
 const CATEGORY_META: Record<string, { label: string; dot: string; chip: string }> = {
   asset: { label: '자산', dot: 'bg-blue-500', chip: 'bg-blue-50 text-blue-700 border-blue-200' },
@@ -68,6 +69,7 @@ export default function AccountLedgerPage() {
   const [categoryFilter, setCategoryFilter] = useState<string | undefined>(undefined)
   const [onlyActivity, setOnlyActivity] = useState(true)
   const [selectedCode, setSelectedCode] = useState<string | null>(null)
+  const [selectedEntryId, setSelectedEntryId] = useState<number | null>(null)
   const [entrySearch, setEntrySearch] = useState('')
   const [collapsedCats, setCollapsedCats] = useState<Set<string>>(new Set())
   const searchInputRef = useRef<HTMLInputElement | null>(null)
@@ -115,6 +117,11 @@ export default function AccountLedgerPage() {
       setSelectedCode(accounts[0].account_code)
     }
   }, [accounts, selectedCode])
+
+  // 계정 변경 시 선택 거래 클리어
+  useEffect(() => {
+    setSelectedEntryId(null)
+  }, [selectedCode])
 
   // Cmd/Ctrl-K to focus account search
   useEffect(() => {
@@ -549,7 +556,7 @@ export default function AccountLedgerPage() {
               </div>
 
               {/* Excel-like grid */}
-              <div className="flex-1 ag-theme-alpine">
+              <div className="flex-1 ag-theme-alpine min-h-0">
                 <AgGridReact
                   rowData={entries}
                   columnDefs={columnDefs as any}
@@ -562,6 +569,13 @@ export default function AccountLedgerPage() {
                   pagination
                   paginationPageSize={100}
                   paginationPageSizeSelector={[50, 100, 200, 500]}
+                  rowSelection="single"
+                  onRowClicked={(e: any) => {
+                    if (e?.data?.id) setSelectedEntryId(e.data.id)
+                  }}
+                  getRowClass={(p: any) =>
+                    p?.data?.id === selectedEntryId ? 'ag-row-selected' : ''
+                  }
                   noRowsOverlayComponent={() => (
                     <div className="text-xs text-ink-400 p-4">
                       이 기간에 해당 계정의 거래가 없습니다.
@@ -569,6 +583,23 @@ export default function AccountLedgerPage() {
                   )}
                 />
               </div>
+
+              {/* Bottom detail panel */}
+              {(() => {
+                const sel = entries.find((e) => e.id === selectedEntryId)
+                if (!sel) return null
+                return (
+                  <LedgerEntryDetailPanel
+                    entry={sel}
+                    source={{
+                      account_code: summary.account_code,
+                      account_name: summary.account_name,
+                      category: summary.category,
+                    }}
+                    onClose={() => setSelectedEntryId(null)}
+                  />
+                )
+              })()}
             </>
           ) : (
             <EmptyState
