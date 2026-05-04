@@ -149,19 +149,7 @@ async def get_available_years(db: AsyncSession = Depends(get_db)):
     }
 
 
-# ============ 더존 6자리 코드 분류 (financial_reports와 동일) ============
-DOUZONE_CATEGORY: dict = {
-    '1': 'asset',
-    '2': 'liability',
-    '3': 'equity',
-    '4': 'revenue',
-    '5': 'expense',  # 매출원가
-    '6': 'expense',  # 제조원가
-    '7': 'expense',
-    '8': 'expense',  # 판관비
-    '9': 'non_operating',
-}
-
+# ============ 카테고리 분류 (코드 + 이름 기반) ============
 CATEGORY_LABEL = {
     'asset': '자산',
     'liability': '부채',
@@ -171,6 +159,14 @@ CATEGORY_LABEL = {
     'non_operating': '영업외',
 }
 
+# 이름 키워드 기반 분류
+_NAME_RULES = [
+    (('매출원가', '제조원가', '상품매출원가', '제품매출원가', '용역매출원가'), 'expense'),
+    (('이자수익', '이자비용', '외환차익', '외환차손', '외화환산이익', '외화환산손실',
+      '잡이익', '잡손실', '유형자산처분', '무형자산처분', '기부금', '재해손실'), 'non_operating'),
+    (('상품매출', '제품매출', '용역매출', '공사매출', '임대료수익', '수출매출'), 'revenue'),
+]
+
 
 def _strip_code(code: Optional[str]) -> str:
     if not code:
@@ -178,10 +174,36 @@ def _strip_code(code: Optional[str]) -> str:
     return code.lstrip('0') or '0'
 
 
-def _category_of(code: Optional[str]) -> str:
-    stripped = _strip_code(code)
-    first = stripped[0] if stripped else '0'
-    return DOUZONE_CATEGORY.get(first, 'expense')
+def _category_of(code: Optional[str], name: str = '') -> str:
+    """
+    코드 + 이름 둘 다 보고 정확히 분류.
+    - 이름 우선: '매출원가'는 expense로 (45x인 4xx여도)
+    - 4xx 세분화: 45x~49x는 expense(원가), 40x~44x는 revenue
+    """
+    n = (name or '').strip()
+
+    for keywords, cat in _NAME_RULES:
+        if any(k in n for k in keywords):
+            return cat
+
+    s = _strip_code(code)
+    first = s[0] if s else '0'
+
+    if first == '4':
+        if len(s) >= 2 and s[1] in ('5', '6', '7', '8', '9'):
+            return 'expense'
+        return 'revenue'
+
+    return {
+        '1': 'asset',
+        '2': 'liability',
+        '3': 'equity',
+        '5': 'expense',
+        '6': 'expense',
+        '7': 'expense',
+        '8': 'expense',
+        '9': 'non_operating',
+    }.get(first, 'expense')
 
 
 def _date_to_iso(s: Optional[str]) -> Optional[str]:
@@ -287,7 +309,7 @@ async def list_accounts(
 
     accounts: List[LedgerAccount] = []
     for r in rows:
-        cat = _category_of(r.source_account_code)
+        cat = _category_of(r.source_account_code, r.name)
         if category and cat != category:
             continue
         debit = Decimal(str(r.debit or 0))
@@ -369,6 +391,7 @@ async def get_account_summary(
     db: AsyncSession = Depends(get_db),
 ):
     """선택 계정의 기간 요약 (그리드 상단 KPI)"""
+    # 임시로 코드만 — 아래에서 name 받아온 후 재분류
     cat = _category_of(account_code)
 
     # 기간 내 합계 (source 기준 — 원장 시점)
@@ -414,6 +437,9 @@ async def get_account_summary(
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
         ).where(opening_filter)
     )).one()
+
+    # 이름 받아온 후 카테고리 재분류 (이름 우선)
+    cat = _category_of(account_code, period_row.name or '')
 
     opening_balance = _signed_change(
         cat,

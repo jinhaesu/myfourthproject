@@ -36,24 +36,61 @@ def _strip_code(code: Optional[str]) -> str:
     return code.lstrip('0') or '0'
 
 
-def _category_of(code: Optional[str]) -> str:
+# 이름 키워드 기반 분류 (가장 강한 신호)
+_NAME_RULES = [
+    # 매출원가 키워드 (가장 우선 — 매출보다 강함)
+    (('매출원가', '제조원가', '상품매출원가', '제품매출원가', '용역매출원가'), 'cogs'),
+    # 영업외 (특정 키워드)
+    (('이자수익', '이자비용', '외환차익', '외환차손', '외화환산이익', '외화환산손실',
+      '잡이익', '잡손실', '유형자산처분', '무형자산처분', '기부금', '재해손실'), 'non_operating'),
+    # 매출
+    (('상품매출', '제품매출', '용역매출', '공사매출', '임대료수익', '수출매출'), 'revenue'),
+]
+
+
+def _category_of(code: Optional[str], name: str = '') -> str:
     """
-    1xx: asset, 2xx: liability, 3xx: equity,
-    4xx: revenue, 5xx/6xx/7xx: cogs, 8xx: opex, 9xx: non_operating
+    카테고리 분류:
+      asset / liability / equity / revenue / cogs / opex / non_operating
+
+    우선순위: 이름 키워드 → 코드 세분화 (4xx 중 45x~49x는 cogs)
     """
+    n = (name or '').strip()
+
+    # 1) 이름 우선
+    for keywords, cat in _NAME_RULES:
+        if any(k in n for k in keywords):
+            return cat
+
+    # 2) 코드 기반
     s = _strip_code(code)
     first = s[0] if s else '0'
+
+    if first == '4':
+        # 4xx 세분화: 45x~49x는 cogs(매출원가), 40x~44x는 revenue
+        if len(s) >= 2 and s[1] in ('5', '6', '7', '8', '9'):
+            return 'cogs'
+        return 'revenue'
+
+    if first == '9':
+        # 9xx은 일반적으로 영업외 — 이름에 '비용'이 있어도 non_operating
+        return 'non_operating'
+
     return {
         '1': 'asset',
         '2': 'liability',
         '3': 'equity',
-        '4': 'revenue',
         '5': 'cogs',
         '6': 'cogs',
         '7': 'cogs',
         '8': 'opex',
-        '9': 'non_operating',
     }.get(first, 'opex')
+
+
+def _is_non_operating_income(code: Optional[str], name: str = '') -> bool:
+    """영업외 중에서 '수익'성인지 (이자수익, 잡이익 등)"""
+    n = (name or '').strip()
+    return any(k in n for k in ('수익', '이익', '환입'))
 
 
 def _date_filters(period_start: Optional[date], period_end: Optional[date]):
@@ -89,16 +126,19 @@ async def _aggregate_by_category(
     period_start: date,
     period_end: date,
 ) -> Dict[str, Decimal]:
-    """기간 내 카테고리별 합계 (revenue/cogs/opex/non_operating).
+    """
+    기간 내 카테고리별 합계.
 
-    - source_account_code가 4xx면 revenue (credit - debit)
-    - source_account_code가 5/6/7xx면 cogs (debit - credit)
-    - source_account_code가 8xx면 opex (debit - credit)
-    - source_account_code가 9xx면 non_operating (debit - credit)
+    분류는 코드 + 계정명으로 결정 (_category_of):
+    - revenue: 401, 404 등 매출 계정
+    - cogs: 45x~49x, 5xx, 6xx, 7xx (매출원가/제조원가) 또는 이름에 '매출원가'
+    - opex: 8xx (판관비)
+    - non_operating: 9xx 또는 이자수익/이자비용/외환 등
     """
     rows = (await db.execute(
         select(
             AIRawTransactionData.source_account_code,
+            func.max(AIRawTransactionData.source_account_name).label('name'),
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
         )
@@ -111,14 +151,30 @@ async def _aggregate_by_category(
     )).all()
 
     totals = defaultdict(lambda: Decimal('0'))
+    nop_income = Decimal('0')
+    nop_expense = Decimal('0')
+
     for r in rows:
-        cat = _category_of(r.source_account_code)
+        cat = _category_of(r.source_account_code, r.name)
         debit = Decimal(str(r.debit or 0))
         credit = Decimal(str(r.credit or 0))
         if cat == 'revenue':
-            totals[cat] += credit - debit
-        elif cat in ('cogs', 'opex', 'non_operating'):
-            totals[cat] += debit - credit
+            totals['revenue'] += credit - debit
+        elif cat == 'cogs':
+            totals['cogs'] += debit - credit
+        elif cat == 'opex':
+            totals['opex'] += debit - credit
+        elif cat == 'non_operating':
+            # 영업외 수익/비용 분리
+            if _is_non_operating_income(r.source_account_code, r.name):
+                nop_income += credit - debit
+            else:
+                nop_expense += debit - credit
+
+    totals['non_operating_income'] = nop_income
+    totals['non_operating_expense'] = nop_expense
+    # 기존 코드 호환: non_operating은 비용성으로
+    totals['non_operating'] = nop_expense
     return totals
 
 
@@ -126,11 +182,12 @@ def _build_summary(start: date, end: date, label: str, totals: Dict[str, Decimal
     revenue = totals.get('revenue', Decimal('0'))
     cogs = totals.get('cogs', Decimal('0'))
     opex = totals.get('opex', Decimal('0'))
-    nop = totals.get('non_operating', Decimal('0'))
+    nop_income = totals.get('non_operating_income', Decimal('0'))
+    nop_expense = totals.get('non_operating_expense', Decimal('0'))
 
     gross = revenue - cogs
     op = gross - opex
-    net = op - nop  # 영업외는 비용으로 단순 차감 (수익 분리 추후 보강)
+    net = op + nop_income - nop_expense
 
     def pct(numerator: Decimal) -> float:
         if revenue == 0:
@@ -148,8 +205,8 @@ def _build_summary(start: date, end: date, label: str, totals: Dict[str, Decimal
         opex=opex,
         operating_profit=op,
         operating_margin_pct=pct(op),
-        non_operating_income=Decimal('0'),
-        non_operating_expense=nop,
+        non_operating_income=nop_income,
+        non_operating_expense=nop_expense,
         net_profit=net,
         net_margin_pct=pct(net),
     )
@@ -304,13 +361,16 @@ async def get_cash_pl(
     total_revenue = sum(s.revenue for s in summaries) or Decimal('1')
     line_items: List[CashPLLineItem] = []
     for r in rows:
-        cat = _category_of(r.source_account_code)
+        cat = _category_of(r.source_account_code, r.name)
         if cat in ('asset', 'liability', 'equity'):
             continue
         debit = Decimal(str(r.debit or 0))
         credit = Decimal(str(r.credit or 0))
         if cat == 'revenue':
             amt = credit - debit
+        elif cat == 'non_operating':
+            # 영업외수익/비용 둘 다 non_operating 카테고리로 묶음
+            amt = (credit - debit) if _is_non_operating_income(r.source_account_code, r.name) else (debit - credit)
         else:
             amt = debit - credit
         line_items.append(CashPLLineItem(
@@ -361,13 +421,15 @@ async def _aggregate_by_account_in_period(
 
     out = {}
     for r in rows:
-        cat = _category_of(r.source_account_code)
+        cat = _category_of(r.source_account_code, r.name)
         if cat in ('asset', 'liability', 'equity'):
             continue
         debit = Decimal(str(r.debit or 0))
         credit = Decimal(str(r.credit or 0))
         if cat == 'revenue':
             amt = credit - debit
+        elif cat == 'non_operating':
+            amt = (credit - debit) if _is_non_operating_income(r.source_account_code, r.name) else (debit - credit)
         else:
             amt = debit - credit
         out[r.source_account_code] = {
