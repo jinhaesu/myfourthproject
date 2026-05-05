@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
+import toast from 'react-hot-toast'
 import {
   CalendarDaysIcon,
   ArrowPathIcon,
@@ -9,6 +10,7 @@ import {
   CheckCircleIcon,
   CheckIcon,
   XMarkIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency } from '@/utils/format'
@@ -102,6 +104,52 @@ export default function SettlementPage() {
   })
 
   const { tax: taxTickets, bank: bankTickets } = dataQuery.data || { tax: [], bank: [] }
+
+  // 최근 거래 자동 탐색 (세금계산서 OR 통장 거래 둘 중 하나라도 있는 구간)
+  const findRecentMut = useMutation({
+    mutationFn: async () => {
+      const today = new Date()
+      for (let offset = 0; offset < 12; offset++) {
+        const end = new Date(today)
+        end.setDate(end.getDate() - offset * 31)
+        const start = new Date(end)
+        start.setDate(start.getDate() - 31)
+        const startStr = start.toISOString().slice(0, 10)
+        const endStr = end.toISOString().slice(0, 10)
+        try {
+          const [taxR, bankR] = await Promise.all([
+            granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: startStr, endDate: endStr }),
+            granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: startStr, endDate: endStr }),
+          ])
+          const taxItems = Array.isArray(taxR.data) ? taxR.data : taxR.data?.data || []
+          const bankItems = Array.isArray(bankR.data) ? bankR.data : bankR.data?.data || []
+          if (taxItems.length + bankItems.length > 0) {
+            return {
+              start: startStr,
+              end: endStr,
+              taxCount: taxItems.length,
+              bankCount: bankItems.length,
+              monthsBack: offset,
+            }
+          }
+        } catch {
+          // 무시
+        }
+      }
+      return { start: null, end: null, taxCount: 0, bankCount: 0, monthsBack: 0 }
+    },
+    onSuccess: (res) => {
+      if (res.start && res.end) {
+        setFrom(res.start)
+        setTo(res.end)
+        toast.success(
+          `${res.monthsBack === 0 ? '이번달' : `${res.monthsBack}개월 전`} · 매출 ${res.taxCount}건, 입금 ${res.bankCount}건`
+        )
+      } else {
+        toast.error('최근 12개월 내 매칭할 거래가 없습니다.')
+      }
+    },
+  })
 
   // 거래처별 매출 집계 (세금계산서 매출만 — IN)
   // 통장 입금 집계 (BANK_TRANSACTION_TICKET, IN만)
@@ -236,6 +284,14 @@ export default function SettlementPage() {
               className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
             />
           </div>
+          <button
+            onClick={() => findRecentMut.mutate()}
+            disabled={findRecentMut.isPending}
+            className="btn-secondary"
+          >
+            <ClockIcon className="h-3 w-3 mr-1" />
+            {findRecentMut.isPending ? '탐색 중...' : '최근 거래 한 달'}
+          </button>
           <button onClick={() => dataQuery.refetch()} className="btn-secondary">
             <ArrowPathIcon className="h-3 w-3" />
           </button>
@@ -392,7 +448,19 @@ export default function SettlementPage() {
                   {!dataQuery.isLoading && filteredContacts.length === 0 && (
                     <tr>
                       <td colSpan={5} className="text-center py-6 text-2xs text-ink-400">
-                        조건에 맞는 거래처가 없습니다.
+                        <div>조건에 맞는 거래처가 없습니다.</div>
+                        <div className="mt-2">
+                          <button
+                            onClick={() => findRecentMut.mutate()}
+                            disabled={findRecentMut.isPending}
+                            className="text-primary-700 hover:underline font-semibold"
+                          >
+                            ⏱️ 최근 12개월에서 매출 + 입금 자동 탐색
+                          </button>
+                          <div className="text-2xs text-ink-400 mt-1">
+                            세금계산서가 없으면 그랜터에 홈택스 자산이 연동됐는지, 통장 거래가 없으면 계좌 자산이 연동됐는지 확인하세요.
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   )}

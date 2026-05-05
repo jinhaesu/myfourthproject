@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
+import toast from 'react-hot-toast'
 import {
   CalendarDaysIcon,
   ArrowPathIcon,
@@ -9,6 +10,7 @@ import {
   MagnifyingGlassIcon,
   ExclamationTriangleIcon,
   CheckCircleIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency } from '@/utils/format'
@@ -84,6 +86,48 @@ export default function TaxInvoicePage() {
     if (Array.isArray(d)) return d
     return d?.data || []
   }, [ticketsQuery.data])
+
+  // 최근 세금계산서 자동 탐색
+  const findRecentMut = useMutation({
+    mutationFn: async () => {
+      // /granter/recent-activity-period가 모든 타입을 시도하니
+      // TAX_INVOICE_TICKET만 명시적으로 시도하려면 직접 호출
+      const today = new Date()
+      for (let offset = 0; offset < 12; offset++) {
+        const end = new Date(today)
+        end.setDate(end.getDate() - offset * 31)
+        const start = new Date(end)
+        start.setDate(start.getDate() - 31)
+        const startStr = start.toISOString().slice(0, 10)
+        const endStr = end.toISOString().slice(0, 10)
+        try {
+          const r = await granterApi.listTickets({
+            ticketType: 'TAX_INVOICE_TICKET',
+            startDate: startStr,
+            endDate: endStr,
+          })
+          const items = Array.isArray(r.data) ? r.data : r.data?.data || []
+          if (items.length > 0) {
+            return { start: startStr, end: endStr, count: items.length, monthsBack: offset }
+          }
+        } catch {
+          // 무시
+        }
+      }
+      return { start: null, end: null, count: 0, monthsBack: 0 }
+    },
+    onSuccess: (res) => {
+      if (res.start && res.end) {
+        setFrom(res.start)
+        setTo(res.end)
+        toast.success(
+          `${res.monthsBack === 0 ? '이번달' : `${res.monthsBack}개월 전`} 구간 (${res.count}건)`
+        )
+      } else {
+        toast.error('최근 12개월 내 세금계산서가 없습니다. 그랜터에 홈택스 자산이 연동되었는지 확인하세요.')
+      }
+    },
+  })
 
   // 매출/매입 분리: transactionType IN=매출, OUT=매입 (그랜터 관행)
   const salesTickets = useMemo(
@@ -170,6 +214,15 @@ export default function TaxInvoicePage() {
               className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
             />
           </div>
+          <button
+            onClick={() => findRecentMut.mutate()}
+            disabled={findRecentMut.isPending}
+            className="btn-secondary"
+            title="최근 세금계산서가 있는 31일 구간 자동 탐색"
+          >
+            <ClockIcon className="h-3 w-3 mr-1" />
+            {findRecentMut.isPending ? '탐색 중...' : '최근 거래 한 달'}
+          </button>
           <button onClick={() => ticketsQuery.refetch()} className="btn-secondary">
             <ArrowPathIcon className="h-3 w-3" />
           </button>
@@ -342,7 +395,19 @@ export default function TaxInvoicePage() {
               {!ticketsQuery.isLoading && filtered.length === 0 && (
                 <tr>
                   <td colSpan={6} className="text-center py-6 text-2xs text-ink-400">
-                    이 기간에 세금계산서가 없습니다.
+                    <div>이 기간에 세금계산서가 없습니다.</div>
+                    <div className="mt-2 space-y-1">
+                      <button
+                        onClick={() => findRecentMut.mutate()}
+                        disabled={findRecentMut.isPending}
+                        className="text-primary-700 hover:underline font-semibold"
+                      >
+                        ⏱️ 최근 12개월에서 자동 탐색
+                      </button>
+                      <div className="text-2xs text-ink-400">
+                        그랜터 홈택스 자산 연동 상태는 [통합조회 → ⚙️ 설정]에서 확인하세요.
+                      </div>
+                    </div>
                   </td>
                 </tr>
               )}

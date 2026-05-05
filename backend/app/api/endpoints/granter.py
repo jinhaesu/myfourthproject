@@ -72,6 +72,56 @@ async def list_all_assets(only_active: bool = True):
         raise _err(e)
 
 
+@router.get("/diag-tickets")
+async def diag_tickets(
+    start_date: str = Query(..., description="yyyy-MM-dd"),
+    end_date: str = Query(..., description="yyyy-MM-dd"),
+):
+    """
+    모든 ticketType별 그랜터 응답 건수 + 샘플 (어느 타입에 데이터 있는지 즉시 확인).
+    세금계산서/현금영수증 조회 안 될 때 사용.
+    """
+    client = get_granter_client()
+    if not client.is_configured:
+        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
+
+    types = [
+        "EXPENSE_TICKET",
+        "BANK_TRANSACTION_TICKET",
+        "TAX_INVOICE_TICKET",
+        "CASH_RECEIPT_TICKET",
+        "WORKFLOW",
+        "MERCHANT_CARD_TRANSACTION_TICKET",
+        "ECOMMERCE_SETTLEMENT",
+        "PG_SETTLEMENT",
+        "SALARY_HISTORY",
+        "MANUAL_TRANSACTION_TICKET",
+    ]
+
+    results = {}
+    for t in types:
+        try:
+            r = await client.list_tickets({
+                "ticketType": t,
+                "startDate": start_date,
+                "endDate": end_date,
+            })
+            items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+            results[t] = {
+                "count": len(items),
+                "sample_keys": list(items[0].keys()) if items else None,
+                "sample_first": items[0] if items else None,
+            }
+        except GranterAPIError as e:
+            results[t] = {"error": str(e)[:200], "status_code": e.status_code}
+
+    return {
+        "period": {"start": start_date, "end": end_date},
+        "ticket_types": results,
+        "hint": "count > 0인 타입은 데이터 존재. 모두 0이면 그랜터에 해당 자산 미연동 또는 기간 외 데이터.",
+    }
+
+
 @router.get("/asset-debug")
 async def asset_debug(
     account_number: Optional[str] = Query(None, description="계좌번호(부분 일치)"),
