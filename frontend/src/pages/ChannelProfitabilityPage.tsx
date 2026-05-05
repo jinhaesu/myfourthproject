@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
@@ -18,7 +18,11 @@ import {
   ResponsiveContainer,
   Cell,
   Legend,
+  PieChart,
+  Pie,
+  Sector,
 } from 'recharts'
+import type { PieSectorDataItem } from 'recharts/types/polar/Pie'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, formatPct, isoLocal } from '@/utils/format'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
@@ -38,46 +42,47 @@ export const CHANNEL_RULES: { key: string; label: string; keywords: string[]; co
 ]
 
 // ─── 헬퍼 함수 ───────────────────────────────────────────────────────────────
-function num(obj: any, ...keys: string[]): number {
+function num(obj: unknown, ...keys: string[]): number {
   for (const k of keys) {
-    const v = obj?.[k]
+    const v = (obj as Record<string, unknown>)?.[k]
     if (v !== undefined && v !== null && v !== '') return Number(v) || 0
   }
   return 0
 }
-function str(obj: any, ...keys: string[]): string {
+function str(obj: unknown, ...keys: string[]): string {
   for (const k of keys) {
-    const v = obj?.[k]
+    const v = (obj as Record<string, unknown>)?.[k]
     if (v !== undefined && v !== null && v !== '') return String(v)
   }
   return ''
 }
 
 /** SettlementPage 패턴과 동일한 거래처 추출 */
-function extractContact(t: any): string {
-  if (t?.taxInvoice) {
-    const ti = t.taxInvoice
+function extractContact(t: unknown): string {
+  const tx = t as Record<string, unknown>
+  if (tx?.taxInvoice) {
+    const ti = tx.taxInvoice as Record<string, unknown>
     if (str(t, 'transactionType') === 'IN')
       return str(ti?.contractor, 'companyName') || str(ti?.supplier, 'companyName') || '(미지정)'
     return str(ti?.supplier, 'companyName') || str(ti?.contractor, 'companyName') || '(미지정)'
   }
-  if (t?.cashReceipt) {
-    return str(t.cashReceipt?.issuer, 'companyName') || str(t.cashReceipt?.issuer, 'userName') || '(미지정)'
+  if (tx?.cashReceipt) {
+    const cr = tx.cashReceipt as Record<string, unknown>
+    return str(cr?.issuer, 'companyName') || str(cr?.issuer, 'userName') || '(미지정)'
   }
   return (
     str(t, 'contact') ||
-    str(t?.bankTransaction, 'counterparty') ||
-    str(t?.cardUsage, 'storeName') ||
-    str(t?.bankTransaction, 'content') ||
+    str((tx?.bankTransaction as Record<string, unknown>), 'counterparty') ||
+    str((tx?.cardUsage as Record<string, unknown>), 'storeName') ||
+    str((tx?.bankTransaction as Record<string, unknown>), 'content') ||
     str(t, 'content', 'merchantName', 'counterpartyName', 'vendor') ||
     '(미지정)'
   )
 }
 
 function classifyChannel(contactName: string): string {
-  const name = contactName
   for (const rule of CHANNEL_RULES) {
-    if (rule.keywords.some((kw) => name.includes(kw))) return rule.key
+    if (rule.keywords.some((kw) => contactName.includes(kw))) return rule.key
   }
   return 'others'
 }
@@ -97,33 +102,84 @@ interface ChannelRow {
   key: string
   label: string
   color: string
-  // 매출
   revenue: number
   revenueCount: number
-  revenueTickets: any[]
-  // 비용
-  directCost: number      // 채널 키워드 직접 매칭 비용
-  allocatedCost: number   // 매출 점유율 안분 비용
+  revenueTickets: unknown[]
+  directCost: number
+  allocatedCost: number
   totalCost: number
   margin: number
   marginPct: number
-  // 차트용 일별 데이터
-  dailySales: { date: string; revenue: number; cost: number }[]
-  // 직접 비용 티켓
-  directCostTickets: any[]
+  dailySales: { date: string; revenue: number }[]
+  directCostTickets: unknown[]
+}
+
+interface ContactRow {
+  name: string
+  count: number
+  revenue: number
+  avgPrice: number
+  sharePct: number
+}
+
+// ─── Recharts 커스텀 ActiveShape ──────────────────────────────────────────────
+function renderActiveShape(props: PieSectorDataItem) {
+  const {
+    cx = 0, cy = 0,
+    innerRadius = 0, outerRadius = 0,
+    startAngle = 0, endAngle = 0,
+    fill = '#ccc',
+    payload,
+    percent = 0,
+  } = props
+  const RADIAN = Math.PI / 180
+  const midAngle = (startAngle + endAngle) / 2
+  const sin = Math.sin(-RADIAN * midAngle)
+  const cos = Math.cos(-RADIAN * midAngle)
+  const mx = cx + (outerRadius + 16) * cos
+  const my = cy + (outerRadius + 16) * sin
+  const ex = mx + (cos >= 0 ? 1 : -1) * 10
+  const ey = my
+  const anchor = cos >= 0 ? 'start' : 'end'
+  const name = (payload as { label?: string; name?: string })?.label ?? (payload as { name?: string })?.name ?? ''
+  const value = (payload as { revenue?: number })?.revenue ?? 0
+
+  return (
+    <g>
+      <Sector
+        cx={cx} cy={cy}
+        innerRadius={innerRadius} outerRadius={outerRadius + 4}
+        startAngle={startAngle} endAngle={endAngle}
+        fill={fill}
+      />
+      <path d={`M${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={1.5} />
+      <circle cx={ex} cy={ey} r={2} fill={fill} />
+      <text x={ex + (cos >= 0 ? 4 : -4)} y={ey} textAnchor={anchor} fill="#374151" fontSize={9} fontWeight={600}>
+        {name}
+      </text>
+      <text x={ex + (cos >= 0 ? 4 : -4)} y={ey + 12} textAnchor={anchor} fill="#6b7280" fontSize={8}>
+        {formatCompactWon(value)} ({(percent * 100).toFixed(1)}%)
+      </text>
+    </g>
+  )
 }
 
 // ─── 메인 컴포넌트 ────────────────────────────────────────────────────────────
 export default function ChannelProfitabilityPage() {
   const [tab, setTab] = useState<AnalysisTab>('bank')
-  const [preset, setPreset] = useState<PeriodPreset>('this_month')
+  // default를 last_30d로 변경
+  const [preset, setPreset] = useState<PeriodPreset>('last_30d')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [pieActiveIdx, setPieActiveIdx] = useState(0)
+  const [detailPieActiveIdx, setDetailPieActiveIdx] = useState(0)
+  // 빈 결과 자동 탐색 가드
+  const autoSearchFired = useRef(false)
 
-  // 초기 기간 설정
+  // 초기 기간 설정 (last_30d)
   useEffect(() => {
-    const r = periodForPreset('this_month')
+    const r = periodForPreset('last_30d')
     setFrom(r.start)
     setTo(r.end)
   }, [])
@@ -184,8 +240,8 @@ export default function ChannelProfitabilityPage() {
           const bankItems = Array.isArray(bankR.data) ? bankR.data : bankR.data?.data || []
           const taxItems  = Array.isArray(taxR.data)  ? taxR.data  : taxR.data?.data  || []
           const inCount =
-            bankItems.filter((t: any) => str(t, 'transactionType') === 'IN').length +
-            taxItems.filter((t: any) => str(t, 'transactionType') === 'IN').length
+            bankItems.filter((t: unknown) => str(t, 'transactionType') === 'IN').length +
+            taxItems.filter((t: unknown) => str(t, 'transactionType') === 'IN').length
           if (inCount > 0) return { start: startStr, end: endStr, count: inCount, monthsBack: offset }
         } catch { /* 무시 */ }
       }
@@ -205,29 +261,44 @@ export default function ChannelProfitabilityPage() {
     },
   })
 
+  // ─── 빈 결과 자동 탐색 (한 번만) ────────────────────────────────────────────
+  useEffect(() => {
+    if (
+      !dataQuery.isLoading &&
+      dataQuery.isFetched &&
+      !autoSearchFired.current &&
+      isConfigured
+    ) {
+      const { bank = [], tax = [], expense: _exp = [] } = dataQuery.data || {}
+      const inCount =
+        (bank as unknown[]).filter((t) => str(t, 'transactionType') === 'IN').length +
+        (tax as unknown[]).filter((t) => str(t, 'transactionType') === 'IN').length
+      if (inCount === 0) {
+        autoSearchFired.current = true
+        findRecentMut.mutate()
+      }
+    }
+  }, [dataQuery.isLoading, dataQuery.isFetched, dataQuery.data, isConfigured, findRecentMut])
+
   // ─── 채널별 수익성 집계 ───────────────────────────────────────────────────
   const channels: ChannelRow[] = useMemo(() => {
     const { bank = [], tax = [], expense = [] } = dataQuery.data || {}
 
-    // 분석 탭에 따라 매출 티켓 선택
-    let salesTickets: any[]
+    let salesTickets: unknown[]
     if (tab === 'bank') {
-      salesTickets = bank.filter((t: any) => str(t, 'transactionType') === 'IN')
+      salesTickets = (bank as unknown[]).filter((t) => str(t, 'transactionType') === 'IN')
     } else {
-      salesTickets = tax.filter((t: any) => str(t, 'transactionType') === 'IN')
+      salesTickets = (tax as unknown[]).filter((t) => str(t, 'transactionType') === 'IN')
     }
 
-    // 비용 티켓: EXPENSE_TICKET(카드) + BANK_TRANSACTION_TICKET OUT(출금)
-    const costTickets: any[] = [
-      ...expense,
-      ...bank.filter((t: any) => str(t, 'transactionType') === 'OUT'),
+    const costTickets: unknown[] = [
+      ...(expense as unknown[]),
+      ...(bank as unknown[]).filter((t) => str(t, 'transactionType') === 'OUT'),
     ]
 
-    // 총 매출 (안분 계산용)
-    const totalRevenue = salesTickets.reduce((s: number, t: any) => s + num(t, 'amount'), 0)
+    const totalRevenue = salesTickets.reduce((s: number, t) => s + num(t, 'amount'), 0)
 
-    // 채널별 매출 집계
-    const revenueMap: Record<string, { tickets: any[]; dailyMap: Record<string, number> }> = {}
+    const revenueMap: Record<string, { tickets: unknown[]; dailyMap: Record<string, number> }> = {}
     for (const t of salesTickets) {
       const contact = extractContact(t)
       const key = classifyChannel(contact)
@@ -237,28 +308,24 @@ export default function ChannelProfitabilityPage() {
       revenueMap[key].dailyMap[date] = (revenueMap[key].dailyMap[date] || 0) + num(t, 'amount')
     }
 
-    // 채널별 직접 비용 + 공통 비용 분리
-    const directCostMap: Record<string, { tickets: any[]; total: number }> = {}
+    const directCostMap: Record<string, { tickets: unknown[]; total: number }> = {}
     let commonCostTotal = 0
 
     for (const t of costTickets) {
       const contact = extractContact(t)
       const key = classifyChannel(contact)
       if (key !== 'others') {
-        // 채널 키워드 매칭 — 해당 채널에 직접 귀속
         if (!directCostMap[key]) directCostMap[key] = { tickets: [], total: 0 }
         directCostMap[key].tickets.push(t)
         directCostMap[key].total += num(t, 'amount')
       } else {
-        // 공통 비용
         commonCostTotal += num(t, 'amount')
       }
     }
 
-    // 채널 리스트 빌드
     const result: ChannelRow[] = Object.entries(revenueMap).map(([key, { tickets, dailyMap }]) => {
       const meta = channelMeta(key)
-      const revenue = tickets.reduce((s: number, t: any) => s + num(t, 'amount'), 0)
+      const revenue = tickets.reduce((s: number, t) => s + num(t, 'amount'), 0)
       const sharePct = totalRevenue > 0 ? revenue / totalRevenue : 0
 
       const directInfo = directCostMap[key] ?? { tickets: [], total: 0 }
@@ -268,10 +335,9 @@ export default function ChannelProfitabilityPage() {
       const margin = revenue - totalCost
       const marginPct = revenue > 0 ? (margin / revenue) * 100 : 0
 
-      // 일별 차트 데이터 (매출)
       const dailySales = Object.entries(dailyMap)
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, rev]) => ({ date: date.slice(5), revenue: rev, cost: 0 }))
+        .map(([date, rev]) => ({ date: date.slice(5), revenue: rev }))
 
       return {
         key,
@@ -308,7 +374,98 @@ export default function ChannelProfitabilityPage() {
     [channels, selectedKey]
   )
 
+  // ─── 일별 stacked BarChart 데이터 ────────────────────────────────────────────
+  const dailyStackedData = useMemo(() => {
+    // 최대 6개 채널 + 기타
+    const topChannels = channels.slice(0, 6)
+    const otherChannels = channels.slice(6)
+
+    const dateSet = new Set<string>()
+    for (const ch of channels) {
+      for (const d of ch.dailySales) dateSet.add(d.date)
+    }
+    const dates = Array.from(dateSet).sort()
+
+    return dates.map((date) => {
+      const row: Record<string, string | number> = { date }
+      for (const ch of topChannels) {
+        const found = ch.dailySales.find((d) => d.date === date)
+        row[ch.label] = found ? found.revenue : 0
+      }
+      if (otherChannels.length > 0) {
+        row['기타'] = otherChannels.reduce((s, ch) => {
+          const found = ch.dailySales.find((d) => d.date === date)
+          return s + (found ? found.revenue : 0)
+        }, 0)
+      }
+      return row
+    })
+  }, [channels])
+
+  // ─── PieChart 데이터 ─────────────────────────────────────────────────────────
+  const pieData = useMemo(() =>
+    channels.map((c) => ({ label: c.label, name: c.label, revenue: c.revenue, fill: c.color })),
+    [channels]
+  )
+
+  // ─── 거래처별 매출 표 (상위 20) ──────────────────────────────────────────────
+  const contactRows: ContactRow[] = useMemo(() => {
+    const { bank = [], tax = [], expense: _exp = [] } = dataQuery.data || {}
+    let salesTickets: unknown[]
+    if (tab === 'bank') {
+      salesTickets = (bank as unknown[]).filter((t) => str(t, 'transactionType') === 'IN')
+    } else {
+      salesTickets = (tax as unknown[]).filter((t) => str(t, 'transactionType') === 'IN')
+    }
+    const totalRevenue = salesTickets.reduce((s: number, t) => s + num(t, 'amount'), 0)
+
+    const map: Record<string, { count: number; revenue: number }> = {}
+    for (const t of salesTickets) {
+      const name = extractContact(t)
+      if (!map[name]) map[name] = { count: 0, revenue: 0 }
+      map[name].count += 1
+      map[name].revenue += num(t, 'amount')
+    }
+    return Object.entries(map)
+      .map(([name, { count, revenue }]) => ({
+        name,
+        count,
+        revenue,
+        avgPrice: count > 0 ? Math.round(revenue / count) : 0,
+        sharePct: totalRevenue > 0 ? (revenue / totalRevenue) * 100 : 0,
+      }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 20)
+  }, [dataQuery.data, tab])
+
+  // ─── 선택 채널 거래 종류별 PieChart 데이터 ───────────────────────────────────
+  const detailTypePieData = useMemo(() => {
+    if (!selected) return []
+    const counts: Record<string, number> = {
+      '세금계산서': 0,
+      '통장입금': 0,
+      '카드·지출': 0,
+    }
+    for (const t of selected.revenueTickets) {
+      const tx = t as Record<string, unknown>
+      if (tx.taxInvoice) counts['세금계산서']++
+      else if (tx.bankTransaction) counts['통장입금']++
+      else counts['카드·지출']++
+    }
+    const colors = ['#6366f1', '#10b981', '#f59e0b']
+    return Object.entries(counts)
+      .filter(([, v]) => v > 0)
+      .map(([name, value], i) => ({ name, value, fill: colors[i % colors.length] }))
+  }, [selected])
+
   const isLoading = dataQuery.isLoading
+
+  // 일별 차트에 표시할 채널 목록 (최대 6개 + '기타')
+  const stackedChannelKeys = useMemo(() => {
+    const keys = channels.slice(0, 6).map((c) => ({ label: c.label, color: c.color }))
+    if (channels.length > 6) keys.push({ label: '기타', color: '#71717a' })
+    return keys
+  }, [channels])
 
   return (
     <div className="space-y-3">
@@ -426,6 +583,144 @@ export default function ChannelProfitabilityPage() {
         </div>
       </div>
 
+      {/* ── 시각화 섹션 (채널 선택 없을 때) ── */}
+      {!selected && channels.length > 0 && (
+        <div className="space-y-3">
+          {/* A + C: 채널별 비교 BarChart + PieChart */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {/* A. 채널별 매출/마진 비교 BarChart */}
+            <div className="panel p-3">
+              <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+                채널별 매출 vs 마진
+              </div>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={channels.map((c) => ({
+                      label: c.label,
+                      revenue: c.revenue,
+                      margin: Math.max(c.margin, 0),
+                      marginPct: c.marginPct,
+                      color: c.color,
+                    }))}
+                    margin={{ top: 4, right: 8, bottom: 2, left: 0 }}
+                  >
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fontSize: 9, fill: '#9ca3af' }}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis hide />
+                    <Tooltip
+                      formatter={(v: number, name: string) => [
+                        formatCurrency(v, false) + '원',
+                        name === 'revenue' ? '매출' : '마진',
+                      ]}
+                      labelStyle={{ fontSize: 10 }}
+                      contentStyle={{ fontSize: 10, padding: '4px 8px' }}
+                    />
+                    <Legend
+                      iconSize={8}
+                      wrapperStyle={{ fontSize: 9 }}
+                      formatter={(value) => (value === 'revenue' ? '매출' : '마진')}
+                    />
+                    <Bar dataKey="revenue" radius={[3, 3, 0, 0]} name="revenue">
+                      {channels.map((c, i) => (
+                        <Cell key={i} fill={c.color} fillOpacity={0.4} />
+                      ))}
+                    </Bar>
+                    <Bar dataKey="margin" radius={[3, 3, 0, 0]} name="margin">
+                      {channels.map((c, i) => (
+                        <Cell key={i} fill={c.color} fillOpacity={0.9} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              {/* 마진율 라벨 */}
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {channels.map((c) => (
+                  <span
+                    key={c.key}
+                    className="text-2xs px-1.5 py-0.5 rounded-full font-mono"
+                    style={{ background: `${c.color}18`, color: c.color }}
+                  >
+                    {c.label} {formatPct(c.marginPct)}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* C. 채널 매출 점유율 도넛 PieChart */}
+            <div className="panel p-3">
+              <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+                채널 매출 점유율
+              </div>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      activeIndex={pieActiveIdx}
+                      activeShape={renderActiveShape}
+                      data={pieData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={48}
+                      outerRadius={68}
+                      dataKey="revenue"
+                      onMouseEnter={(_, index) => setPieActiveIdx(index)}
+                    >
+                      {pieData.map((entry, i) => (
+                        <Cell key={i} fill={entry.fill} />
+                      ))}
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          {/* B. 일별 매출 추이 stacked BarChart */}
+          {dailyStackedData.length > 0 && (
+            <div className="panel p-3">
+              <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+                일별 채널 매출 추이 (기간: {actualFrom} ~ {to})
+              </div>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={dailyStackedData} margin={{ top: 4, right: 4, bottom: 2, left: 0 }}>
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fontSize: 8, fill: '#9ca3af' }}
+                      tickLine={false}
+                      axisLine={false}
+                      interval="preserveStartEnd"
+                    />
+                    <YAxis hide />
+                    <Tooltip
+                      formatter={(v: number) => [formatCurrency(v, false) + '원']}
+                      labelStyle={{ fontSize: 10 }}
+                      contentStyle={{ fontSize: 10, padding: '4px 8px' }}
+                    />
+                    <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />
+                    {stackedChannelKeys.map((ch) => (
+                      <Bar
+                        key={ch.label}
+                        dataKey={ch.label}
+                        stackId="daily"
+                        fill={ch.color}
+                        radius={stackedChannelKeys[stackedChannelKeys.length - 1].label === ch.label ? [2, 2, 0, 0] : [0, 0, 0, 0]}
+                      />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── 2-pane: 채널 리스트 + 상세 ── */}
       <div className="grid grid-cols-12 gap-3">
         {/* 좌측: 채널 리스트 */}
@@ -478,7 +773,6 @@ export default function ChannelProfitabilityPage() {
                         </div>
                         <div className="text-2xs text-ink-500">{ch.revenueCount}건</div>
                       </div>
-                      {/* 마진율 배지 */}
                       <span className={`badge text-2xs shrink-0 ${marginColor}`}>
                         {formatPct(ch.marginPct)}
                       </span>
@@ -504,7 +798,6 @@ export default function ChannelProfitabilityPage() {
                         </div>
                       )}
                     </div>
-                    {/* 비용 미니 바 */}
                     {ch.totalCost > 0 && (
                       <div className="mt-1.5 ml-7 flex items-center gap-1.5 text-2xs text-ink-400">
                         <span>비용 {formatCompactWon(ch.totalCost)}</span>
@@ -542,33 +835,41 @@ export default function ChannelProfitabilityPage() {
               </div>
 
               <div className="flex-1 overflow-y-auto p-3 space-y-4">
-                {/* KPI 소계 */}
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="panel px-2.5 py-2 text-center">
+                {/* KPI 소계 (5개) */}
+                <div className="grid grid-cols-5 gap-1.5">
+                  <div className="panel px-2 py-2 text-center">
                     <div className="text-2xs text-ink-500">매출</div>
-                    <div className="font-mono font-bold text-sm text-emerald-700 mt-0.5">
+                    <div className="font-mono font-bold text-xs text-emerald-700 mt-0.5">
                       {formatCompactWon(selected.revenue)}
                     </div>
                   </div>
-                  <div className="panel px-2.5 py-2 text-center">
-                    <div className="text-2xs text-ink-500">총 비용</div>
-                    <div className="font-mono font-bold text-sm text-rose-700 mt-0.5">
-                      {formatCompactWon(selected.totalCost)}
-                    </div>
-                    <div className="text-2xs text-ink-400">
-                      직접 {formatCompactWon(selected.directCost)} + 안분 {formatCompactWon(selected.allocatedCost)}
+                  <div className="panel px-2 py-2 text-center">
+                    <div className="text-2xs text-ink-500">직접비용</div>
+                    <div className="font-mono font-bold text-xs text-rose-700 mt-0.5">
+                      {formatCompactWon(selected.directCost)}
                     </div>
                   </div>
-                  <div className="panel px-2.5 py-2 text-center">
+                  <div className="panel px-2 py-2 text-center">
+                    <div className="text-2xs text-ink-500">안분비용</div>
+                    <div className="font-mono font-bold text-xs text-rose-600 mt-0.5">
+                      {formatCompactWon(selected.allocatedCost)}
+                    </div>
+                  </div>
+                  <div className="panel px-2 py-2 text-center">
                     <div className="text-2xs text-ink-500">마진</div>
-                    <div className={`font-mono font-bold text-sm mt-0.5 ${selected.margin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+                    <div className={`font-mono font-bold text-xs mt-0.5 ${selected.margin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
                       {formatCompactWon(selected.margin)}
                     </div>
-                    <div className="text-2xs text-ink-400">{formatPct(selected.marginPct)}</div>
+                  </div>
+                  <div className="panel px-2 py-2 text-center">
+                    <div className="text-2xs text-ink-500">마진율</div>
+                    <div className={`font-mono font-bold text-xs mt-0.5 ${selected.marginPct >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+                      {formatPct(selected.marginPct)}
+                    </div>
                   </div>
                 </div>
 
-                {/* 매출 + 비용 추이 차트 */}
+                {/* 일별 매출 추이 BarChart */}
                 {selected.dailySales.length > 0 && (
                   <div>
                     <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
@@ -586,25 +887,62 @@ export default function ChannelProfitabilityPage() {
                           />
                           <YAxis hide />
                           <Tooltip
-                            formatter={(v: number, name: string) => [
-                              formatCurrency(v, false) + '원',
-                              name === 'revenue' ? '매출' : '비용',
-                            ]}
+                            formatter={(v: number) => [formatCurrency(v, false) + '원', '매출']}
                             labelStyle={{ fontSize: 10 }}
                             contentStyle={{ fontSize: 10, padding: '4px 8px' }}
                           />
-                          <Legend
-                            iconSize={8}
-                            wrapperStyle={{ fontSize: 9 }}
-                            formatter={(value) => (value === 'revenue' ? '매출' : '비용')}
-                          />
-                          <Bar dataKey="revenue" radius={[2, 2, 0, 0]}>
+                          <Bar dataKey="revenue" radius={[2, 2, 0, 0]} name="매출">
                             {selected.dailySales.map((_, i) => (
                               <Cell key={i} fill={selected.color} fillOpacity={0.85} />
                             ))}
                           </Bar>
                         </BarChart>
                       </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+
+                {/* 거래 종류별 분포 PieChart */}
+                {detailTypePieData.length > 0 && (
+                  <div>
+                    <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+                      거래 종류별 분포
+                    </div>
+                    <div className="h-32">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            activeIndex={detailPieActiveIdx}
+                            activeShape={renderActiveShape}
+                            data={detailTypePieData}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={36}
+                            outerRadius={52}
+                            dataKey="value"
+                            onMouseEnter={(_, index) => setDetailPieActiveIdx(index)}
+                          >
+                            {detailTypePieData.map((entry, i) => (
+                              <Cell key={i} fill={entry.fill} />
+                            ))}
+                          </Pie>
+                          <Tooltip
+                            formatter={(v: number) => [`${v}건`]}
+                            contentStyle={{ fontSize: 10, padding: '4px 8px' }}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {detailTypePieData.map((d) => (
+                        <span
+                          key={d.name}
+                          className="text-2xs flex items-center gap-1"
+                        >
+                          <span className="h-1.5 w-1.5 rounded-full inline-block" style={{ background: d.fill }} />
+                          {d.name} {d.value}건
+                        </span>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -632,50 +970,149 @@ export default function ChannelProfitabilityPage() {
         )}
       </div>
 
-      {/* ── 전체 채널 비교 차트 (상세 패널 닫힌 경우) ── */}
-      {!selected && channels.length > 0 && (
-        <div className="panel p-3">
-          <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
-            채널별 매출 vs 마진 비교
+      {/* ── 거래처별 매출 표 (상위 20) ── */}
+      {!selected && contactRows.length > 0 && (
+        <div className="panel overflow-hidden">
+          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
+            <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
+              거래처별 매출 (상위 20)
+            </span>
+            <span className="text-2xs text-ink-400">매출 큰 순</span>
           </div>
-          <div className="h-44">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={channels.map((c) => ({ label: c.label, revenue: c.revenue, margin: Math.max(c.margin, 0), color: c.color }))}
-                margin={{ top: 2, right: 4, bottom: 2, left: 0 }}
-              >
-                <XAxis
-                  dataKey="label"
-                  tick={{ fontSize: 9, fill: '#9ca3af' }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis hide />
-                <Tooltip
-                  formatter={(v: number, name: string) => [
-                    formatCurrency(v, false) + '원',
-                    name === 'revenue' ? '매출' : '마진',
-                  ]}
-                  labelStyle={{ fontSize: 10 }}
-                  contentStyle={{ fontSize: 10, padding: '4px 8px' }}
-                />
-                <Legend
-                  iconSize={8}
-                  wrapperStyle={{ fontSize: 9 }}
-                  formatter={(value) => (value === 'revenue' ? '매출' : '마진')}
-                />
-                <Bar dataKey="revenue" radius={[3, 3, 0, 0]} fill="#d1d5db" opacity={0.6}>
-                  {channels.map((c, i) => (
-                    <Cell key={i} fill={c.color} fillOpacity={0.4} />
-                  ))}
-                </Bar>
-                <Bar dataKey="margin" radius={[3, 3, 0, 0]}>
-                  {channels.map((c, i) => (
-                    <Cell key={i} fill={c.color} fillOpacity={0.9} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="overflow-x-auto">
+            <table className="w-full text-2xs">
+              <thead>
+                <tr className="border-b border-ink-100">
+                  <th className="px-3 py-1.5 text-left text-ink-500 font-semibold w-6">#</th>
+                  <th className="px-3 py-1.5 text-left text-ink-500 font-semibold">거래처명</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold w-16">건수</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold w-24">매출 합계</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold w-24">평균 단가</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold w-16">점유율</th>
+                </tr>
+              </thead>
+              <tbody>
+                {contactRows.map((row, idx) => (
+                  <tr key={idx} className="border-b border-ink-50 hover:bg-canvas-50">
+                    <td className="px-3 py-1.5 font-mono text-ink-400">{idx + 1}</td>
+                    <td className="px-3 py-1.5 font-medium text-ink-800 max-w-[12rem] truncate">{row.name}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-ink-600">{row.count.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-right font-mono font-semibold text-emerald-700">
+                      {formatCurrency(row.revenue, false)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-ink-600">
+                      {formatCurrency(row.avgPrice, false)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <div className="w-12 h-1.5 rounded-full bg-ink-100 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-primary-500"
+                            style={{ width: `${Math.min(row.sharePct, 100)}%` }}
+                          />
+                        </div>
+                        <span className="font-mono text-ink-600">{formatPct(row.sharePct)}</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── 기간별 채널 합계 표 ── */}
+      {!selected && channels.length > 0 && (
+        <div className="panel overflow-hidden">
+          <div className="px-3 py-2 border-b border-ink-200">
+            <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
+              기간 합계 ({actualFrom} ~ {to})
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-2xs">
+              <thead>
+                <tr className="border-b border-ink-100">
+                  <th className="px-3 py-1.5 text-left text-ink-500 font-semibold">채널</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">건수</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">매출 합계</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">직접 비용</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">안분 비용</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">총 비용</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">마진</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">마진율</th>
+                </tr>
+              </thead>
+              <tbody>
+                {channels.map((ch) => (
+                  <tr
+                    key={ch.key}
+                    className="border-b border-ink-50 hover:bg-canvas-50 cursor-pointer"
+                    onClick={() => setSelectedKey(ch.key)}
+                  >
+                    <td className="px-3 py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="h-2 w-2 rounded-full shrink-0" style={{ background: ch.color }} />
+                        <span className="font-semibold text-ink-800">{ch.label}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-ink-600">{ch.revenueCount}</td>
+                    <td className="px-3 py-1.5 text-right font-mono font-semibold text-emerald-700">
+                      {formatCurrency(ch.revenue, false)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-rose-600">
+                      {formatCurrency(ch.directCost, false)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-rose-400">
+                      {formatCurrency(ch.allocatedCost, false)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-rose-700">
+                      {formatCurrency(ch.totalCost, false)}
+                    </td>
+                    <td className={`px-3 py-1.5 text-right font-mono font-semibold ${ch.margin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+                      {ch.margin >= 0 ? '+' : ''}{formatCurrency(ch.margin, false)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      <span className={`badge text-2xs ${
+                        ch.marginPct >= 20
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : ch.marginPct >= 0
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-rose-50 text-rose-700 border-rose-200'
+                      }`}>
+                        {formatPct(ch.marginPct)}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {/* 합계 행 */}
+                <tr className="border-t-2 border-ink-200 bg-ink-50 font-semibold">
+                  <td className="px-3 py-1.5 text-ink-700">합계</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-ink-700">
+                    {channels.reduce((s, c) => s + c.revenueCount, 0)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-emerald-700">
+                    {formatCurrency(summary.totalRevenue, false)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-rose-600">
+                    {formatCurrency(channels.reduce((s, c) => s + c.directCost, 0), false)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-rose-400">
+                    {formatCurrency(channels.reduce((s, c) => s + c.allocatedCost, 0), false)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-rose-700">
+                    {formatCurrency(summary.totalCost, false)}
+                  </td>
+                  <td className={`px-3 py-1.5 text-right font-mono ${summary.totalMargin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+                    {summary.totalMargin >= 0 ? '+' : ''}{formatCurrency(summary.totalMargin, false)}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-ink-700">
+                    {formatPct(summary.avgMarginPct)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -696,7 +1133,7 @@ function TxTable({
   amountColor,
 }: {
   title: string
-  tickets: any[]
+  tickets: unknown[]
   color: string
   amountColor: string
 }) {
@@ -718,10 +1155,11 @@ function TxTable({
           const contact = extractContact(t)
           const date    = str(t, 'transactAt', 'date').slice(0, 10)
           const desc    = str(t, 'content', 'description')
-          const type    = t.taxInvoice ? '세금계산서' : t.cardUsage ? '카드' : '통장'
+          const tx      = t as Record<string, unknown>
+          const type    = tx.taxInvoice ? '세금계산서' : tx.cardUsage ? '카드' : '통장'
           return (
             <div
-              key={t.id || idx}
+              key={idx}
               className="flex items-start justify-between text-2xs border border-ink-100 bg-canvas-50 rounded p-1.5 gap-2"
             >
               <div className="min-w-0 flex-1 space-y-0.5">
@@ -751,3 +1189,4 @@ function TxTable({
     </div>
   )
 }
+

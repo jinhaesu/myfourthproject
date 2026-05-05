@@ -13,6 +13,21 @@ import {
   ArrowsRightLeftIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
+import {
+  PieChart,
+  Pie,
+  Cell,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  CartesianGrid,
+  Legend,
+} from 'recharts'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, isoLocal, flattenTickets } from '@/utils/format'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
@@ -70,6 +85,13 @@ interface ContactScore {
   score: number       // 0~100
   grade: Grade
   breakdown: ScoreBreakdown
+}
+
+/** 거래처별 일별 거래 데이터 (LineChart용) */
+interface DailyTx {
+  date: string
+  in: number
+  out: number
 }
 
 // ─────────────────────────────────────────────
@@ -167,14 +189,12 @@ function scoreContacts(tickets: any[]): ContactScore[] {
     const payFreq = Math.min(25, Math.round((outCount / 5) * 25))
 
     // --- 2. 결제 정시성 (0~25): 매입 세금계산서 발행일 vs 최초 OUT 날짜 간격 ---
-    // 발행일 대비 가장 가까운 OUT 날짜를 매칭해 평균 계산
     let avgPayDays = 0
     let payPunct = 12 // 데이터 없으면 중간값
     if (row.taxIssueDates.length > 0 && row.outDates.length > 0) {
       const sortedOut = [...row.outDates].sort()
       const gaps: number[] = []
       for (const issueDate of row.taxIssueDates) {
-        // 발행일 이후 가장 가까운 OUT 날짜 찾기
         const afterOut = sortedOut.find((d) => d >= issueDate)
         if (afterOut) {
           const gap = daysBetween(issueDate, afterOut)
@@ -183,7 +203,6 @@ function scoreContacts(tickets: any[]): ContactScore[] {
       }
       if (gaps.length > 0) {
         avgPayDays = Math.round(gaps.reduce((s, v) => s + v, 0) / gaps.length)
-        // 즉시(0~3일)=25, 7일=22, 15일=18, 30일=13, 60일=7, 90일+=2
         payPunct =
           avgPayDays <= 3 ? 25 :
           avgPayDays <= 7 ? 22 :
@@ -192,7 +211,6 @@ function scoreContacts(tickets: any[]): ContactScore[] {
           avgPayDays <= 60 ? 7 : 2
       }
     } else if (row.outDates.length >= 2) {
-      // 세금계산서 없으면 OUT 간격으로 대체
       const sortedOut = [...row.outDates].sort()
       const gaps: number[] = []
       for (let i = 1; i < sortedOut.length; i++) {
@@ -261,6 +279,24 @@ function scoreContacts(tickets: any[]): ContactScore[] {
   return results.sort((a, b) => b.score - a.score)
 }
 
+/** 특정 거래처의 일별 IN/OUT 집계 (LineChart용) */
+function buildDailyTx(tickets: any[], contactName: string): DailyTx[] {
+  const dayMap: Record<string, { in: number; out: number }> = {}
+  for (const t of tickets) {
+    if (extractContact(t) !== contactName) continue
+    const dateStr = str(t, 'transactAt', 'date').slice(0, 10)
+    if (!dateStr) continue
+    const txType = str(t, 'transactionType')
+    const amount = num(t, 'amount')
+    if (!dayMap[dateStr]) dayMap[dateStr] = { in: 0, out: 0 }
+    if (txType === 'IN') dayMap[dateStr].in += amount
+    else if (txType === 'OUT') dayMap[dateStr].out += amount
+  }
+  return Object.entries(dayMap)
+    .map(([date, v]) => ({ date, in: v.in, out: v.out }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+}
+
 // ─────────────────────────────────────────────
 // 등급별 색상
 // ─────────────────────────────────────────────
@@ -279,6 +315,15 @@ const GRADE_BG: Record<Grade, string> = {
   B:   'bg-cyan-400',
   C:   'bg-amber-400',
   D:   'bg-rose-500',
+}
+/** Recharts Cell용 hex 색상 */
+const GRADE_HEX: Record<Grade, string> = {
+  'A+': '#10b981',
+  A:   '#34d399',
+  'B+': '#06b6d4',
+  B:   '#67e8f9',
+  C:   '#f59e0b',
+  D:   '#f43f5e',
 }
 
 // ─────────────────────────────────────────────
@@ -396,15 +441,296 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 // ─────────────────────────────────────────────
-// 상세 패널
+// 커스텀 툴팁 (Recharts)
+// ─────────────────────────────────────────────
+function ChartTooltip({ active, payload, label, formatter }: any) {
+  if (!active || !payload || !payload.length) return null
+  return (
+    <div className="rounded-md border border-ink-200 bg-white shadow-md px-2.5 py-2 text-2xs">
+      {label && <div className="font-semibold text-ink-700 mb-1">{label}</div>}
+      {payload.map((p: any, i: number) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: p.color || p.fill }} />
+          <span className="text-ink-600">{p.name}:</span>
+          <span className="font-mono font-semibold text-ink-900">
+            {formatter ? formatter(p.value, p.name) : p.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// 차트 섹션 컴포넌트
+// ─────────────────────────────────────────────
+
+/** A. 등급별 분포 도넛 차트 */
+function GradeDistributionChart({ scores }: { scores: ContactScore[] }) {
+  const GRADES: Grade[] = ['A+', 'A', 'B+', 'B', 'C', 'D']
+  const data = GRADES.map((g) => ({
+    name: g,
+    value: scores.filter((s) => s.grade === g).length,
+  })).filter((d) => d.value > 0)
+
+  if (data.length === 0) return <EmptyChartPlaceholder />
+
+  const total = data.reduce((s, d) => s + d.value, 0)
+
+  return (
+    <div className="panel px-3 py-2.5">
+      <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+        등급별 분포
+      </div>
+      <div className="flex items-center gap-3">
+        <ResponsiveContainer width={120} height={120}>
+          <PieChart>
+            <Pie
+              data={data}
+              cx="50%"
+              cy="50%"
+              innerRadius={32}
+              outerRadius={54}
+              paddingAngle={2}
+              dataKey="value"
+            >
+              {data.map((entry, index) => (
+                <Cell key={index} fill={GRADE_HEX[entry.name as Grade]} />
+              ))}
+            </Pie>
+            <Tooltip
+              content={
+                <ChartTooltip
+                  formatter={(v: number) => `${v}곳 (${Math.round((v / total) * 100)}%)`}
+                />
+              }
+            />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="flex-1 space-y-1">
+          {data.map((d) => (
+            <div key={d.name} className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="inline-block w-2 h-2 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: GRADE_HEX[d.name as Grade] }}
+                />
+                <span className="text-2xs font-bold text-ink-700">{d.name}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-16 h-1 rounded-full bg-ink-100 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.round((d.value / total) * 100)}%`,
+                      backgroundColor: GRADE_HEX[d.name as Grade],
+                    }}
+                  />
+                </div>
+                <span className="text-2xs font-mono text-ink-600 w-8 text-right">
+                  {d.value}곳
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** B. 상위 거래처 매출 가로 막대 차트 */
+function TopContactsBarChart({ scores }: { scores: ContactScore[] }) {
+  const top10 = [...scores]
+    .sort((a, b) => b.totalAmount - a.totalAmount)
+    .slice(0, 10)
+    .map((s) => ({
+      name: s.name.length > 8 ? s.name.slice(0, 8) + '…' : s.name,
+      fullName: s.name,
+      매출IN: Math.round(s.inAmount / 10000),
+      매입OUT: Math.round(s.outAmount / 10000),
+      grade: s.grade,
+      type: s.type,
+    }))
+    .reverse() // 가로 막대는 아래에서 위로 정렬
+
+  if (top10.length === 0) return <EmptyChartPlaceholder />
+
+  return (
+    <div className="panel px-3 py-2.5">
+      <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+        상위 거래처 거래액 (TOP 10, 만원)
+      </div>
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart
+          data={top10}
+          layout="vertical"
+          margin={{ top: 0, right: 8, left: 4, bottom: 0 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e5e7eb" />
+          <XAxis
+            type="number"
+            tick={{ fontSize: 9, fill: '#9ca3af' }}
+            tickFormatter={(v) => `${v.toLocaleString()}만`}
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            tick={{ fontSize: 9, fill: '#374151' }}
+            width={64}
+          />
+          <Tooltip
+            content={
+              <ChartTooltip
+                formatter={(v: number, _name: string) =>
+                  `${v.toLocaleString()}만원`
+                }
+              />
+            }
+          />
+          <Legend
+            iconSize={8}
+            wrapperStyle={{ fontSize: 9, paddingTop: 4 }}
+          />
+          <Bar dataKey="매출IN" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} maxBarSize={14} />
+          <Bar dataKey="매입OUT" stackId="a" fill="#f43f5e" radius={[0, 2, 2, 0]} maxBarSize={14} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+/** C. 점수 분포 히스토그램 */
+function ScoreHistogram({ scores }: { scores: ContactScore[] }) {
+  const bins = [
+    { label: '0~50', min: 0,  max: 50,  fill: '#f43f5e' },
+    { label: '50~60', min: 50, max: 60, fill: '#fb923c' },
+    { label: '60~70', min: 60, max: 70, fill: '#f59e0b' },
+    { label: '70~80', min: 70, max: 80, fill: '#06b6d4' },
+    { label: '80~90', min: 80, max: 90, fill: '#34d399' },
+    { label: '90~100', min: 90, max: 101, fill: '#10b981' },
+  ]
+
+  const data = bins.map((b) => ({
+    label: b.label,
+    count: scores.filter((s) => s.score >= b.min && s.score < b.max).length,
+    fill: b.fill,
+  }))
+
+  if (scores.length === 0) return <EmptyChartPlaceholder />
+
+  return (
+    <div className="panel px-3 py-2.5">
+      <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+        점수 구간별 분포
+      </div>
+      <ResponsiveContainer width="100%" height={130}>
+        <BarChart data={data} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
+          <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#9ca3af' }} />
+          <YAxis tick={{ fontSize: 9, fill: '#9ca3af' }} allowDecimals={false} />
+          <Tooltip
+            content={
+              <ChartTooltip formatter={(v: number) => `${v}곳`} />
+            }
+          />
+          <Bar dataKey="count" name="거래처 수" radius={[2, 2, 0, 0]} maxBarSize={40}>
+            {data.map((entry, index) => (
+              <Cell key={index} fill={entry.fill} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function EmptyChartPlaceholder() {
+  return (
+    <div className="panel px-3 py-2.5 flex items-center justify-center h-32">
+      <span className="text-2xs text-ink-400">데이터 없음</span>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// 매출처 / 매입처 TOP 5 패널
+// ─────────────────────────────────────────────
+function TopContactsPanel({
+  scores,
+  mode,
+}: {
+  scores: ContactScore[]
+  mode: 'sales' | 'purchase'
+}) {
+  const isSales = mode === 'sales'
+  const list = scores
+    .filter((s) => s.type === mode || s.type === 'both')
+    .sort((a, b) => (isSales ? b.inAmount - a.inAmount : b.outAmount - a.outAmount))
+    .slice(0, 5)
+
+  return (
+    <div className="panel px-3 py-2.5">
+      <div className="flex items-center gap-1.5 mb-2">
+        {isSales ? (
+          <BuildingStorefrontIcon className="h-3 w-3 text-emerald-600" />
+        ) : (
+          <TruckIcon className="h-3 w-3 text-amber-600" />
+        )}
+        <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
+          {isSales ? '매출처 TOP 5' : '매입처 TOP 5'}
+        </span>
+      </div>
+      {list.length === 0 ? (
+        <div className="text-2xs text-ink-400 text-center py-3">데이터 없음</div>
+      ) : (
+        <div className="space-y-1.5">
+          {list.map((c, i) => (
+            <div key={c.name} className="flex items-center gap-2">
+              <span className="text-2xs text-ink-400 font-mono w-3">{i + 1}</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-2xs font-medium text-ink-800 truncate">{c.name}</span>
+                  <GradeBadge grade={c.grade} />
+                </div>
+                <div className="text-2xs text-ink-400 font-mono">
+                  {isSales
+                    ? `${c.txCount}건 · ${formatCompactWon(c.inAmount)}`
+                    : `${c.outCount}건 · ${formatCompactWon(c.outAmount)}`}
+                </div>
+              </div>
+              <div
+                className={`text-2xs font-mono font-semibold ${
+                  isSales ? 'text-emerald-700' : 'text-amber-700'
+                }`}
+              >
+                {isSales ? formatCompactWon(c.inAmount) : formatCompactWon(c.outAmount)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// 상세 패널 (거래 추이 LineChart 포함)
 // ─────────────────────────────────────────────
 function ContactDetail({
   contact,
+  tickets,
   onClose,
 }: {
   contact: ContactScore
+  tickets: any[]
   onClose: () => void
 }) {
+  const dailyTx = useMemo(
+    () => buildDailyTx(tickets, contact.name),
+    [tickets, contact.name]
+  )
+
   const gradeDesc: Record<Grade, string> = {
     'A+': '최우량 거래처. 결제가 빠르고 거래 규모·빈도 모두 탁월합니다.',
     A:   '우량 거래처. 결제 주기 및 거래 패턴이 전반적으로 안정적입니다.',
@@ -421,6 +747,13 @@ function ContactDetail({
     C:   '결제 지연 빈번 시 신용 한도 재검토 필요.',
     D:   '선결제 또는 현금 거래 조건 적용 권장.',
   }
+
+  /** LineChart용 만원 단위 변환 */
+  const chartData = dailyTx.map((d) => ({
+    date: d.date.slice(5), // MM-DD
+    'IN(만원)': Math.round(d.in / 10000),
+    'OUT(만원)': Math.round(d.out / 10000),
+  }))
 
   return (
     <div className="panel overflow-hidden flex flex-col sticky top-4 max-h-[calc(100vh-8rem)]">
@@ -476,6 +809,53 @@ function ContactDetail({
             />
           </div>
         </div>
+
+        {/* 거래 추이 LineChart */}
+        {chartData.length > 0 && (
+          <div className="px-3 py-2 border-b border-ink-100">
+            <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+              거래 추이 (일별, 만원)
+            </div>
+            <ResponsiveContainer width="100%" height={110}>
+              <LineChart
+                data={chartData}
+                margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis
+                  dataKey="date"
+                  tick={{ fontSize: 8, fill: '#9ca3af' }}
+                  interval="preserveStartEnd"
+                />
+                <YAxis tick={{ fontSize: 8, fill: '#9ca3af' }} allowDecimals={false} />
+                <Tooltip
+                  content={
+                    <ChartTooltip
+                      formatter={(v: number, _name: string) => `${v.toLocaleString()}만원`}
+                    />
+                  }
+                />
+                <Legend iconSize={7} wrapperStyle={{ fontSize: 9 }} />
+                <Line
+                  type="monotone"
+                  dataKey="IN(만원)"
+                  stroke="#10b981"
+                  strokeWidth={1.5}
+                  dot={chartData.length <= 10 ? { r: 2, fill: '#10b981' } : false}
+                  activeDot={{ r: 3 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="OUT(만원)"
+                  stroke="#f43f5e"
+                  strokeWidth={1.5}
+                  dot={chartData.length <= 10 ? { r: 2, fill: '#f43f5e' } : false}
+                  activeDot={{ r: 3 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
 
         {/* 거래 내역 요약 */}
         <div className="px-3 py-2 border-b border-ink-100">
@@ -536,8 +916,6 @@ function ContactDetail({
 // 메인 페이지
 // ─────────────────────────────────────────────
 export default function ContactScoringPage() {
-  // 기간: 이번달 default
-  // default: last_30d (이번달은 월초 며칠뿐이라 데이터 부족 → 지난 30일이 더 풍부)
   const initialPeriod = periodForPreset('last_30d')
   const [preset, setPreset] = useState<PeriodPreset>('last_30d')
   const [from, setFrom] = useState(initialPeriod.start)
@@ -617,7 +995,7 @@ export default function ContactScoringPage() {
     },
   })
 
-  // 첫 조회 결과가 0건이면 자동 탐색 트리거 (사용자 무한 대기 방지)
+  // 첫 조회 결과가 0건이면 자동 탐색 트리거
   const autoTriedRef = useRef(false)
   useEffect(() => {
     if (
@@ -640,7 +1018,9 @@ export default function ContactScoringPage() {
     const purchaseCount = scores.filter((s) => s.type === 'purchase').length
     const aCount        = scores.filter((s) => s.grade === 'A+' || s.grade === 'A').length
     const dCount        = scores.filter((s) => s.grade === 'D').length
-    return { total: scores.length, salesCount, purchaseCount, aCount, dCount }
+    const totalInAmount  = scores.reduce((s, c) => s + c.inAmount, 0)
+    const totalOutAmount = scores.reduce((s, c) => s + c.outAmount, 0)
+    return { total: scores.length, salesCount, purchaseCount, aCount, dCount, totalInAmount, totalOutAmount }
   }, [scores])
 
   // 필터 + 정렬
@@ -751,7 +1131,7 @@ export default function ContactScoringPage() {
         </div>
       )}
 
-      {/* KPI */}
+      {/* KPI 5개 */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <KPI label="총 거래처" value={kpi.total} tone="neutral" />
         <KPI
@@ -780,7 +1160,77 @@ export default function ContactScoringPage() {
         />
       </div>
 
-      {/* 메인 콘텐츠 */}
+      {/* 시각화 섹션: 차트 3개 + TOP5 패널 2개 */}
+      {scores.length > 0 && (
+        <div className="grid grid-cols-12 gap-3">
+          {/* 차트 A: 등급별 분포 도넛 */}
+          <div className="col-span-12 md:col-span-4">
+            <GradeDistributionChart scores={scores} />
+          </div>
+          {/* 차트 C: 점수 구간별 분포 */}
+          <div className="col-span-12 md:col-span-4">
+            <ScoreHistogram scores={scores} />
+          </div>
+          {/* 매출처/매입처 합산 미니 KPI */}
+          <div className="col-span-12 md:col-span-4 flex flex-col gap-2">
+            <div className="panel px-3 py-2.5 flex-1">
+              <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1.5">
+                기간 합계
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center">
+                  <span className="text-2xs text-ink-500">총 매출 (IN 합계)</span>
+                  <span className="text-xs font-mono font-bold text-emerald-700">
+                    {formatCompactWon(kpi.totalInAmount)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-2xs text-ink-500">총 매입 (OUT 합계)</span>
+                  <span className="text-xs font-mono font-bold text-amber-700">
+                    {formatCompactWon(kpi.totalOutAmount)}
+                  </span>
+                </div>
+                <div className="h-px bg-ink-100" />
+                <div className="flex justify-between items-center">
+                  <span className="text-2xs text-ink-500">순차액 (IN-OUT)</span>
+                  <span
+                    className={`text-xs font-mono font-bold ${
+                      kpi.totalInAmount - kpi.totalOutAmount >= 0
+                        ? 'text-emerald-700'
+                        : 'text-rose-700'
+                    }`}
+                  >
+                    {formatCompactWon(kpi.totalInAmount - kpi.totalOutAmount)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-2xs text-ink-500">평균 신용점수</span>
+                  <span className="text-xs font-mono font-bold text-primary-700">
+                    {scores.length > 0
+                      ? Math.round(scores.reduce((s, c) => s + c.score, 0) / scores.length)
+                      : 0}점
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 차트 B: 상위 거래처 가로 막대 (전체 너비) */}
+          <div className="col-span-12">
+            <TopContactsBarChart scores={scores} />
+          </div>
+
+          {/* 매출처 TOP5 / 매입처 TOP5 */}
+          <div className="col-span-12 md:col-span-6">
+            <TopContactsPanel scores={scores} mode="sales" />
+          </div>
+          <div className="col-span-12 md:col-span-6">
+            <TopContactsPanel scores={scores} mode="purchase" />
+          </div>
+        </div>
+      )}
+
+      {/* 메인 콘텐츠: 테이블 + 상세 패널 */}
       <div className="grid grid-cols-12 gap-3">
         {/* 테이블 영역 */}
         <div className={selected ? 'col-span-7' : 'col-span-12'}>
@@ -957,7 +1407,11 @@ export default function ContactScoringPage() {
         {/* 상세 패널 */}
         {selected && (
           <div className="col-span-5">
-            <ContactDetail contact={selected} onClose={() => setSelected(null)} />
+            <ContactDetail
+              contact={selected}
+              tickets={tickets}
+              onClose={() => setSelected(null)}
+            />
           </div>
         )}
       </div>

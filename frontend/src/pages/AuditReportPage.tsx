@@ -1,5 +1,9 @@
-import { useState } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Legend,
+} from 'recharts'
 import {
   ShieldExclamationIcon,
   ExclamationTriangleIcon,
@@ -7,10 +11,29 @@ import {
   XMarkIcon,
   CheckCircleIcon,
   CheckIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
 } from '@heroicons/react/24/outline'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatDateTime, isoLocal } from '@/utils/format'
+
+// ─── 안전한 직렬화 ────────────────────────────────────────────────────────────
+
+function safeStringify(obj: any): string {
+  const seen = new WeakSet()
+  return JSON.stringify(
+    obj,
+    (_, v) => {
+      if (typeof v === 'object' && v !== null) {
+        if (seen.has(v)) return '[Circular]'
+        seen.add(v)
+      }
+      return v
+    },
+    2
+  )
+}
 
 // ─── 날짜 유틸 ───────────────────────────────────────────────────────────────
 
@@ -28,7 +51,7 @@ function str(obj: any, ...keys: string[]): string {
   return ''
 }
 
-/** 거래처명 추출 — SettlementPage 패턴 그대로 */
+/** 거래처명 추출 — SettlementPage 패턴 */
 function extractContact(t: any): string {
   if (t?.taxInvoice) {
     const ti = t.taxInvoice
@@ -38,7 +61,11 @@ function extractContact(t: any): string {
     return str(ti?.supplier, 'companyName') || str(ti?.contractor, 'companyName') || '(미지정)'
   }
   if (t?.cashReceipt) {
-    return str(t.cashReceipt?.issuer, 'companyName') || str(t.cashReceipt?.issuer, 'userName') || '(미지정)'
+    return (
+      str(t.cashReceipt?.issuer, 'companyName') ||
+      str(t.cashReceipt?.issuer, 'userName') ||
+      '(미지정)'
+    )
   }
   return (
     str(t, 'contact') ||
@@ -50,7 +77,7 @@ function extractContact(t: any): string {
   )
 }
 
-/** API 응답 정규화 — 객체면 values 펼치기 */
+/** API 응답 정규화 */
 function normalizeTickets(data: any): any[] {
   if (!data) return []
   if (Array.isArray(data)) return data
@@ -58,13 +85,17 @@ function normalizeTickets(data: any): any[] {
     const all: any[] = []
     for (const v of Object.values(data)) {
       if (Array.isArray(v)) all.push(...(v as any[]))
+      else if (v && typeof v === 'object' && Array.isArray((v as any).data)) {
+        all.push(...(v as any).data)
+      }
     }
-    return all
+    if (all.length > 0) return all
+    if (Array.isArray((data as any).data)) return (data as any).data
   }
   return []
 }
 
-// ─── Issue 타입 ───────────────────────────────────────────────────────────────
+// ─── 타입 ─────────────────────────────────────────────────────────────────────
 
 type RuleKey =
   | 'anomaly'
@@ -77,6 +108,9 @@ type RuleKey =
   | 'duplicate'
 
 type Severity = 'high' | 'medium' | 'low'
+type Side = 'revenue' | 'expense' | 'neutral'
+type SortKey = 'date' | 'amount' | 'severity'
+type SortDir = 'asc' | 'desc'
 
 interface Issue {
   ticketId: number
@@ -84,42 +118,53 @@ interface Issue {
   ruleKey: RuleKey
   ruleLabel: string
   severity: Severity
+  side: Side
   amount: number
   contact: string
   date: string
   message: string
 }
 
-// ─── 탭 메타 ─────────────────────────────────────────────────────────────────
+// ─── 탭 메타 ──────────────────────────────────────────────────────────────────
 
-type TabKey = 'all' | RuleKey
+type TabKey = 'all' | 'revenue' | 'expense' | RuleKey
 
 interface TabMeta {
+  key: TabKey
   label: string
-  ruleKey?: RuleKey
-  severityColor: string // Tailwind border color for active tab
+  severityColor: string
   badgeClass: string
 }
 
 const TAB_META: TabMeta[] = [
-  { label: '전체',    severityColor: 'border-ink-900 text-ink-900',       badgeClass: 'bg-ink-100 text-ink-700 border-ink-200' },
-  { label: '이상거래',  ruleKey: 'anomaly',        severityColor: 'border-rose-500 text-rose-700',   badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
-  { label: '큰 금액',  ruleKey: 'large',           severityColor: 'border-rose-500 text-rose-700',   badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
-  { label: '새벽',    ruleKey: 'night',            severityColor: 'border-amber-500 text-amber-700', badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
-  { label: '미분류',  ruleKey: 'no_category',      severityColor: 'border-amber-500 text-amber-700', badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
-  { label: '증빙없음', ruleKey: 'no_attachment',   severityColor: 'border-amber-500 text-amber-700', badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
-  { label: '미확인',  ruleKey: 'long_pending',     severityColor: 'border-primary-500 text-primary-700', badgeClass: 'bg-primary-50 text-primary-700 border-primary-200' },
-  { label: '미포함',  ruleKey: 'not_included',     severityColor: 'border-ink-500 text-ink-700',     badgeClass: 'bg-ink-50 text-ink-700 border-ink-200' },
-  { label: '중복',    ruleKey: 'duplicate',        severityColor: 'border-rose-500 text-rose-700',   badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { key: 'all',           label: '전체',   severityColor: 'border-ink-900 text-ink-900',           badgeClass: 'bg-ink-100 text-ink-700 border-ink-200' },
+  { key: 'revenue',       label: '매출사이드', severityColor: 'border-emerald-500 text-emerald-700', badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  { key: 'expense',       label: '비용사이드', severityColor: 'border-rose-400 text-rose-600',       badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { key: 'anomaly',       label: '이상거래', severityColor: 'border-rose-500 text-rose-700',         badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { key: 'duplicate',     label: '중복',    severityColor: 'border-rose-500 text-rose-700',         badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { key: 'large',         label: '큰금액',  severityColor: 'border-rose-500 text-rose-700',         badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
+  { key: 'night',         label: '새벽',    severityColor: 'border-amber-500 text-amber-700',       badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
+  { key: 'no_category',   label: '미분류',  severityColor: 'border-amber-500 text-amber-700',       badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
+  { key: 'no_attachment', label: '증빙없음', severityColor: 'border-amber-500 text-amber-700',      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
+  { key: 'long_pending',  label: '미확인',  severityColor: 'border-primary-500 text-primary-700',   badgeClass: 'bg-primary-50 text-primary-700 border-primary-200' },
+  { key: 'not_included',  label: '미포함',  severityColor: 'border-ink-500 text-ink-700',           badgeClass: 'bg-ink-50 text-ink-700 border-ink-200' },
 ]
 
-// ─── 검출 함수 (단일 순회 + O(n) duplicate) ──────────────────────────────────
+const RULE_COLOR: Record<RuleKey, string> = {
+  anomaly:        'bg-rose-50 text-rose-700 border-rose-200',
+  large:          'bg-rose-50 text-rose-700 border-rose-200',
+  night:          'bg-amber-50 text-amber-700 border-amber-200',
+  no_category:    'bg-amber-50 text-amber-700 border-amber-200',
+  no_attachment:  'bg-amber-50 text-amber-700 border-amber-200',
+  long_pending:   'bg-primary-50 text-primary-700 border-primary-200',
+  not_included:   'bg-ink-50 text-ink-700 border-ink-200',
+  duplicate:      'bg-rose-50 text-rose-700 border-rose-200',
+}
 
-/**
- * 8가지 룰을 단일 순회로 검출한다.
- * duplicate만 사전 그룹핑(Map)으로 O(n) 처리.
- * console.time으로 성능 측정.
- */
+const SEV_ORDER: Record<Severity, number> = { high: 0, medium: 1, low: 2 }
+
+// ─── 검출 함수 (단일 순회 O(n)) ──────────────────────────────────────────────
+
 function detectIssues(tickets: any[]): Issue[] {
   if (!tickets.length) return []
 
@@ -128,17 +173,15 @@ function detectIssues(tickets: any[]): Issue[] {
   const issues: Issue[] = []
   const now = Date.now()
 
-  // 평균 금액 (0 제외)
-  let amountSum = 0
-  let amountCount = 0
+  // 평균 금액
+  let amountSum = 0; let amountCount = 0
   for (const t of tickets) {
     const a = Number(t.amount || 0)
     if (a > 0) { amountSum += a; amountCount++ }
   }
   const avgAmount = amountCount > 0 ? amountSum / amountCount : 0
 
-  // rule 8 사전 처리: 거래처+금액 키 → 타임스탬프 배열 (O(n))
-  // duplicate 여부는 후속 순회에서 이 맵을 조회
+  // duplicate 사전 처리 O(n)
   const dupMap = new Map<string, number[]>()
   for (const t of tickets) {
     const contact = extractContact(t)
@@ -151,7 +194,6 @@ function detectIssues(tickets: any[]): Issue[] {
     if (arr) arr.push(ts)
     else dupMap.set(key, [ts])
   }
-  // 각 그룹에서 24시간 내 다중 건이 있는지 빠른 확인용 Set
   const dupTicketSet = new Set<any>()
   for (const t of tickets) {
     const contact = extractContact(t)
@@ -162,20 +204,21 @@ function detectIssues(tickets: any[]): Issue[] {
     const key = `${contact}||${amount}`
     const arr = dupMap.get(key)
     if (!arr || arr.length < 2) continue
-    // 현재 티켓 ts 기준 24h 내 다른 건이 존재하는지
     const hasPair = arr.some((other) => other !== ts && Math.abs(ts - other) <= 86400000)
     if (hasPair) dupTicketSet.add(t)
   }
 
-  // 단일 순회 — rule 1~7
+  // 단일 순회
   for (const t of tickets) {
     const ticketId = Number(t.id || 0)
     const contact = extractContact(t)
     const amount = Number(t.amount || 0)
     const date = String(t.transactAt || t.transactionDate || t.createdAt || '')
+    const txType = str(t, 'transactionType')
+    const side: Side = txType === 'IN' ? 'revenue' : txType === 'OUT' ? 'expense' : 'neutral'
 
     const push = (ruleKey: RuleKey, ruleLabel: string, severity: Severity, message: string) => {
-      issues.push({ ticketId, ticket: t, ruleKey, ruleLabel, severity, amount, contact, date, message })
+      issues.push({ ticketId, ticket: t, ruleKey, ruleLabel, severity, side, amount, contact, date, message })
     }
 
     // rule 1: anomalyStatus
@@ -185,7 +228,7 @@ function detectIssues(tickets: any[]): Issue[] {
 
     // rule 2: 큰 금액 (avg × 5)
     if (avgAmount > 0 && amount > avgAmount * 5) {
-      push('large', '큰 금액', amount >= 5_000_000 ? 'high' : 'medium',
+      push('large', '큰금액', amount >= 5_000_000 ? 'high' : 'medium',
         `평균(${formatCurrency(Math.round(avgAmount), false)}원)의 5배 초과`)
     }
 
@@ -225,36 +268,61 @@ function detectIssues(tickets: any[]): Issue[] {
 
     // rule 7: 미포함
     if (t.isIncluded === false) {
-      push('not_included', '미포함', amount >= 1_000_000 ? 'medium' : 'low', '회계 미포함 처리 (isIncluded: false)')
+      push('not_included', '미포함', amount >= 1_000_000 ? 'medium' : 'low',
+        '회계 미포함 처리 (isIncluded: false)')
     }
 
-    // rule 8: duplicate (사전 Set 조회)
+    // rule 8: duplicate
     if (dupTicketSet.has(t)) {
       push('duplicate', '중복', 'high',
         `24시간 내 동일 거래처·금액 중복 (${contact}, ${formatCurrency(amount, false)}원)`)
     }
   }
 
-  // 위험도 내림차순 → 금액 내림차순
-  const sev: Record<Severity, number> = { high: 0, medium: 1, low: 2 }
-  issues.sort((a, b) => sev[a.severity] - sev[b.severity] || b.amount - a.amount)
-
+  issues.sort((a, b) => SEV_ORDER[a.severity] - SEV_ORDER[b.severity] || b.amount - a.amount)
   console.timeEnd('[audit] detectIssues')
   return issues
+}
+
+// ─── 자동 탐색 기간 목록 (24개월 거꾸로) ─────────────────────────────────────
+
+function buildFallbackPeriods(): Array<{ start: string; end: string }> {
+  const periods: Array<{ start: string; end: string }> = []
+  const today = new Date()
+  for (let i = 0; i < 24; i++) {
+    const end = new Date(today.getFullYear(), today.getMonth() - i, 0) // 해당 달 말일
+    const start = new Date(end.getFullYear(), end.getMonth() - 1 + 1, 1) // 해당 달 1일
+    // 30일 이내로 클램프
+    const clampedStart = new Date(Math.max(start.getTime(), end.getTime() - 29 * 86400000))
+    periods.push({ start: isoLocal(clampedStart), end: isoLocal(end) })
+  }
+  return periods
 }
 
 // ─── 메인 컴포넌트 ────────────────────────────────────────────────────────────
 
 export default function AuditReportPage() {
-  const initPeriod = periodForPreset('this_month')
-  const [preset, setPreset]   = useState<PeriodPreset>('this_month')
-  const [from,   setFrom]     = useState(initPeriod.start)
-  const [to,     setTo]       = useState(initPeriod.end)
+  const initPeriod = periodForPreset('last_30d')
+  const [preset, setPreset]     = useState<PeriodPreset>('last_30d')
+  const [from,   setFrom]       = useState(initPeriod.start)
+  const [to,     setTo]         = useState(initPeriod.end)
   const [activeTab, setActiveTab] = useState<TabKey>('all')
-  const [selected, setSelected]   = useState<Issue | null>(null)
+  const [selected,  setSelected]  = useState<Issue | null>(null)
+  const [sortKey,   setSortKey]   = useState<SortKey>('severity')
+  const [sortDir,   setSortDir]   = useState<SortDir>('asc')
 
-  const ready      = Boolean(from && to)
-  const exceeds31  = ready && daysBetween(from, to) > 31
+  // 빈 결과 자동 탐색
+  const fallbackPeriods = useRef(buildFallbackPeriods())
+  const fallbackIdx     = useRef(0)
+  const autoSearching   = useRef(false)
+  const [fbFrom, setFbFrom] = useState('')
+  const [fbTo,   setFbTo]   = useState('')
+
+  const effectiveFrom = fbFrom || from
+  const effectiveTo   = fbTo   || to
+
+  const ready     = Boolean(effectiveFrom && effectiveTo)
+  const exceeds31 = ready && daysBetween(effectiveFrom, effectiveTo) > 31
 
   // 그랜터 연결 확인
   const healthQuery = useQuery({
@@ -266,15 +334,16 @@ export default function AuditReportPage() {
 
   // 단일 31일 호출 (chunked 절대 금지)
   const ticketsQuery = useQuery({
-    queryKey: ['audit', from, to],
+    queryKey: ['audit', effectiveFrom, effectiveTo],
     queryFn: () => {
-      let actualStart = from
+      let actualStart = effectiveFrom
       if (exceeds31) {
-        const d = new Date(to); d.setDate(d.getDate() - 30)
+        const d = new Date(effectiveTo)
+        d.setDate(d.getDate() - 30)
         actualStart = isoLocal(d)
       }
       console.time('[audit] listTicketsAllTypes')
-      return granterApi.listTicketsAllTypes(actualStart, to).then((r) => {
+      return granterApi.listTicketsAllTypes(actualStart, effectiveTo).then((r) => {
         console.timeEnd('[audit] listTicketsAllTypes')
         return r.data
       })
@@ -283,35 +352,131 @@ export default function AuditReportPage() {
     retry: false,
   })
 
-  // 동기 계산 — useMemo 없이 렌더 시 직접 계산 (1500건 미만이면 충분히 빠름)
-  const tickets = normalizeTickets(ticketsQuery.data)
-  const issues  = ticketsQuery.isSuccess ? detectIssues(tickets) : []
+  // 빈 결과 자동 탐색 (useEffect + useRef 가드)
+  useEffect(() => {
+    if (!isConfigured) return
+    if (!ticketsQuery.isSuccess) return
+    const tickets = normalizeTickets(ticketsQuery.data)
+    if (tickets.length > 0) {
+      autoSearching.current = false
+      return
+    }
+    if (autoSearching.current) return
+    if (fallbackIdx.current >= fallbackPeriods.current.length) return
+    autoSearching.current = true
+    const next = fallbackPeriods.current[fallbackIdx.current++]
+    setFbFrom(next.start)
+    setFbTo(next.end)
+  }, [ticketsQuery.isSuccess, ticketsQuery.data, isConfigured])
+
+  // 계산
+  const tickets = useMemo(() => normalizeTickets(ticketsQuery.data), [ticketsQuery.data])
+  const issues  = useMemo(
+    () => (ticketsQuery.isSuccess ? detectIssues(tickets) : []),
+    [ticketsQuery.isSuccess, tickets]
+  )
 
   // KPI
-  const totalCount  = issues.length
-  const highCount   = issues.filter((i) => i.severity === 'high').length
-  const mediumCount = issues.filter((i) => i.severity === 'medium').length
-  const lowCount    = issues.filter((i) => i.severity === 'low').length
-  const riskAmount  = (() => {
-    const seen = new Set<number>()
-    let sum = 0
-    for (const i of issues) {
-      if (!seen.has(i.ticketId)) { seen.add(i.ticketId); sum += i.amount }
+  const kpi = useMemo(() => {
+    const totalCount   = issues.length
+    const highCount    = issues.filter((i) => i.severity === 'high').length
+    const mediumCount  = issues.filter((i) => i.severity === 'medium').length
+    const lowCount     = issues.filter((i) => i.severity === 'low').length
+
+    const revIssues = issues.filter((i) => i.side === 'revenue')
+    const expIssues = issues.filter((i) => i.side === 'expense')
+
+    const uniqueAmountSum = (() => {
+      const seen = new Set<number>()
+      let sum = 0
+      for (const i of issues) {
+        if (!seen.has(i.ticketId)) { seen.add(i.ticketId); sum += i.amount }
+      }
+      return sum
+    })()
+
+    const revAmount = revIssues.reduce((s, i) => s + i.amount, 0)
+    const expAmount = expIssues.reduce((s, i) => s + i.amount, 0)
+
+    return {
+      totalCount, highCount, mediumCount, lowCount,
+      revCount: revIssues.length, revAmount,
+      expCount: expIssues.length, expAmount,
+      totalAmount: uniqueAmountSum,
     }
-    return sum
-  })()
+  }, [issues])
 
   // 탭별 카운트
-  const tabCounts: Record<string, number> = { all: totalCount }
-  for (const i of issues) {
-    tabCounts[i.ruleKey] = (tabCounts[i.ruleKey] || 0) + 1
-  }
+  const tabCounts = useMemo(() => {
+    const c: Record<string, number> = { all: issues.length, revenue: 0, expense: 0 }
+    for (const i of issues) {
+      c[i.ruleKey] = (c[i.ruleKey] || 0) + 1
+      if (i.side === 'revenue') c.revenue++
+      if (i.side === 'expense') c.expense++
+    }
+    return c
+  }, [issues])
 
-  // 표시 목록
-  const displayed = activeTab === 'all' ? issues : issues.filter((i) => i.ruleKey === activeTab)
+  // 표시 목록 (탭 필터 + 정렬)
+  const displayed = useMemo(() => {
+    let list = issues
+    if (activeTab === 'revenue') list = issues.filter((i) => i.side === 'revenue')
+    else if (activeTab === 'expense') list = issues.filter((i) => i.side === 'expense')
+    else if (activeTab !== 'all') list = issues.filter((i) => i.ruleKey === activeTab)
+
+    return [...list].sort((a, b) => {
+      let cmp = 0
+      if (sortKey === 'date')     cmp = new Date(a.date).getTime() - new Date(b.date).getTime()
+      if (sortKey === 'amount')   cmp = a.amount - b.amount
+      if (sortKey === 'severity') cmp = SEV_ORDER[a.severity] - SEV_ORDER[b.severity]
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+  }, [issues, activeTab, sortKey, sortDir])
+
+  // 차트 데이터
+  const monthlyChartData = useMemo(() => {
+    const map = new Map<string, { count: number; amount: number }>()
+    for (const i of issues) {
+      if (!i.date) continue
+      const d = new Date(i.date)
+      if (Number.isNaN(d.getTime())) continue
+      const label = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}`
+      const cur = map.get(label) || { count: 0, amount: 0 }
+      map.set(label, { count: cur.count + 1, amount: cur.amount + i.amount })
+    }
+    return Array.from(map.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, v]) => ({ month, ...v }))
+  }, [issues])
+
+  const ruleChartData = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const i of issues) {
+      map.set(i.ruleLabel, (map.get(i.ruleLabel) || 0) + 1)
+    }
+    return Array.from(map.entries())
+      .sort(([, a], [, b]) => b - a)
+      .map(([name, value]) => ({ name, value }))
+  }, [issues])
+
+  const sideChartData = useMemo(() => [
+    { name: '매출사이드', value: kpi.revCount,                              color: '#10b981' },
+    { name: '비용사이드', value: kpi.expCount,                              color: '#f43f5e' },
+    { name: '기타',       value: issues.filter((i) => i.side === 'neutral').length, color: '#94a3b8' },
+  ].filter((d) => d.value > 0), [kpi, issues])
 
   const isLoading  = ticketsQuery.isLoading
   const isAllClean = ticketsQuery.isSuccess && tickets.length > 0 && issues.length === 0
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortKey(key); setSortDir('asc') }
+  }
+
+  const SortIcon = ({ k }: { k: SortKey }) => {
+    if (sortKey !== k) return <span className="opacity-30">↕</span>
+    return <span>{sortDir === 'asc' ? '↑' : '↓'}</span>
+  }
 
   return (
     <div className="space-y-3">
@@ -331,7 +496,12 @@ export default function AuditReportPage() {
             preset={preset}
             from={from}
             to={to}
-            onChange={(p, f, t) => { setPreset(p); setFrom(f); setTo(t) }}
+            onChange={(p, f, t) => {
+              setPreset(p); setFrom(f); setTo(t)
+              setFbFrom(''); setFbTo('')
+              fallbackIdx.current = 0
+              autoSearching.current = false
+            }}
             groups={[
               { label: '월', presets: ['this_month', 'last_month'] },
               { label: '범위', presets: ['last_7d', 'last_30d'] },
@@ -361,22 +531,38 @@ export default function AuditReportPage() {
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
-          {exceeds31 && (
+          {(fbFrom || exceeds31) && (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
-              31일 초과 — 종료일 기준 최근 31일만 조회
+              {fbFrom
+                ? `데이터 없음 — ${fbFrom} ~ ${fbTo} 자동 탐색 중`
+                : '31일 초과 — 종료일 기준 최근 31일만 조회'}
             </div>
           )}
         </div>
       )}
 
-      {/* KPI 카드 */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-        <KpiCard label="총 검출"      value={totalCount}  unit="건" tone="warning" loading={isLoading} />
-        <KpiCard label="고위험"       value={highCount}   unit="건" tone="danger"  loading={isLoading} />
-        <KpiCard label="중위험"       value={mediumCount} unit="건" tone="warning" loading={isLoading} />
-        <KpiCard label="저위험"       value={lowCount}    unit="건" tone="primary" loading={isLoading} />
-        <KpiCard label="위험도 합계"  value={riskAmount}  unit="원" tone="danger"  loading={isLoading} />
+      {/* KPI 카드 8개 */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+        <KpiCard label="총 검출"      value={kpi.totalCount}  unit="건" tone="warning"  loading={isLoading} />
+        <KpiCard label="고위험"       value={kpi.highCount}   unit="건" tone="danger"   loading={isLoading} />
+        <KpiCard label="중위험"       value={kpi.mediumCount} unit="건" tone="warning"  loading={isLoading} />
+        <KpiCard label="저위험"       value={kpi.lowCount}    unit="건" tone="primary"  loading={isLoading} />
+        <KpiCard label="매출사이드 건수" value={kpi.revCount}  unit="건" tone="emerald"  loading={isLoading} />
+        <KpiCard label="매출사이드 금액" value={kpi.revAmount} unit="원" tone="emerald"  loading={isLoading} />
+        <KpiCard label="비용사이드 건수" value={kpi.expCount}  unit="건" tone="danger"   loading={isLoading} />
+        <KpiCard label="비용사이드 금액" value={kpi.expAmount} unit="원" tone="danger"   loading={isLoading} />
       </div>
+
+      {/* 검출 금액 합계 배너 */}
+      {!isLoading && issues.length > 0 && (
+        <div className="panel px-4 py-2 flex items-center justify-between flex-wrap gap-2">
+          <span className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">검출 금액 합계 (중복 제외)</span>
+          <span className="font-mono font-bold text-sm text-rose-700 tabular-nums">
+            {formatCurrency(kpi.totalAmount, false)}
+            <span className="text-2xs text-ink-400 ml-1 font-medium">원</span>
+          </span>
+        </div>
+      )}
 
       {/* 모두 정상 */}
       {isAllClean && (
@@ -389,9 +575,96 @@ export default function AuditReportPage() {
             <div className="text-2xs text-ink-500 mt-1">
               조회 기간 내 {tickets.length.toLocaleString('ko-KR')}건 거래 — 모든 검출 룰을 통과했습니다.
             </div>
-            <div className="text-2xs text-emerald-700 mt-0.5 font-medium">
-              회계사도 좋아할 결과입니다.
+          </div>
+        </div>
+      )}
+
+      {/* 차트 섹션 */}
+      {!isLoading && issues.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+          {/* 월별 검출 추이 */}
+          <div className="panel p-3 lg:col-span-1">
+            <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+              월별 검출 건수
             </div>
+            {monthlyChartData.length === 0 ? (
+              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={140}>
+                <BarChart data={monthlyChartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="month" tick={{ fontSize: 9 }} />
+                  <YAxis tick={{ fontSize: 9 }} allowDecimals={false} />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11 }}
+                    formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']}
+                  />
+                  <Bar dataKey="count" fill="#6366f1" radius={[2, 2, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* 룰별 분포 */}
+          <div className="panel p-3 lg:col-span-1">
+            <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+              룰별 검출 건수
+            </div>
+            {ruleChartData.length === 0 ? (
+              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={140}>
+                <BarChart data={ruleChartData} layout="vertical" margin={{ top: 0, right: 12, left: 4, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis type="number" tick={{ fontSize: 9 }} allowDecimals={false} />
+                  <YAxis dataKey="name" type="category" tick={{ fontSize: 9 }} width={52} />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11 }}
+                    formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']}
+                  />
+                  <Bar dataKey="value" fill="#f43f5e" radius={[0, 2, 2, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* 사이드별 검출 */}
+          <div className="panel p-3 lg:col-span-1">
+            <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+              매출 / 비용 사이드
+            </div>
+            {sideChartData.length === 0 ? (
+              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={140}>
+                <PieChart>
+                  <Pie
+                    data={sideChartData}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={52}
+                    label={({ name, percent }) =>
+                      `${name} ${(percent * 100).toFixed(0)}%`
+                    }
+                    labelLine={false}
+                  >
+                    {sideChartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Legend
+                    iconSize={8}
+                    formatter={(value) => <span style={{ fontSize: 10 }}>{value}</span>}
+                  />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11 }}
+                    formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
       )}
@@ -403,17 +676,18 @@ export default function AuditReportPage() {
           <div className={selected ? 'col-span-7' : 'col-span-12'}>
             <div className="panel overflow-hidden">
               {/* 탭 바 */}
-              <div className="px-3 pt-2 pb-0 border-b border-ink-200 flex items-center gap-0 overflow-x-auto">
+              <div className="px-3 pt-2 pb-0 border-b border-ink-200 flex items-center overflow-x-auto">
                 {TAB_META.map((tab) => {
-                  const key: TabKey = tab.ruleKey ?? 'all'
-                  const cnt = tabCounts[key] || 0
-                  const isActive = activeTab === key
+                  const cnt = tabCounts[tab.key] || 0
+                  const isActive = activeTab === tab.key
                   return (
                     <button
-                      key={key}
-                      onClick={() => setActiveTab(key)}
+                      key={tab.key}
+                      onClick={() => setActiveTab(tab.key)}
                       className={`px-3 py-1.5 text-2xs font-semibold border-b-2 transition -mb-px whitespace-nowrap ${
-                        isActive ? tab.severityColor : 'border-transparent text-ink-500 hover:text-ink-700'
+                        isActive
+                          ? tab.severityColor
+                          : 'border-transparent text-ink-500 hover:text-ink-700'
                       }`}
                     >
                       {tab.label}
@@ -426,33 +700,43 @@ export default function AuditReportPage() {
               </div>
 
               {/* 테이블 */}
-              <div className="overflow-x-auto max-h-[calc(100vh-30rem)] overflow-y-auto">
+              <div className="overflow-x-auto max-h-[calc(100vh-32rem)] overflow-y-auto">
                 <table className="min-w-full">
                   <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-200">
                     <tr>
-                      {['일시', '거래처', '금액', '룰', '위험도', '사유', '확인'].map((h, i) => (
-                        <th
-                          key={h}
-                          className={`px-3 py-1.5 text-2xs font-semibold text-ink-500 uppercase tracking-wider ${
-                            i === 2 ? 'text-right' : i === 4 || i === 6 ? 'text-center' : 'text-left'
-                          }`}
-                        >
-                          {h}
-                        </th>
-                      ))}
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                        <button onClick={() => handleSort('date')} className="flex items-center gap-0.5 hover:text-ink-700">
+                          일시 <SortIcon k="date" />
+                        </button>
+                      </th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">거래처</th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">사이드</th>
+                      <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                        <button onClick={() => handleSort('amount')} className="flex items-center gap-0.5 hover:text-ink-700 ml-auto">
+                          금액 <SortIcon k="amount" />
+                        </button>
+                      </th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">룰</th>
+                      <th className="px-3 py-1.5 text-center text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                        <button onClick={() => handleSort('severity')} className="flex items-center gap-0.5 hover:text-ink-700 mx-auto">
+                          위험도 <SortIcon k="severity" />
+                        </button>
+                      </th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">사유</th>
+                      <th className="px-3 py-1.5 text-center text-2xs font-semibold text-ink-500 uppercase tracking-wider">확인</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-100">
                     {isLoading && (
                       <tr>
-                        <td colSpan={7} className="text-center py-8 text-2xs text-ink-400">
+                        <td colSpan={8} className="text-center py-8 text-2xs text-ink-400">
                           데이터 불러오는 중…
                         </td>
                       </tr>
                     )}
                     {!isLoading && displayed.length === 0 && issues.length > 0 && (
                       <tr>
-                        <td colSpan={7} className="text-center py-6 text-2xs text-ink-400">
+                        <td colSpan={8} className="text-center py-6 text-2xs text-ink-400">
                           이 탭에 검출된 건이 없습니다.
                         </td>
                       </tr>
@@ -465,33 +749,27 @@ export default function AuditReportPage() {
                           onClick={() => setSelected(issue)}
                           className={`cursor-pointer ${isSel ? 'bg-ink-50' : 'hover:bg-canvas-50'}`}
                         >
-                          {/* 일시 */}
                           <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
                             {issue.date ? formatDateTime(issue.date) : '-'}
                           </td>
-                          {/* 거래처 */}
                           <td className="px-3 py-1.5 text-xs text-ink-900">
-                            <div className="font-medium truncate max-w-[140px]">{issue.contact}</div>
+                            <div className="font-medium truncate max-w-[130px]">{issue.contact}</div>
                           </td>
-                          {/* 금액 */}
+                          <td className="px-3 py-1.5 whitespace-nowrap">
+                            <SideBadge side={issue.side} />
+                          </td>
                           <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900">
                             {issue.amount > 0 ? formatCurrency(issue.amount, false) : '-'}
                           </td>
-                          {/* 룰 */}
                           <td className="px-3 py-1.5 whitespace-nowrap">
                             <RuleBadge ruleKey={issue.ruleKey} label={issue.ruleLabel} />
                           </td>
-                          {/* 위험도 */}
                           <td className="px-3 py-1.5 text-center">
                             <SeverityBadge severity={issue.severity} />
                           </td>
-                          {/* 사유 */}
-                          <td className="px-3 py-1.5 text-2xs text-ink-700 max-w-[200px]">
-                            <div className="truncate" title={issue.message}>
-                              {issue.message}
-                            </div>
+                          <td className="px-3 py-1.5 text-2xs text-ink-700 max-w-[180px]">
+                            <div className="truncate" title={issue.message}>{issue.message}</div>
                           </td>
-                          {/* 확인 버튼 */}
                           <td className="px-3 py-1.5 text-center">
                             <button
                               onClick={(e) => e.stopPropagation()}
@@ -513,46 +791,7 @@ export default function AuditReportPage() {
           {/* 우측 디테일 패널 */}
           {selected && (
             <div className="col-span-5">
-              <div className="panel overflow-hidden h-full flex flex-col">
-                <div className="px-3 py-2 border-b border-ink-200 flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <h2 className="text-sm truncate">{selected.contact}</h2>
-                      <SeverityBadge severity={selected.severity} />
-                      <RuleBadge ruleKey={selected.ruleKey} label={selected.ruleLabel} />
-                    </div>
-                    <div className="text-2xs text-ink-500 mt-0.5 font-mono">
-                      {formatCurrency(selected.amount, false)}원
-                      {selected.date ? ` · ${formatDateTime(selected.date)}` : ''}
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setSelected(null)}
-                    className="text-ink-400 hover:text-ink-700 flex-shrink-0"
-                  >
-                    <XMarkIcon className="h-4 w-4" />
-                  </button>
-                </div>
-
-                {/* 검출 사유 */}
-                <div className="px-3 py-2 border-b border-ink-100 bg-canvas-50">
-                  <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-1">
-                    검출 사유
-                  </div>
-                  <div className="text-2xs text-ink-700 flex items-start gap-1">
-                    <span className="text-rose-500">·</span>
-                    <span>{selected.message}</span>
-                  </div>
-                </div>
-
-                {/* Raw JSON */}
-                <div className="flex-1 overflow-y-auto p-3">
-                  <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
-                    티켓 원본 (감사용)
-                  </div>
-                  <RawTicket ticket={selected.ticket} />
-                </div>
-              </div>
+              <DetailPanel issue={selected} onClose={() => setSelected(null)} />
             </div>
           )}
         </div>
@@ -573,6 +812,113 @@ export default function AuditReportPage() {
   )
 }
 
+// ─── 디테일 패널 ──────────────────────────────────────────────────────────────
+
+function DetailPanel({ issue, onClose }: { issue: Issue; onClose: () => void }) {
+  const [rawOpen, setRawOpen] = useState(false)
+
+  const t = issue.ticket
+  const catStr = (() => {
+    const c = t?.expenseCategory
+    if (!c) return null
+    return c?.name ? `${c.name}${c?.code ? ` (${c.code})` : ''}` : null
+  })()
+  const assetName = t?.assetName || t?.asset?.name || t?.bankTransaction?.accountName || ''
+
+  // 검출된 룰 목록 (같은 ticket의 다른 rule)
+  // — 여기서는 단일 issue이므로 현재 rule만 표시
+  const rawStr = (() => {
+    try { return safeStringify(t) }
+    catch { return '(직렬화 실패)' }
+  })()
+
+  return (
+    <div className="panel overflow-hidden h-full flex flex-col">
+      {/* 헤더 */}
+      <div className="px-3 py-2 border-b border-ink-200 flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <h2 className="text-sm font-semibold truncate">{issue.contact}</h2>
+            <SideBadge side={issue.side} />
+          </div>
+          <div className="text-2xs text-ink-500 mt-0.5 font-mono">
+            {issue.date ? formatDateTime(issue.date) : '-'}
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          className="text-ink-400 hover:text-ink-700 flex-shrink-0"
+        >
+          <XMarkIcon className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {/* 핵심 정보 카드 */}
+        <div className="px-3 pt-3 pb-0 grid grid-cols-2 gap-2">
+          <InfoCard label="금액">
+            <span className="font-mono font-bold text-sm text-ink-900 tabular-nums">
+              {issue.amount > 0 ? `${formatCurrency(issue.amount, false)}원` : '-'}
+            </span>
+          </InfoCard>
+          <InfoCard label="구분">
+            <SideBadge side={issue.side} />
+          </InfoCard>
+          <InfoCard label="계정과목">
+            <span className={`text-2xs ${catStr ? 'text-ink-800' : 'text-rose-500 font-medium'}`}>
+              {catStr ?? '미분류'}
+            </span>
+          </InfoCard>
+          <InfoCard label="자산명">
+            <span className="text-2xs text-ink-800 truncate">{assetName || '-'}</span>
+          </InfoCard>
+        </div>
+
+        {/* 검출된 룰 */}
+        <div className="px-3 pt-2">
+          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1">검출 룰</div>
+          <div className="flex flex-wrap gap-1">
+            <RuleBadge ruleKey={issue.ruleKey} label={issue.ruleLabel} />
+            <SeverityBadge severity={issue.severity} />
+          </div>
+          <div className="mt-1.5 text-2xs text-ink-700 flex items-start gap-1">
+            <span className="text-rose-400 mt-0.5">·</span>
+            <span>{issue.message}</span>
+          </div>
+        </div>
+
+        {/* 원본 Raw JSON (접고 펼치기) */}
+        <div className="px-3 pt-3 pb-3">
+          <button
+            onClick={() => setRawOpen((v) => !v)}
+            className="flex items-center gap-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider hover:text-ink-700 transition"
+          >
+            {rawOpen
+              ? <ChevronUpIcon className="h-3 w-3" />
+              : <ChevronDownIcon className="h-3 w-3" />
+            }
+            원본 JSON (감사용)
+          </button>
+          {rawOpen && (
+            <pre className="mt-2 text-2xs font-mono text-ink-700 bg-canvas-50 border border-ink-100 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-72 overflow-y-auto">
+              {rawStr}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function InfoCard({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded border border-ink-100 bg-canvas-50 px-2 py-1.5">
+      <div className="text-2xs text-ink-400 mb-0.5">{label}</div>
+      <div className="flex items-center min-h-[18px]">{children}</div>
+    </div>
+  )
+}
+
 // ─── 서브 컴포넌트 ────────────────────────────────────────────────────────────
 
 function KpiCard({
@@ -588,7 +934,7 @@ function KpiCard({
   }
   return (
     <div className="panel px-3 py-2">
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider truncate">{label}</div>
+      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider truncate leading-tight">{label}</div>
       <div className={`mt-0.5 font-mono tabular-nums font-bold text-sm ${cls[tone]}`}>
         {loading ? (
           <span className="text-ink-300">—</span>
@@ -608,79 +954,12 @@ function SeverityBadge({ severity }: { severity: Severity }) {
   return <span className="badge bg-primary-50 text-primary-700 border-primary-200">저위험</span>
 }
 
-const RULE_COLOR: Record<RuleKey, string> = {
-  anomaly:        'bg-rose-50 text-rose-700 border-rose-200',
-  large:          'bg-rose-50 text-rose-700 border-rose-200',
-  night:          'bg-amber-50 text-amber-700 border-amber-200',
-  no_category:    'bg-amber-50 text-amber-700 border-amber-200',
-  no_attachment:  'bg-amber-50 text-amber-700 border-amber-200',
-  long_pending:   'bg-primary-50 text-primary-700 border-primary-200',
-  not_included:   'bg-ink-50 text-ink-700 border-ink-200',
-  duplicate:      'bg-rose-50 text-rose-700 border-rose-200',
+function SideBadge({ side }: { side: Side }) {
+  if (side === 'revenue') return <span className="badge bg-emerald-50 text-emerald-700 border-emerald-200">매출 IN</span>
+  if (side === 'expense') return <span className="badge bg-rose-50 text-rose-600 border-rose-200">비용 OUT</span>
+  return <span className="badge bg-ink-50 text-ink-500 border-ink-200">기타</span>
 }
 
 function RuleBadge({ ruleKey, label }: { ruleKey: RuleKey; label: string }) {
   return <span className={`badge ${RULE_COLOR[ruleKey]}`}>{label}</span>
-}
-
-/** Raw ticket JSON — 주요 필드 우선, 나머지 JSON.stringify */
-function RawTicket({ ticket }: { ticket: any }) {
-  const TOP_KEYS = [
-    'id', 'ticketType', 'transactionType', 'status', 'anomalyStatus',
-    'isIncluded', 'transactAt', 'createdAt', 'amount', 'attachmentCount', 'messageCount',
-  ]
-
-  const fmtVal = (k: string, v: any): string => {
-    if (v === null || v === undefined) return '-'
-    if ((k === 'amount') && typeof v !== 'object') return `${formatCurrency(Number(v), false)}원`
-    if ((k.endsWith('At') || k.endsWith('Date')) && typeof v === 'string') {
-      try { return formatDateTime(v) } catch { return v }
-    }
-    if (typeof v === 'boolean') return v ? 'true' : 'false'
-    if (typeof v === 'object') return JSON.stringify(v, null, 0).slice(0, 150)
-    return String(v)
-  }
-
-  const topEntries = TOP_KEYS.map((k) => [k, ticket?.[k]] as [string, any]).filter(([, v]) => v !== undefined)
-  const catStr = (() => {
-    const c = ticket?.expenseCategory
-    if (!c) return null
-    return c?.name ? `${c.name} (${c?.code || ''})` : JSON.stringify(c)
-  })()
-
-  const subObjects = ['bankTransaction', 'cardUsage', 'taxInvoice', 'cashReceipt']
-    .map((k) => ({ key: k, val: ticket?.[k] }))
-    .filter(({ val }) => val && typeof val === 'object')
-
-  const Row = ({ k, v }: { k: string; v: any }) => (
-    <div className="flex items-start px-2 py-1 gap-2 border-b border-ink-100 last:border-0">
-      <span className="text-2xs text-ink-400 w-28 flex-shrink-0 font-mono truncate" title={k}>{k}</span>
-      <span className="text-2xs text-ink-800 break-all">{fmtVal(k, v)}</span>
-    </div>
-  )
-
-  return (
-    <div className="space-y-3">
-      <div className="rounded border border-ink-100">
-        {topEntries.map(([k, v]) => <Row key={k} k={k} v={v} />)}
-        <div className="flex items-start px-2 py-1 gap-2 border-b border-ink-100 last:border-0">
-          <span className="text-2xs text-ink-400 w-28 flex-shrink-0 font-mono">expenseCategory</span>
-          <span className={`text-2xs break-all ${catStr ? 'text-ink-800' : 'text-rose-500 font-medium'}`}>
-            {catStr ?? '미분류'}
-          </span>
-        </div>
-      </div>
-
-      {subObjects.map(({ key, val }) => (
-        <div key={key}>
-          <div className="text-2xs text-ink-400 uppercase tracking-wider font-semibold mb-1">{key}</div>
-          <div className="rounded border border-ink-100">
-            {Object.entries(val).filter(([, v]) => v !== null && v !== undefined).map(([k, v]) => (
-              <Row key={k} k={k} v={v} />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  )
 }
