@@ -316,8 +316,9 @@ export default function UnifiedViewPage() {
         d.setDate(d.getDate() - 30)
         actualStart = isoLocal(d)
       }
-      if (selected.scope === 'all' || !selected.ticketType) {
-        // 모든 타입 통합 호출
+      // ticketType이 있으면 무조건 단일 타입 호출 (세금계산서/현금영수증/카드/계좌 등)
+      // ticketType이 없을 때만 모든 타입 통합 호출 (전체 거래 보기)
+      if (!selected.ticketType) {
         return granterApi
           .listTicketsAllTypes(actualStart, to, selected.assetId)
           .then((r) => r.data)
