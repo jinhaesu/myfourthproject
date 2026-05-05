@@ -38,12 +38,18 @@ class GranterClient:
 
     DEFAULT_BASE_URL = "https://app.granter.biz/api/public-docs"
     DEFAULT_TIMEOUT = 30.0
+    # 그랜터가 동시 호출 N개 이상이면 401로 차단 → semaphore로 직렬화
+    _SEMAPHORE = None  # type: ignore
 
     def __init__(self):
+        import asyncio
         self.api_key = os.getenv("GRANTER_API_KEY", "").strip()
         self.base_url = os.getenv("GRANTER_BASE_URL", self.DEFAULT_BASE_URL).rstrip("/")
         self.timeout = float(os.getenv("GRANTER_TIMEOUT", str(self.DEFAULT_TIMEOUT)))
         self._client: Optional[httpx.AsyncClient] = None
+        # 동시 호출 1개로 제한 (그랜터 401 차단 회피)
+        if GranterClient._SEMAPHORE is None:
+            GranterClient._SEMAPHORE = asyncio.Semaphore(1)
 
     @property
     def is_configured(self) -> bool:
@@ -95,26 +101,30 @@ class GranterClient:
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
 
-        try:
-            resp = await client.request(method, path, params=params, json=json, headers=headers)
-        except httpx.TimeoutException as e:
-            # 타임아웃도 재시도 대상
-            if _retry_count < 2:
-                await asyncio.sleep(0.5 * (2 ** _retry_count))
-                return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
-            raise GranterAPIError(f"그랜터 API 타임아웃: {path}", status_code=504) from e
-        except httpx.HTTPError as e:
-            if _retry_count < 2:
-                await asyncio.sleep(0.5 * (2 ** _retry_count))
-                return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
-            raise GranterAPIError(f"그랜터 API 통신 오류: {e}", status_code=502) from e
+        # 글로벌 semaphore로 그랜터 동시 호출 1개로 직렬화 (401 차단 방지) + 호출 간 간격
+        async with GranterClient._SEMAPHORE:  # type: ignore
+            try:
+                resp = await client.request(method, path, params=params, json=json, headers=headers)
+            except httpx.TimeoutException as e:
+                if _retry_count < 2:
+                    await asyncio.sleep(1.0 * (2 ** _retry_count))
+                    return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
+                raise GranterAPIError(f"그랜터 API 타임아웃: {path}", status_code=504) from e
+            except httpx.HTTPError as e:
+                if _retry_count < 2:
+                    await asyncio.sleep(1.0 * (2 ** _retry_count))
+                    return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
+                raise GranterAPIError(f"그랜터 API 통신 오류: {e}", status_code=502) from e
+            # 다음 호출과 간격 100ms (그랜터 부담 경감)
+            await asyncio.sleep(0.1)
 
         # 일시적 실패(401/429/5xx) 자동 재시도 — 그랜터 동시 호출 시 간헐 401 회복
         RETRYABLE_STATUS = {401, 429, 502, 503, 504}
-        if resp.status_code in RETRYABLE_STATUS and _retry_count < 2:
-            wait = 0.5 * (2 ** _retry_count)
+        if resp.status_code in RETRYABLE_STATUS and _retry_count < 3:
+            # 그랜터 차단 회복 시간이 길 수 있어 더 긴 백오프 (1s/3s/9s)
+            wait = 1.0 * (3 ** _retry_count)
             logger.info(
-                "Granter %s %s → %s, retry %d/2 after %.1fs",
+                "Granter %s %s → %s, retry %d/3 after %.1fs",
                 method, path, resp.status_code, _retry_count + 1, wait,
             )
             await asyncio.sleep(wait)
@@ -204,7 +214,10 @@ class GranterClient:
                 logger.warning("Granter assets %s fetch failed: %s", t, e)
                 return t, []
 
-        results = await asyncio.gather(*[_fetch(t) for t in asset_types])
+        # 그랜터 401 차단 회피 — semaphore로 어차피 순차이지만 명시적 순차 처리
+        results = []
+        for t in asset_types:
+            results.append(await _fetch(t))
         return dict(results)
 
     # 메모리 TTL 캐시 (같은 (start, end, asset_id) 조합 5분 캐시)

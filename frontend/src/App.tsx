@@ -1,7 +1,5 @@
-import { useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
-import { granterApi } from '@/services/api'
 import Layout from '@/components/common/Layout'
 import LoginPage from '@/pages/LoginPage'
 import DashboardPage from '@/pages/DashboardPage'
@@ -36,11 +34,6 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
-  // 앱 첫 마운트 시 backend 그랜터 캐시 1회 클리어 — 빈 응답 고착 자동 회복
-  useEffect(() => {
-    granterApi.clearCache().catch(() => {/* 무시 */})
-  }, [])
-
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
