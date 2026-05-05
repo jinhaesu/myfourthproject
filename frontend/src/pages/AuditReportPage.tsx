@@ -172,49 +172,70 @@ function detectIssues(tickets: any[]): Issue[] {
 
   const issues: Issue[] = []
   const now = Date.now()
+  const N = tickets.length
 
-  // 평균 금액
-  let amountSum = 0; let amountCount = 0
-  for (const t of tickets) {
-    const a = Number(t.amount || 0)
-    if (a > 0) { amountSum += a; amountCount++ }
+  // ── 1패스: 티켓별 메타데이터 캐시 (extractContact 호출 1회만) ────────────
+  const contactArr = new Array<string>(N)
+  const amountArr  = new Array<number>(N)
+  const tsArr      = new Array<number>(N)
+  const dateArr    = new Array<string>(N)
+  const txTypeArr  = new Array<string>(N)
+
+  let amountSum = 0
+  let amountCount = 0
+
+  for (let i = 0; i < N; i++) {
+    const t = tickets[i]
+    const amount = Number(t.amount || 0)
+    const date   = String(t.transactAt || t.transactionDate || t.createdAt || '')
+    const ts     = date ? new Date(date).getTime() || 0 : 0
+    const txType = str(t, 'transactionType')
+
+    contactArr[i] = extractContact(t)
+    amountArr[i]  = amount
+    tsArr[i]      = ts
+    dateArr[i]    = date
+    txTypeArr[i]  = txType
+
+    if (amount > 0) { amountSum += amount; amountCount++ }
   }
+
   const avgAmount = amountCount > 0 ? amountSum / amountCount : 0
 
-  // duplicate 사전 처리 O(n)
+  // ── 2패스: 중복 사전 처리 (캐시된 contact/amount/ts 재사용) ─────────────
   const dupMap = new Map<string, number[]>()
-  for (const t of tickets) {
-    const contact = extractContact(t)
-    const amount = Number(t.amount || 0)
-    if (!amount || contact === '(미지정)') continue
-    const ts = new Date(t.transactAt || t.transactionDate || '').getTime()
-    if (!ts) continue
+  for (let i = 0; i < N; i++) {
+    const contact = contactArr[i]
+    const amount  = amountArr[i]
+    const ts      = tsArr[i]
+    if (!amount || contact === '(미지정)' || !ts) continue
     const key = `${contact}||${amount}`
     const arr = dupMap.get(key)
     if (arr) arr.push(ts)
     else dupMap.set(key, [ts])
   }
-  const dupTicketSet = new Set<any>()
-  for (const t of tickets) {
-    const contact = extractContact(t)
-    const amount = Number(t.amount || 0)
-    if (!amount || contact === '(미지정)') continue
-    const ts = new Date(t.transactAt || t.transactionDate || '').getTime()
-    if (!ts) continue
-    const key = `${contact}||${amount}`
-    const arr = dupMap.get(key)
+
+  const dupSet = new Set<number>() // index-based — Set<any>(ticket)는 객체 비교 비용↑
+  for (let i = 0; i < N; i++) {
+    const contact = contactArr[i]
+    const amount  = amountArr[i]
+    const ts      = tsArr[i]
+    if (!amount || contact === '(미지정)' || !ts) continue
+    const arr = dupMap.get(`${contact}||${amount}`)
     if (!arr || arr.length < 2) continue
-    const hasPair = arr.some((other) => other !== ts && Math.abs(ts - other) <= 86400000)
-    if (hasPair) dupTicketSet.add(t)
+    if (arr.some((other) => other !== ts && Math.abs(ts - other) <= 86400000)) {
+      dupSet.add(i)
+    }
   }
 
-  // 단일 순회
-  for (const t of tickets) {
+  // ── 3패스: 룰 검출 ────────────────────────────────────────────────────
+  for (let i = 0; i < N; i++) {
+    const t = tickets[i]
     const ticketId = Number(t.id || 0)
-    const contact = extractContact(t)
-    const amount = Number(t.amount || 0)
-    const date = String(t.transactAt || t.transactionDate || t.createdAt || '')
-    const txType = str(t, 'transactionType')
+    const contact  = contactArr[i]
+    const amount   = amountArr[i]
+    const date     = dateArr[i]
+    const txType   = txTypeArr[i]
     const side: Side = txType === 'IN' ? 'revenue' : txType === 'OUT' ? 'expense' : 'neutral'
 
     const push = (ruleKey: RuleKey, ruleLabel: string, severity: Severity, message: string) => {
@@ -273,7 +294,7 @@ function detectIssues(tickets: any[]): Issue[] {
     }
 
     // rule 8: duplicate
-    if (dupTicketSet.has(t)) {
+    if (dupSet.has(i)) {
       push('duplicate', '중복', 'high',
         `24시간 내 동일 거래처·금액 중복 (${contact}, ${formatCurrency(amount, false)}원)`)
     }
@@ -796,19 +817,22 @@ function DetailPanel({ issue, onClose }: { issue: Issue; onClose: () => void }) 
   const [rawOpen, setRawOpen] = useState(false)
 
   const t = issue.ticket
-  const catStr = (() => {
+  const catStr = useMemo(() => {
     const c = t?.expenseCategory
     if (!c) return null
     return c?.name ? `${c.name}${c?.code ? ` (${c.code})` : ''}` : null
-  })()
-  const assetName = t?.assetName || t?.asset?.name || t?.bankTransaction?.accountName || ''
+  }, [t])
+  const assetName = useMemo(
+    () => t?.assetName || t?.asset?.name || t?.bankTransaction?.accountName || '',
+    [t]
+  )
 
-  // 검출된 룰 목록 (같은 ticket의 다른 rule)
-  // — 여기서는 단일 issue이므로 현재 rule만 표시
-  const rawStr = (() => {
+  // 무거운 safeStringify는 사용자가 펼쳤을 때만 1회 실행 (메인 스레드 freeze 방지)
+  const rawStr = useMemo(() => {
+    if (!rawOpen) return ''
     try { return safeStringify(t) }
     catch { return '(직렬화 실패)' }
-  })()
+  }, [rawOpen, t])
 
   return (
     <div className="panel overflow-hidden h-full flex flex-col">
