@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
+import toast from 'react-hot-toast'
 import {
   Cog6ToothIcon,
   BuildingLibraryIcon,
@@ -13,9 +14,10 @@ import {
   ExclamationTriangleIcon,
   CheckCircleIcon,
   ChartPieIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency, formatCompactWon } from '@/utils/format'
+import { formatCurrency } from '@/utils/format'
 
 type PeriodPreset = 'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
 
@@ -141,19 +143,97 @@ export default function UnifiedViewPage() {
   const securitiesAssets: any[] = useMemo(() => assetsData?.SECURITIES_ACCOUNT || [], [assetsData])
   const ecommerceAssets: any[] = useMemo(() => assetsData?.ECOMMERCE || [], [assetsData])
 
-  // 가용자금: 계좌 잔액 합 (그랜터 자산의 bankAccount.accountBalance 합)
+  // 가용자금: KRW 계좌 잔액만 합 (외화 계좌는 별도 처리)
   const totalCash = useMemo(
-    () => bankAssets.reduce((s, a) => s + num(a?.bankAccount, 'accountBalance', 'originalBalance'), 0),
+    () =>
+      bankAssets.reduce((s, a) => {
+        const ba = a?.bankAccount || {}
+        const code = String(ba?.currencyCode || 'KRW').toUpperCase()
+        if (code !== 'KRW') return s
+        return s + Number(ba?.accountBalance || ba?.originalBalance || 0)
+      }, 0),
+    [bankAssets]
+  )
+  const foreignCashAccounts = useMemo(
+    () =>
+      bankAssets.filter((a) => {
+        const code = String(a?.bankAccount?.currencyCode || 'KRW').toUpperCase()
+        return code !== 'KRW'
+      }),
     [bankAssets]
   )
   const totalSecurities = useMemo(
     () => securitiesAssets.reduce((s, a) => s + num(a?.securitiesAccount, 'totalAmount'), 0),
     [securitiesAssets]
   )
+
+  // 기간 내 자산별 사용/입출금 자동 집계 (모든 ticket 합산)
+  // 31일 초과 시 백엔드가 종료일 기준 31일만 반환
+  const usageQuery = useQuery({
+    queryKey: ['granter-tickets-usage', from, to],
+    queryFn: () => {
+      let actualStart = from
+      if (exceeds31Days) {
+        const d = new Date(to)
+        d.setDate(d.getDate() - 30)
+        actualStart = d.toISOString().slice(0, 10)
+      }
+      return granterApi.listTicketsAllTypes(actualStart, to).then((r) => r.data)
+    },
+    enabled: !!isConfigured && ready,
+    retry: false,
+  })
+
+  // assetId → 기간 내 사용금액 합
+  const usageByAsset = useMemo(() => {
+    const map: Record<number, { total: number; inAmt: number; outAmt: number; count: number }> = {}
+    const data = usageQuery.data || {}
+    for (const tickets of Object.values(data)) {
+      if (!Array.isArray(tickets)) continue
+      for (const t of tickets) {
+        const aid = Number(t.assetId || t.asset?.id || 0)
+        if (!aid) continue
+        const amt = Number(t.amount || 0)
+        const isIn = String(t.transactionType) === 'IN'
+        if (!map[aid]) map[aid] = { total: 0, inAmt: 0, outAmt: 0, count: 0 }
+        map[aid].total += amt
+        if (isIn) map[aid].inAmt += amt
+        else map[aid].outAmt += amt
+        map[aid].count += 1
+      }
+    }
+    return map
+  }, [usageQuery.data])
+
   const totalCardUsed = useMemo(
-    () => cardAssets.reduce((s, a) => s + num(a?.card, 'usedAmount'), 0),
-    [cardAssets]
+    () =>
+      cardAssets.reduce((s, a) => {
+        const id = Number(a?.id || 0)
+        const fromTickets = usageByAsset[id]?.outAmt || 0
+        const fromMeta = num(a?.card, 'usedAmount')
+        return s + (fromTickets > 0 ? fromTickets : fromMeta)
+      }, 0),
+    [cardAssets, usageByAsset]
   )
+
+  // 최근 거래 자동 탐색
+  const findRecentMut = useMutation({
+    mutationFn: () => granterApi.recentActivityPeriod(),
+    onSuccess: (res) => {
+      const d = res.data
+      if (d?.start && d?.end) {
+        setFrom(d.start)
+        setTo(d.end)
+        setPreset('custom')
+        toast.success(
+          `최근 거래 ${d.months_back === 0 ? '이번달' : `${d.months_back}개월 전`} 구간으로 이동 (${d.count}건)`
+        )
+      } else {
+        toast.error('최근 12개월 내 거래를 찾을 수 없습니다.')
+      }
+    },
+    onError: () => toast.error('탐색 실패'),
+  })
 
   // 거래 (선택에 따라 단일 타입 또는 모든 타입 통합)
   const ticketsQuery = useQuery({
@@ -262,6 +342,15 @@ export default function UnifiedViewPage() {
               className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
             />
           </div>
+          <button
+            onClick={() => findRecentMut.mutate()}
+            disabled={findRecentMut.isPending}
+            className="btn-secondary"
+            title="최근 거래가 있는 31일 구간으로 자동 이동"
+          >
+            <ClockIcon className="h-3 w-3 mr-1" />
+            {findRecentMut.isPending ? '탐색 중...' : '최근 거래 한 달'}
+          </button>
           <button onClick={() => ticketsQuery.refetch()} className="btn-secondary" title="새로고침">
             <ArrowPathIcon className="h-3 w-3" />
           </button>
@@ -314,25 +403,32 @@ export default function UnifiedViewPage() {
           {/* 가용자금 + 카드 사용 + 증권 종합 카드 */}
           <div className="panel p-4 space-y-3">
             <div>
-              <div className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">가용자금</div>
-              <div className="mt-1 text-2xl font-bold text-ink-900 tabular-nums tracking-crisp">
+              <div className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">
+                가용자금 (현재 잔액)
+              </div>
+              <div className="mt-1 text-xl font-bold text-ink-900 tabular-nums tracking-crisp">
                 {formatCurrency(totalCash, false)}
                 <span className="text-xs text-ink-400 font-medium ml-1">원</span>
               </div>
-              <div className="text-2xs text-ink-400 mt-0.5">계좌 잔액 합 · {bankAssets.length}개 계좌</div>
+              <div className="text-2xs text-ink-400 mt-0.5">
+                KRW 계좌 잔액 합 · {bankAssets.length}개 계좌
+                {foreignCashAccounts.length > 0 && ` · 외화 ${foreignCashAccounts.length}건 별도`}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100">
               <div>
-                <div className="text-2xs text-ink-500">카드 사용</div>
+                <div className="text-2xs text-ink-500">기간 카드 사용</div>
                 <div className="mt-0.5 text-sm font-semibold text-rose-700 font-mono tabular-nums">
-                  {formatCompactWon(totalCardUsed)}
+                  {formatCurrency(totalCardUsed, false)}
                 </div>
+                <div className="text-2xs text-ink-400 mt-0.5">{usageQuery.isLoading ? '집계 중...' : 'EXPENSE_TICKET'}</div>
               </div>
               <div>
                 <div className="text-2xs text-ink-500">증권 평가</div>
                 <div className="mt-0.5 text-sm font-semibold text-ink-900 font-mono tabular-nums">
-                  {formatCompactWon(totalSecurities)}
+                  {formatCurrency(totalSecurities, false)}
                 </div>
+                <div className="text-2xs text-ink-400 mt-0.5">현재 시점</div>
               </div>
             </div>
           </div>
@@ -363,6 +459,8 @@ export default function UnifiedViewPage() {
               const alias = str(a, 'nickname') || str(ba, 'nickName', 'accountName')
               const acctNum = str(ba, 'accountNumber') || str(a, 'number')
               const balance = num(ba, 'accountBalance', 'originalBalance')
+              const currency = String(ba?.currencyCode || 'KRW').toUpperCase()
+              const periodFlow = usageByAsset[id]
               const isActive = selected.assetId === id
               return (
                 <button
@@ -385,7 +483,7 @@ export default function UnifiedViewPage() {
                       {alias || bankName}
                     </div>
                     <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
-                      {bankName} · {acctNum}
+                      {bankName} · {acctNum} {currency !== 'KRW' && `(${currency})`}
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
@@ -394,8 +492,14 @@ export default function UnifiedViewPage() {
                         isActive ? '' : balance >= 0 ? 'text-ink-900' : 'text-rose-600'
                       }`}
                     >
-                      {formatCompactWon(balance)}
+                      {formatCurrency(balance, false)}
                     </div>
+                    {periodFlow && periodFlow.count > 0 && (
+                      <div className={`text-2xs font-mono ${isActive ? 'text-ink-300' : 'text-ink-400'}`}>
+                        +{formatCurrency(periodFlow.inAmt, false).replace('₩ ', '')} / -
+                        {formatCurrency(periodFlow.outAmt, false).replace('₩ ', '')}
+                      </div>
+                    )}
                   </div>
                 </button>
               )
@@ -427,8 +531,12 @@ export default function UnifiedViewPage() {
               const issuer = str(c, 'organizationName', 'name')
               const alias = str(c, 'nickname')
               const cardNum = str(c, 'number')
-              const used = num(cardInfo, 'usedAmount')
+              // 사용금액: 우선 ticket 합산, fallback으로 자산 메타의 usedAmount
+              const periodUsage = usageByAsset[id]?.outAmt || 0
+              const fallbackUsed = num(cardInfo, 'usedAmount')
+              const used = periodUsage > 0 ? periodUsage : fallbackUsed
               const limit = num(cardInfo, 'limitAmount')
+              const txCount = usageByAsset[id]?.count || 0
               const isActive = selected.assetId === id
               return (
                 <button
@@ -452,15 +560,16 @@ export default function UnifiedViewPage() {
                     </div>
                     <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
                       {issuer} · {cardNum}
+                      {txCount > 0 && ` · ${txCount}건`}
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className={`font-mono tabular-nums font-semibold ${isActive ? '' : 'text-ink-900'}`}>
-                      {formatCompactWon(used)}
+                    <div className={`font-mono tabular-nums font-semibold ${isActive ? '' : 'text-rose-700'}`}>
+                      {formatCurrency(used, false)}
                     </div>
                     {limit > 0 && (
                       <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'}`}>
-                        / {formatCompactWon(limit)}
+                        한도 {formatCurrency(limit, false)}
                       </div>
                     )}
                   </div>
@@ -539,12 +648,12 @@ export default function UnifiedViewPage() {
                     <div className="flex items-center justify-between">
                       <div className="font-medium text-ink-900 truncate">{str(s, 'name')}</div>
                       <div className="font-mono text-ink-700 font-semibold">
-                        {formatCompactWon(num(sa, 'totalAmount'))}
+                        {formatCurrency(num(sa, 'totalAmount'), false)}
                       </div>
                     </div>
-                    <div className="text-2xs text-ink-500 mt-0.5">
-                      예수금 {formatCompactWon(num(sa, 'depositAmount'))} · 평가{' '}
-                      {formatCompactWon(num(sa, 'totalValuationAmount'))}
+                    <div className="text-2xs text-ink-500 mt-0.5 font-mono">
+                      예수금 {formatCurrency(num(sa, 'depositAmount'), false)} · 평가{' '}
+                      {formatCurrency(num(sa, 'totalValuationAmount'), false)}
                     </div>
                   </div>
                 )

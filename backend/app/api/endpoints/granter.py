@@ -72,6 +72,55 @@ async def list_all_assets(only_active: bool = True):
         raise _err(e)
 
 
+@router.get("/recent-activity-period")
+async def recent_activity_period(
+    asset_id: Optional[int] = Query(None),
+    max_lookback_months: int = Query(12, ge=1, le=24),
+):
+    """
+    최근 거래가 있는 31일 구간을 자동 탐색.
+    오늘부터 31일씩 거꾸로 가면서 첫 거래가 발견되는 구간 반환.
+
+    Returns: { "start": "yyyy-MM-dd", "end": "yyyy-MM-dd", "count": N, "lookback_months": M }
+    """
+    from datetime import date, timedelta
+    client = get_granter_client()
+    if not client.is_configured:
+        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
+
+    today = date.today()
+    ticket_types = ["EXPENSE_TICKET", "BANK_TRANSACTION_TICKET", "TAX_INVOICE_TICKET", "CASH_RECEIPT_TICKET"]
+
+    for offset in range(0, max_lookback_months):
+        end = today - timedelta(days=offset * 31)
+        start = end - timedelta(days=31)
+        # 자산 지정이면 그 자산이 속한 타입만 우선 시도, 아니면 모든 타입
+        types_to_try = ticket_types
+        for tt in types_to_try:
+            payload = {
+                "ticketType": tt,
+                "startDate": start.strftime('%Y-%m-%d'),
+                "endDate": end.strftime('%Y-%m-%d'),
+            }
+            if asset_id is not None:
+                payload["assetId"] = asset_id
+            try:
+                r = await client.list_tickets(payload)
+                items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+                if items:
+                    return {
+                        "start": start.isoformat(),
+                        "end": end.isoformat(),
+                        "count": len(items),
+                        "found_in_ticket_type": tt,
+                        "months_back": offset,
+                    }
+            except GranterAPIError:
+                continue
+
+    return {"start": None, "end": None, "count": 0, "lookback_months": max_lookback_months}
+
+
 @router.post("/tickets/all")
 async def list_tickets_all_types(
     start_date: str = Query(..., description="yyyy-MM-dd"),
