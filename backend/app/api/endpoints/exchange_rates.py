@@ -23,19 +23,28 @@ async def get_exchange_timeseries(
     Frankfurter (ECB) 시계열 환율 프록시.
     응답 구조: { base, start_date, end_date, rates: { "YYYY-MM-DD": { CODE: rate } } }
     """
-    url = f"https://api.frankfurter.app/{start_date}..{end_date}"
+    # Frankfurter 도메인이 .app → .dev로 마이그레이션됨 (.app은 301 redirect).
+    # 새 도메인 우선, 실패 시 구 도메인 follow_redirects로 폴백.
+    candidate_urls = [
+        f"https://api.frankfurter.dev/v1/{start_date}..{end_date}",
+        f"https://api.frankfurter.app/{start_date}..{end_date}",
+    ]
     params = {"from": base, "to": targets}
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, params=params)
-        if resp.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Frankfurter API {resp.status_code}: {resp.text[:200]}",
-            )
-        return resp.json()
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Frankfurter API 타임아웃")
-    except httpx.HTTPError as e:
-        logger.exception("Frankfurter fetch failed")
-        raise HTTPException(status_code=502, detail=f"Frankfurter 통신 오류: {e}")
+    last_err: str | None = None
+
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        for url in candidate_urls:
+            try:
+                resp = await client.get(url, params=params)
+                if resp.status_code == 200:
+                    return resp.json()
+                last_err = f"{url} → {resp.status_code}: {resp.text[:200]}"
+                logger.warning("Frankfurter %s", last_err)
+            except httpx.TimeoutException:
+                last_err = f"{url} → 타임아웃"
+                logger.warning("Frankfurter timeout: %s", url)
+            except httpx.HTTPError as e:
+                last_err = f"{url} → {e}"
+                logger.warning("Frankfurter HTTPError: %s", e)
+
+    raise HTTPException(status_code=502, detail=f"Frankfurter API 응답 실패: {last_err}")

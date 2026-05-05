@@ -713,6 +713,10 @@ export const granterApi = {
 
   listTags: () => api.get('/granter/tags'),
   listCategories: () => api.get('/granter/categories'),
+
+  // 지난 N개월 세금계산서에서 거래처 풀 추출 (default 12개월)
+  contractorsPool: (months: number = 12) =>
+    api.get('/granter/contractors-pool', { params: { months } }),
 }
 
 // ==================== 매출·매입·거래처 정산 ====================

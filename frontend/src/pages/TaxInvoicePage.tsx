@@ -28,7 +28,7 @@ const SUPPLIER_DEFAULT = {
   corporateNumber: '131411-0405152',
   companyName: '주식회사 조인앤조인',
   representativeName: '진해수',
-  address: '전북특별자치도 전주시 덕진구 가린대로 458, 2층',
+  address: '전북특별자치도 전주시 덕진구 기린대로 458, 2층',
   businessType: '제조업',
   businessItem: '식품 및 기타 식품제조업',
   email: '',
@@ -43,6 +43,9 @@ interface ContractorSuggestion {
   representativeName: string
   address: string
   email: string
+  phone?: string
+  businessType?: string
+  businessItem?: string
   count: number
 }
 
@@ -735,8 +738,21 @@ export default function TaxInvoicePage() {
     return d?.data || []
   }, [ticketsQuery.data])
 
-  // 기존 티켓에서 거래처 목록 추출 (자동완성용)
-  const contractors = useMemo(() => extractContractors(allTickets), [allTickets])
+  // 거래처 풀: 지난 12개월 세금계산서에서 별도로 모은 풀 (백엔드 endpoint)
+  // 페이지가 보고 있는 기간(31일)뿐만 아니라 1년치 거래처를 발행 모달에서 사용 가능
+  const contractorsPoolQuery = useQuery({
+    queryKey: ['granter-contractors-pool', 12],
+    queryFn: () => granterApi.contractorsPool(12).then((r) => r.data),
+    enabled: !!isConfigured,
+    retry: 1,
+  })
+
+  // 백엔드 풀 데이터 우선, 없으면 현재 페이지 티켓에서 추출(보강)
+  const contractors = useMemo<ContractorSuggestion[]>(() => {
+    const pool = contractorsPoolQuery.data?.contractors as ContractorSuggestion[] | undefined
+    if (pool && pool.length > 0) return pool
+    return extractContractors(allTickets)
+  }, [contractorsPoolQuery.data, allTickets])
 
   // 최근 세금계산서 자동 탐색
   const findRecentMut = useMutation({

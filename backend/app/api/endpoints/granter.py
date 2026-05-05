@@ -496,3 +496,86 @@ async def list_categories():
         return await client.list_categories()
     except GranterAPIError as e:
         raise _err(e)
+
+
+# ============ 거래처 풀 (지난 N개월 세금계산서에서 거래처 정보 추출) ============
+
+@router.get("/contractors-pool")
+async def get_contractors_pool(months: int = Query(12, ge=1, le=24)):
+    """
+    지난 N개월(default 12) 세금계산서 데이터에서 거래처(contractor + supplier) 풀 구성.
+    그랜터 31일 한도 때문에 31일씩 분할 호출.
+    각 거래처 정보: 사업자번호 / 회사명 / 대표자 / 주소 / 이메일 + 등장 빈도
+
+    응답: { count: int, contractors: [{businessNumber, companyName, ...}, ...] }
+    """
+    import asyncio
+    from datetime import date, timedelta
+
+    client = get_granter_client()
+    if not client.is_configured:
+        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
+
+    today = date.today()
+    chunks = []
+    cursor = today
+    for _ in range(months):
+        chunk_end = cursor
+        chunk_start = chunk_end - timedelta(days=30)
+        chunks.append((chunk_start.isoformat(), chunk_end.isoformat()))
+        cursor = chunk_start - timedelta(days=1)
+
+    async def _fetch_chunk(start: str, end: str):
+        try:
+            return await client.list_tickets({
+                "ticketType": "TAX_INVOICE_TICKET",
+                "startDate": start,
+                "endDate": end,
+            })
+        except GranterAPIError as e:
+            logger.warning("contractors-pool chunk %s~%s failed: %s", start, end, e)
+            return []
+
+    results = await asyncio.gather(*[_fetch_chunk(s, e) for s, e in chunks])
+
+    # 합치기
+    pool: Dict[str, Dict[str, Any]] = {}
+    for r in results:
+        items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+        for t in items:
+            ti = t.get("taxInvoice") if isinstance(t, dict) else None
+            if not ti:
+                continue
+            for c in (ti.get("contractor"), ti.get("supplier")):
+                if not isinstance(c, dict):
+                    continue
+                bn = str(c.get("businessNumber") or "").strip()
+                name = str(c.get("companyName") or "").strip()
+                if not bn and not name:
+                    continue
+                # 본인 회사(503-87-01038) 제외
+                bn_digits = "".join(filter(str.isdigit, bn))
+                if bn_digits == "5038701038":
+                    continue
+                key = bn or name
+                cur = pool.get(key) or {
+                    "businessNumber": bn,
+                    "companyName": name,
+                    "representativeName": str(c.get("representativeName") or "").strip(),
+                    "address": str(c.get("address") or "").strip(),
+                    "email": str(c.get("email") or "").strip(),
+                    "phone": str(c.get("phone") or c.get("phoneNumber") or "").strip(),
+                    "businessType": str(c.get("businessType") or "").strip(),
+                    "businessItem": str(c.get("businessItem") or "").strip(),
+                    "count": 0,
+                }
+                cur["count"] += 1
+                # 빈 필드는 신규 ticket에서 보강
+                for fld in ("representativeName", "address", "email", "phone", "businessType", "businessItem"):
+                    src_key = "phoneNumber" if fld == "phone" else fld
+                    if not cur[fld] and c.get(src_key):
+                        cur[fld] = str(c.get(src_key))
+                pool[key] = cur
+
+    contractors = sorted(pool.values(), key=lambda x: -x["count"])
+    return {"count": len(contractors), "months": months, "contractors": contractors}

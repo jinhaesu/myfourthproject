@@ -182,9 +182,9 @@ class GranterClient:
         results = await asyncio.gather(*[_fetch(t) for t in asset_types])
         return dict(results)
 
-    # 메모리 TTL 캐시 (같은 (start, end, asset_id) 조합 60초 캐시)
+    # 메모리 TTL 캐시 (같은 (start, end, asset_id) 조합 3시간 캐시)
     _TICKETS_CACHE: Dict[str, Any] = {}
-    _CACHE_TTL = 60  # seconds
+    _CACHE_TTL = 3 * 60 * 60  # 3 hours (사용자 요구)
 
     async def list_tickets_all_types(
         self,
