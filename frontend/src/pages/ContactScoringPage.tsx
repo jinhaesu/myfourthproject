@@ -13,7 +13,7 @@ import {
   ArrowsRightLeftIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
-import { buildOwnAccountSet, filterOutInternalTransfers, isSelfCompany, isSelfContact } from '@/utils/internalTransfer'
+import { buildOwnAccountSet, filterOutInternalTransfers, isSelfContact } from '@/utils/internalTransfer'
 import {
   PieChart,
   Pie,
@@ -143,17 +143,8 @@ function scoreContacts(tickets: any[]): ContactScore[] {
   for (const t of tickets) {
     const name = extractContact(t)
     if (!name) continue
-    // 본인 회사(조인앤조인)는 거래처로 잡지 않음
+    // 본인 회사(조인앤조인) 제외 — extractContact가 이미 거래상대방 반환
     if (isSelfContact(name)) continue
-    // 세금계산서일 경우 사업자번호로도 확인 (회사명 변형 회피)
-    if (t?.taxInvoice) {
-      const ti = t.taxInvoice
-      const counterParty = t.transactionType === 'IN' ? ti?.contractor : ti?.supplier
-      if (isSelfCompany({
-        businessNumber: counterParty?.businessNumber,
-        companyName: counterParty?.companyName,
-      })) continue
-    }
     const row = ensure(name)
     const txType = str(t, 'transactionType')
     const amount = num(t, 'amount')

@@ -129,8 +129,11 @@ const _selfNameSet = new Set(
 
 /**
  * 사업자번호 또는 회사명이 본인 회사인지 판정.
- * - 사업자번호는 하이픈/공백 제거 후 매칭
- * - 회사명은 공백 제거·소문자 후 매칭
+ * - 사업자번호는 하이픈/공백 제거 후 정확 매칭 (10자리)
+ * - 회사명은 공백 제거·소문자 후 정확 매칭
+ *
+ * 부분 일치는 false positive가 많아 제외 (예: '조인사' 같은 다른 거래처).
+ * 사업자번호가 있으면 그것만으로 충분, 없으면 회사명 정확 매칭만.
  */
 export function isSelfCompany(opts: {
   businessNumber?: string | null
@@ -142,12 +145,6 @@ export function isSelfCompany(opts: {
   const name = String(opts.companyName || '').replace(/\s+/g, '').toLowerCase()
   if (name && _selfNameSet.has(name)) return true
 
-  // 부분 일치 (예: "(주)조인앤조인 본사" 같은 변형)
-  if (name) {
-    for (const v of _selfNameSet) {
-      if (v.length >= 4 && name.includes(v)) return true
-    }
-  }
   return false
 }
 
