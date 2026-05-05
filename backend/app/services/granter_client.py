@@ -182,9 +182,11 @@ class GranterClient:
         results = await asyncio.gather(*[_fetch(t) for t in asset_types])
         return dict(results)
 
-    # 메모리 TTL 캐시 (같은 (start, end, asset_id) 조합 3시간 캐시)
+    # 메모리 TTL 캐시 (같은 (start, end, asset_id) 조합 5분 캐시)
+    # 3시간으로 늘렸을 때 빈 응답이 고착되는 문제 발생 → 5분으로 단축.
+    # 사용자 요구 '3시간 캐시'는 frontend gcTime로 충족됨.
     _TICKETS_CACHE: Dict[str, Any] = {}
-    _CACHE_TTL = 3 * 60 * 60  # 3 hours (사용자 요구)
+    _CACHE_TTL = 5 * 60  # 5 minutes
 
     async def list_tickets_all_types(
         self,
@@ -227,14 +229,27 @@ class GranterClient:
 
         results = await asyncio.gather(*[_fetch(t) for t in ticket_types])
         result_dict = dict(results)
-        self._TICKETS_CACHE[cache_key] = (now, result_dict)
-        # 캐시 청소 (오래된 항목 제거 — 캐시가 100개 넘을 때만)
-        if len(self._TICKETS_CACHE) > 100:
-            cutoff = now - self._CACHE_TTL
-            self._TICKETS_CACHE = {
-                k: v for k, v in self._TICKETS_CACHE.items() if v[0] > cutoff
-            }
+
+        # 모든 sub-call이 빈 배열이면 캐시에 저장하지 않음 (실패한 응답이 고착되는 문제 방지)
+        total_count = sum(len(v) for v in result_dict.values() if isinstance(v, list))
+        if total_count > 0:
+            self._TICKETS_CACHE[cache_key] = (now, result_dict)
+            # 캐시 청소 (오래된 항목 제거 — 캐시가 100개 넘을 때만)
+            if len(self._TICKETS_CACHE) > 100:
+                cutoff = now - self._CACHE_TTL
+                self._TICKETS_CACHE = {
+                    k: v for k, v in self._TICKETS_CACHE.items() if v[0] > cutoff
+                }
+        else:
+            logger.info("Granter cache SKIP (empty): %s", cache_key)
         return result_dict
+
+    def clear_cache(self):
+        """전체 캐시 강제 무효화 (디버깅/회복용)"""
+        n = len(self._TICKETS_CACHE)
+        self._TICKETS_CACHE.clear()
+        logger.info("Granter cache cleared (%d entries)", n)
+        return n
 
     # ============ 잔액 / 일일 리포트 / 환율 ============
 

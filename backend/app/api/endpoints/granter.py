@@ -59,6 +59,14 @@ async def granter_ping():
         }
 
 
+@router.post("/cache/clear")
+async def granter_cache_clear():
+    """그랜터 메모리 캐시 강제 무효화 — 빈 응답 고착 회복용"""
+    client = get_granter_client()
+    cleared = client.clear_cache()
+    return {"ok": True, "cleared_entries": cleared}
+
+
 @router.get("/assets/all")
 async def list_all_assets(only_active: bool = True):
     """
