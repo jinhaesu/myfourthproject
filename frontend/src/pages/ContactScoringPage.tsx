@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
@@ -537,8 +537,9 @@ function ContactDetail({
 // ─────────────────────────────────────────────
 export default function ContactScoringPage() {
   // 기간: 이번달 default
-  const initialPeriod = periodForPreset('this_month')
-  const [preset, setPreset] = useState<PeriodPreset>('this_month')
+  // default: last_30d (이번달은 월초 며칠뿐이라 데이터 부족 → 지난 30일이 더 풍부)
+  const initialPeriod = periodForPreset('last_30d')
+  const [preset, setPreset] = useState<PeriodPreset>('last_30d')
   const [from, setFrom] = useState(initialPeriod.start)
   const [to, setTo] = useState(initialPeriod.end)
 
@@ -615,6 +616,20 @@ export default function ContactScoringPage() {
       }
     },
   })
+
+  // 첫 조회 결과가 0건이면 자동 탐색 트리거 (사용자 무한 대기 방지)
+  const autoTriedRef = useRef(false)
+  useEffect(() => {
+    if (
+      !autoTriedRef.current &&
+      ticketsQuery.isSuccess &&
+      ticketsQuery.data?.tickets?.length === 0 &&
+      !findRecentMut.isPending
+    ) {
+      autoTriedRef.current = true
+      findRecentMut.mutate()
+    }
+  }, [ticketsQuery.isSuccess, ticketsQuery.data, findRecentMut])
 
   // 스코어링 계산 (순수 함수, 메모이제이션)
   const scores = useMemo(() => scoreContacts(tickets), [tickets])
