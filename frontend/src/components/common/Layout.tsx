@@ -27,6 +27,7 @@ import {
   StarIcon,
   ArrowTrendingUpIcon,
   ShieldCheckIcon,
+  GlobeAltIcon,
 } from '@heroicons/react/24/outline'
 
 type NavItem =
@@ -41,6 +42,7 @@ const baseNavigation: NavItem[] = [
   { name: '자금일보', href: '/daily-report', icon: SunIcon },
   { name: '세금계산서', href: '/tax-invoices', icon: ReceiptPercentIcon },
   { name: '거래처 정산', href: '/settlement', icon: ArrowsRightLeftIcon },
+  { name: '환율 흐름', href: '/exchange-rates', icon: GlobeAltIcon },
 
   { name: '경영 인사이트', section: true },
   { name: '채널별 수익성', href: '/channel-profitability', icon: ShoppingBagIcon },

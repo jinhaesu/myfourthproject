@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  CalendarDaysIcon,
   ArrowPathIcon,
   ArrowDownLeftIcon,
   ArrowUpRightIcon,
@@ -12,22 +11,17 @@ import {
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
+import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 
-function todayISO() {
-  return isoLocal(new Date())
-}
-function thisMonthStartISO() {
-  const d = new Date()
-  d.setDate(1)
-  return isoLocal(d)
-}
 function daysBetween(a: string, b: string) {
   return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
 }
 
 export default function DailyReportPage() {
-  const [from, setFrom] = useState(thisMonthStartISO())
-  const [to, setTo] = useState(todayISO())
+  const initial = periodForPreset('this_month')
+  const [preset, setPreset] = useState<PeriodPreset>('this_month')
+  const [from, setFrom] = useState(initial.start)
+  const [to, setTo] = useState(initial.end)
   const [useCurrentRate, setUseCurrentRate] = useState(false)
 
   const ready = Boolean(from && to)
@@ -70,14 +64,6 @@ export default function DailyReportPage() {
   const nonLoanAssets = useMemo(() => assets.filter((a) => !a.isLoan), [assets])
   const loanAssets = useMemo(() => assets.filter((a) => a.isLoan), [assets])
 
-  const setQuickRange = (days: number) => {
-    const end = new Date()
-    const start = new Date()
-    start.setDate(end.getDate() - days + 1)
-    setFrom(isoLocal(start))
-    setTo(isoLocal(end))
-  }
-
   return (
     <div className="space-y-3">
       {/* Header */}
@@ -92,48 +78,18 @@ export default function DailyReportPage() {
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
-            <button
-              onClick={() => {
-                setFrom(todayISO())
-                setTo(todayISO())
-              }}
-              className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50"
-            >
-              오늘
-            </button>
-            <button onClick={() => setQuickRange(7)} className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50">
-              7일
-            </button>
-            <button
-              onClick={() => {
-                setFrom(thisMonthStartISO())
-                setTo(todayISO())
-              }}
-              className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50"
-            >
-              이번달
-            </button>
-            <button onClick={() => setQuickRange(31)} className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50">
-              31일
-            </button>
-          </div>
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white border border-ink-200">
-            <CalendarDaysIcon className="h-3 w-3 text-ink-400" />
-            <input
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
-            />
-            <span className="text-ink-300">→</span>
-            <input
-              type="date"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
-            />
-          </div>
+          {/* 공통 날짜 프리셋 피커 */}
+          <PeriodPicker
+            preset={preset}
+            from={from}
+            to={to}
+            onChange={(p, f, t) => { setPreset(p); setFrom(f); setTo(t) }}
+            groups={[
+              { label: '일/주', presets: ['today', 'yesterday', 'this_week', 'last_week'] },
+              { label: '월', presets: ['this_month', 'last_month'] },
+              { label: '범위', presets: ['last_7d', 'last_30d'] },
+            ]}
+          />
           <label className="flex items-center gap-1 text-2xs text-ink-600 cursor-pointer px-2">
             <input
               type="checkbox"

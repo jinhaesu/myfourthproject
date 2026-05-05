@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
-  CalendarDaysIcon,
   ArrowPathIcon,
   ArrowsRightLeftIcon,
   MagnifyingGlassIcon,
@@ -14,15 +13,8 @@ import {
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
+import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 
-function todayISO() {
-  return isoLocal(new Date())
-}
-function thisMonthStartISO() {
-  const d = new Date()
-  d.setDate(1)
-  return isoLocal(d)
-}
 function daysBetween(a: string, b: string) {
   return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
 }
@@ -55,8 +47,10 @@ interface ContactRow {
 }
 
 export default function SettlementPage() {
-  const [from, setFrom] = useState(thisMonthStartISO())
-  const [to, setTo] = useState(todayISO())
+  const initial = periodForPreset('this_month')
+  const [preset, setPreset] = useState<PeriodPreset>('this_month')
+  const [from, setFrom] = useState(initial.start)
+  const [to, setTo] = useState(initial.end)
   const [search, setSearch] = useState('')
   const [selectedContact, setSelectedContact] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'unmatched' | 'matched'>('all')
@@ -140,6 +134,7 @@ export default function SettlementPage() {
     },
     onSuccess: (res) => {
       if (res.start && res.end) {
+        setPreset('custom')
         setFrom(res.start)
         setTo(res.end)
         toast.success(
@@ -257,14 +252,6 @@ export default function SettlementPage() {
     [contacts, selectedContact]
   )
 
-  const setQuickRange = (days: number) => {
-    const end = new Date()
-    const start = new Date()
-    start.setDate(end.getDate() - days + 1)
-    setFrom(isoLocal(start))
-    setTo(isoLocal(end))
-  }
-
   return (
     <div className="space-y-3">
       {/* Header */}
@@ -279,36 +266,18 @@ export default function SettlementPage() {
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
-            <button
-              onClick={() => {
-                setFrom(thisMonthStartISO())
-                setTo(todayISO())
-              }}
-              className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50"
-            >
-              이번달
-            </button>
-            <button onClick={() => setQuickRange(31)} className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50">
-              31일
-            </button>
-          </div>
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white border border-ink-200">
-            <CalendarDaysIcon className="h-3 w-3 text-ink-400" />
-            <input
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
-            />
-            <span className="text-ink-300">→</span>
-            <input
-              type="date"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
-            />
-          </div>
+          {/* 공통 날짜 프리셋 피커 */}
+          <PeriodPicker
+            preset={preset}
+            from={from}
+            to={to}
+            onChange={(p, f, t) => { setPreset(p); setFrom(f); setTo(t) }}
+            groups={[
+              { label: '일/주', presets: ['today', 'yesterday', 'this_week', 'last_week'] },
+              { label: '월', presets: ['this_month', 'last_month'] },
+              { label: '범위', presets: ['last_7d', 'last_30d'] },
+            ]}
+          />
           <button
             onClick={() => findRecentMut.mutate()}
             disabled={findRecentMut.isPending}

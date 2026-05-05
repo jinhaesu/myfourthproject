@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
-  CalendarDaysIcon,
   ArrowPathIcon,
   ReceiptPercentIcon,
   ArrowDownLeftIcon,
@@ -11,20 +10,16 @@ import {
   ExclamationTriangleIcon,
   CheckCircleIcon,
   ClockIcon,
+  PlusIcon,
+  TrashIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
+import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 
 type Direction = 'all' | 'sales' | 'purchase'
 
-function todayISO() {
-  return isoLocal(new Date())
-}
-function thisMonthStartISO() {
-  const d = new Date()
-  d.setDate(1)
-  return isoLocal(d)
-}
 function daysBetween(a: string, b: string) {
   return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
 }
@@ -44,11 +39,454 @@ function str(obj: any, ...keys: string[]): string {
   return ''
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// 세금계산서 발행 모달
+// ────────────────────────────────────────────────────────────────────────────
+
+interface InvoiceItem {
+  itemName: string
+  quantity: number
+  unitPrice: number
+  supplyAmount: number
+  taxAmount: number
+}
+
+interface IssueTaxInvoiceModalProps {
+  open: boolean
+  onClose: () => void
+  onSuccess: () => void
+}
+
+function todayStr() {
+  return isoLocal(new Date())
+}
+
+const emptyItem = (): InvoiceItem => ({
+  itemName: '',
+  quantity: 1,
+  unitPrice: 0,
+  supplyAmount: 0,
+  taxAmount: 0,
+})
+
+function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModalProps) {
+  // 거래일자
+  const [writeDate, setWriteDate] = useState(todayStr())
+
+  // 공급자 (본인 회사) 정보
+  const [supplierBizNo, setSupplierBizNo] = useState('')
+  const [supplierName, setSupplierName] = useState('조인앤조인')
+  const [supplierRep, setSupplierRep] = useState('진해수')
+  const [supplierAddr, setSupplierAddr] = useState('')
+  const [supplierBizType, setSupplierBizType] = useState('')
+  const [supplierBizItem, setSupplierBizItem] = useState('')
+
+  // 공급받는자 (거래처) 정보
+  const [contractorBizNo, setContractorBizNo] = useState('')
+  const [contractorName, setContractorName] = useState('')
+  const [contractorRep, setContractorRep] = useState('')
+  const [contractorEmail, setContractorEmail] = useState('')
+
+  // 품목
+  const [items, setItems] = useState<InvoiceItem[]>([emptyItem()])
+
+  // 비고 / 발행유형
+  const [remark, setRemark] = useState('')
+  const [issueImmediately, setIssueImmediately] = useState(true)
+
+  // 디버그: 그랜터 응답 raw
+  const [debugRaw, setDebugRaw] = useState<string | null>(null)
+
+  // 품목 수량/단가 변경 시 자동 계산
+  const updateItem = (idx: number, patch: Partial<InvoiceItem>) => {
+    setItems((prev) => {
+      const next = [...prev]
+      const cur = { ...next[idx], ...patch }
+      // quantity 또는 unitPrice 변경 시 재계산
+      if ('quantity' in patch || 'unitPrice' in patch) {
+        cur.supplyAmount = cur.quantity * cur.unitPrice
+        cur.taxAmount = Math.round(cur.supplyAmount * 0.1)
+      }
+      next[idx] = cur
+      return next
+    })
+  }
+
+  const addItem = () => setItems((prev) => [...prev, emptyItem()])
+  const removeItem = (idx: number) => setItems((prev) => prev.filter((_, i) => i !== idx))
+
+  // 합계 자동 계산
+  const totalSupplyAmount = items.reduce((s, it) => s + (it.supplyAmount || 0), 0)
+  const totalTaxAmount = items.reduce((s, it) => s + (it.taxAmount || 0), 0)
+  const totalAmount = totalSupplyAmount + totalTaxAmount
+
+  const issueMut = useMutation({
+    mutationFn: () => {
+      const idempotencyKey = crypto.randomUUID()
+      const payload = {
+        type: 'REGULAR',
+        writeDate,
+        supplier: {
+          businessNumber: supplierBizNo,
+          companyName: supplierName,
+          representativeName: supplierRep,
+          address: supplierAddr,
+          businessType: supplierBizType,
+          businessItem: supplierBizItem,
+        },
+        contractor: {
+          businessNumber: contractorBizNo,
+          companyName: contractorName,
+          representativeName: contractorRep,
+          email: contractorEmail,
+        },
+        items: items.map((it) => ({
+          itemName: it.itemName,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          supplyAmount: it.supplyAmount,
+          taxAmount: it.taxAmount,
+        })),
+        totalSupplyAmount,
+        totalTaxAmount,
+        totalAmount,
+        remark,
+        issueImmediately,
+      }
+      return granterApi.issueTaxInvoice(payload, idempotencyKey)
+    },
+    onSuccess: (_res) => {
+      toast.success('세금계산서가 발행되었습니다.')
+      setDebugRaw(null)
+      onSuccess()
+      onClose()
+    },
+    onError: (err: any) => {
+      const detail =
+        err?.response?.data?.detail ||
+        err?.response?.data?.message ||
+        err?.message ||
+        '발행 실패'
+      toast.error(String(detail))
+      // 디버깅용 raw 응답 표시
+      const raw = err?.response?.data
+        ? JSON.stringify(err.response.data, null, 2)
+        : String(err)
+      setDebugRaw(raw)
+    },
+  })
+
+  if (!open) return null
+
+  return (
+    /* fixed overlay */
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+        {/* 모달 헤더 */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-ink-200">
+          <h2 className="font-bold text-sm text-ink-900 flex items-center gap-2">
+            <ReceiptPercentIcon className="h-4 w-4 text-ink-500" />
+            세금계산서 발행
+          </h2>
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+            <XMarkIcon className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* 스크롤 영역 */}
+        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4 text-xs">
+          {/* 거래일자 */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">거래일자 *</label>
+              <input
+                type="date"
+                value={writeDate}
+                onChange={(e) => setWriteDate(e.target.value)}
+                className="input w-full"
+              />
+            </div>
+            <div>
+              <label className="label">발행 유형</label>
+              <div className="flex items-center gap-3 mt-1">
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={issueImmediately}
+                    onChange={() => setIssueImmediately(true)}
+                  />
+                  즉시발행
+                </label>
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="radio"
+                    checked={!issueImmediately}
+                    onChange={() => setIssueImmediately(false)}
+                  />
+                  예약발행
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* 공급자 */}
+          <fieldset className="border border-ink-200 rounded-lg p-3 space-y-2">
+            <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+              공급자 (본인)
+            </legend>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="label">사업자번호 *</label>
+                <input
+                  value={supplierBizNo}
+                  onChange={(e) => setSupplierBizNo(e.target.value)}
+                  placeholder="000-00-00000"
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="label">회사명 *</label>
+                <input
+                  value={supplierName}
+                  onChange={(e) => setSupplierName(e.target.value)}
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="label">대표자 *</label>
+                <input
+                  value={supplierRep}
+                  onChange={(e) => setSupplierRep(e.target.value)}
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="label">주소</label>
+                <input
+                  value={supplierAddr}
+                  onChange={(e) => setSupplierAddr(e.target.value)}
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="label">업태</label>
+                <input
+                  value={supplierBizType}
+                  onChange={(e) => setSupplierBizType(e.target.value)}
+                  placeholder="예) 도매 및 소매업"
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="label">종목</label>
+                <input
+                  value={supplierBizItem}
+                  onChange={(e) => setSupplierBizItem(e.target.value)}
+                  placeholder="예) 식품"
+                  className="input w-full"
+                />
+              </div>
+            </div>
+          </fieldset>
+
+          {/* 공급받는자 */}
+          <fieldset className="border border-ink-200 rounded-lg p-3 space-y-2">
+            <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+              공급받는자 (거래처)
+            </legend>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="label">사업자번호 *</label>
+                <input
+                  value={contractorBizNo}
+                  onChange={(e) => setContractorBizNo(e.target.value)}
+                  placeholder="000-00-00000"
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="label">회사명 *</label>
+                <input
+                  value={contractorName}
+                  onChange={(e) => setContractorName(e.target.value)}
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="label">대표자</label>
+                <input
+                  value={contractorRep}
+                  onChange={(e) => setContractorRep(e.target.value)}
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="label">이메일 *</label>
+                <input
+                  type="email"
+                  value={contractorEmail}
+                  onChange={(e) => setContractorEmail(e.target.value)}
+                  placeholder="invoice@company.com"
+                  className="input w-full"
+                />
+              </div>
+            </div>
+          </fieldset>
+
+          {/* 품목 */}
+          <fieldset className="border border-ink-200 rounded-lg p-3 space-y-2">
+            <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+              품목
+            </legend>
+            <table className="w-full text-2xs">
+              <thead>
+                <tr className="text-ink-500">
+                  <th className="text-left pb-1 font-semibold w-32">품명</th>
+                  <th className="text-right pb-1 font-semibold w-14">수량</th>
+                  <th className="text-right pb-1 font-semibold w-24">단가</th>
+                  <th className="text-right pb-1 font-semibold w-24">공급가액</th>
+                  <th className="text-right pb-1 font-semibold w-20">세액</th>
+                  <th className="w-6"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-100">
+                {items.map((it, idx) => (
+                  <tr key={idx}>
+                    <td className="py-1 pr-1">
+                      <input
+                        value={it.itemName}
+                        onChange={(e) => updateItem(idx, { itemName: e.target.value })}
+                        placeholder="품명"
+                        className="input w-full"
+                      />
+                    </td>
+                    <td className="py-1 px-1">
+                      <input
+                        type="number"
+                        min={1}
+                        value={it.quantity}
+                        onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
+                        className="input w-full text-right"
+                      />
+                    </td>
+                    <td className="py-1 px-1">
+                      <input
+                        type="number"
+                        min={0}
+                        value={it.unitPrice}
+                        onChange={(e) => updateItem(idx, { unitPrice: Number(e.target.value) })}
+                        className="input w-full text-right font-mono"
+                      />
+                    </td>
+                    <td className="py-1 px-1 text-right font-mono text-ink-700">
+                      {it.supplyAmount.toLocaleString()}
+                    </td>
+                    <td className="py-1 px-1 text-right font-mono text-ink-500">
+                      {it.taxAmount.toLocaleString()}
+                    </td>
+                    <td className="py-1 pl-1">
+                      {items.length > 1 && (
+                        <button
+                          onClick={() => removeItem(idx)}
+                          className="text-rose-400 hover:text-rose-600"
+                        >
+                          <TrashIcon className="h-3 w-3" />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <button
+              onClick={addItem}
+              className="flex items-center gap-1 text-2xs text-primary-700 hover:underline mt-1"
+            >
+              <PlusIcon className="h-3 w-3" />
+              품목 추가
+            </button>
+          </fieldset>
+
+          {/* 합계 */}
+          <div className="bg-canvas-50 rounded-lg p-3 flex gap-6 text-2xs justify-end">
+            <div>
+              <span className="text-ink-500">공급가액</span>
+              <span className="ml-2 font-mono font-bold text-ink-900">
+                {totalSupplyAmount.toLocaleString()}
+              </span>
+            </div>
+            <div>
+              <span className="text-ink-500">세액</span>
+              <span className="ml-2 font-mono font-bold text-ink-900">
+                {totalTaxAmount.toLocaleString()}
+              </span>
+            </div>
+            <div>
+              <span className="text-ink-500">합계</span>
+              <span className="ml-2 font-mono font-bold text-primary-700 text-sm">
+                {totalAmount.toLocaleString()}
+              </span>
+            </div>
+          </div>
+
+          {/* 비고 */}
+          <div>
+            <label className="label">비고</label>
+            <textarea
+              value={remark}
+              onChange={(e) => setRemark(e.target.value)}
+              rows={2}
+              className="input w-full resize-none"
+              placeholder="선택 사항"
+            />
+          </div>
+
+          {/* 디버깅: 그랜터 응답 raw */}
+          {debugRaw && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+              <div className="text-2xs font-semibold text-rose-700 mb-1">
+                그랜터 응답 (디버그) — 필드 오류 확인 후 수정하세요
+              </div>
+              <pre className="text-2xs text-rose-800 overflow-x-auto whitespace-pre-wrap break-all">
+                {debugRaw}
+              </pre>
+            </div>
+          )}
+        </div>
+
+        {/* 모달 푸터 */}
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-ink-200">
+          <button onClick={onClose} className="btn-secondary">
+            취소
+          </button>
+          <button
+            onClick={() => issueMut.mutate()}
+            disabled={issueMut.isPending}
+            className="btn-primary flex items-center gap-1.5"
+          >
+            {issueMut.isPending && (
+              <ArrowPathIcon className="h-3 w-3 animate-spin" />
+            )}
+            {issueMut.isPending ? '발행 중...' : '발행'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 메인 페이지
+// ────────────────────────────────────────────────────────────────────────────
+
 export default function TaxInvoicePage() {
-  const [from, setFrom] = useState(thisMonthStartISO())
-  const [to, setTo] = useState(todayISO())
+  const initial = periodForPreset('this_month')
+  const [preset, setPreset] = useState<PeriodPreset>('this_month')
+  const [from, setFrom] = useState(initial.start)
+  const [to, setTo] = useState(initial.end)
   const [direction, setDirection] = useState<Direction>('all')
   const [search, setSearch] = useState('')
+  const [issueModalOpen, setIssueModalOpen] = useState(false)
 
   const ready = Boolean(from && to)
   const exceeds31 = ready && daysBetween(from, to) > 31
@@ -90,8 +528,6 @@ export default function TaxInvoicePage() {
   // 최근 세금계산서 자동 탐색
   const findRecentMut = useMutation({
     mutationFn: async () => {
-      // /granter/recent-activity-period가 모든 타입을 시도하니
-      // TAX_INVOICE_TICKET만 명시적으로 시도하려면 직접 호출
       const today = new Date()
       for (let offset = 0; offset < 24; offset++) {
         const end = new Date(today)
@@ -118,6 +554,7 @@ export default function TaxInvoicePage() {
     },
     onSuccess: (res) => {
       if (res.start && res.end) {
+        setPreset('custom')
         setFrom(res.start)
         setTo(res.end)
         toast.success(
@@ -159,16 +596,15 @@ export default function TaxInvoicePage() {
     [purchaseTickets]
   )
 
-  const setQuickRange = (days: number) => {
-    const end = new Date()
-    const start = new Date()
-    start.setDate(end.getDate() - days + 1)
-    setFrom(isoLocal(start))
-    setTo(isoLocal(end))
-  }
-
   return (
     <div className="space-y-3">
+      {/* 세금계산서 발행 모달 */}
+      <IssueTaxInvoiceModal
+        open={issueModalOpen}
+        onClose={() => setIssueModalOpen(false)}
+        onSuccess={() => ticketsQuery.refetch()}
+      />
+
       {/* Header */}
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
@@ -181,39 +617,21 @@ export default function TaxInvoicePage() {
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
-            <button
-              onClick={() => {
-                setFrom(thisMonthStartISO())
-                setTo(todayISO())
-              }}
-              className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50"
-            >
-              이번달
-            </button>
-            <button
-              onClick={() => setQuickRange(31)}
-              className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50"
-            >
-              31일
-            </button>
-          </div>
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white border border-ink-200">
-            <CalendarDaysIcon className="h-3 w-3 text-ink-400" />
-            <input
-              type="date"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
-            />
-            <span className="text-ink-300">→</span>
-            <input
-              type="date"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
-            />
-          </div>
+          <PeriodPicker
+            preset={preset}
+            from={from}
+            to={to}
+            onChange={(p, f, t) => {
+              setPreset(p)
+              setFrom(f)
+              setTo(t)
+            }}
+            groups={[
+              { label: '일/주', presets: ['today', 'yesterday', 'this_week', 'last_week'] },
+              { label: '월', presets: ['this_month', 'last_month'] },
+              { label: '범위', presets: ['last_7d', 'last_30d'] },
+            ]}
+          />
           <button
             onClick={() => findRecentMut.mutate()}
             disabled={findRecentMut.isPending}
@@ -225,6 +643,14 @@ export default function TaxInvoicePage() {
           </button>
           <button onClick={() => ticketsQuery.refetch()} className="btn-secondary">
             <ArrowPathIcon className="h-3 w-3" />
+          </button>
+          {/* 세금계산서 발행 버튼 */}
+          <button
+            onClick={() => setIssueModalOpen(true)}
+            className="btn-primary flex items-center gap-1"
+          >
+            <PlusIcon className="h-3 w-3" />
+            발행
           </button>
         </div>
       </div>
@@ -414,10 +840,10 @@ export default function TaxInvoicePage() {
                         disabled={findRecentMut.isPending}
                         className="text-primary-700 hover:underline font-semibold"
                       >
-                        ⏱️ 최근 12개월에서 자동 탐색
+                        최근 12개월에서 자동 탐색
                       </button>
                       <div className="text-2xs text-ink-400">
-                        그랜터 홈택스 자산 연동 상태는 [통합조회 → ⚙️ 설정]에서 확인하세요.
+                        그랜터 홈택스 자산 연동 상태는 [통합조회 → 설정]에서 확인하세요.
                       </div>
                     </div>
                   </td>
@@ -429,7 +855,7 @@ export default function TaxInvoicePage() {
       </div>
 
       <div className="text-2xs text-ink-400 px-1">
-        ※ transactionType = IN 매출, OUT 매입 자동 분리. 세금계산서 발행/수정/취소는 그랜터 발행 API로 가능 (별도 워크플로).
+        transactionType = IN 매출, OUT 매입 자동 분리. 세금계산서 발행은 헤더 [발행] 버튼 사용.
       </div>
     </div>
   )

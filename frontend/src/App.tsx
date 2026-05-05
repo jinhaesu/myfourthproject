@@ -26,6 +26,7 @@ import ChannelProfitabilityPage from '@/pages/ChannelProfitabilityPage'
 import ContactScoringPage from '@/pages/ContactScoringPage'
 import CashflowForecastPage from '@/pages/CashflowForecastPage'
 import AuditReportPage from '@/pages/AuditReportPage'
+import ExchangeRatesPage from '@/pages/ExchangeRatesPage'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -52,6 +53,7 @@ function App() {
         <Route path="cash-pl" element={<CashPLPage />} />
         <Route path="settlement" element={<SettlementPage />} />
         <Route path="tax-invoices" element={<TaxInvoicePage />} />
+        <Route path="exchange-rates" element={<ExchangeRatesPage />} />
         <Route path="vouchers" element={<VouchersPage />} />
         <Route path="vouchers/:id" element={<VoucherDetailPage />} />
         <Route path="treasury" element={<TreasuryPage />} />
