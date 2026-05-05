@@ -109,7 +109,7 @@ export default function SettlementPage() {
   const findRecentMut = useMutation({
     mutationFn: async () => {
       const today = new Date()
-      for (let offset = 0; offset < 12; offset++) {
+      for (let offset = 0; offset < 24; offset++) {
         const end = new Date(today)
         end.setDate(end.getDate() - offset * 31)
         const start = new Date(end)
@@ -146,7 +146,7 @@ export default function SettlementPage() {
           `${res.monthsBack === 0 ? '이번달' : `${res.monthsBack}개월 전`} · 매출 ${res.taxCount}건, 입금 ${res.bankCount}건`
         )
       } else {
-        toast.error('최근 12개월 내 매칭할 거래가 없습니다.')
+        toast.error('최근 24개월 내 매칭할 거래가 없습니다.')
       }
     },
   })

@@ -157,15 +157,21 @@ export default function UnifiedViewPage() {
     [allBankAssets]
   )
 
-  // 가용자금: 일반 계좌(대출 제외) KRW 잔액 합
+  // 가용자금: 일반 계좌(대출 제외) — accountBalance는 외화도 KRW 환산값(그랜터 표준)
   const totalCash = useMemo(
     () =>
       bankAssets.reduce((s, a) => {
         const ba = a?.bankAccount || {}
-        const code = String(ba?.currencyCode || 'KRW').toUpperCase()
-        if (code !== 'KRW') return s
-        return s + Number(ba?.accountBalance || ba?.originalBalance || 0)
+        return s + Number(ba?.accountBalance || 0)
       }, 0),
+    [bankAssets]
+  )
+  const krwCashAccounts = useMemo(
+    () =>
+      bankAssets.filter((a) => {
+        const code = String(a?.bankAccount?.currencyCode || 'KRW').toUpperCase()
+        return code === 'KRW'
+      }),
     [bankAssets]
   )
   const foreignCashAccounts = useMemo(
@@ -439,8 +445,7 @@ export default function UnifiedViewPage() {
                 <span className="text-xs text-ink-400 font-medium ml-1">원</span>
               </div>
               <div className="text-2xs text-ink-400 mt-0.5">
-                KRW 입출금 계좌 {bankAssets.length}개
-                {foreignCashAccounts.length > 0 && ` · 외화 ${foreignCashAccounts.length}건 별도`}
+                {bankAssets.length}개 계좌 (KRW {krwCashAccounts.length} + 외화 {foreignCashAccounts.length}, KRW 환산 합)
               </div>
             </div>
 

@@ -93,7 +93,7 @@ export default function TaxInvoicePage() {
       // /granter/recent-activity-period가 모든 타입을 시도하니
       // TAX_INVOICE_TICKET만 명시적으로 시도하려면 직접 호출
       const today = new Date()
-      for (let offset = 0; offset < 12; offset++) {
+      for (let offset = 0; offset < 24; offset++) {
         const end = new Date(today)
         end.setDate(end.getDate() - offset * 31)
         const start = new Date(end)
@@ -124,7 +124,7 @@ export default function TaxInvoicePage() {
           `${res.monthsBack === 0 ? '이번달' : `${res.monthsBack}개월 전`} 구간 (${res.count}건)`
         )
       } else {
-        toast.error('최근 12개월 내 세금계산서가 없습니다. 그랜터에 홈택스 자산이 연동되었는지 확인하세요.')
+        toast.error('최근 24개월 내 세금계산서가 없습니다. 그랜터에서 홈택스 데이터 동기화가 진행 중일 수 있습니다.')
       }
     },
   })
