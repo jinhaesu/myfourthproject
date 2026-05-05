@@ -678,6 +678,7 @@ export const cashPLApi = {
 export const granterApi = {
   health: () => api.get('/granter/health'),
   ping: () => api.get('/granter/ping'),
+  clearCache: () => api.post('/granter/cache/clear'),
 
   listTickets: (payload: any) => api.post('/granter/tickets', payload),
   bulkUpdateTickets: (payload: any) => api.post('/granter/tickets/bulk-update', payload),
