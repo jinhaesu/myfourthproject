@@ -678,7 +678,12 @@ export const granterApi = {
   bulkUpdateTickets: (payload: any) => api.post('/granter/tickets/bulk-update', payload),
 
   listAssets: (payload: { assetType: string }) => api.post('/granter/assets', payload),
-  listAllAssets: () => api.get('/granter/assets/all'),
+  listAllAssets: (onlyActive: boolean = true) =>
+    api.get('/granter/assets/all', { params: { only_active: onlyActive } }),
+  listTicketsAllTypes: (startDate: string, endDate: string, assetId?: number) =>
+    api.post('/granter/tickets/all', null, {
+      params: { start_date: startDate, end_date: endDate, asset_id: assetId },
+    }),
   listBalances: (payload: any) => api.post('/granter/balances', payload),
   getDailyReport: (payload: any) => api.post('/granter/daily-report', payload),
   getExchangeRates: (payload: any) => api.post('/granter/exchange-rates', payload),

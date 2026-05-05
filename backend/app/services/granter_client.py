@@ -134,10 +134,17 @@ class GranterClient:
         """
         return await self._request("POST", "/assets", json=payload)
 
-    async def list_all_assets(self) -> Dict[str, Any]:
+    async def list_all_assets(self, only_active: bool = True) -> Dict[str, Any]:
         """
-        모든 assetType별로 병렬 호출해 합친 결과.
-        Returns: { "CARD": [...], "BANK_ACCOUNT": [...], ... }
+        모든 assetType을 병렬 호출 후 합쳐서 반환.
+
+        only_active=True (default): 그랜터 자산 중 다음 조건 모두 만족하는 것만:
+          - isActive == True
+          - isHidden == False
+          - isDormant == False
+          - 홈택스의 경우 readCertificate.isExpired != True (인증서 미만료)
+
+        Returns: { "CARD": [...], "BANK_ACCOUNT": [...], "HOME_TAX_ACCOUNT": [...], ... }
         """
         import asyncio
 
@@ -146,15 +153,67 @@ class GranterClient:
             "SECURITIES_ACCOUNT", "ECOMMERCE", "MERCHANT_GROUP",
         ]
 
+        def _is_active(a: Dict[str, Any]) -> bool:
+            if not a.get("isActive", True):
+                return False
+            if a.get("isHidden", False):
+                return False
+            if a.get("isDormant", False):
+                return False
+            # 홈택스 인증서 만료 체크
+            if a.get("assetType") == "HOME_TAX_ACCOUNT":
+                ht = a.get("homeTaxAccount") or {}
+                read_cert = ht.get("readCertificate") or {}
+                if read_cert.get("isExpired"):
+                    return False
+            return True
+
         async def _fetch(t: str):
             try:
                 r = await self.list_assets({"assetType": t})
-                items = r if isinstance(r, list) else r.get("data", []) if isinstance(r, dict) else []
+                items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+                if only_active:
+                    items = [a for a in items if _is_active(a)]
                 return t, items
-            except GranterAPIError:
+            except GranterAPIError as e:
+                logger.warning("Granter assets %s fetch failed: %s", t, e)
                 return t, []
 
         results = await asyncio.gather(*[_fetch(t) for t in asset_types])
+        return dict(results)
+
+    async def list_tickets_all_types(
+        self,
+        start_date: str,
+        end_date: str,
+        asset_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        모든 ticketType을 병렬 호출해 합쳐서 반환.
+        그랜터 31일 제한 안내: 31일 이상이면 클라이언트가 분할 호출 권장.
+        """
+        import asyncio
+
+        ticket_types = [
+            "EXPENSE_TICKET",            # 카드 사용
+            "BANK_TRANSACTION_TICKET",   # 계좌 입출금
+            "TAX_INVOICE_TICKET",        # 세금계산서
+            "CASH_RECEIPT_TICKET",       # 현금영수증
+        ]
+
+        async def _fetch(t: str):
+            payload = {"ticketType": t, "startDate": start_date, "endDate": end_date}
+            if asset_id is not None:
+                payload["assetId"] = asset_id
+            try:
+                r = await self.list_tickets(payload)
+                items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+                return t, items
+            except GranterAPIError as e:
+                logger.warning("Granter tickets %s fetch failed: %s", t, e)
+                return t, []
+
+        results = await asyncio.gather(*[_fetch(t) for t in ticket_types])
         return dict(results)
 
     # ============ 잔액 / 일일 리포트 / 환율 ============

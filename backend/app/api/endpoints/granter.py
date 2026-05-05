@@ -60,11 +60,32 @@ async def granter_ping():
 
 
 @router.get("/assets/all")
-async def list_all_assets():
-    """모든 자산 타입을 한 번에 (CARD/BANK/HOME_TAX 등 병렬 호출)"""
+async def list_all_assets(only_active: bool = True):
+    """
+    모든 자산 타입을 한 번에 병렬 호출.
+    only_active=True (default): 활성 + 미숨김 + 비휴면 자산만, 홈택스는 인증서 만료 안 된 것만.
+    """
     client = get_granter_client()
     try:
-        return await client.list_all_assets()
+        return await client.list_all_assets(only_active=only_active)
+    except GranterAPIError as e:
+        raise _err(e)
+
+
+@router.post("/tickets/all")
+async def list_tickets_all_types(
+    start_date: str = Query(..., description="yyyy-MM-dd"),
+    end_date: str = Query(..., description="yyyy-MM-dd"),
+    asset_id: Optional[int] = Query(None),
+):
+    """
+    모든 ticketType을 병렬 호출해 합쳐서 반환.
+    EXPENSE_TICKET / BANK_TRANSACTION_TICKET / TAX_INVOICE_TICKET / CASH_RECEIPT_TICKET
+    그랜터 31일 제한 — 클라이언트에서 31일 이하 구간으로 호출.
+    """
+    client = get_granter_client()
+    try:
+        return await client.list_tickets_all_types(start_date, end_date, asset_id)
     except GranterAPIError as e:
         raise _err(e)
 

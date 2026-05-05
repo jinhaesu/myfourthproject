@@ -12,10 +12,10 @@ import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
   CheckCircleIcon,
-  CloudArrowDownIcon,
+  ChartPieIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency } from '@/utils/format'
+import { formatCurrency, formatCompactWon } from '@/utils/format'
 
 type PeriodPreset = 'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
 
@@ -50,19 +50,24 @@ function periodForPreset(preset: PeriodPreset): { start: string; end: string } {
       return { start: iso(new Date(y, qStart, 1)), end: iso(today) }
     }
     case 'this_year':
-      return { start: `${y}-01-01`, end: `${y}-12-31` }
+      return { start: `${y}-01-01`, end: iso(today) }
     default:
       return { start: '', end: '' }
   }
 }
 
-type TicketKind = 'CARD_TICKET' | 'BANK_TICKET' | 'TAX_INVOICE_TICKET' | 'CASH_RECEIPT_TICKET'
+function daysBetween(from: string, to: string): number {
+  const f = new Date(from).getTime()
+  const t = new Date(to).getTime()
+  return Math.floor((t - f) / (24 * 3600 * 1000)) + 1
+}
 
 interface SelectedSource {
-  type: 'all' | 'bank' | 'card' | 'tax_sales' | 'tax_purchase'
-  assetId?: number | string
+  scope: 'all' | 'asset_only'
+  ticketType?: 'EXPENSE_TICKET' | 'BANK_TRANSACTION_TICKET' | 'TAX_INVOICE_TICKET' | 'CASH_RECEIPT_TICKET'
+  assetId?: number
   label: string
-  ticketTypes?: TicketKind[]
+  sublabel?: string
 }
 
 function num(obj: any, ...keys: string[]): number {
@@ -80,12 +85,29 @@ function str(obj: any, ...keys: string[]): string {
   return ''
 }
 
+const TICKET_TYPE_LABEL: Record<string, string> = {
+  EXPENSE_TICKET: '카드',
+  BANK_TRANSACTION_TICKET: '계좌',
+  TAX_INVOICE_TICKET: '세금계산서',
+  CASH_RECEIPT_TICKET: '현금영수증',
+  WORKFLOW: '결재',
+  MERCHANT_CARD_TRANSACTION_TICKET: '포스기',
+  ECOMMERCE_SETTLEMENT: '이커머스',
+  PG_SETTLEMENT: 'PG',
+  SALARY_HISTORY: '급여',
+  MANUAL_TRANSACTION_TICKET: '수기',
+}
+
 export default function UnifiedViewPage() {
   const [preset, setPreset] = useState<PeriodPreset>('this_month')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [showSettings, setShowSettings] = useState(false)
-  const [selected, setSelected] = useState<SelectedSource>({ type: 'all', label: '전체 거래' })
+  const [showInactive, setShowInactive] = useState(false)
+  const [selected, setSelected] = useState<SelectedSource>({
+    scope: 'all',
+    label: '전체 거래',
+  })
 
   useEffect(() => {
     const r = periodForPreset('this_month')
@@ -94,8 +116,9 @@ export default function UnifiedViewPage() {
   }, [])
 
   const ready = Boolean(from && to)
+  const periodDays = ready ? daysBetween(from, to) : 0
+  const exceeds31Days = periodDays > 31
 
-  // 그랜터 상태
   const healthQuery = useQuery({
     queryKey: ['granter-health'],
     queryFn: () => granterApi.health().then((r) => r.data),
@@ -103,63 +126,84 @@ export default function UnifiedViewPage() {
   })
   const isConfigured = healthQuery.data?.configured
 
-  // 자산 목록 (모든 타입 한 번에)
+  // 자산 (활성만 default)
   const assetsQuery = useQuery({
-    queryKey: ['granter-assets-all'],
-    queryFn: () => granterApi.listAllAssets().then((r) => r.data),
+    queryKey: ['granter-assets-all', showInactive],
+    queryFn: () => granterApi.listAllAssets(!showInactive).then((r) => r.data),
     enabled: !!isConfigured,
     retry: false,
   })
 
-  // 잔액 시계열
-  const balancesQuery = useQuery({
-    queryKey: ['granter-balances', from, to],
-    queryFn: () =>
-      granterApi
-        .listBalances({ fromDate: from, toDate: to })
-        .then((r) => r.data),
-    enabled: !!isConfigured && ready,
-    retry: false,
-  })
+  const assetsData = assetsQuery.data || {}
+  const bankAssets: any[] = useMemo(() => assetsData?.BANK_ACCOUNT || [], [assetsData])
+  const cardAssets: any[] = useMemo(() => assetsData?.CARD || [], [assetsData])
+  const homeTaxAssets: any[] = useMemo(() => assetsData?.HOME_TAX_ACCOUNT || [], [assetsData])
+  const securitiesAssets: any[] = useMemo(() => assetsData?.SECURITIES_ACCOUNT || [], [assetsData])
+  const ecommerceAssets: any[] = useMemo(() => assetsData?.ECOMMERCE || [], [assetsData])
 
-  // 선택한 자산/유형의 거래 (tickets)
+  // 가용자금: 계좌 잔액 합 (그랜터 자산의 bankAccount.accountBalance 합)
+  const totalCash = useMemo(
+    () => bankAssets.reduce((s, a) => s + num(a?.bankAccount, 'accountBalance', 'originalBalance'), 0),
+    [bankAssets]
+  )
+  const totalSecurities = useMemo(
+    () => securitiesAssets.reduce((s, a) => s + num(a?.securitiesAccount, 'totalAmount'), 0),
+    [securitiesAssets]
+  )
+  const totalCardUsed = useMemo(
+    () => cardAssets.reduce((s, a) => s + num(a?.card, 'usedAmount'), 0),
+    [cardAssets]
+  )
+
+  // 거래 (선택에 따라 단일 타입 또는 모든 타입 통합)
   const ticketsQuery = useQuery({
-    queryKey: ['granter-tickets', selected, from, to],
+    queryKey: ['granter-tickets-v2', selected, from, to],
     queryFn: () => {
-      const payload: any = {
-        fromDate: from,
-        toDate: to,
-        limit: 200,
+      // 31일 초과 시 자동으로 마지막 31일만 (사용자에게 안내)
+      let actualStart = from
+      if (exceeds31Days) {
+        const d = new Date(to)
+        d.setDate(d.getDate() - 30)
+        actualStart = d.toISOString().slice(0, 10)
       }
-      if (selected.ticketTypes) payload.ticketTypes = selected.ticketTypes
-      if (selected.assetId) payload.assetIds = [selected.assetId]
+      if (selected.scope === 'all' || !selected.ticketType) {
+        // 모든 타입 통합 호출
+        return granterApi
+          .listTicketsAllTypes(actualStart, to, selected.assetId)
+          .then((r) => r.data)
+      }
+      // 단일 타입
+      const payload: any = {
+        ticketType: selected.ticketType,
+        startDate: actualStart,
+        endDate: to,
+      }
+      if (selected.assetId) payload.assetId = selected.assetId
       return granterApi.listTickets(payload).then((r) => r.data)
     },
     enabled: !!isConfigured && ready,
     retry: false,
   })
 
-  // /assets/all 응답: { CARD: [...], BANK_ACCOUNT: [...], HOME_TAX_ACCOUNT: [...], ... }
-  const assetsData = assetsQuery.data || {}
-  const bankAssets: any[] = useMemo(() => assetsData?.BANK_ACCOUNT || [], [assetsData])
-  const cardAssets: any[] = useMemo(() => assetsData?.CARD || [], [assetsData])
-  const homeTaxAssets: any[] = useMemo(() => assetsData?.HOME_TAX_ACCOUNT || [], [assetsData])
-
-  // 잔액 합계
-  const balances: any[] = useMemo(() => {
-    const d = balancesQuery.data
-    if (Array.isArray(d)) return d
-    return d?.data || d?.balances || []
-  }, [balancesQuery.data])
-  const totalCash = useMemo(
-    () => balances.reduce((s, b) => s + num(b, 'balance', 'amount', 'closingBalance'), 0),
-    [balances]
-  )
-
+  // 거래 데이터 정규화 (단일 타입 → 배열, 통합 → 객체를 합쳐서 배열)
   const tickets: any[] = useMemo(() => {
     const d = ticketsQuery.data
+    if (!d) return []
     if (Array.isArray(d)) return d
-    return d?.data || []
+    // 통합 응답: { EXPENSE_TICKET: [...], BANK_TRANSACTION_TICKET: [...], ... }
+    if (typeof d === 'object') {
+      const all: any[] = []
+      for (const v of Object.values(d)) {
+        if (Array.isArray(v)) all.push(...v)
+      }
+      // 시간 역순
+      return all.sort((a, b) => {
+        const at = String(a.transactAt || a.transactionDate || '')
+        const bt = String(b.transactAt || b.transactionDate || '')
+        return bt.localeCompare(at)
+      })
+    }
+    return []
   }, [ticketsQuery.data])
 
   const handlePreset = (p: PeriodPreset) => {
@@ -178,7 +222,7 @@ export default function UnifiedViewPage() {
         <div>
           <h1>통합 조회</h1>
           <p className="text-2xs text-ink-500 mt-0.5">
-            그랜터 실시간 — 카드·계좌·세금계산서·현금영수증 거래 통합 조회
+            그랜터 실시간 — 활성 자산만 노출 · 카드·계좌·세금계산서·현금영수증 통합
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -228,10 +272,8 @@ export default function UnifiedViewPage() {
         </div>
       </div>
 
-      {/* Granter status banner */}
-      {healthQuery.isLoading ? (
-        <div className="panel px-3 py-2 text-2xs text-ink-500">그랜터 상태 확인 중…</div>
-      ) : !isConfigured ? (
+      {/* Status / 31일 제한 안내 */}
+      {!isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1 text-2xs">
@@ -243,27 +285,55 @@ export default function UnifiedViewPage() {
           </div>
         </div>
       ) : (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 flex items-center gap-2">
-          <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-          <div className="text-2xs text-emerald-800">그랜터 연결됨 · 실시간 데이터 활성화</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
+            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          </div>
+          {exceeds31Days && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
+              ⓘ 그랜터는 1회 조회 최대 31일 — 자동으로 종료일 기준 최근 31일만 조회됩니다
+            </div>
+          )}
+          <label className="ml-auto flex items-center gap-1.5 text-2xs text-ink-600 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showInactive}
+              onChange={(e) => setShowInactive(e.target.checked)}
+              className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3"
+            />
+            만료/비활성 자산도 보기
+          </label>
         </div>
       )}
 
       {/* 2-pane layout */}
-      <div className="grid grid-cols-12 gap-3 min-h-[calc(100vh-12rem)]">
+      <div className="grid grid-cols-12 gap-3 min-h-[calc(100vh-13rem)]">
         {/* Left — sidebar */}
         <aside className="col-span-12 lg:col-span-5 xl:col-span-4 space-y-3 overflow-y-auto">
-          {/* 가용자금 */}
-          <div className="panel p-4">
-            <div className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">
-              가용자금
+          {/* 가용자금 + 카드 사용 + 증권 종합 카드 */}
+          <div className="panel p-4 space-y-3">
+            <div>
+              <div className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">가용자금</div>
+              <div className="mt-1 text-2xl font-bold text-ink-900 tabular-nums tracking-crisp">
+                {formatCurrency(totalCash, false)}
+                <span className="text-xs text-ink-400 font-medium ml-1">원</span>
+              </div>
+              <div className="text-2xs text-ink-400 mt-0.5">계좌 잔액 합 · {bankAssets.length}개 계좌</div>
             </div>
-            <div className="mt-1 text-2xl font-bold text-ink-900 tabular-nums tracking-crisp">
-              {formatCurrency(totalCash, false)}
-              <span className="text-xs text-ink-400 font-medium ml-1">원</span>
-            </div>
-            <div className="text-2xs text-ink-400 mt-0.5">
-              그랜터 잔액 합계 · {balances.length}건
+            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100">
+              <div>
+                <div className="text-2xs text-ink-500">카드 사용</div>
+                <div className="mt-0.5 text-sm font-semibold text-rose-700 font-mono tabular-nums">
+                  {formatCompactWon(totalCardUsed)}
+                </div>
+              </div>
+              <div>
+                <div className="text-2xs text-ink-500">증권 평가</div>
+                <div className="mt-0.5 text-sm font-semibold text-ink-900 font-mono tabular-nums">
+                  {formatCompactWon(totalSecurities)}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -273,39 +343,58 @@ export default function UnifiedViewPage() {
             icon={<BuildingLibraryIcon className="h-3.5 w-3.5" />}
             count={bankAssets.length}
             onClickAll={() =>
-              setSelected({ type: 'all', label: '전체 계좌 거래', ticketTypes: ['BANK_TICKET'] })
+              setSelected({
+                scope: 'all',
+                ticketType: 'BANK_TRANSACTION_TICKET',
+                label: '계좌 전체 거래',
+                sublabel: `${bankAssets.length}개 계좌`,
+              })
             }
-            allLabel="계좌 전체"
-            isAllActive={selected.type === 'all' && selected.ticketTypes?.[0] === 'BANK_TICKET'}
+            allLabel="전체"
+            isAllActive={selected.ticketType === 'BANK_TRANSACTION_TICKET' && !selected.assetId}
           >
             {bankAssets.length === 0 && !assetsQuery.isLoading && (
-              <div className="text-2xs text-ink-400 px-2 py-3 text-center">
-                {isConfigured ? '연동된 계좌 없음' : '그랜터 미설정'}
-              </div>
+              <div className="text-2xs text-ink-400 px-2 py-3 text-center">활성 계좌 없음</div>
             )}
             {bankAssets.map((a, idx) => {
-              const id = num(a, 'id', 'assetId')
-              const name =
-                str(a, 'alias', 'nickname', 'institutionName', 'companyName', 'name') ||
-                `계좌 ${idx + 1}`
-              const accountNumber = str(a, 'accountNumber', 'maskedAccountNumber', 'identifier')
-              const isActive = selected.type === 'bank' && selected.assetId === id
+              const id = num(a, 'id')
+              const ba = a.bankAccount || {}
+              const bankName = str(a, 'organizationName', 'name')
+              const alias = str(a, 'nickname') || str(ba, 'nickName', 'accountName')
+              const acctNum = str(ba, 'accountNumber') || str(a, 'number')
+              const balance = num(ba, 'accountBalance', 'originalBalance')
+              const isActive = selected.assetId === id
               return (
                 <button
                   key={id || idx}
                   onClick={() =>
-                    setSelected({ type: 'bank', assetId: id, label: name, ticketTypes: ['BANK_TICKET'] })
+                    setSelected({
+                      scope: 'asset_only',
+                      ticketType: 'BANK_TRANSACTION_TICKET',
+                      assetId: id,
+                      label: alias || bankName,
+                      sublabel: `${bankName} ${acctNum}`,
+                    })
                   }
-                  className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition ${
+                  className={`w-full flex items-start justify-between px-2 py-1.5 rounded text-2xs transition gap-2 ${
                     isActive ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
                   }`}
                 >
                   <div className="text-left min-w-0 flex-1">
                     <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'}`}>
-                      {name}
+                      {alias || bankName}
                     </div>
                     <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
-                      {accountNumber || '-'}
+                      {bankName} · {acctNum}
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div
+                      className={`font-mono tabular-nums font-semibold ${
+                        isActive ? '' : balance >= 0 ? 'text-ink-900' : 'text-rose-600'
+                      }`}
+                    >
+                      {formatCompactWon(balance)}
                     </div>
                   </div>
                 </button>
@@ -319,107 +408,166 @@ export default function UnifiedViewPage() {
             icon={<CreditCardIcon className="h-3.5 w-3.5" />}
             count={cardAssets.length}
             onClickAll={() =>
-              setSelected({ type: 'all', label: '전체 카드 거래', ticketTypes: ['CARD_TICKET'] })
+              setSelected({
+                scope: 'all',
+                ticketType: 'EXPENSE_TICKET',
+                label: '카드 전체 거래',
+                sublabel: `${cardAssets.length}개 카드`,
+              })
             }
-            allLabel="카드 전체"
-            isAllActive={selected.type === 'all' && selected.ticketTypes?.[0] === 'CARD_TICKET'}
+            allLabel="전체"
+            isAllActive={selected.ticketType === 'EXPENSE_TICKET' && !selected.assetId}
           >
             {cardAssets.length === 0 && !assetsQuery.isLoading && (
-              <div className="text-2xs text-ink-400 px-2 py-3 text-center">
-                {isConfigured ? '연동된 카드 없음' : '그랜터 미설정'}
-              </div>
+              <div className="text-2xs text-ink-400 px-2 py-3 text-center">활성 카드 없음</div>
             )}
             {cardAssets.map((c, idx) => {
-              const id = num(c, 'id', 'assetId')
-              const name =
-                str(c, 'alias', 'nickname', 'institutionName', 'companyName', 'name') ||
-                `카드 ${idx + 1}`
-              const cardNumber = str(c, 'cardNumber', 'maskedCardNumber', 'identifier')
-              const isActive = selected.type === 'card' && selected.assetId === id
+              const id = num(c, 'id')
+              const cardInfo = c.card || {}
+              const issuer = str(c, 'organizationName', 'name')
+              const alias = str(c, 'nickname')
+              const cardNum = str(c, 'number')
+              const used = num(cardInfo, 'usedAmount')
+              const limit = num(cardInfo, 'limitAmount')
+              const isActive = selected.assetId === id
               return (
                 <button
                   key={id || idx}
                   onClick={() =>
-                    setSelected({ type: 'card', assetId: id, label: name, ticketTypes: ['CARD_TICKET'] })
+                    setSelected({
+                      scope: 'asset_only',
+                      ticketType: 'EXPENSE_TICKET',
+                      assetId: id,
+                      label: alias || issuer,
+                      sublabel: `${issuer} ${cardNum}`,
+                    })
                   }
-                  className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition ${
+                  className={`w-full flex items-start justify-between px-2 py-1.5 rounded text-2xs transition gap-2 ${
                     isActive ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
                   }`}
                 >
                   <div className="text-left min-w-0 flex-1">
                     <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'}`}>
-                      {name}
+                      {alias || issuer}
                     </div>
                     <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
-                      {cardNumber || '-'}
+                      {issuer} · {cardNum}
                     </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className={`font-mono tabular-nums font-semibold ${isActive ? '' : 'text-ink-900'}`}>
+                      {formatCompactWon(used)}
+                    </div>
+                    {limit > 0 && (
+                      <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'}`}>
+                        / {formatCompactWon(limit)}
+                      </div>
+                    )}
                   </div>
                 </button>
               )
             })}
           </Section>
 
-          {/* 세금계산서 */}
+          {/* 세금계산서/현금영수증 */}
           <Section
-            title="세금계산서"
+            title="세금계산서·현금영수증"
             icon={<DocumentTextIcon className="h-3.5 w-3.5" />}
             count={homeTaxAssets.length}
           >
+            {homeTaxAssets.map((h, idx) => {
+              const id = num(h, 'id')
+              const ht = h.homeTaxAccount || {}
+              const company = str(ht, 'companyName') || str(h, 'name')
+              const bizNo = str(ht, 'registrationNumber')
+              const category = str(ht, 'category')
+              return (
+                <div key={id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 mb-1">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium text-ink-900 truncate">{company}</div>
+                    <span className="badge bg-ink-50 text-ink-700 border-ink-200">
+                      {category === 'TAX_INVOICE' ? '세금계산서' : category === 'CASH_RECEIPT' ? '현금영수증' : category || '홈택스'}
+                    </span>
+                  </div>
+                  <div className="text-2xs text-ink-500 font-mono mt-0.5">{bizNo}</div>
+                </div>
+              )
+            })}
             <button
               onClick={() =>
                 setSelected({
-                  type: 'tax_sales',
-                  label: '세금계산서 전체',
-                  ticketTypes: ['TAX_INVOICE_TICKET'],
+                  scope: 'all',
+                  ticketType: 'TAX_INVOICE_TICKET',
+                  label: '세금계산서 거래',
                 })
               }
-              className={`w-full flex items-center justify-between px-2 py-2 rounded text-2xs transition ${
-                selected.type === 'tax_sales' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+              className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition mt-1 ${
+                selected.ticketType === 'TAX_INVOICE_TICKET' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
               }`}
             >
-              <div className="text-left">
-                <div className={selected.type === 'tax_sales' ? 'font-semibold' : 'text-ink-700 font-medium'}>
-                  세금계산서 거래
-                </div>
-                <div className={`text-2xs ${selected.type === 'tax_sales' ? 'text-ink-300' : 'text-ink-400'}`}>
-                  매출/매입 통합
-                </div>
-              </div>
-              <ArrowsRightLeftIcon className="h-3.5 w-3.5 opacity-60" />
+              <span>세금계산서 거래 보기</span>
+              <ArrowsRightLeftIcon className="h-3 w-3 opacity-60" />
             </button>
             <button
               onClick={() =>
                 setSelected({
-                  type: 'tax_purchase',
+                  scope: 'all',
+                  ticketType: 'CASH_RECEIPT_TICKET',
                   label: '현금영수증 거래',
-                  ticketTypes: ['CASH_RECEIPT_TICKET'],
                 })
               }
-              className={`w-full flex items-center justify-between px-2 py-2 rounded text-2xs transition ${
-                selected.type === 'tax_purchase' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+              className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition mt-1 ${
+                selected.ticketType === 'CASH_RECEIPT_TICKET' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
               }`}
             >
-              <div className="text-left">
-                <div className={selected.type === 'tax_purchase' ? 'font-semibold' : 'text-ink-700 font-medium'}>
-                  현금영수증 거래
-                </div>
-                <div className={`text-2xs ${selected.type === 'tax_purchase' ? 'text-ink-300' : 'text-ink-400'}`}>
-                  발행/수취
-                </div>
-              </div>
-              <ArrowsRightLeftIcon className="h-3.5 w-3.5 opacity-60" />
+              <span>현금영수증 거래 보기</span>
+              <ArrowsRightLeftIcon className="h-3 w-3 opacity-60" />
             </button>
           </Section>
 
-          <div className="rounded-md border border-ink-200 bg-canvas-50 px-3 py-2">
-            <div className="flex items-start gap-2">
-              <CloudArrowDownIcon className="h-3.5 w-3.5 text-ink-500 flex-shrink-0 mt-0.5" />
-              <div className="text-2xs text-ink-600 leading-relaxed">
-                여기는 그랜터 <strong>실시간 raw 데이터</strong>입니다. 회계 처리(전표/원장/재무)는
-                AI 분류 메뉴에서 업로드한 엑셀 데이터로 진행합니다.
-              </div>
-            </div>
-          </div>
+          {/* 증권 / 이커머스 */}
+          {(securitiesAssets.length > 0 || ecommerceAssets.length > 0) && (
+            <Section
+              title="기타 자산"
+              icon={<ChartPieIcon className="h-3.5 w-3.5" />}
+              count={securitiesAssets.length + ecommerceAssets.length}
+            >
+              {securitiesAssets.map((s, idx) => {
+                const sa = s.securitiesAccount || {}
+                return (
+                  <div key={s.id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 mb-1">
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium text-ink-900 truncate">{str(s, 'name')}</div>
+                      <div className="font-mono text-ink-700 font-semibold">
+                        {formatCompactWon(num(sa, 'totalAmount'))}
+                      </div>
+                    </div>
+                    <div className="text-2xs text-ink-500 mt-0.5">
+                      예수금 {formatCompactWon(num(sa, 'depositAmount'))} · 평가{' '}
+                      {formatCompactWon(num(sa, 'totalValuationAmount'))}
+                    </div>
+                  </div>
+                )
+              })}
+              {ecommerceAssets.map((e, idx) => (
+                <div key={e.id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 mb-1">
+                  <div className="font-medium text-ink-900 truncate">{str(e, 'name', 'organizationName')}</div>
+                  <div className="text-2xs text-ink-500 mt-0.5">{str(e, 'organizationName')}</div>
+                </div>
+              ))}
+            </Section>
+          )}
+
+          {/* 전체 통합 */}
+          <button
+            onClick={() => setSelected({ scope: 'all', label: '전체 거래' })}
+            className={`w-full panel px-3 py-2 text-left text-2xs hover:bg-ink-50 transition ${
+              !selected.ticketType && selected.scope === 'all' ? 'border-ink-900 border-2' : ''
+            }`}
+          >
+            <div className="font-semibold text-ink-900">전체 거래 통합</div>
+            <div className="text-ink-500 mt-0.5">카드 + 계좌 + 세금계산서 + 현금영수증 한 번에</div>
+          </button>
         </aside>
 
         {/* Right — tickets */}
@@ -428,9 +576,14 @@ export default function UnifiedViewPage() {
             <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
               <div className="flex items-center gap-2 min-w-0">
                 <ArrowsRightLeftIcon className="h-3.5 w-3.5 text-ink-500" />
-                <h2 className="text-sm">{selected.label}</h2>
+                <div className="min-w-0">
+                  <h2 className="text-sm">{selected.label}</h2>
+                  {selected.sublabel && (
+                    <div className="text-2xs text-ink-400 truncate">{selected.sublabel}</div>
+                  )}
+                </div>
                 {tickets.length > 0 && (
-                  <span className="text-2xs text-ink-400">
+                  <span className="text-2xs text-ink-400 ml-2">
                     · {tickets.length.toLocaleString('ko-KR')}건
                   </span>
                 )}
@@ -447,7 +600,7 @@ export default function UnifiedViewPage() {
               </div>
             ) : ticketsQuery.isError ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-rose-500 p-6 text-center">
-                그랜터 API 호출 실패. 키 권한 또는 엔드포인트 확인 필요.
+                그랜터 API 호출 실패. 권한·기간 확인.
               </div>
             ) : tickets.length === 0 ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400">
@@ -466,6 +619,9 @@ export default function UnifiedViewPage() {
                       </th>
                       <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
                         거래처/적요
+                      </th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                        계정과목
                       </th>
                       <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
                         <span className="inline-flex items-center gap-0.5">
@@ -487,23 +643,36 @@ export default function UnifiedViewPage() {
                       const amount = num(t, 'amount')
                       const inAmount = txType === 'IN' ? amount : 0
                       const outAmount = txType === 'OUT' ? amount : 0
+                      const ticketType = str(t, 'ticketType')
+                      const cat = t.expenseCategory || {}
+                      const contact = str(t, 'contact', 'merchantName', 'counterpartyName', 'vendor')
                       return (
                         <tr key={t.id || idx} className="hover:bg-canvas-50">
                           <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
-                            {str(t, 'transactAt', 'transactionDate', 'date').slice(0, 16)}
+                            {str(t, 'transactAt', 'transactionDate', 'date').slice(0, 16).replace('T', ' ')}
                           </td>
                           <td className="px-3 py-1.5 whitespace-nowrap">
                             <span className="badge bg-ink-50 text-ink-700 border-ink-200">
-                              {str(t, 'ticketType', 'kind').replace('_TICKET', '') || '-'}
+                              {TICKET_TYPE_LABEL[ticketType] || ticketType.replace('_TICKET', '')}
                             </span>
                           </td>
                           <td className="px-3 py-1.5 text-xs text-ink-900">
                             <div className="font-medium">
-                              {str(t, 'merchantName', 'counterpartyName', 'vendor', 'content') || '-'}
+                              {contact || str(t, 'content') || '-'}
                             </div>
                             <div className="text-2xs text-ink-500 truncate max-w-md">
-                              {str(t, 'content', 'memo', 'description')}
+                              {str(t, 'description', 'memo', 'content')}
                             </div>
+                          </td>
+                          <td className="px-3 py-1.5 whitespace-nowrap text-2xs">
+                            {str(cat, 'name') ? (
+                              <span className="inline-flex items-center gap-1">
+                                <span className="font-mono text-ink-400">{str(cat, 'code')}</span>
+                                <span className="text-ink-700">{str(cat, 'name')}</span>
+                              </span>
+                            ) : (
+                              <span className="text-ink-300">-</span>
+                            )}
                           </td>
                           <td className="px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap">
                             {inAmount > 0 ? (
@@ -585,27 +754,30 @@ function Section({
 }
 
 function SettingsModal({ onClose }: { onClose: () => void }) {
+  const [showInactive, setShowInactive] = useState(true)  // 설정에서는 모든 자산 보이기
+
   const assetsQuery = useQuery({
-    queryKey: ['granter-assets-settings'],
-    queryFn: () => granterApi.listAllAssets().then((r) => r.data),
+    queryKey: ['granter-assets-settings', showInactive],
+    queryFn: () => granterApi.listAllAssets(!showInactive).then((r) => r.data),
     retry: false,
   })
 
-  const assets: any[] = useMemo(() => {
+  const allAssets: any[] = useMemo(() => {
     const d = assetsQuery.data || {}
-    return [
-      ...(d.BANK_ACCOUNT || []),
-      ...(d.CARD || []),
-      ...(d.HOME_TAX_ACCOUNT || []),
-      ...(d.SECURITIES_ACCOUNT || []),
-      ...(d.ECOMMERCE || []),
-      ...(d.MERCHANT_GROUP || []),
-    ]
+    const result: any[] = []
+    for (const [type, items] of Object.entries(d)) {
+      if (Array.isArray(items)) {
+        for (const item of items) {
+          result.push({ ...item, _typeKey: type })
+        }
+      }
+    }
+    return result
   }, [assetsQuery.data])
 
   return (
     <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-pop w-full max-w-2xl max-h-[80vh] overflow-y-auto border border-ink-200">
+      <div className="bg-white rounded-lg shadow-pop w-full max-w-3xl max-h-[80vh] overflow-y-auto border border-ink-200">
         <div className="sticky top-0 bg-white border-b border-ink-200 px-4 py-2.5 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-ink-900">데이터 소스 (그랜터 자산)</h3>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
@@ -614,28 +786,46 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="p-4 space-y-3">
-          <div className="rounded-md bg-canvas-50 border border-ink-200 px-3 py-2 text-2xs text-ink-600 leading-relaxed">
-            그랜터에 연동된 자산입니다. 새 연결은 그랜터 대시보드에서 추가하세요.
+          <div className="flex items-center justify-between">
+            <div className="rounded-md bg-canvas-50 border border-ink-200 px-3 py-2 text-2xs text-ink-600 leading-relaxed flex-1 mr-3">
+              그랜터에 연동된 자산입니다. 새 연결은 그랜터 대시보드에서 추가합니다.
+            </div>
+            <label className="flex items-center gap-1.5 text-2xs text-ink-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!showInactive}
+                onChange={(e) => setShowInactive(!e.target.checked)}
+                className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3"
+              />
+              활성만
+            </label>
           </div>
           <div className="space-y-1.5">
-            {assets.map((a, idx) => (
-              <div
-                key={a.id || idx}
-                className="flex items-center justify-between px-3 py-2 border border-ink-200 rounded"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs font-medium text-ink-900 truncate">
-                    {str(a, 'alias', 'nickname', 'institutionName', 'companyName', 'name') ||
-                      `자산 ${idx + 1}`}
-                  </div>
-                  <div className="text-2xs text-ink-500">
-                    {str(a, 'assetType', 'type')} ·{' '}
-                    {str(a, 'identifier', 'accountNumber', 'cardNumber', 'maskedNumber')}
+            {allAssets.map((a, idx) => {
+              const isActive = a.isActive && !a.isHidden && !a.isDormant
+              return (
+                <div
+                  key={`${a._typeKey}-${a.id || idx}`}
+                  className="flex items-center justify-between px-3 py-2 border border-ink-200 rounded"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-ink-900 truncate flex items-center gap-1.5">
+                      {str(a, 'nickname') || str(a, 'name')}
+                      {!isActive && (
+                        <span className="badge bg-rose-50 text-rose-700 border-rose-200">비활성</span>
+                      )}
+                      {a.isDormant && (
+                        <span className="badge bg-amber-50 text-amber-700 border-amber-200">휴면</span>
+                      )}
+                    </div>
+                    <div className="text-2xs text-ink-500 font-mono">
+                      {a._typeKey} · {str(a, 'organizationName')} · {str(a, 'number') || str(a?.bankAccount, 'accountNumber')}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-            {assets.length === 0 && (
+              )
+            })}
+            {allAssets.length === 0 && !assetsQuery.isLoading && (
               <div className="text-center text-2xs text-ink-400 py-6">자산이 없습니다.</div>
             )}
           </div>
