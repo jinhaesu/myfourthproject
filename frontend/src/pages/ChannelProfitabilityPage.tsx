@@ -446,9 +446,9 @@ export default function ChannelProfitabilityPage() {
 
     const map: Record<string, { count: number; revenue: number }> = {}
     for (const t of salesTickets) {
-      const name = extractContact(t)
-      if (!name) continue
-      // 본인 회사(조인앤조인) 제외 — extractContact가 이미 거래상대방 회사명 반환
+      const rawName = extractContact(t)
+      const name = rawName || '(미지정)'  // 빈 contact도 '(미지정)'으로 집계
+      // 본인 회사(조인앤조인)만 정확 매칭 시 제외
       if (isSelfContact(name)) continue
       if (!map[name]) map[name] = { count: 0, revenue: 0 }
       map[name].count += 1
@@ -463,7 +463,7 @@ export default function ChannelProfitabilityPage() {
         sharePct: totalRevenue > 0 ? (revenue / totalRevenue) * 100 : 0,
       }))
       .sort((a, b) => b.revenue - a.revenue)
-      .slice(0, 20)
+      .slice(0, 50)
   }, [dataQuery.data, tab])
 
   // ─── 선택 채널 거래 종류별 PieChart 데이터 ───────────────────────────────────
