@@ -23,6 +23,10 @@ import {
   ReceiptPercentIcon,
   ArchiveBoxArrowDownIcon,
   BookOpenIcon,
+  ShoppingBagIcon,
+  StarIcon,
+  ArrowTrendingUpIcon,
+  ShieldCheckIcon,
 } from '@heroicons/react/24/outline'
 
 type NavItem =
@@ -37,6 +41,12 @@ const baseNavigation: NavItem[] = [
   { name: '자금일보', href: '/daily-report', icon: SunIcon },
   { name: '세금계산서', href: '/tax-invoices', icon: ReceiptPercentIcon },
   { name: '거래처 정산', href: '/settlement', icon: ArrowsRightLeftIcon },
+
+  { name: '경영 인사이트', section: true },
+  { name: '채널별 수익성', href: '/channel-profitability', icon: ShoppingBagIcon },
+  { name: '거래처 스코어링', href: '/contact-scoring', icon: StarIcon },
+  { name: '캐시플로우 예측', href: '/cashflow-forecast', icon: ArrowTrendingUpIcon },
+  { name: '감사·컴플라이언스', href: '/audit-report', icon: ShieldCheckIcon },
 
   { name: '회계 / 분석', section: true },
   { name: 'AI 분류', href: '/ai-classification', icon: CpuChipIcon },

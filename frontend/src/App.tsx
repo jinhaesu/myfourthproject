@@ -22,6 +22,10 @@ import TaxInvoicePage from '@/pages/TaxInvoicePage'
 import ConnectClientsPage from '@/pages/ConnectClientsPage'
 import ConnectClosingPage from '@/pages/ConnectClosingPage'
 import AccountLedgerPage from '@/pages/AccountLedgerPage'
+import ChannelProfitabilityPage from '@/pages/ChannelProfitabilityPage'
+import ContactScoringPage from '@/pages/ContactScoringPage'
+import CashflowForecastPage from '@/pages/CashflowForecastPage'
+import AuditReportPage from '@/pages/AuditReportPage'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -60,6 +64,10 @@ function App() {
         <Route path="financial" element={<FinancialReportsPage />} />
         <Route path="connect/clients" element={<ConnectClientsPage />} />
         <Route path="connect/closing" element={<ConnectClosingPage />} />
+        <Route path="channel-profitability" element={<ChannelProfitabilityPage />} />
+        <Route path="contact-scoring" element={<ContactScoringPage />} />
+        <Route path="cashflow-forecast" element={<CashflowForecastPage />} />
+        <Route path="audit-report" element={<AuditReportPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="admin" element={<AdminPage />} />
       </Route>
