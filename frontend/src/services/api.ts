@@ -1,8 +1,13 @@
 import axios, { AxiosError, AxiosRequestConfig } from 'axios'
 import { useAuthStore } from '@/store/authStore'
 
-// 환경변수에서 API URL 가져오기 (프로덕션 배포 시 설정)
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api/v1'
+// 환경변수 우선, 없으면 Railway production URL을 명시적 fallback (Vercel 환경변수 누락 방어)
+// 로컬 개발 시 vite proxy 사용하려면 VITE_API_URL=/api/v1 설정
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV
+    ? '/api/v1'
+    : 'https://myfourthproject-production.up.railway.app/api/v1')
 
 const api = axios.create({
   baseURL: API_BASE_URL,
