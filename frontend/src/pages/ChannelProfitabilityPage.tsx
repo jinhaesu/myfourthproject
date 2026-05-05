@@ -26,7 +26,8 @@ import {
 import type { PieSectorDataItem } from 'recharts/types/polar/Pie'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, formatPct, isoLocal } from '@/utils/format'
-import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import PeriodPicker from '@/components/common/PeriodPicker'
+import { usePeriodStore } from '@/store/periodStore'
 
 // ─── 채널 분류 상수 ───────────────────────────────────────────────────────────
 export const CHANNEL_RULES: { key: string; label: string; keywords: string[]; color: string }[] = [
@@ -168,22 +169,15 @@ function renderActiveShape(props: PieSectorDataItem) {
 // ─── 메인 컴포넌트 ────────────────────────────────────────────────────────────
 export default function ChannelProfitabilityPage() {
   const [tab, setTab] = useState<AnalysisTab>('bank')
-  // default를 last_30d로 변경
-  const [preset, setPreset] = useState<PeriodPreset>('last_30d')
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
+  const preset = usePeriodStore((s) => s.preset)
+  const from = usePeriodStore((s) => s.from)
+  const to = usePeriodStore((s) => s.to)
+  const setPeriod = usePeriodStore((s) => s.set)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [pieActiveIdx, setPieActiveIdx] = useState(0)
   const [detailPieActiveIdx, setDetailPieActiveIdx] = useState(0)
   // 빈 결과 자동 탐색 가드
   const autoSearchFired = useRef(false)
-
-  // 초기 기간 설정 (last_30d)
-  useEffect(() => {
-    const r = periodForPreset('last_30d')
-    setFrom(r.start)
-    setTo(r.end)
-  }, [])
 
   const ready = Boolean(from && to)
   const exceeds31 = ready && daysBetween(from, to) > 31
@@ -259,9 +253,7 @@ export default function ChannelProfitabilityPage() {
     },
     onSuccess: (res) => {
       if (res.start && res.end) {
-        setPreset('custom')
-        setFrom(res.start)
-        setTo(res.end)
+        setPeriod('custom', res.start, res.end)
         toast.success(
           `${res.monthsBack === 0 ? '이번달' : `${res.monthsBack}개월 전`} 구간 (매출 ${res.count}건)`
         )
@@ -431,7 +423,7 @@ export default function ChannelProfitabilityPage() {
     [channels]
   )
 
-  // ─── 거래처별 매출 표 (상위 20) ──────────────────────────────────────────────
+  // ─── 거래처별 매출 표 (상위 50) ──────────────────────────────────────────────
   const contactRows: ContactRow[] = useMemo(() => {
     const { bank: rawBank = [], tax = [], expense: _exp = [] } = dataQuery.data || {}
     // 법인 계좌 간 이체 제외
@@ -518,7 +510,7 @@ export default function ChannelProfitabilityPage() {
             preset={preset}
             from={from}
             to={to}
-            onChange={(p, f, t) => { setPreset(p); setFrom(f); setTo(t) }}
+            onChange={(p, f, t) => setPeriod(p, f, t)}
           />
           <button
             onClick={() => findRecentMut.mutate()}
@@ -1003,12 +995,12 @@ export default function ChannelProfitabilityPage() {
         )}
       </div>
 
-      {/* ── 거래처별 매출 표 (상위 20) ── */}
+      {/* ── 거래처별 매출 표 (상위 50) ── */}
       {!selected && contactRows.length > 0 && (
         <div className="panel overflow-hidden">
           <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
             <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
-              거래처별 매출 (상위 20)
+              거래처별 매출 (상위 50)
             </span>
             <span className="text-2xs text-ink-400">매출 큰 순</span>
           </div>

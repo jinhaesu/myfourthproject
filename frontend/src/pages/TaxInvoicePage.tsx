@@ -17,7 +17,8 @@ import {
 import { granterApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
 import { isSelfCompany } from '@/utils/internalTransfer'
-import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import PeriodPicker from '@/components/common/PeriodPicker'
+import { usePeriodStore } from '@/store/periodStore'
 
 type Direction = 'all' | 'sales' | 'purchase'
 
@@ -713,10 +714,10 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
 // ────────────────────────────────────────────────────────────────────────────
 
 export default function TaxInvoicePage() {
-  const initial = periodForPreset('this_month')
-  const [preset, setPreset] = useState<PeriodPreset>('this_month')
-  const [from, setFrom] = useState(initial.start)
-  const [to, setTo] = useState(initial.end)
+  const preset = usePeriodStore((s) => s.preset)
+  const from = usePeriodStore((s) => s.from)
+  const to = usePeriodStore((s) => s.to)
+  const setPeriod = usePeriodStore((s) => s.set)
   const [direction, setDirection] = useState<Direction>('all')
   const [search, setSearch] = useState('')
   const [issueModalOpen, setIssueModalOpen] = useState(false)
@@ -820,9 +821,7 @@ export default function TaxInvoicePage() {
     },
     onSuccess: (res) => {
       if (res.start && res.end) {
-        setPreset('custom')
-        setFrom(res.start)
-        setTo(res.end)
+        setPeriod('custom', res.start, res.end)
         toast.success(
           `${res.monthsBack === 0 ? '이번달' : `${res.monthsBack}개월 전`} 구간 (${res.count}건)`
         )
@@ -889,11 +888,7 @@ export default function TaxInvoicePage() {
             preset={preset}
             from={from}
             to={to}
-            onChange={(p, f, t) => {
-              setPreset(p)
-              setFrom(f)
-              setTo(t)
-            }}
+            onChange={(p, f, t) => setPeriod(p, f, t)}
             groups={[
               { label: '일/주', presets: ['today', 'yesterday', 'this_week', 'last_week'] },
               { label: '월', presets: ['this_month', 'last_month'] },

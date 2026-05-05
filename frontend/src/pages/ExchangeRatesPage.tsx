@@ -17,7 +17,8 @@ import {
 } from '@heroicons/react/24/outline'
 import api, { granterApi } from '@/services/api'
 import { isoLocal } from '@/utils/format'
-import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import PeriodPicker from '@/components/common/PeriodPicker'
+import { usePeriodStore } from '@/store/periodStore'
 
 // ---------------------------------------------------------------------------
 // 통화 메타 / 색상
@@ -223,10 +224,10 @@ function RateKpiCard({
 // ---------------------------------------------------------------------------
 
 export default function ExchangeRatesPage() {
-  const initial = periodForPreset('last_30d')
-  const [preset, setPreset] = useState<PeriodPreset>('last_30d')
-  const [from, setFrom] = useState(initial.start)
-  const [to, setTo] = useState(initial.end)
+  const preset = usePeriodStore((s) => s.preset)
+  const from = usePeriodStore((s) => s.from)
+  const to = usePeriodStore((s) => s.to)
+  const setPeriod = usePeriodStore((s) => s.set)
 
   // 31일 초과 자동 클램프
   const span = daysBetween(from, to)
@@ -348,11 +349,7 @@ export default function ExchangeRatesPage() {
             preset={preset}
             from={from}
             to={to}
-            onChange={(p, f, t) => {
-              setPreset(p)
-              setFrom(f)
-              setTo(t)
-            }}
+            onChange={(p, f, t) => setPeriod(p, f, t)}
             groups={[
               { label: '월', presets: ['this_month', 'last_month'] },
               { label: '범위', presets: ['last_7d', 'last_30d'] },

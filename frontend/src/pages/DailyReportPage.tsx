@@ -11,17 +11,18 @@ import {
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
-import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import PeriodPicker from '@/components/common/PeriodPicker'
+import { usePeriodStore } from '@/store/periodStore'
 
 function daysBetween(a: string, b: string) {
   return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
 }
 
 export default function DailyReportPage() {
-  const initial = periodForPreset('this_month')
-  const [preset, setPreset] = useState<PeriodPreset>('this_month')
-  const [from, setFrom] = useState(initial.start)
-  const [to, setTo] = useState(initial.end)
+  const preset = usePeriodStore((s) => s.preset)
+  const from = usePeriodStore((s) => s.from)
+  const to = usePeriodStore((s) => s.to)
+  const setPeriod = usePeriodStore((s) => s.set)
   const [useCurrentRate, setUseCurrentRate] = useState(false)
 
   const ready = Boolean(from && to)
@@ -83,7 +84,7 @@ export default function DailyReportPage() {
             preset={preset}
             from={from}
             to={to}
-            onChange={(p, f, t) => { setPreset(p); setFrom(f); setTo(t) }}
+            onChange={(p, f, t) => setPeriod(p, f, t)}
             groups={[
               { label: '일/주', presets: ['today', 'yesterday', 'this_week', 'last_week'] },
               { label: '월', presets: ['this_month', 'last_month'] },

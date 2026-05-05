@@ -31,7 +31,8 @@ import {
 } from 'recharts'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, isoLocal, flattenTickets } from '@/utils/format'
-import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import PeriodPicker, { type PeriodPreset } from '@/components/common/PeriodPicker'
+import { usePeriodStore } from '@/store/periodStore'
 
 // ─────────────────────────────────────────────
 // 유틸
@@ -919,10 +920,10 @@ function ContactDetail({
 // 메인 페이지
 // ─────────────────────────────────────────────
 export default function ContactScoringPage() {
-  const initialPeriod = periodForPreset('last_30d')
-  const [preset, setPreset] = useState<PeriodPreset>('last_30d')
-  const [from, setFrom] = useState(initialPeriod.start)
-  const [to, setTo] = useState(initialPeriod.end)
+  const preset = usePeriodStore((s) => s.preset)
+  const from = usePeriodStore((s) => s.from)
+  const to = usePeriodStore((s) => s.to)
+  const setPeriod = usePeriodStore((s) => s.set)
 
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | ContactType>('all')
@@ -1005,9 +1006,7 @@ export default function ContactScoringPage() {
     },
     onSuccess: (res) => {
       if (res.start && res.end) {
-        setPreset('custom')
-        setFrom(res.start)
-        setTo(res.end)
+        setPeriod('custom', res.start, res.end)
         toast.success(`${res.offset === 0 ? '이번달' : `약 ${res.offset}개월 전`} · ${res.count}건 발견`)
       } else {
         toast.error('최근 24개월 내 거래 데이터가 없습니다.')
@@ -1072,9 +1071,7 @@ export default function ContactScoringPage() {
     sortKey === k ? <span className="ml-0.5 text-ink-400">{sortAsc ? '↑' : '↓'}</span> : null
 
   const handlePeriodChange = (p: PeriodPreset, f: string, t: string) => {
-    setPreset(p)
-    setFrom(f)
-    setTo(t)
+    setPeriod(p, f, t)
     setSelected(null)
   }
 

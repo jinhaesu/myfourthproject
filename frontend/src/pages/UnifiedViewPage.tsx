@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
@@ -19,6 +19,7 @@ import {
 import { granterApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
+import { usePeriodStore } from '@/store/periodStore'
 
 type PeriodPreset = 'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
 
@@ -102,21 +103,16 @@ const TICKET_TYPE_LABEL: Record<string, string> = {
 }
 
 export default function UnifiedViewPage() {
-  const [preset, setPreset] = useState<PeriodPreset>('this_month')
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
+  const preset = usePeriodStore((s) => s.preset)
+  const from = usePeriodStore((s) => s.from)
+  const to = usePeriodStore((s) => s.to)
+  const setPeriod = usePeriodStore((s) => s.set)
   const [showSettings, setShowSettings] = useState(false)
   const [showInactive, setShowInactive] = useState(false)
   const [selected, setSelected] = useState<SelectedSource>({
     scope: 'all',
     label: '전체 거래',
   })
-
-  useEffect(() => {
-    const r = periodForPreset('this_month')
-    setFrom(r.start)
-    setTo(r.end)
-  }, [])
 
   const ready = Boolean(from && to)
   const periodDays = ready ? daysBetween(from, to) : 0
@@ -292,9 +288,7 @@ export default function UnifiedViewPage() {
     onSuccess: (res) => {
       const d = res.data
       if (d?.start && d?.end) {
-        setFrom(d.start)
-        setTo(d.end)
-        setPreset('custom')
+        setPeriod('custom', d.start, d.end)
         toast.success(
           `최근 거래 ${d.months_back === 0 ? '이번달' : `${d.months_back}개월 전`} 구간으로 이동 (${d.count}건)`
         )
@@ -398,11 +392,11 @@ export default function UnifiedViewPage() {
   }, [tickets, selected.ticketType])
 
   const handlePreset = (p: PeriodPreset) => {
-    setPreset(p)
     if (p !== 'custom') {
       const r = periodForPreset(p)
-      setFrom(r.start)
-      setTo(r.end)
+      setPeriod(p, r.start, r.end)
+    } else {
+      setPeriod(p, from, to)
     }
   }
 
@@ -437,8 +431,7 @@ export default function UnifiedViewPage() {
               type="date"
               value={from}
               onChange={(e) => {
-                setFrom(e.target.value)
-                setPreset('custom')
+                setPeriod('custom', e.target.value, to)
               }}
               className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
             />
@@ -447,8 +440,7 @@ export default function UnifiedViewPage() {
               type="date"
               value={to}
               onChange={(e) => {
-                setTo(e.target.value)
-                setPreset('custom')
+                setPeriod('custom', from, e.target.value)
               }}
               className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
             />

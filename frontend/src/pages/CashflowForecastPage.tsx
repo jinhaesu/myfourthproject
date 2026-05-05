@@ -27,6 +27,7 @@ import {
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, formatDate, isoLocal, flattenTickets } from '@/utils/format'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import { usePeriodStore } from '@/store/periodStore'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1091,11 +1092,11 @@ const FORECAST_PRESET_LABELS: Record<ForecastPreset, string> = {
 export default function CashflowForecastPage() {
   const today = isoToday()
 
-  // -- Lookback (분석 기간) --
-  const defaultLookback = periodForPreset('last_30d')
-  const [lookbackPreset, setLookbackPreset] = useState<PeriodPreset>('last_30d')
-  const [lookbackFrom, setLookbackFrom] = useState(defaultLookback.start)
-  const [lookbackTo, setLookbackTo] = useState(defaultLookback.end)
+  // -- Lookback (분석 기간) — 글로벌 periodStore 사용 --
+  const lookbackPreset = usePeriodStore((s) => s.preset)
+  const lookbackFrom = usePeriodStore((s) => s.from)
+  const lookbackTo = usePeriodStore((s) => s.to)
+  const setLookbackPeriod = usePeriodStore((s) => s.set)
 
   // Clamp to ≤31 days
   const lookbackSpan = diffDays(lookbackFrom, lookbackTo) + 1
@@ -1292,9 +1293,7 @@ export default function CashflowForecastPage() {
   // ---------------------------------------------------------------------------
 
   function handleLookbackChange(p: PeriodPreset, f: string, t: string) {
-    setLookbackPreset(p)
-    setLookbackFrom(f)
-    setLookbackTo(t)
+    setLookbackPeriod(p, f, t)
   }
 
   // ---------------------------------------------------------------------------
@@ -1461,9 +1460,7 @@ export default function CashflowForecastPage() {
             className="btn-secondary text-2xs"
             onClick={() => {
               const p = periodForPreset('last_30d')
-              setLookbackPreset('last_30d')
-              setLookbackFrom(p.start)
-              setLookbackTo(p.end)
+              setLookbackPeriod('last_30d', p.start, p.end)
             }}
           >
             최근 30일로 다시 조회

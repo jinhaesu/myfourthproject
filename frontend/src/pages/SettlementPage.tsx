@@ -29,7 +29,8 @@ import {
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, isoLocal } from '@/utils/format'
-import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import PeriodPicker from '@/components/common/PeriodPicker'
+import { usePeriodStore } from '@/store/periodStore'
 import { buildOwnAccountSet, filterOutInternalTransfers, isSelfCompany } from '@/utils/internalTransfer'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -500,10 +501,10 @@ function DetailPanel({
 export default function SettlementPage() {
   const navigate = useNavigate()
 
-  const periodInit = periodForPreset('last_30d')
-  const [preset, setPreset] = useState<PeriodPreset>('last_30d')
-  const [from, setFrom] = useState(periodInit.start)
-  const [to, setTo] = useState(periodInit.end)
+  const preset = usePeriodStore((s) => s.preset)
+  const from = usePeriodStore((s) => s.from)
+  const to = usePeriodStore((s) => s.to)
+  const setPeriod = usePeriodStore((s) => s.set)
   const [search, setSearch] = useState('')
   const [filterMode, setFilterMode] = useState<FilterMode>('all')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -643,11 +644,7 @@ export default function SettlementPage() {
             preset={preset}
             from={from}
             to={to}
-            onChange={(p, f, t) => {
-              setPreset(p)
-              setFrom(f)
-              setTo(t)
-            }}
+            onChange={(p, f, t) => setPeriod(p, f, t)}
             groups={[
               { label: '일/주', presets: ['today', 'yesterday', 'this_week', 'last_week'] },
               { label: '월', presets: ['this_month', 'last_month'] },

@@ -14,7 +14,8 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
 } from '@heroicons/react/24/outline'
-import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import PeriodPicker from '@/components/common/PeriodPicker'
+import { usePeriodStore } from '@/store/periodStore'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatDateTime, isoLocal } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers, isSelfContact } from '@/utils/internalTransfer'
@@ -339,10 +340,10 @@ function buildFallbackPeriods(): Array<{ start: string; end: string }> {
 // ─── 메인 컴포넌트 ────────────────────────────────────────────────────────────
 
 export default function AuditReportPage() {
-  const initPeriod = periodForPreset('last_30d')
-  const [preset, setPreset]     = useState<PeriodPreset>('last_30d')
-  const [from,   setFrom]       = useState(initPeriod.start)
-  const [to,     setTo]         = useState(initPeriod.end)
+  const preset = usePeriodStore((s) => s.preset)
+  const from = usePeriodStore((s) => s.from)
+  const to = usePeriodStore((s) => s.to)
+  const setPeriod = usePeriodStore((s) => s.set)
   const [activeTab, setActiveTab] = useState<TabKey>('all')
   const [selected,  setSelected]  = useState<IssueGroup | null>(null)
   const [sortKey,   setSortKey]   = useState<SortKey>('severity')
@@ -612,7 +613,7 @@ export default function AuditReportPage() {
             from={from}
             to={to}
             onChange={(p, f, t) => {
-              setPreset(p); setFrom(f); setTo(t)
+              setPeriod(p, f, t)
               setFbFrom(''); setFbTo('')
               fallbackIdx.current = 0
               autoSearching.current = false
