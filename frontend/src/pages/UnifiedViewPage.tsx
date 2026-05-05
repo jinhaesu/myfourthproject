@@ -17,7 +17,7 @@ import {
   ClockIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency } from '@/utils/format'
+import { formatCurrency, formatCompactWon } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 
 type PeriodPreset = 'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
@@ -240,15 +240,50 @@ export default function UnifiedViewPage() {
     return map
   }, [usageQuery.data])
 
+  // 카드(EXPENSE_TICKET) 전용 조회 — 페이지 진입 시 즉시 카드 사용금액 표시
+  const cardExpenseQuery = useQuery({
+    queryKey: ['unified-card-expenses', from, to],
+    queryFn: () => {
+      let actualStart = from
+      if (exceeds31Days) {
+        const d = new Date(to)
+        d.setDate(d.getDate() - 30)
+        actualStart = d.toISOString().slice(0, 10)
+      }
+      return granterApi.listTickets({
+        ticketType: 'EXPENSE_TICKET',
+        startDate: actualStart,
+        endDate: to,
+      }).then((r) => r.data)
+    },
+    enabled: !!isConfigured && ready,
+    retry: false,
+  })
+
+  // 카드별 사용금액 합계 (assetId → 합계)
+  const cardTotalsByAssetId = useMemo(() => {
+    const items: any[] = Array.isArray(cardExpenseQuery.data)
+      ? cardExpenseQuery.data
+      : (cardExpenseQuery.data as any)?.data || []
+    const map = new Map<number, number>()
+    for (const t of items) {
+      const aid = Number(t?.asset?.id || t?.assetId || 0)
+      if (!aid) continue
+      map.set(aid, (map.get(aid) || 0) + Math.abs(Number(t.amount || 0)))
+    }
+    return map
+  }, [cardExpenseQuery.data])
+
   const totalCardUsed = useMemo(
     () =>
       cardAssets.reduce((s, a) => {
         const id = Number(a?.id || 0)
+        const fromCardQuery = cardTotalsByAssetId.get(id) || 0
         const fromTickets = usageByAsset[id]?.outAmt || 0
         const fromMeta = num(a?.card, 'usedAmount')
-        return s + (fromTickets > 0 ? fromTickets : fromMeta)
+        return s + (fromCardQuery > 0 ? fromCardQuery : (fromTickets > 0 ? fromTickets : fromMeta))
       }, 0),
-    [cardAssets, usageByAsset]
+    [cardAssets, cardTotalsByAssetId, usageByAsset]
   )
 
   // 최근 거래 자동 탐색
@@ -336,6 +371,30 @@ export default function UnifiedViewPage() {
 
   // 표시용 tickets는 원본 유지 (표시는 그대로), 합계 계산만 filteredTickets 사용
   const tickets = rawTickets
+
+  // 세금계산서 매출/매입 합계
+  const taxSummary = useMemo(() => {
+    if (selected.ticketType !== 'TAX_INVOICE_TICKET') return null
+    let salesAmount = 0, salesCount = 0, purchaseAmount = 0, purchaseCount = 0
+    for (const t of tickets) {
+      const amt = Math.abs(Number(t.amount || 0))
+      if (String(t.transactionType) === 'IN') { salesAmount += amt; salesCount++ }
+      else if (String(t.transactionType) === 'OUT') { purchaseAmount += amt; purchaseCount++ }
+    }
+    return { salesAmount, salesCount, purchaseAmount, purchaseCount, net: salesAmount - purchaseAmount }
+  }, [tickets, selected.ticketType])
+
+  // 현금영수증 매출/매입 합계
+  const cashReceiptSummary = useMemo(() => {
+    if (selected.ticketType !== 'CASH_RECEIPT_TICKET') return null
+    let salesAmount = 0, salesCount = 0, purchaseAmount = 0, purchaseCount = 0
+    for (const t of tickets) {
+      const amt = Math.abs(Number(t.amount || 0))
+      if (String(t.transactionType) === 'IN') { salesAmount += amt; salesCount++ }
+      else if (String(t.transactionType) === 'OUT') { purchaseAmount += amt; purchaseCount++ }
+    }
+    return { salesAmount, salesCount, purchaseAmount, purchaseCount, net: salesAmount - purchaseAmount }
+  }, [tickets, selected.ticketType])
 
   const handlePreset = (p: PeriodPreset) => {
     setPreset(p)
@@ -663,10 +722,11 @@ export default function UnifiedViewPage() {
               const issuer = str(c, 'organizationName', 'name')
               const alias = str(c, 'nickname')
               const cardNum = str(c, 'number')
-              // 사용금액: 우선 ticket 합산, fallback으로 자산 메타의 usedAmount
+              // 사용금액: 카드 전용 조회(cardTotalsByAssetId) 우선, fallback으로 usageByAsset, 자산 메타
+              const cardQueryUsed = cardTotalsByAssetId.get(id) || 0
               const periodUsage = usageByAsset[id]?.outAmt || 0
               const fallbackUsed = num(cardInfo, 'usedAmount')
-              const used = periodUsage > 0 ? periodUsage : fallbackUsed
+              const used = cardQueryUsed > 0 ? cardQueryUsed : (periodUsage > 0 ? periodUsage : fallbackUsed)
               const limit = num(cardInfo, 'limitAmount')
               const txCount = usageByAsset[id]?.count || 0
               const isActive = selected.assetId === id
@@ -852,33 +912,120 @@ export default function UnifiedViewPage() {
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400">
                 이 기간에 거래가 없습니다.
               </div>
+            ) : (taxSummary || cashReceiptSummary) ? (
+              /* 세금계산서 / 현금영수증: 좌측 합계 카드 + 우측 컴팩트 리스트 */
+              <div className="flex-1 overflow-hidden flex">
+                {/* 좌측: 매출/매입 합계 */}
+                <div className="w-44 flex-shrink-0 border-r border-ink-200 p-3 space-y-3 overflow-y-auto">
+                  {(taxSummary || cashReceiptSummary) && (() => {
+                    const s = (taxSummary || cashReceiptSummary)!
+                    return (
+                      <>
+                        <div className="rounded-md bg-emerald-50 border border-emerald-200 p-2.5">
+                          <div className="text-2xs font-semibold text-emerald-700 mb-1">매출 합계</div>
+                          <div className="font-mono font-bold text-emerald-800 text-sm tabular-nums leading-tight">
+                            {formatCompactWon(s.salesAmount)}
+                          </div>
+                          <div className="text-2xs text-emerald-600 mt-0.5">{s.salesCount}건</div>
+                        </div>
+                        <div className="rounded-md bg-rose-50 border border-rose-200 p-2.5">
+                          <div className="text-2xs font-semibold text-rose-700 mb-1">매입 합계</div>
+                          <div className="font-mono font-bold text-rose-800 text-sm tabular-nums leading-tight">
+                            {formatCompactWon(s.purchaseAmount)}
+                          </div>
+                          <div className="text-2xs text-rose-600 mt-0.5">{s.purchaseCount}건</div>
+                        </div>
+                        <div className={`rounded-md p-2.5 border ${s.net >= 0 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'}`}>
+                          <div className={`text-2xs font-semibold mb-1 ${s.net >= 0 ? 'text-blue-700' : 'text-amber-700'}`}>순 차감</div>
+                          <div className={`font-mono font-bold text-sm tabular-nums leading-tight ${s.net >= 0 ? 'text-blue-800' : 'text-amber-800'}`}>
+                            {s.net < 0 ? '-' : ''}{formatCompactWon(Math.abs(s.net))}
+                          </div>
+                          <div className={`text-2xs mt-0.5 ${s.net >= 0 ? 'text-blue-600' : 'text-amber-600'}`}>매출−매입</div>
+                        </div>
+                      </>
+                    )
+                  })()}
+                </div>
+                {/* 우측: 컴팩트 리스트 */}
+                <div className="flex-1 overflow-y-auto overflow-x-hidden">
+                  <table className="min-w-full table-fixed">
+                    <colgroup>
+                      <col className="w-[68px]" />
+                      <col />
+                      <col className="w-[96px]" />
+                      <col className="w-[44px]" />
+                    </colgroup>
+                    <thead className="bg-canvas-50 sticky top-0 z-10">
+                      <tr>
+                        <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">일자</th>
+                        <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">거래처</th>
+                        <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500">금액</th>
+                        <th className="px-2 py-1 text-center text-2xs font-semibold text-ink-500">구분</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-ink-100">
+                      {tickets.map((t, idx) => {
+                        const txType = str(t, 'transactionType')
+                        const amount = Math.abs(num(t, 'amount'))
+                        const isSales = txType === 'IN'
+                        // 거래처
+                        let contact = str(t, 'contact')
+                        if (t?.taxInvoice) {
+                          contact = contact || (isSales
+                            ? str(t.taxInvoice?.contractor, 'companyName')
+                            : str(t.taxInvoice?.supplier, 'companyName'))
+                        } else if (t?.cashReceipt) {
+                          contact = contact || str(t.cashReceipt?.issuer, 'companyName', 'userName')
+                        }
+                        contact = contact || str(t, 'content') || '-'
+                        // 날짜 MM/DD
+                        const dateRaw = str(t, 'transactAt', 'transactionDate', 'date').slice(0, 10)
+                        const dateShort = dateRaw.length >= 7 ? dateRaw.slice(5, 10).replace('-', '/') : dateRaw
+                        return (
+                          <tr key={t.id || idx} className="hover:bg-canvas-50">
+                            <td className="px-2 py-1 whitespace-nowrap text-2xs text-ink-500 font-mono">{dateShort}</td>
+                            <td className="px-2 py-1 text-2xs text-ink-900 overflow-hidden">
+                              <div className="truncate font-medium">{contact}</div>
+                            </td>
+                            <td className={`px-2 py-1 text-right font-mono tabular-nums text-2xs font-semibold whitespace-nowrap ${isSales ? 'text-emerald-700' : 'text-rose-700'}`}>
+                              {formatCompactWon(amount)}
+                            </td>
+                            <td className="px-2 py-1 text-center">
+                              <span className={`text-2xs font-semibold ${isSales ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {isSales ? '매출' : '매입'}
+                              </span>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             ) : (
-              <div className="flex-1 overflow-y-auto">
-                <table className="min-w-full">
+              /* 일반 거래 (카드/계좌/전체): 컴팩트 테이블 */
+              <div className="flex-1 overflow-y-auto overflow-x-hidden">
+                <table className="min-w-full table-fixed">
+                  <colgroup>
+                    <col className="w-[68px]" />
+                    <col className="w-[44px]" />
+                    <col />
+                    <col className="w-[96px]" />
+                    <col className="w-[96px]" />
+                  </colgroup>
                   <thead className="bg-canvas-50 sticky top-0 z-10">
                     <tr>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        일시
-                      </th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        유형
-                      </th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        거래처/적요
-                      </th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        계정과목
-                      </th>
-                      <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        <span className="inline-flex items-center gap-0.5">
-                          <ArrowDownLeftIcon className="h-2.5 w-2.5 text-emerald-500" />
-                          입금
+                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">일자</th>
+                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">유형</th>
+                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">거래처/적요</th>
+                      <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500">
+                        <span className="inline-flex items-center gap-0.5 justify-end">
+                          <ArrowDownLeftIcon className="h-2.5 w-2.5 text-emerald-500" />입금
                         </span>
                       </th>
-                      <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        <span className="inline-flex items-center gap-0.5">
-                          <ArrowUpRightIcon className="h-2.5 w-2.5 text-rose-500" />
-                          출금
+                      <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500">
+                        <span className="inline-flex items-center gap-0.5 justify-end">
+                          <ArrowUpRightIcon className="h-2.5 w-2.5 text-rose-500" />출금
                         </span>
                       </th>
                     </tr>
@@ -890,17 +1037,13 @@ export default function UnifiedViewPage() {
                       const inAmount = txType === 'IN' ? amount : 0
                       const outAmount = txType === 'OUT' ? amount : 0
                       const ticketType = str(t, 'ticketType')
-                      const cat = t.expenseCategory || {}
-                      // 거래처: ticketType별 정확한 위치
                       let contact = str(t, 'contact')
                       let memo = ''
                       if (t?.taxInvoice) {
                         const isSales = txType === 'IN'
-                        contact =
-                          contact ||
-                          (isSales
-                            ? str(t.taxInvoice?.contractor, 'companyName')
-                            : str(t.taxInvoice?.supplier, 'companyName'))
+                        contact = contact || (isSales
+                          ? str(t.taxInvoice?.contractor, 'companyName')
+                          : str(t.taxInvoice?.supplier, 'companyName'))
                         memo = str(t.taxInvoice, 'content')
                       } else if (t?.cashReceipt) {
                         contact = contact || str(t.cashReceipt?.issuer, 'companyName', 'userName')
@@ -914,46 +1057,31 @@ export default function UnifiedViewPage() {
                       }
                       contact = contact || str(t, 'content')
                       memo = memo || str(t, 'description', 'memo', 'content')
+                      // 날짜 MM/DD
+                      const dateRaw = str(t, 'transactAt', 'transactionDate', 'date').slice(0, 10)
+                      const dateShort = dateRaw.length >= 7 ? dateRaw.slice(5, 10).replace('-', '/') : dateRaw
                       return (
                         <tr key={t.id || idx} className="hover:bg-canvas-50">
-                          <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
-                            {str(t, 'transactAt', 'transactionDate', 'date').slice(0, 16).replace('T', ' ')}
-                          </td>
-                          <td className="px-3 py-1.5 whitespace-nowrap">
-                            <span className="badge bg-ink-50 text-ink-700 border-ink-200">
+                          <td className="px-2 py-1 whitespace-nowrap text-2xs text-ink-500 font-mono">{dateShort}</td>
+                          <td className="px-2 py-1 whitespace-nowrap">
+                            <span className="badge bg-ink-50 text-ink-700 border-ink-200 text-2xs">
                               {TICKET_TYPE_LABEL[ticketType] || ticketType.replace('_TICKET', '')}
                             </span>
                           </td>
-                          <td className="px-3 py-1.5 text-xs text-ink-900">
-                            <div className="font-medium">
-                              {contact || str(t, 'content') || '-'}
-                            </div>
-                            <div className="text-2xs text-ink-500 truncate max-w-md">{memo}</div>
+                          <td className="px-2 py-1 overflow-hidden">
+                            <div className="text-2xs font-medium text-ink-900 truncate">{contact || '-'}</div>
+                            {memo && <div className="text-2xs text-ink-400 truncate">{memo}</div>}
                           </td>
-                          <td className="px-3 py-1.5 whitespace-nowrap text-2xs">
-                            {str(cat, 'name') ? (
-                              <span className="inline-flex items-center gap-1">
-                                <span className="font-mono text-ink-400">{str(cat, 'code')}</span>
-                                <span className="text-ink-700">{str(cat, 'name')}</span>
-                              </span>
-                            ) : (
-                              <span className="text-ink-300">-</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap">
+                          <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
                             {inAmount > 0 ? (
-                              <span className="text-emerald-700 font-semibold">
-                                {formatCurrency(inAmount, false)}
-                              </span>
+                              <span className="text-emerald-700 font-semibold">{formatCompactWon(inAmount)}</span>
                             ) : (
                               <span className="text-ink-200">-</span>
                             )}
                           </td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap">
+                          <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
                             {outAmount > 0 ? (
-                              <span className="text-rose-700 font-semibold">
-                                {formatCurrency(outAmount, false)}
-                              </span>
+                              <span className="text-rose-700 font-semibold">{formatCompactWon(outAmount)}</span>
                             ) : (
                               <span className="text-ink-200">-</span>
                             )}
