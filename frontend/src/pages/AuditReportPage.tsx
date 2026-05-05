@@ -417,13 +417,15 @@ export default function AuditReportPage() {
     setFbTo(next.end)
   }, [ticketsQuery.isSuccess, ticketsQuery.data, isConfigured])
 
-  // 계산
+  // 계산 — 감사 리포트는 모든 거래(법인계좌 간 이체 포함)를 봐야 함.
+  // 이체 카운트는 참고용으로만 표시.
   const rawTickets = useMemo(() => normalizeTickets(ticketsQuery.data), [ticketsQuery.data])
-  const tickets = useMemo(
+  const internalTransferTickets = useMemo(
     () => filterOutInternalTransfers(rawTickets, ownAccounts),
     [rawTickets, ownAccounts]
   )
-  const filteredCount = rawTickets.length - tickets.length
+  const filteredCount = rawTickets.length - internalTransferTickets.length
+  const tickets = rawTickets // 감사 리포트는 모든 거래 검출
   const issues  = useMemo(
     () => (ticketsQuery.isSuccess ? detectIssues(tickets) : []),
     [ticketsQuery.isSuccess, tickets]

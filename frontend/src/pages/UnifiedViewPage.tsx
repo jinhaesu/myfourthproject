@@ -17,7 +17,7 @@ import {
   ClockIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency, formatCompactWon } from '@/utils/format'
+import { formatCurrency, isoLocal } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 
 type PeriodPreset = 'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
@@ -36,24 +36,24 @@ function periodForPreset(preset: PeriodPreset): { start: string; end: string } {
   const y = today.getFullYear()
   const m = today.getMonth()
   const d = today.getDate()
-  const iso = (dt: Date) => dt.toISOString().slice(0, 10)
+  // isoLocal — toISOString()은 UTC 기준이라 KST 자정~오전 9시에 전날로 변환되는 버그 방지
   switch (preset) {
     case 'today':
-      return { start: iso(today), end: iso(today) }
+      return { start: isoLocal(today), end: isoLocal(today) }
     case 'this_week': {
       const dayOfWeek = today.getDay() || 7
       const monday = new Date(today)
       monday.setDate(d - dayOfWeek + 1)
-      return { start: iso(monday), end: iso(today) }
+      return { start: isoLocal(monday), end: isoLocal(today) }
     }
     case 'this_month':
-      return { start: iso(new Date(y, m, 1)), end: iso(today) }
+      return { start: isoLocal(new Date(y, m, 1)), end: isoLocal(today) }
     case 'this_quarter': {
       const qStart = Math.floor(m / 3) * 3
-      return { start: iso(new Date(y, qStart, 1)), end: iso(today) }
+      return { start: isoLocal(new Date(y, qStart, 1)), end: isoLocal(today) }
     }
     case 'this_year':
-      return { start: `${y}-01-01`, end: iso(today) }
+      return { start: `${y}-01-01`, end: isoLocal(today) }
     default:
       return { start: '', end: '' }
   }
@@ -924,21 +924,21 @@ export default function UnifiedViewPage() {
                         <div className="rounded-md bg-emerald-50 border border-emerald-200 p-2.5">
                           <div className="text-2xs font-semibold text-emerald-700 mb-1">매출 합계</div>
                           <div className="font-mono font-bold text-emerald-800 text-sm tabular-nums leading-tight">
-                            {formatCompactWon(s.salesAmount)}
+                            {formatCurrency(s.salesAmount, false)}원
                           </div>
                           <div className="text-2xs text-emerald-600 mt-0.5">{s.salesCount}건</div>
                         </div>
                         <div className="rounded-md bg-rose-50 border border-rose-200 p-2.5">
                           <div className="text-2xs font-semibold text-rose-700 mb-1">매입 합계</div>
                           <div className="font-mono font-bold text-rose-800 text-sm tabular-nums leading-tight">
-                            {formatCompactWon(s.purchaseAmount)}
+                            {formatCurrency(s.purchaseAmount, false)}원
                           </div>
                           <div className="text-2xs text-rose-600 mt-0.5">{s.purchaseCount}건</div>
                         </div>
                         <div className={`rounded-md p-2.5 border ${s.net >= 0 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'}`}>
                           <div className={`text-2xs font-semibold mb-1 ${s.net >= 0 ? 'text-blue-700' : 'text-amber-700'}`}>순 차감</div>
                           <div className={`font-mono font-bold text-sm tabular-nums leading-tight ${s.net >= 0 ? 'text-blue-800' : 'text-amber-800'}`}>
-                            {s.net < 0 ? '-' : ''}{formatCompactWon(Math.abs(s.net))}
+                            {s.net < 0 ? '-' : ''}{formatCurrency(Math.abs(s.net), false)}원
                           </div>
                           <div className={`text-2xs mt-0.5 ${s.net >= 0 ? 'text-blue-600' : 'text-amber-600'}`}>매출−매입</div>
                         </div>
@@ -988,7 +988,7 @@ export default function UnifiedViewPage() {
                               <div className="truncate font-medium">{contact}</div>
                             </td>
                             <td className={`px-2 py-1 text-right font-mono tabular-nums text-2xs font-semibold whitespace-nowrap ${isSales ? 'text-emerald-700' : 'text-rose-700'}`}>
-                              {formatCompactWon(amount)}
+                              {formatCurrency(amount, false)}
                             </td>
                             <td className="px-2 py-1 text-center">
                               <span className={`text-2xs font-semibold ${isSales ? 'text-emerald-600' : 'text-rose-600'}`}>
@@ -1074,14 +1074,14 @@ export default function UnifiedViewPage() {
                           </td>
                           <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
                             {inAmount > 0 ? (
-                              <span className="text-emerald-700 font-semibold">{formatCompactWon(inAmount)}</span>
+                              <span className="text-emerald-700 font-semibold">{formatCurrency(inAmount, false)}</span>
                             ) : (
                               <span className="text-ink-200">-</span>
                             )}
                           </td>
                           <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
                             {outAmount > 0 ? (
-                              <span className="text-rose-700 font-semibold">{formatCompactWon(outAmount)}</span>
+                              <span className="text-rose-700 font-semibold">{formatCurrency(outAmount, false)}</span>
                             ) : (
                               <span className="text-ink-200">-</span>
                             )}

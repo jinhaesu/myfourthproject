@@ -538,7 +538,20 @@ async def get_contractors_pool(months: int = Query(12, ge=1, le=24)):
 
     results = await asyncio.gather(*[_fetch_chunk(s, e) for s, e in chunks])
 
-    # 합치기
+    # 그랜터 TaxInvoiceUser 실제 필드명 (가이드 line 753~786 기준):
+    #   registrationNumber=사업자등록번호, companyName=회사명, ceoName=대표자명, name=담당자명,
+    #   businessTypes=업태, businessItems=종목, businessPlace=사업장주소,
+    #   email=이메일, email2=보조이메일, phone=휴대전화, tel=전화번호
+    def _g(c: Dict[str, Any], *keys: str) -> str:
+        """첫 번째 비어있지 않은 값을 문자열로 반환"""
+        for k in keys:
+            v = c.get(k)
+            if v:
+                s = str(v).strip()
+                if s:
+                    return s
+        return ""
+
     pool: Dict[str, Dict[str, Any]] = {}
     for r in results:
         items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
@@ -549,8 +562,9 @@ async def get_contractors_pool(months: int = Query(12, ge=1, le=24)):
             for c in (ti.get("contractor"), ti.get("supplier")):
                 if not isinstance(c, dict):
                     continue
-                bn = str(c.get("businessNumber") or "").strip()
-                name = str(c.get("companyName") or "").strip()
+                # 사업자번호 (registrationNumber 우선, businessNumber 폴백)
+                bn = _g(c, "registrationNumber", "businessNumber")
+                name = _g(c, "companyName", "name")
                 if not bn and not name:
                     continue
                 # 본인 회사(503-87-01038) 제외
@@ -558,24 +572,37 @@ async def get_contractors_pool(months: int = Query(12, ge=1, le=24)):
                 if bn_digits == "5038701038":
                     continue
                 key = bn or name
-                cur = pool.get(key) or {
-                    "businessNumber": bn,
-                    "companyName": name,
-                    "representativeName": str(c.get("representativeName") or "").strip(),
-                    "address": str(c.get("address") or "").strip(),
-                    "email": str(c.get("email") or "").strip(),
-                    "phone": str(c.get("phone") or c.get("phoneNumber") or "").strip(),
-                    "businessType": str(c.get("businessType") or "").strip(),
-                    "businessItem": str(c.get("businessItem") or "").strip(),
-                    "count": 0,
-                }
+                cur = pool.get(key)
+                if cur is None:
+                    cur = {
+                        "businessNumber": bn,
+                        "companyName": name,
+                        "representativeName": _g(c, "ceoName", "representativeName"),
+                        "address": _g(c, "businessPlace", "address"),
+                        "email": _g(c, "email", "email2"),
+                        "phone": _g(c, "phone", "tel", "phoneNumber"),
+                        "businessType": _g(c, "businessTypes", "businessType"),
+                        "businessItem": _g(c, "businessItems", "businessItem"),
+                        "contactName": _g(c, "name"),  # 담당자명
+                        "count": 0,
+                    }
+                    pool[key] = cur
                 cur["count"] += 1
                 # 빈 필드는 신규 ticket에서 보강
-                for fld in ("representativeName", "address", "email", "phone", "businessType", "businessItem"):
-                    src_key = "phoneNumber" if fld == "phone" else fld
-                    if not cur[fld] and c.get(src_key):
-                        cur[fld] = str(c.get(src_key))
-                pool[key] = cur
+                if not cur["representativeName"]:
+                    cur["representativeName"] = _g(c, "ceoName", "representativeName")
+                if not cur["address"]:
+                    cur["address"] = _g(c, "businessPlace", "address")
+                if not cur["email"]:
+                    cur["email"] = _g(c, "email", "email2")
+                if not cur["phone"]:
+                    cur["phone"] = _g(c, "phone", "tel", "phoneNumber")
+                if not cur["businessType"]:
+                    cur["businessType"] = _g(c, "businessTypes", "businessType")
+                if not cur["businessItem"]:
+                    cur["businessItem"] = _g(c, "businessItems", "businessItem")
+                if not cur["contactName"]:
+                    cur["contactName"] = _g(c, "name")
 
     contractors = sorted(pool.values(), key=lambda x: -x["count"])
     return {"count": len(contractors), "months": months, "contractors": contractors}

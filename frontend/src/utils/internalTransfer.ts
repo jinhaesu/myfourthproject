@@ -28,6 +28,12 @@ export function buildOwnAccountSet(allAssets: any): OwnAccountSet {
 
   const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase()
 
+  // 너무 일반적인 계좌명(보통예금/저축예금 등)은 false positive 다발 → 제외
+  const GENERIC_NAMES = new Set([
+    '보통예금', '저축예금', '당좌예금', '기업자유예금', '자유예금',
+    '입출금통장', '저축통장', '당좌통장',
+  ].map(norm))
+
   for (const a of banks) {
     const ba = a?.bankAccount || {}
     const nickName      = String(ba.nickName    || '').trim()
@@ -35,11 +41,18 @@ export function buildOwnAccountSet(allAssets: any): OwnAccountSet {
     const accountNumber = String(ba.accountNumber || '').replace(/[^0-9]/g, '')
     const orgName       = String(a.organizationName || '').trim()
 
-    if (nickName)    names.add(norm(nickName))
-    if (accountName) names.add(norm(accountName))
+    // 이름 추가 — 일반 단어/너무 짧은 이름(<3자) 제외
+    const addName = (s: string) => {
+      const n = norm(s)
+      if (!n || n.length < 3) return
+      if (GENERIC_NAMES.has(n)) return
+      names.add(n)
+    }
+    if (nickName)    addName(nickName)
+    if (accountName) addName(accountName)
     if (accountNumber) numbers.add(accountNumber)
 
-    // 회사명+계좌번호 조합도 추가 (예: "조인앤조인 503-1234-...")
+    // 회사명+계좌번호 조합 (정확 매칭이 안전)
     if (orgName && accountNumber) {
       names.add(norm(`${orgName}${accountNumber}`))
     }
