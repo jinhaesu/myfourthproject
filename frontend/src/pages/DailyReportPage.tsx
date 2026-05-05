@@ -1,352 +1,420 @@
-import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import toast from 'react-hot-toast'
+import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
-  PaperAirplaneIcon,
-  EnvelopeIcon,
-  ChatBubbleLeftRightIcon,
-  ChevronUpIcon,
-  ChevronDownIcon,
-  PlusIcon,
-  TrashIcon,
+  CalendarDaysIcon,
+  ArrowPathIcon,
+  ArrowDownLeftIcon,
+  ArrowUpRightIcon,
+  SunIcon,
+  ExclamationTriangleIcon,
+  CheckCircleIcon,
+  BuildingLibraryIcon,
 } from '@heroicons/react/24/outline'
-import { dailyReportApi } from '@/services/api'
-import { useAuthStore } from '@/store/authStore'
-import StatCard from '@/components/common/StatCard'
-import { formatCurrency, formatCompactWon, formatPct, formatDate, formatRelativeTime, todayISO } from '@/utils/format'
+import { granterApi } from '@/services/api'
+import { formatCurrency } from '@/utils/format'
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10)
+}
+function thisMonthStartISO() {
+  const d = new Date()
+  d.setDate(1)
+  return d.toISOString().slice(0, 10)
+}
+function daysBetween(a: string, b: string) {
+  return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
+}
 
 export default function DailyReportPage() {
-  const qc = useQueryClient()
-  const userId = useAuthStore((s) => s.user?.id ?? 1)
-  const [reportDate, setReportDate] = useState<string>(todayISO())
-  const [showSubModal, setShowSubModal] = useState(false)
+  const [from, setFrom] = useState(thisMonthStartISO())
+  const [to, setTo] = useState(todayISO())
+  const [useCurrentRate, setUseCurrentRate] = useState(false)
+
+  const ready = Boolean(from && to)
+  const exceeds31 = ready && daysBetween(from, to) > 31
+
+  const healthQuery = useQuery({
+    queryKey: ['granter-health'],
+    queryFn: () => granterApi.health().then((r) => r.data),
+    retry: false,
+  })
+  const isConfigured = healthQuery.data?.configured
 
   const reportQuery = useQuery({
-    queryKey: ['daily-report', reportDate],
-    queryFn: () =>
-      reportDate === todayISO()
-        ? dailyReportApi.getToday().then((r) => r.data)
-        : dailyReportApi.getByDate(reportDate).then((r) => r.data),
-  })
-
-  const subQuery = useQuery({
-    queryKey: ['daily-report-subs'],
-    queryFn: () => dailyReportApi.listSubscriptions().then((r) => r.data),
-  })
-
-  const historyQuery = useQuery({
-    queryKey: ['daily-report-history'],
-    queryFn: () => dailyReportApi.getHistory(7).then((r) => r.data),
-  })
-
-  const sendNowMutation = useMutation({
-    mutationFn: () => dailyReportApi.sendNow(reportDate),
-    onSuccess: () => {
-      toast.success('자금일보 발송이 큐에 등록되었습니다.')
-      qc.invalidateQueries({ queryKey: ['daily-report-history'] })
+    queryKey: ['granter-daily-report', from, to, useCurrentRate],
+    queryFn: () => {
+      let actualStart = from
+      if (exceeds31) {
+        const d = new Date(to)
+        d.setDate(d.getDate() - 30)
+        actualStart = d.toISOString().slice(0, 10)
+      }
+      return granterApi
+        .getDailyReport({
+          startDate: actualStart,
+          endDate: to,
+          useCurrentExchangeRate: useCurrentRate,
+        })
+        .then((r) => r.data)
     },
+    enabled: !!isConfigured && ready,
+    retry: false,
   })
 
-  const r = reportQuery.data
-  const subs = subQuery.data || []
+  const data = reportQuery.data
+  const total = data?.total || {}
+  const assets: any[] = data?.assets || []
+  const currencyTotals: any[] = data?.currencyTotals || []
+
+  // 대출 제외 + 대출 분리
+  const nonLoanAssets = useMemo(() => assets.filter((a) => !a.isLoan), [assets])
+  const loanAssets = useMemo(() => assets.filter((a) => a.isLoan), [assets])
+
+  const setQuickRange = (days: number) => {
+    const end = new Date()
+    const start = new Date()
+    start.setDate(end.getDate() - days + 1)
+    setFrom(start.toISOString().slice(0, 10))
+    setTo(end.toISOString().slice(0, 10))
+  }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="space-y-3">
+      {/* Header */}
+      <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">실시간 자금일보</h1>
-          <p className="text-gray-500 mt-1">매일 아침, 어제까지의 자금 현황을 한 장으로.</p>
+          <h1 className="flex items-center gap-2">
+            <SunIcon className="h-4 w-4 text-ink-500" />
+            자금일보
+          </h1>
+          <p className="text-2xs text-ink-500 mt-0.5">
+            그랜터 daily-financial-report 기반 — 자산별 일별 잔액·입출금·대출 분리
+          </p>
         </div>
-        <div className="flex items-center gap-2">
-          <input
-            type="date"
-            value={reportDate}
-            onChange={(e) => setReportDate(e.target.value)}
-            className="input w-40"
-          />
-          <button
-            onClick={() => sendNowMutation.mutate()}
-            disabled={sendNowMutation.isPending}
-            className="btn-primary"
-          >
-            <PaperAirplaneIcon className="h-5 w-5 mr-1" />
-            지금 발송
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+            <button
+              onClick={() => {
+                setFrom(todayISO())
+                setTo(todayISO())
+              }}
+              className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50"
+            >
+              오늘
+            </button>
+            <button onClick={() => setQuickRange(7)} className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50">
+              7일
+            </button>
+            <button
+              onClick={() => {
+                setFrom(thisMonthStartISO())
+                setTo(todayISO())
+              }}
+              className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50"
+            >
+              이번달
+            </button>
+            <button onClick={() => setQuickRange(31)} className="px-2 py-1 rounded text-2xs font-semibold text-ink-600 hover:bg-ink-50">
+              31일
+            </button>
+          </div>
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white border border-ink-200">
+            <CalendarDaysIcon className="h-3 w-3 text-ink-400" />
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
+            />
+            <span className="text-ink-300">→</span>
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
+            />
+          </div>
+          <label className="flex items-center gap-1 text-2xs text-ink-600 cursor-pointer px-2">
+            <input
+              type="checkbox"
+              checked={useCurrentRate}
+              onChange={(e) => setUseCurrentRate(e.target.checked)}
+              className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3"
+            />
+            현재 환율 통일
+          </label>
+          <button onClick={() => reportQuery.refetch()} className="btn-secondary">
+            <ArrowPathIcon className="h-3 w-3" />
           </button>
         </div>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          label="전체 잔액"
-          value={formatCurrency(r?.summary?.total_balance, false)}
-          unit="원"
-          delta={
-            r?.summary
-              ? {
-                  value: `${formatCompactWon(r.summary.change_amount)} (${formatPct(r.summary.change_pct)})`,
-                  positive: Number(r.summary.change_amount) >= 0,
-                }
-              : undefined
-          }
-          hint={r?.summary ? `전일 ${formatCompactWon(r.summary.yesterday_balance)}원` : ''}
-          tone="primary"
-        />
-        <StatCard
-          label="입금"
-          value={formatCompactWon(r?.summary?.inbound_total)}
-          unit="원"
-          tone="success"
-        />
-        <StatCard
-          label="출금"
-          value={formatCompactWon(r?.summary?.outbound_total)}
-          unit="원"
-          tone="danger"
-        />
-        <StatCard
-          label="순현금흐름"
-          value={formatCompactWon(r?.summary?.net_cashflow)}
-          unit="원"
-          tone={Number(r?.summary?.net_cashflow ?? 0) >= 0 ? 'mint' : 'warning'}
-        />
-      </div>
-
-      {/* Risk strip */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-          <div className="text-sm text-amber-700">7일 내 예정 지급</div>
-          <div className="mt-1 text-2xl font-bold text-amber-900">
-            {formatCurrency(r?.upcoming_payments_amount, false)}
-            <span className="text-sm font-medium ml-1">원</span>
+      {!isConfigured ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600" />
+          <div className="text-2xs text-amber-800">그랜터 API 키 미설정 — Railway 환경변수 등록 필요</div>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
+            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
+          {data?.effectiveEndDate && data?.previousDate && (
+            <div className="text-2xs text-ink-500">
+              실제 종료일 <span className="font-mono text-ink-700">{data.effectiveEndDate}</span> · 이전 기준일{' '}
+              <span className="font-mono text-ink-700">{data.previousDate}</span>
+            </div>
+          )}
+          {exceeds31 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
+              31일 초과 — 종료일 기준 최근 31일만 자동 조회
+            </div>
+          )}
         </div>
-        <div className="rounded-lg border border-rose-200 bg-rose-50 p-4">
-          <div className="text-sm text-rose-700">연체 매출채권</div>
-          <div className="mt-1 text-2xl font-bold text-rose-900">
-            {formatCurrency(r?.overdue_receivables_amount, false)}
-            <span className="text-sm font-medium ml-1">원</span>
+      )}
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+        <KPI label="이전 잔액" value={total.previousBalance} />
+        <KPI label="현재 잔액" value={total.currentBalance} highlight />
+        <KPI label="증감" value={total.difference} delta />
+        <KPI label="입금 합계" value={total.inAmount} tone="success" icon={<ArrowDownLeftIcon className="h-3 w-3" />} />
+        <KPI label="출금 합계" value={total.outAmount} tone="danger" icon={<ArrowUpRightIcon className="h-3 w-3" />} />
+      </div>
+
+      {/* 대출 분리 */}
+      {(total.loanBalance > 0 || loanAssets.length > 0) && (
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+          <KPI label="대출 잔액" value={total.loanBalance} tone="warning" />
+          <KPI label="순포지션 (잔액 − 대출)" value={total.netPosition} tone="primary" highlight />
+          <KPI label="대출 계좌 수" value={loanAssets.length} unit="개" />
+        </div>
+      )}
+
+      {/* 통화별 합계 */}
+      {currencyTotals.length > 1 && (
+        <div className="panel p-3">
+          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+            통화별 합계
           </div>
-        </div>
-      </div>
-
-      {/* Account snapshots */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">계좌별 잔액</h2>
-          <span className="text-xs text-gray-500">
-            기준 {formatDate(r?.summary?.report_date)}
-          </span>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {r?.accounts?.map((a: any) => {
-            const isUp = Number(a.change) >= 0
-            return (
-              <div key={a.bank_account_id} className="rounded-lg border border-gray-200 p-4">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="text-xs text-gray-500">{a.bank_name}</div>
-                    <div className="font-medium text-gray-900">{a.account_alias}</div>
-                    <div className="text-xs text-gray-400 font-mono">{a.account_number_masked}</div>
-                  </div>
-                  <div
-                    className={`flex items-center text-sm font-medium ${
-                      isUp ? 'text-emerald-600' : 'text-rose-600'
-                    }`}
-                  >
-                    {isUp ? <ChevronUpIcon className="h-4 w-4" /> : <ChevronDownIcon className="h-4 w-4" />}
-                    {formatCompactWon(Math.abs(Number(a.change)))}
-                  </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {currencyTotals.map((c) => (
+              <div key={c.currencyCode} className="border border-ink-200 rounded p-2">
+                <div className="text-2xs text-ink-500">{c.currencyCode}</div>
+                <div className="font-mono tabular-nums font-semibold text-ink-900">
+                  {formatCurrency(c.currentBalance, false)}
                 </div>
-                <div className="mt-3">
-                  <div className="text-xl font-bold text-gray-900 tabular-nums">
-                    {formatCurrency(a.closing_balance, false)}
-                    <span className="text-sm font-medium text-gray-500 ml-1">원</span>
-                  </div>
-                  <div className="mt-1 flex gap-3 text-xs">
-                    <span className="text-emerald-600">+{formatCompactWon(a.inbound_total)}</span>
-                    <span className="text-rose-600">-{formatCompactWon(a.outbound_total)}</span>
-                  </div>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Top movements */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="card">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">큰 입금 TOP {r?.top_inbound?.length ?? 0}</h2>
-          <div className="space-y-2">
-            {r?.top_inbound?.map((it: any) => (
-              <div key={it.transaction_id} className="flex items-center justify-between border-b border-gray-100 pb-2 last:border-b-0">
-                <div>
-                  <div className="font-medium text-gray-900">{it.counterparty}</div>
-                  <div className="text-xs text-gray-500">
-                    {it.transaction_time} · {it.description}
-                  </div>
-                </div>
-                <div className="font-mono tabular-nums font-semibold text-emerald-700">
-                  +{formatCurrency(it.amount, false)}
+                <div className="text-2xs text-ink-400 mt-0.5">
+                  Δ {formatCurrency(c.difference, false)}
                 </div>
               </div>
             ))}
           </div>
         </div>
-        <div className="card">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">큰 출금 TOP {r?.top_outbound?.length ?? 0}</h2>
-          <div className="space-y-2">
-            {r?.top_outbound?.map((it: any) => (
-              <div key={it.transaction_id} className="flex items-center justify-between border-b border-gray-100 pb-2 last:border-b-0">
-                <div>
-                  <div className="font-medium text-gray-900">{it.counterparty}</div>
-                  <div className="text-xs text-gray-500">
-                    {it.transaction_time} · {it.description}
-                  </div>
-                </div>
-                <div className="font-mono tabular-nums font-semibold text-rose-700">
-                  -{formatCurrency(it.amount, false)}
-                </div>
-              </div>
-            ))}
-          </div>
+      )}
+
+      {/* 자산별 표 */}
+      <div className="panel overflow-hidden">
+        <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
+          <h2 className="text-sm flex items-center gap-1.5">
+            <BuildingLibraryIcon className="h-3.5 w-3.5 text-ink-500" />
+            계좌별 잔액 (대출 제외)
+          </h2>
+          <span className="text-2xs text-ink-400">{nonLoanAssets.length}개 계좌</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full">
+            <thead className="bg-canvas-50">
+              <tr>
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  자산
+                </th>
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  계좌번호
+                </th>
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  통화
+                </th>
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  이전 잔액
+                </th>
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  현재 잔액
+                </th>
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  증감
+                </th>
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  입금
+                </th>
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  출금
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-ink-100">
+              {reportQuery.isLoading && (
+                <tr>
+                  <td colSpan={8} className="text-center py-6 text-2xs text-ink-400">
+                    불러오는 중…
+                  </td>
+                </tr>
+              )}
+              {!reportQuery.isLoading &&
+                nonLoanAssets.map((a) => {
+                  const diff = Number(a.difference || 0)
+                  return (
+                    <tr key={a.assetId} className="hover:bg-canvas-50">
+                      <td className="px-3 py-1.5 text-xs">
+                        <div className="font-medium text-ink-900">{a.assetName}</div>
+                        <div className="text-2xs text-ink-500">{a.organizationName}</div>
+                      </td>
+                      <td className="px-3 py-1.5 font-mono text-2xs text-ink-700">{a.assetNumber}</td>
+                      <td className="px-3 py-1.5 text-2xs">
+                        <span className="badge bg-ink-50 text-ink-700 border-ink-200">
+                          {a.currencyCode}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-600">
+                        {formatCurrency(a.previousBalance, false)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900">
+                        {formatCurrency(a.currentBalance, false)}
+                      </td>
+                      <td
+                        className={`px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold ${
+                          diff >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                        }`}
+                      >
+                        {diff >= 0 ? '+' : ''}
+                        {formatCurrency(diff, false)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-emerald-700">
+                        {Number(a.inAmount) > 0 ? formatCurrency(a.inAmount, false) : <span className="text-ink-200">-</span>}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-rose-700">
+                        {Number(a.outAmount) !== 0 ? formatCurrency(Math.abs(Number(a.outAmount)), false) : <span className="text-ink-200">-</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              {!reportQuery.isLoading && nonLoanAssets.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="text-center py-6 text-2xs text-ink-400">
+                    이 기간에 데이터가 없습니다.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
-      {/* Subscriptions + history */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="card">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">정기 발송 구독</h2>
-            <button onClick={() => setShowSubModal(true)} className="btn-secondary text-sm">
-              <PlusIcon className="h-4 w-4 mr-1" />
-              구독 추가
-            </button>
+      {/* 대출 계좌 별도 표 */}
+      {loanAssets.length > 0 && (
+        <div className="panel overflow-hidden">
+          <div className="px-3 py-2 border-b border-ink-200 bg-amber-50/40">
+            <h2 className="text-sm">대출 계좌 (잔액 합계와 별도)</h2>
           </div>
-          <div className="space-y-2">
-            {subs.length === 0 && (
-              <div className="text-sm text-gray-500 py-4 text-center">
-                정기 발송 설정이 없습니다.
-              </div>
-            )}
-            {subs.map((s: any) => (
-              <div key={s.id} className="flex items-center justify-between border border-gray-200 rounded p-3">
-                <div className="flex items-center gap-3">
-                  {s.delivery_method === 'email' ? (
-                    <EnvelopeIcon className="h-5 w-5 text-gray-400" />
-                  ) : (
-                    <ChatBubbleLeftRightIcon className="h-5 w-5 text-gray-400" />
-                  )}
-                  <div>
-                    <div className="font-medium text-gray-900">{s.delivery_target}</div>
-                    <div className="text-xs text-gray-500">
-                      매일 {s.schedule_time} · {s.delivery_method.toUpperCase()}
-                    </div>
-                  </div>
-                </div>
-                <button className="text-gray-400 hover:text-rose-500">
-                  <TrashIcon className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="card">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">최근 발송 이력</h2>
-          <div className="space-y-2">
-            {historyQuery.data?.map((h: any) => (
-              <div key={h.id} className="flex items-center justify-between text-sm border-b border-gray-100 pb-2 last:border-b-0">
-                <div>
-                  <div className="text-gray-900 font-medium">{formatDate(h.report_date)}</div>
-                  <div className="text-xs text-gray-500">{h.delivery_target}</div>
-                </div>
-                <div className="text-right">
-                  <span
-                    className={
-                      h.status === 'sent'
-                        ? 'badge bg-emerald-100 text-emerald-700'
-                        : h.status === 'failed'
-                        ? 'badge bg-rose-100 text-rose-700'
-                        : 'badge bg-gray-100 text-gray-700'
-                    }
-                  >
-                    {h.status === 'sent' ? '발송완료' : h.status === 'failed' ? '실패' : '대기'}
-                  </span>
-                  <div className="text-xs text-gray-400 mt-0.5">{formatRelativeTime(h.sent_at)}</div>
-                </div>
-              </div>
-            ))}
+          <div className="overflow-x-auto">
+            <table className="min-w-full">
+              <thead className="bg-canvas-50">
+                <tr>
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    자산
+                  </th>
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    계좌번호
+                  </th>
+                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    이전
+                  </th>
+                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    현재
+                  </th>
+                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    증감
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-100">
+                {loanAssets.map((a) => {
+                  const diff = Number(a.difference || 0)
+                  return (
+                    <tr key={a.assetId} className="hover:bg-canvas-50">
+                      <td className="px-3 py-1.5 text-xs">
+                        <div className="font-medium text-ink-900">{a.assetName}</div>
+                        <div className="text-2xs text-ink-500">{a.organizationName}</div>
+                      </td>
+                      <td className="px-3 py-1.5 font-mono text-2xs text-ink-700">{a.assetNumber}</td>
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-600">
+                        {formatCurrency(a.previousBalance, false)}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-amber-700">
+                        {formatCurrency(a.currentBalance, false)}
+                      </td>
+                      <td
+                        className={`px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold ${
+                          diff >= 0 ? 'text-amber-700' : 'text-emerald-700'
+                        }`}
+                      >
+                        {diff >= 0 ? '+' : ''}
+                        {formatCurrency(diff, false)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
-
-      {showSubModal && <SubscribeModal userId={userId} onClose={() => setShowSubModal(false)} />}
+      )}
     </div>
   )
 }
 
-function SubscribeModal({ userId, onClose }: { userId: number; onClose: () => void }) {
-  const qc = useQueryClient()
-  const [method, setMethod] = useState<'email' | 'kakao' | 'slack'>('email')
-  const [target, setTarget] = useState('')
-  const [time, setTime] = useState('09:00')
-
-  const createMut = useMutation({
-    mutationFn: () =>
-      dailyReportApi.createSubscription(
-        { delivery_method: method, delivery_target: target, schedule_time: time, include_attachments: true },
-        userId
-      ),
-    onSuccess: () => {
-      toast.success('구독이 추가되었습니다.')
-      qc.invalidateQueries({ queryKey: ['daily-report-subs'] })
-      onClose()
-    },
-    onError: (e: any) => toast.error(e.response?.data?.detail || '추가에 실패했습니다.'),
-  })
-
+function KPI({
+  label,
+  value,
+  unit = '원',
+  tone = 'neutral',
+  highlight = false,
+  delta = false,
+  icon,
+}: {
+  label: string
+  value: number | undefined
+  unit?: string
+  tone?: 'neutral' | 'primary' | 'success' | 'danger' | 'warning'
+  highlight?: boolean
+  delta?: boolean
+  icon?: React.ReactNode
+}) {
+  const v = Number(value || 0)
+  const toneClass: Record<string, string> = {
+    neutral: 'text-ink-900',
+    primary: 'text-primary-700',
+    success: 'text-emerald-700',
+    danger: 'text-rose-700',
+    warning: 'text-amber-700',
+  }
+  let deltaClass = ''
+  if (delta) deltaClass = v >= 0 ? 'text-emerald-700' : 'text-rose-700'
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">정기 발송 구독 추가</h3>
-        <div className="space-y-3">
-          <div>
-            <label className="label">발송 채널</label>
-            <select value={method} onChange={(e) => setMethod(e.target.value as any)} className="input">
-              <option value="email">이메일</option>
-              <option value="kakao">카카오톡</option>
-              <option value="slack">Slack 웹훅</option>
-            </select>
-          </div>
-          <div>
-            <label className="label">수신 대상</label>
-            <input
-              type="text"
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              placeholder={method === 'email' ? 'ceo@example.com' : method === 'kakao' ? '010-1234-5678' : 'https://hooks.slack.com/...'}
-              className="input"
-            />
-          </div>
-          <div>
-            <label className="label">발송 시간</label>
-            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="input w-32" />
-          </div>
-        </div>
-        <div className="mt-6 flex justify-end gap-2">
-          <button onClick={onClose} className="btn-secondary">
-            취소
-          </button>
-          <button
-            disabled={!target || createMut.isPending}
-            onClick={() => createMut.mutate()}
-            className="btn-primary"
-          >
-            {createMut.isPending ? '저장 중...' : '추가'}
-          </button>
-        </div>
+    <div className={`panel px-3 py-2 ${highlight ? 'border-ink-900 border-2' : ''}`}>
+      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider flex items-center gap-1">
+        {icon}
+        {label}
+      </div>
+      <div
+        className={`mt-0.5 font-mono tabular-nums font-bold ${highlight ? 'text-base' : 'text-sm'} ${
+          delta ? deltaClass : toneClass[tone]
+        }`}
+      >
+        {delta && v >= 0 && '+'}
+        {formatCurrency(Math.abs(v), false)}
+        {unit !== '원' && <span className="text-2xs text-ink-400 ml-1 font-medium">{unit}</span>}
       </div>
     </div>
   )
