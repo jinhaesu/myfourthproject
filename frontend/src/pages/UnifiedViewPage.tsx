@@ -137,13 +137,27 @@ export default function UnifiedViewPage() {
   })
 
   const assetsData = assetsQuery.data || {}
-  const bankAssets: any[] = useMemo(() => assetsData?.BANK_ACCOUNT || [], [assetsData])
+  const allBankAssets: any[] = useMemo(() => assetsData?.BANK_ACCOUNT || [], [assetsData])
   const cardAssets: any[] = useMemo(() => assetsData?.CARD || [], [assetsData])
   const homeTaxAssets: any[] = useMemo(() => assetsData?.HOME_TAX_ACCOUNT || [], [assetsData])
   const securitiesAssets: any[] = useMemo(() => assetsData?.SECURITIES_ACCOUNT || [], [assetsData])
   const ecommerceAssets: any[] = useMemo(() => assetsData?.ECOMMERCE || [], [assetsData])
 
-  // 가용자금: KRW 계좌 잔액만 합 (외화 계좌는 별도 처리)
+  // 대출 계좌 분리 (accountType=LOAN 또는 isLoan)
+  const isLoanAccount = (a: any) => {
+    const accType = String(a?.bankAccount?.accountType || '').toUpperCase()
+    return accType === 'LOAN' || a?.bankAccount?.isLoan === true || a?.isLoan === true
+  }
+  const bankAssets: any[] = useMemo(
+    () => allBankAssets.filter((a) => !isLoanAccount(a)),
+    [allBankAssets]
+  )
+  const loanAssets: any[] = useMemo(
+    () => allBankAssets.filter(isLoanAccount),
+    [allBankAssets]
+  )
+
+  // 가용자금: 일반 계좌(대출 제외) KRW 잔액 합
   const totalCash = useMemo(
     () =>
       bankAssets.reduce((s, a) => {
@@ -162,6 +176,20 @@ export default function UnifiedViewPage() {
       }),
     [bankAssets]
   )
+
+  // 대출 총액
+  const totalLoan = useMemo(
+    () =>
+      loanAssets.reduce(
+        (s, a) =>
+          s + Number(a?.bankAccount?.accountBalance || a?.bankAccount?.originalBalance || 0),
+        0
+      ),
+    [loanAssets]
+  )
+
+  // 순포지션 = 가용자금 - 대출
+  const netPosition = totalCash - totalLoan
   const totalSecurities = useMemo(
     () => securitiesAssets.reduce((s, a) => s + num(a?.securitiesAccount, 'totalAmount'), 0),
     [securitiesAssets]
@@ -404,17 +432,42 @@ export default function UnifiedViewPage() {
           <div className="panel p-4 space-y-3">
             <div>
               <div className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">
-                가용자금 (현재 잔액)
+                가용자금 (대출 제외)
               </div>
               <div className="mt-1 text-xl font-bold text-ink-900 tabular-nums tracking-crisp">
                 {formatCurrency(totalCash, false)}
                 <span className="text-xs text-ink-400 font-medium ml-1">원</span>
               </div>
               <div className="text-2xs text-ink-400 mt-0.5">
-                KRW 계좌 잔액 합 · {bankAssets.length}개 계좌
+                KRW 입출금 계좌 {bankAssets.length}개
                 {foreignCashAccounts.length > 0 && ` · 외화 ${foreignCashAccounts.length}건 별도`}
               </div>
             </div>
+
+            {/* 대출 / 순포지션 */}
+            {(loanAssets.length > 0 || totalLoan > 0) && (
+              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100">
+                <div>
+                  <div className="text-2xs text-amber-700 font-semibold">대출 잔액</div>
+                  <div className="mt-0.5 text-sm font-semibold text-amber-700 font-mono tabular-nums">
+                    {formatCurrency(totalLoan, false)}
+                  </div>
+                  <div className="text-2xs text-ink-400 mt-0.5">{loanAssets.length}개 계좌</div>
+                </div>
+                <div>
+                  <div className="text-2xs text-primary-700 font-semibold">순포지션</div>
+                  <div
+                    className={`mt-0.5 text-sm font-semibold font-mono tabular-nums ${
+                      netPosition >= 0 ? 'text-primary-700' : 'text-rose-700'
+                    }`}
+                  >
+                    {formatCurrency(netPosition, false)}
+                  </div>
+                  <div className="text-2xs text-ink-400 mt-0.5">가용자금 − 대출</div>
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100">
               <div>
                 <div className="text-2xs text-ink-500">기간 카드 사용</div>
@@ -505,6 +558,63 @@ export default function UnifiedViewPage() {
               )
             })}
           </Section>
+
+          {/* 대출 계좌 (별도) */}
+          {loanAssets.length > 0 && (
+            <Section
+              title="대출 계좌"
+              icon={<BuildingLibraryIcon className="h-3.5 w-3.5" />}
+              count={loanAssets.length}
+            >
+              <div className="px-2 py-1 text-2xs text-amber-700 bg-amber-50 rounded mb-1">
+                ⚠️ 가용자금에 합산되지 않음
+              </div>
+              {loanAssets.map((a, idx) => {
+                const id = num(a, 'id')
+                const ba = a.bankAccount || {}
+                const bankName = str(a, 'organizationName', 'name')
+                const alias = str(a, 'nickname') || str(ba, 'nickName', 'accountName')
+                const acctNum = str(ba, 'accountNumber') || str(a, 'number')
+                const balance = num(ba, 'accountBalance', 'originalBalance')
+                const isActive = selected.assetId === id
+                return (
+                  <button
+                    key={id || idx}
+                    onClick={() =>
+                      setSelected({
+                        scope: 'asset_only',
+                        ticketType: 'BANK_TRANSACTION_TICKET',
+                        assetId: id,
+                        label: alias || bankName,
+                        sublabel: `${bankName} ${acctNum} (대출)`,
+                      })
+                    }
+                    className={`w-full flex items-start justify-between px-2 py-1.5 rounded text-2xs transition gap-2 ${
+                      isActive ? 'bg-ink-900 text-white' : 'hover:bg-amber-50'
+                    }`}
+                  >
+                    <div className="text-left min-w-0 flex-1">
+                      <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'}`}>
+                        {alias || bankName}
+                      </div>
+                      <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
+                        {bankName} · {acctNum}
+                      </div>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <div
+                        className={`font-mono tabular-nums font-semibold ${
+                          isActive ? '' : 'text-amber-700'
+                        }`}
+                      >
+                        {formatCurrency(balance, false)}
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </Section>
+          )}
 
           {/* 신용카드 */}
           <Section
