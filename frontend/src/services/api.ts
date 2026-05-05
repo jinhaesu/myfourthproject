@@ -29,12 +29,25 @@ api.interceptors.request.use(
 )
 
 // Response interceptor - handle token refresh
+// 중요: /granter/ 등 외부 API forward endpoint는 401이 그랜터 응답일 수 있으므로
+// 인증 만료로 처리하지 않음 (auto-logout/refresh 시도 안 함)
 api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
     const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean }
+    const url = String(originalRequest?.url || '')
 
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // 외부 API forward(그랜터/홈택스 등)에서 401은 외부 응답이므로 그대로 reject
+    const isExternalForward =
+      url.includes('/granter/') ||
+      url.includes('/exchange-rates/') ||
+      url.includes('/integrations/')
+
+    if (
+      error.response?.status === 401 &&
+      !originalRequest._retry &&
+      !isExternalForward
+    ) {
       originalRequest._retry = true
 
       const refreshToken = useAuthStore.getState().refreshToken

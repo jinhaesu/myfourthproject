@@ -20,8 +20,13 @@ const queryClient = new QueryClient({
       gcTime: GC_3H,
       refetchOnWindowFocus: false,
       refetchOnMount: 'always',
-      retry: 2,
-      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 8000),
+      // 401/403/429는 retry해도 같은 결과 → retry 안 함 (그랜터 rate limit 폭주 방지)
+      retry: (failureCount, error: any) => {
+        const status = error?.response?.status
+        if (status === 401 || status === 403 || status === 429) return false
+        return failureCount < 1
+      },
+      retryDelay: (attempt) => Math.min(1500 * 2 ** attempt, 6000),
     },
   },
 })

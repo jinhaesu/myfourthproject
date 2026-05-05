@@ -319,12 +319,12 @@ function detectIssues(tickets: any[]): Issue[] {
   return issues
 }
 
-// ─── 자동 탐색 기간 목록 (24개월 거꾸로) ─────────────────────────────────────
+// ─── 자동 탐색 기간 목록 (6개월 거꾸로 — 그랜터 rate limit 보호) ──────────────
 
 function buildFallbackPeriods(): Array<{ start: string; end: string }> {
   const periods: Array<{ start: string; end: string }> = []
   const today = new Date()
-  for (let i = 0; i < 24; i++) {
+  for (let i = 0; i < 6; i++) {
     const end = new Date(today.getFullYear(), today.getMonth() - i, 0) // 해당 달 말일
     const start = new Date(end.getFullYear(), end.getMonth() - 1 + 1, 1) // 해당 달 1일
     // 30일 이내로 클램프
