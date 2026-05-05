@@ -72,6 +72,118 @@ async def list_all_assets(only_active: bool = True):
         raise _err(e)
 
 
+@router.get("/asset-debug")
+async def asset_debug(
+    account_number: Optional[str] = Query(None, description="계좌번호(부분 일치)"),
+    card_number: Optional[str] = Query(None, description="카드번호(부분 일치)"),
+    asset_id: Optional[int] = Query(None, description="자산 ID 직접 지정"),
+    include_inactive: bool = Query(True, description="비활성 자산 포함"),
+):
+    """
+    특정 자산의 그랜터 raw 응답 + 분석.
+    계좌번호/카드번호/asset_id 중 하나로 필터.
+    잔액이 의심스러운 계좌의 정체 확인용.
+    """
+    client = get_granter_client()
+    if not client.is_configured:
+        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
+
+    only_active = not include_inactive
+    try:
+        all_assets = await client.list_all_assets(only_active=only_active)
+    except GranterAPIError as e:
+        raise _err(e)
+
+    matched = []
+    for asset_type, items in all_assets.items():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            ba = item.get('bankAccount') or {}
+            card = item.get('card') or {}
+            number_in_asset = str(item.get('number') or '')
+            account_no = str(ba.get('accountNumber') or '')
+            card_no = number_in_asset
+
+            hit = False
+            if asset_id and item.get('id') == asset_id:
+                hit = True
+            if account_number and account_number.replace('-', '') in account_no.replace('-', ''):
+                hit = True
+            if card_number and card_number in card_no:
+                hit = True
+            if not hit:
+                continue
+
+            # 분석
+            currency = ba.get('currencyCode') or 'KRW'
+            account_balance = ba.get('accountBalance')
+            original_balance = ba.get('originalBalance')
+
+            analysis: Dict[str, Any] = {
+                "currency": currency,
+                "is_krw": str(currency).upper() == "KRW",
+                "active_status": {
+                    "isActive": item.get('isActive'),
+                    "isHidden": item.get('isHidden'),
+                    "isDormant": item.get('isDormant'),
+                    "isPossibleDormant": item.get('isPossibleDormant'),
+                    "shown_in_unified": (
+                        bool(item.get('isActive')) and
+                        not item.get('isHidden') and
+                        not item.get('isDormant')
+                    ),
+                },
+                "balance_fields": {
+                    "accountBalance": account_balance,
+                    "originalBalance": original_balance,
+                    "are_equal": account_balance == original_balance,
+                    "diff": (
+                        (account_balance or 0) - (original_balance or 0)
+                        if (account_balance is not None and original_balance is not None) else None
+                    ),
+                },
+                "transaction_visible": ba.get('isTransactionVisible'),
+                "card_amounts": (
+                    {
+                        "limitAmount": card.get('limitAmount'),
+                        "usedAmount": card.get('usedAmount'),
+                        "remainLimit": card.get('remainLimit'),
+                    } if card else None
+                ),
+                "interpretation_hint": (
+                    "외화 계좌입니다. accountBalance는 원화 환산값일 수 있고, originalBalance는 원본 통화 금액입니다."
+                    if str(currency).upper() != "KRW"
+                    else "원화 계좌입니다. 그랜터 표기 잔액이 실 잔액과 다르면, 그랜터 측 동기화 지연 또는 마이너스(차입성) 통장일 가능성이 있습니다."
+                ),
+            }
+
+            matched.append({
+                "asset_type": asset_type,
+                "id": item.get('id'),
+                "name": item.get('name'),
+                "nickname": item.get('nickname'),
+                "organization": item.get('organization'),
+                "organizationName": item.get('organizationName'),
+                "number": item.get('number'),
+                "createdAt": item.get('createdAt'),
+                "modifiedAt": item.get('modifiedAt'),
+                "analysis": analysis,
+                "raw": item,  # 전체 raw 데이터
+            })
+
+    if not matched:
+        return {
+            "matched": [],
+            "hint": "조건에 맞는 자산을 찾지 못했습니다. include_inactive=true로 다시 시도하세요.",
+        }
+
+    return {
+        "matched_count": len(matched),
+        "matched": matched,
+    }
+
+
 @router.get("/recent-activity-period")
 async def recent_activity_period(
     asset_id: Optional[int] = Query(None),
