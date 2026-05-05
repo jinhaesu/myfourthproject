@@ -211,7 +211,7 @@ export default function UnifiedViewPage() {
       if (exceeds31Days) {
         const d = new Date(to)
         d.setDate(d.getDate() - 30)
-        actualStart = d.toISOString().slice(0, 10)
+        actualStart = isoLocal(d)
       }
       return granterApi.listTicketsAllTypes(actualStart, to).then((r) => r.data)
     },
@@ -248,7 +248,7 @@ export default function UnifiedViewPage() {
       if (exceeds31Days) {
         const d = new Date(to)
         d.setDate(d.getDate() - 30)
-        actualStart = d.toISOString().slice(0, 10)
+        actualStart = isoLocal(d)
       }
       return granterApi.listTickets({
         ticketType: 'EXPENSE_TICKET',
@@ -314,7 +314,7 @@ export default function UnifiedViewPage() {
       if (exceeds31Days) {
         const d = new Date(to)
         d.setDate(d.getDate() - 30)
-        actualStart = d.toISOString().slice(0, 10)
+        actualStart = isoLocal(d)
       }
       if (selected.scope === 'all' || !selected.ticketType) {
         // 모든 타입 통합 호출
@@ -905,8 +905,22 @@ export default function UnifiedViewPage() {
                 불러오는 중…
               </div>
             ) : ticketsQuery.isError ? (
-              <div className="flex-1 flex items-center justify-center text-2xs text-rose-500 p-6 text-center">
-                그랜터 API 호출 실패. 권한·기간 확인.
+              <div className="flex-1 flex flex-col items-center justify-center text-2xs p-6 text-center gap-2">
+                <div className="text-rose-500">그랜터 API 호출 실패</div>
+                <div className="text-ink-500 max-w-md break-all font-mono text-2xs">
+                  {(() => {
+                    const e: any = ticketsQuery.error
+                    const detail = e?.response?.data?.detail || e?.response?.data?.error || e?.message || '알 수 없는 오류'
+                    const status = e?.response?.status
+                    return `${status ? `[${status}] ` : ''}${typeof detail === 'string' ? detail : JSON.stringify(detail).slice(0, 200)}`
+                  })()}
+                </div>
+                <button
+                  onClick={() => ticketsQuery.refetch()}
+                  className="btn-secondary text-2xs mt-2"
+                >
+                  재시도
+                </button>
               </div>
             ) : tickets.length === 0 ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400">

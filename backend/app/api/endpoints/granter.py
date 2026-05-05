@@ -536,7 +536,13 @@ async def get_contractors_pool(months: int = Query(12, ge=1, le=24)):
             logger.warning("contractors-pool chunk %s~%s failed: %s", start, end, e)
             return []
 
-    results = await asyncio.gather(*[_fetch_chunk(s, e) for s, e in chunks])
+    # 그랜터 rate limit 보호: 3개씩 batch로 순차 처리
+    BATCH_SIZE = 3
+    results: list = []
+    for i in range(0, len(chunks), BATCH_SIZE):
+        batch = chunks[i:i + BATCH_SIZE]
+        batch_results = await asyncio.gather(*[_fetch_chunk(s, e) for s, e in batch])
+        results.extend(batch_results)
 
     # 그랜터 TaxInvoiceUser 실제 필드명 (가이드 line 753~786 기준):
     #   registrationNumber=사업자등록번호, companyName=회사명, ceoName=대표자명, name=담당자명,

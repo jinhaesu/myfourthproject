@@ -738,12 +738,12 @@ export default function TaxInvoicePage() {
     return d?.data || []
   }, [ticketsQuery.data])
 
-  // 거래처 풀: 지난 12개월 세금계산서에서 별도로 모은 풀 (백엔드 endpoint)
-  // 페이지가 보고 있는 기간(31일)뿐만 아니라 1년치 거래처를 발행 모달에서 사용 가능
+  // 거래처 풀: 발행 모달 열릴 때만 호출 (페이지 진입 시 자동 호출 금지 — 그랜터 rate limit 회피)
+  // 12개월치 31일씩 분할 병렬 호출이라 자동으로 돌리면 다른 페이지의 그랜터 호출까지 영향
   const contractorsPoolQuery = useQuery({
     queryKey: ['granter-contractors-pool', 12],
     queryFn: () => granterApi.contractorsPool(12).then((r) => r.data),
-    enabled: !!isConfigured,
+    enabled: !!isConfigured && issueModalOpen,
     retry: 1,
   })
 
