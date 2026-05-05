@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts'
+import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
@@ -1155,6 +1156,17 @@ export default function CashflowForecastPage() {
     staleTime: 120_000,
   })
 
+  const assetsQuery = useQuery({
+    queryKey: ['granter-all-assets'],
+    queryFn: () => granterApi.listAllAssets(true).then((r) => r.data),
+    enabled: !!isConfigured,
+    staleTime: 5 * 60_000,
+  })
+  const ownAccounts = useMemo(
+    () => buildOwnAccountSet(assetsQuery.data),
+    [assetsQuery.data]
+  )
+
   const ticketsQuery = useQuery({
     queryKey: ['cashflow-tickets', effectiveLookbackFrom, lookbackTo],
     queryFn: () =>
@@ -1202,12 +1214,19 @@ export default function CashflowForecastPage() {
   }, [historicalPoints, reportQuery.data])
 
   // ---------------------------------------------------------------------------
-  // Contact pattern analysis
+  // Contact pattern analysis (법인 계좌 간 이체 제외 후 분석)
   // ---------------------------------------------------------------------------
 
+  const rawTicketsData = ticketsQuery.data ?? []
+  const filteredTicketsData = useMemo(
+    () => filterOutInternalTransfers(rawTicketsData, ownAccounts),
+    [rawTicketsData, ownAccounts]
+  )
+  const filteredCount = rawTicketsData.length - filteredTicketsData.length
+
   const { inPatterns, outPatterns } = useMemo(
-    () => analyzeContactPatterns(ticketsQuery.data ?? []),
-    [ticketsQuery.data]
+    () => analyzeContactPatterns(filteredTicketsData),
+    [filteredTicketsData]
   )
 
   // ---------------------------------------------------------------------------
@@ -1285,6 +1304,11 @@ export default function CashflowForecastPage() {
           <p className="text-2xs text-ink-500 mt-0.5">
             과거 패턴 분석 기반 미래 자금 예측 도구
           </p>
+          {filteredCount > 0 && (
+            <span className="text-2xs text-ink-400">
+              · 법인 계좌 간 이체 {filteredCount}건 제외됨
+            </span>
+          )}
         </div>
         <button
           onClick={() => {

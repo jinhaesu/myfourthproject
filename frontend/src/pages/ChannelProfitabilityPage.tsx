@@ -9,6 +9,7 @@ import {
   ClockIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
+import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 import {
   BarChart,
   Bar,
@@ -203,6 +204,18 @@ export default function ChannelProfitabilityPage() {
   })
   const isConfigured = healthQuery.data?.configured
 
+  // ─── 본인 계좌 세트 (법인 계좌 간 이체 필터용) ────────────────────────────
+  const assetsQuery = useQuery({
+    queryKey: ['granter-all-assets'],
+    queryFn: () => granterApi.listAllAssets(true).then((r) => r.data),
+    enabled: !!isConfigured,
+    staleTime: 5 * 60_000,
+  })
+  const ownAccounts = useMemo(
+    () => buildOwnAccountSet(assetsQuery.data),
+    [assetsQuery.data]
+  )
+
   // ─── 티켓 조회 (단일 호출, chunked 절대 사용 금지) ────────────────────────
   const dataQuery = useQuery({
     queryKey: ['channel-profitability', actualFrom, to],
@@ -280,9 +293,19 @@ export default function ChannelProfitabilityPage() {
     }
   }, [dataQuery.isLoading, dataQuery.isFetched, dataQuery.data, isConfigured, findRecentMut])
 
+  // ─── 법인 계좌 간 이체 제외 카운트 ─────────────────────────────────────────
+  const internalFilteredCount = useMemo(() => {
+    const rawBank = (dataQuery.data?.bank as unknown[]) || []
+    const filtered = filterOutInternalTransfers(rawBank, ownAccounts)
+    return rawBank.length - filtered.length
+  }, [dataQuery.data, ownAccounts])
+
   // ─── 채널별 수익성 집계 ───────────────────────────────────────────────────
   const channels: ChannelRow[] = useMemo(() => {
-    const { bank = [], tax = [], expense = [] } = dataQuery.data || {}
+    const { bank: rawBank = [], tax = [], expense = [] } = dataQuery.data || {}
+
+    // 법인 계좌 간 이체 제외 (bank 티켓만 필터 대상)
+    const bank = filterOutInternalTransfers(rawBank as unknown[], ownAccounts)
 
     let salesTickets: unknown[]
     if (tab === 'bank') {
@@ -410,7 +433,9 @@ export default function ChannelProfitabilityPage() {
 
   // ─── 거래처별 매출 표 (상위 20) ──────────────────────────────────────────────
   const contactRows: ContactRow[] = useMemo(() => {
-    const { bank = [], tax = [], expense: _exp = [] } = dataQuery.data || {}
+    const { bank: rawBank = [], tax = [], expense: _exp = [] } = dataQuery.data || {}
+    // 법인 계좌 간 이체 제외
+    const bank = filterOutInternalTransfers(rawBank as unknown[], ownAccounts)
     let salesTickets: unknown[]
     if (tab === 'bank') {
       salesTickets = (bank as unknown[]).filter((t) => str(t, 'transactionType') === 'IN')
@@ -479,6 +504,11 @@ export default function ChannelProfitabilityPage() {
           <p className="text-2xs text-ink-500 mt-0.5">
             채널별 매출 - 직접비용 - 안분비용 = 마진 분석
           </p>
+          {internalFilteredCount > 0 && (
+            <span className="text-2xs text-ink-400">
+              · 법인 계좌 간 이체 {internalFilteredCount}건 제외됨
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           <PeriodPicker

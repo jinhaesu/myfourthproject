@@ -79,36 +79,6 @@ function addDays(iso: string, n: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// 정규화 함수 — 그랜터 응답 → ExchangeRatePoint[]
-// 그랜터 exchange-rates는 단일 baseDate만 지원하므로,
-// 응답이 배열([{currencyCode, krwAmount, baseDate}]) 형태임.
-// 날짜별로 그룹핑 (복수 날짜 배열이 혹시 올 경우 대비)
-// ---------------------------------------------------------------------------
-
-function normalizeGranterRates(raw: any, queryDate: string): ExchangeRatePoint[] {
-  if (!raw) return []
-  const items: GranterRateItem[] = Array.isArray(raw) ? raw : (raw?.data ?? [])
-  if (items.length === 0) return []
-
-  // baseDate 기준으로 그룹핑 (보통은 단일 날짜)
-  const byDate = new Map<string, Record<string, number>>()
-  for (const item of items) {
-    const date = (item.baseDate ?? queryDate).slice(0, 10)
-    if (!byDate.has(date)) byDate.set(date, {})
-    const rates = byDate.get(date)!
-    const code = item.currencyCode
-    if (!code) continue
-    // JPY는 baseForeignAmount=100이므로 krwAmount가 이미 100엔 기준
-    // 다른 통화는 baseForeignAmount=1
-    rates[code] = item.krwAmount
-  }
-
-  return Array.from(byDate.entries())
-    .map(([date, rates]) => ({ date, rates }))
-    .sort((a, b) => a.date.localeCompare(b.date))
-}
-
-// ---------------------------------------------------------------------------
 // Frankfurter 로 시계열 가져오기
 // from=KRW 방식: 1 KRW = x USD → 뒤집어서 1 USD = y KRW 로 변환
 // ---------------------------------------------------------------------------
@@ -123,8 +93,13 @@ async function fetchFrankfurterRange(from: string, to: string): Promise<Exchange
   // data.base = "USD", data.rates[date] = { KRW: 1472.4, JPY: 148.5, ... }
   if (!data.rates) return []
 
+  // Frankfurter는 from 이전의 마지막 영업일 데이터를 start_date로 반환하는 경우가 있으므로
+  // 요청 범위(from ~ to) 내 날짜만 포함되도록 필터링
   const result: ExchangeRatePoint[] = []
   for (const [date, dayRates] of Object.entries(data.rates as Record<string, Record<string, number>>)) {
+    // 요청 범위 밖 날짜 제외
+    if (date < from || date > to) continue
+
     const krwPerUsd = (dayRates as any).KRW as number | undefined
     if (!krwPerUsd || krwPerUsd <= 0) continue
 
@@ -143,6 +118,24 @@ async function fetchFrankfurterRange(from: string, to: string): Promise<Exchange
     }
 
     result.push({ date, rates })
+  }
+
+  // 날짜 범위 내 영업일 데이터가 전혀 없으면 범위 직전 1개 포인트라도 반환
+  // (예: 주말/공휴일만 있는 단기 범위 — 최소한 현재 환율은 보여줌)
+  if (result.length === 0 && Object.keys(data.rates).length > 0) {
+    const allDates = Object.keys(data.rates).sort()
+    const closestDate = allDates[allDates.length - 1]
+    const dayRates = (data.rates as Record<string, Record<string, number>>)[closestDate]
+    const krwPerUsd = dayRates?.KRW
+    if (krwPerUsd && krwPerUsd > 0) {
+      const rates: Record<string, number> = { USD: krwPerUsd }
+      for (const code of ['JPY', 'CNY', 'SGD', 'EUR', 'GBP', 'HKD']) {
+        const perUsd = dayRates[code]
+        if (!perUsd || perUsd <= 0) continue
+        rates[code] = code === 'JPY' ? (krwPerUsd / perUsd) * 100 : krwPerUsd / perUsd
+      }
+      result.push({ date: closestDate, rates })
+    }
   }
 
   return result.sort((a, b) => a.date.localeCompare(b.date))
@@ -277,18 +270,15 @@ export default function ExchangeRatesPage() {
   })
 
   // -------------------------------------------------------------------------
-  // 데이터 병합: Frankfurter 시계열 우선, 그랜터의 최신값은 KPI 참고
+  // 데이터 병합: Frankfurter 시계열 우선
+  // 그랜터는 KPI 카드용 최신 환율만 제공 (단일 날짜) — 시계열 차트에는 사용하지 않음
   // -------------------------------------------------------------------------
   const timeSeriesData = useMemo<ExchangeRatePoint[]>(() => {
     if (frankfurterQuery.data && frankfurterQuery.data.length > 0) {
       return frankfurterQuery.data
     }
-    // Frankfurter 실패 시 그랜터 단일 포인트로 폴백
-    if (granterQuery.data && granterQuery.data.length > 0) {
-      return normalizeGranterRates(granterQuery.data, today)
-    }
     return []
-  }, [frankfurterQuery.data, granterQuery.data, today])
+  }, [frankfurterQuery.data])
 
   // 차트용 flat 데이터 (X축: 날짜 레이블)
   const chartData = useMemo(() => {
@@ -313,8 +303,8 @@ export default function ExchangeRatesPage() {
   }, [granterQuery.data])
 
   const isLoading = frankfurterQuery.isLoading
-  const hasError = frankfurterQuery.isError && granterQuery.isError
-  const dataSource = frankfurterQuery.data?.length ? 'Frankfurter (ECB)' : granterQuery.data ? '그랜터' : '-'
+  const hasError = frankfurterQuery.isError
+  const dataSource = frankfurterQuery.data?.length ? 'Frankfurter (ECB)' : '-'
 
   // Y축 범위 자동 계산 (선택 통화 기준)
   const yDomain = useMemo<[number, number] | ['auto', 'auto']>(() => {
@@ -389,7 +379,7 @@ export default function ExchangeRatesPage() {
         <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
           <span className="text-2xs text-rose-800">
-            데이터 없음 — 그랜터 환율 API 연결 확인 및 네트워크 상태를 점검하세요.
+            환율 데이터를 불러오지 못했습니다 — Frankfurter(ECB) API 네트워크 상태를 점검하세요.
           </span>
           <button
             className="btn-secondary text-2xs ml-auto"
@@ -466,7 +456,9 @@ export default function ExchangeRatesPage() {
           </div>
         ) : chartData.length === 0 ? (
           <div className="h-60 flex items-center justify-center text-2xs text-ink-400">
-            데이터 없음 — 그랜터 환율 API 연결 확인
+            {frankfurterQuery.isError
+              ? 'Frankfurter(ECB) API 오류 — 잠시 후 재시도하세요.'
+              : '선택 기간에 해당하는 영업일 데이터가 없습니다.'}
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={260}>

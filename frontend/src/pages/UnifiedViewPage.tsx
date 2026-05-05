@@ -18,6 +18,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency } from '@/utils/format'
+import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 
 type PeriodPreset = 'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
 
@@ -299,8 +300,14 @@ export default function UnifiedViewPage() {
     retry: false,
   })
 
+  // 본인 계좌 세트 (assetsQuery는 이미 위에서 정의됨)
+  const ownAccounts = useMemo(
+    () => buildOwnAccountSet(assetsQuery.data),
+    [assetsQuery.data]
+  )
+
   // 거래 데이터 정규화 (단일 타입 → 배열, 통합 → 객체를 합쳐서 배열)
-  const tickets: any[] = useMemo(() => {
+  const rawTickets: any[] = useMemo(() => {
     const d = ticketsQuery.data
     if (!d) return []
     if (Array.isArray(d)) return d
@@ -319,6 +326,16 @@ export default function UnifiedViewPage() {
     }
     return []
   }, [ticketsQuery.data])
+
+  // 거래 합계 계산에서 법인 계좌 간 이체 제외
+  const filteredTickets: any[] = useMemo(
+    () => filterOutInternalTransfers(rawTickets, ownAccounts),
+    [rawTickets, ownAccounts]
+  )
+  const internalFilteredCount = rawTickets.length - filteredTickets.length
+
+  // 표시용 tickets는 원본 유지 (표시는 그대로), 합계 계산만 filteredTickets 사용
+  const tickets = rawTickets
 
   const handlePreset = (p: PeriodPreset) => {
     setPreset(p)
@@ -809,6 +826,11 @@ export default function UnifiedViewPage() {
                 {tickets.length > 0 && (
                   <span className="text-2xs text-ink-400 ml-2">
                     · {tickets.length.toLocaleString('ko-KR')}건
+                  </span>
+                )}
+                {internalFilteredCount > 0 && (
+                  <span className="text-2xs text-ink-400 ml-1">
+                    · 법인 계좌 간 이체 {internalFilteredCount}건 합계 제외됨
                   </span>
                 )}
               </div>

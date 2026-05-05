@@ -20,6 +20,64 @@ import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/c
 
 type Direction = 'all' | 'sales' | 'purchase'
 
+// ────────────────────────────────────────────────────────────────────────────
+// 조인앤조인 공급자 기본 정보 (사업자등록증 기준)
+// ────────────────────────────────────────────────────────────────────────────
+const SUPPLIER_DEFAULT = {
+  businessNumber: '503-87-01038',
+  corporateNumber: '131411-0405152',
+  companyName: '주식회사 조인앤조인',
+  representativeName: '진해수',
+  address: '전북특별자치도 전주시 덕진구 가리내로 458, 2층 (반월동)',
+  businessType: '서비스',
+  businessItem: '기타 모유 식품 등',
+  email: '',
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 거래처 자동완성용 타입 및 추출 함수
+// ────────────────────────────────────────────────────────────────────────────
+interface ContractorSuggestion {
+  businessNumber: string
+  companyName: string
+  representativeName: string
+  address: string
+  email: string
+  count: number
+}
+
+function extractContractors(taxTickets: any[]): ContractorSuggestion[] {
+  const map = new Map<string, ContractorSuggestion>()
+  for (const t of taxTickets) {
+    const ti = t?.taxInvoice
+    if (!ti) continue
+    // 매출(IN): contractor=공급받는자, 매입(OUT): supplier=상대방 — 둘 다 거래처 풀로 수집
+    const candidates = [ti.contractor, ti.supplier].filter(Boolean)
+    for (const c of candidates) {
+      const bn = String(c?.businessNumber || '').trim()
+      const name = String(c?.companyName || '').trim()
+      if (!bn && !name) continue
+      const key = bn || name
+      // 본인 회사는 제외
+      if (bn === SUPPLIER_DEFAULT.businessNumber || name === SUPPLIER_DEFAULT.companyName) continue
+      const cur = map.get(key) || {
+        businessNumber: bn,
+        companyName: name,
+        representativeName: String(c?.representativeName || '').trim(),
+        address: String(c?.address || '').trim(),
+        email: String(c?.email || '').trim(),
+        count: 0,
+      }
+      cur.count += 1
+      if (!cur.representativeName && c?.representativeName) cur.representativeName = String(c.representativeName)
+      if (!cur.address && c?.address) cur.address = String(c.address)
+      if (!cur.email && c?.email) cur.email = String(c.email)
+      map.set(key, cur)
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => b.count - a.count)
+}
+
 function daysBetween(a: string, b: string) {
   return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
 }
@@ -55,6 +113,7 @@ interface IssueTaxInvoiceModalProps {
   open: boolean
   onClose: () => void
   onSuccess: () => void
+  contractors: ContractorSuggestion[]
 }
 
 function todayStr() {
@@ -69,23 +128,37 @@ const emptyItem = (): InvoiceItem => ({
   taxAmount: 0,
 })
 
-function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModalProps) {
+function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors }: IssueTaxInvoiceModalProps) {
   // 거래일자
   const [writeDate, setWriteDate] = useState(todayStr())
 
-  // 공급자 (본인 회사) 정보
-  const [supplierBizNo, setSupplierBizNo] = useState('')
-  const [supplierName, setSupplierName] = useState('조인앤조인')
-  const [supplierRep, setSupplierRep] = useState('진해수')
-  const [supplierAddr, setSupplierAddr] = useState('')
-  const [supplierBizType, setSupplierBizType] = useState('')
-  const [supplierBizItem, setSupplierBizItem] = useState('')
+  // 공급자 (본인 회사) 정보 — SUPPLIER_DEFAULT로 초기값 설정
+  const [supplierBizNo, setSupplierBizNo] = useState(SUPPLIER_DEFAULT.businessNumber)
+  const [supplierCorpNo, setSupplierCorpNo] = useState(SUPPLIER_DEFAULT.corporateNumber)
+  const [supplierName, setSupplierName] = useState(SUPPLIER_DEFAULT.companyName)
+  const [supplierRep, setSupplierRep] = useState(SUPPLIER_DEFAULT.representativeName)
+  const [supplierAddr, setSupplierAddr] = useState(SUPPLIER_DEFAULT.address)
+  const [supplierBizType, setSupplierBizType] = useState(SUPPLIER_DEFAULT.businessType)
+  const [supplierBizItem, setSupplierBizItem] = useState(SUPPLIER_DEFAULT.businessItem)
 
   // 공급받는자 (거래처) 정보
   const [contractorBizNo, setContractorBizNo] = useState('')
   const [contractorName, setContractorName] = useState('')
   const [contractorRep, setContractorRep] = useState('')
   const [contractorEmail, setContractorEmail] = useState('')
+
+  // 거래처 자동완성: 회사명 선택 시 관련 필드 일괄 적용
+  const handleContractorNameChange = (value: string) => {
+    const found = contractors.find((c) => c.companyName === value)
+    if (found) {
+      setContractorName(found.companyName)
+      if (found.businessNumber) setContractorBizNo(found.businessNumber)
+      if (found.representativeName) setContractorRep(found.representativeName)
+      if (found.email) setContractorEmail(found.email)
+    } else {
+      setContractorName(value)
+    }
+  }
 
   // 품목
   const [items, setItems] = useState<InvoiceItem[]>([emptyItem()])
@@ -128,6 +201,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModal
         writeDate,
         supplier: {
           businessNumber: supplierBizNo,
+          corporateNumber: supplierCorpNo,
           companyName: supplierName,
           representativeName: supplierRep,
           address: supplierAddr,
@@ -245,6 +319,15 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModal
                 />
               </div>
               <div>
+                <label className="label">법인등록번호</label>
+                <input
+                  value={supplierCorpNo}
+                  onChange={(e) => setSupplierCorpNo(e.target.value)}
+                  placeholder="000000-0000000"
+                  className="input w-full"
+                />
+              </div>
+              <div>
                 <label className="label">회사명 *</label>
                 <input
                   value={supplierName}
@@ -260,7 +343,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModal
                   className="input w-full"
                 />
               </div>
-              <div>
+              <div className="col-span-2">
                 <label className="label">주소</label>
                 <input
                   value={supplierAddr}
@@ -273,7 +356,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModal
                 <input
                   value={supplierBizType}
                   onChange={(e) => setSupplierBizType(e.target.value)}
-                  placeholder="예) 도매 및 소매업"
+                  placeholder="예) 서비스"
                   className="input w-full"
                 />
               </div>
@@ -282,7 +365,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModal
                 <input
                   value={supplierBizItem}
                   onChange={(e) => setSupplierBizItem(e.target.value)}
-                  placeholder="예) 식품"
+                  placeholder="예) 기타 모유 식품 등"
                   className="input w-full"
                 />
               </div>
@@ -293,7 +376,21 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModal
           <fieldset className="border border-ink-200 rounded-lg p-3 space-y-2">
             <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider">
               공급받는자 (거래처)
+              {contractors.length > 0 && (
+                <span className="ml-1.5 text-primary-600 normal-case font-normal">
+                  — 기존 거래처 {contractors.length}개 자동완성 가능
+                </span>
+              )}
             </legend>
+            {/* datalist: 회사명 타이핑 시 기존 거래처 목록 제안 */}
+            <datalist id="contractor-suggestions">
+              {contractors.map((c) => (
+                <option
+                  key={c.businessNumber || c.companyName}
+                  value={c.companyName}
+                />
+              ))}
+            </datalist>
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="label">사업자번호 *</label>
@@ -307,8 +404,10 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess }: IssueTaxInvoiceModal
               <div>
                 <label className="label">회사명 *</label>
                 <input
+                  list="contractor-suggestions"
                   value={contractorName}
-                  onChange={(e) => setContractorName(e.target.value)}
+                  onChange={(e) => handleContractorNameChange(e.target.value)}
+                  placeholder="회사명 입력 또는 선택"
                   className="input w-full"
                 />
               </div>
@@ -525,6 +624,9 @@ export default function TaxInvoicePage() {
     return d?.data || []
   }, [ticketsQuery.data])
 
+  // 기존 티켓에서 거래처 목록 추출 (자동완성용)
+  const contractors = useMemo(() => extractContractors(allTickets), [allTickets])
+
   // 최근 세금계산서 자동 탐색
   const findRecentMut = useMutation({
     mutationFn: async () => {
@@ -603,6 +705,7 @@ export default function TaxInvoicePage() {
         open={issueModalOpen}
         onClose={() => setIssueModalOpen(false)}
         onSuccess={() => ticketsQuery.refetch()}
+        contractors={contractors}
       />
 
       {/* Header */}
@@ -652,6 +755,25 @@ export default function TaxInvoicePage() {
             <PlusIcon className="h-3 w-3" />
             발행
           </button>
+        </div>
+      </div>
+
+      {/* 공급자(본인 회사) 정보 패널 */}
+      <div className="rounded-md border border-ink-200 bg-canvas-50 px-3 py-2 text-2xs text-ink-700">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+          <span className="font-semibold text-ink-900">{SUPPLIER_DEFAULT.companyName}</span>
+          <span className="text-ink-500">·</span>
+          <span>{SUPPLIER_DEFAULT.representativeName} (대표)</span>
+          <span className="text-ink-400">|</span>
+          <span>사업자번호 <span className="font-mono">{SUPPLIER_DEFAULT.businessNumber}</span></span>
+          <span className="text-ink-500">·</span>
+          <span>법인번호 <span className="font-mono">{SUPPLIER_DEFAULT.corporateNumber}</span></span>
+          <span className="text-ink-400">|</span>
+          <span className="text-ink-600">{SUPPLIER_DEFAULT.address}</span>
+          <span className="text-ink-400">|</span>
+          <span>업태 {SUPPLIER_DEFAULT.businessType}</span>
+          <span className="text-ink-500">·</span>
+          <span>종목 {SUPPLIER_DEFAULT.businessItem}</span>
         </div>
       </div>
 

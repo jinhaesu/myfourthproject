@@ -14,6 +14,7 @@ import {
 import { granterApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
+import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 
 function daysBetween(a: string, b: string) {
   return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
@@ -97,7 +98,25 @@ export default function SettlementPage() {
     retry: false,
   })
 
-  const { tax: taxTickets, bank: bankTickets } = dataQuery.data || { tax: [], bank: [] }
+  // 본인 계좌 세트 (법인 계좌 간 이체 필터용)
+  const assetsQuery = useQuery({
+    queryKey: ['granter-all-assets'],
+    queryFn: () => granterApi.listAllAssets(true).then((r) => r.data),
+    enabled: !!isConfigured,
+    staleTime: 5 * 60_000,
+  })
+  const ownAccounts = useMemo(
+    () => buildOwnAccountSet(assetsQuery.data),
+    [assetsQuery.data]
+  )
+
+  const { tax: taxTickets, bank: rawBankTickets } = dataQuery.data || { tax: [], bank: [] }
+  // 통장 입금에서 법인 계좌 간 이체 제외 (매출처 정산 오염 방지)
+  const bankTickets = useMemo(
+    () => filterOutInternalTransfers(rawBankTickets as any[], ownAccounts),
+    [rawBankTickets, ownAccounts]
+  )
+  const filteredCount = (rawBankTickets as any[]).length - bankTickets.length
 
   // 최근 거래 자동 탐색 (세금계산서 OR 통장 거래 둘 중 하나라도 있는 구간)
   const findRecentMut = useMutation({
@@ -264,6 +283,11 @@ export default function SettlementPage() {
           <p className="text-2xs text-ink-500 mt-0.5">
             거래처별 세금계산서 매출 vs 통장 입금 매칭 — 미회수 자동 검출
           </p>
+          {filteredCount > 0 && (
+            <span className="text-2xs text-ink-400">
+              · 법인 계좌 간 이체 {filteredCount}건 제외됨
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           {/* 공통 날짜 프리셋 피커 */}

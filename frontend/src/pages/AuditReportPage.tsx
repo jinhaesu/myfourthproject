@@ -17,6 +17,7 @@ import {
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatDateTime, isoLocal } from '@/utils/format'
+import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 
 // ─── 안전한 직렬화 ────────────────────────────────────────────────────────────
 
@@ -355,6 +356,18 @@ export default function AuditReportPage() {
   })
   const isConfigured = healthQuery.data?.configured
 
+  // 본인 계좌 세트 (법인 계좌 간 이체 필터용)
+  const assetsQuery = useQuery({
+    queryKey: ['granter-all-assets'],
+    queryFn: () => granterApi.listAllAssets(true).then((r) => r.data),
+    enabled: !!isConfigured,
+    staleTime: 5 * 60_000,
+  })
+  const ownAccounts = useMemo(
+    () => buildOwnAccountSet(assetsQuery.data),
+    [assetsQuery.data]
+  )
+
   // 단일 31일 호출 (chunked 절대 금지)
   const ticketsQuery = useQuery({
     queryKey: ['audit', effectiveFrom, effectiveTo],
@@ -393,7 +406,12 @@ export default function AuditReportPage() {
   }, [ticketsQuery.isSuccess, ticketsQuery.data, isConfigured])
 
   // 계산
-  const tickets = useMemo(() => normalizeTickets(ticketsQuery.data), [ticketsQuery.data])
+  const rawTickets = useMemo(() => normalizeTickets(ticketsQuery.data), [ticketsQuery.data])
+  const tickets = useMemo(
+    () => filterOutInternalTransfers(rawTickets, ownAccounts),
+    [rawTickets, ownAccounts]
+  )
+  const filteredCount = rawTickets.length - tickets.length
   const issues  = useMemo(
     () => (ticketsQuery.isSuccess ? detectIssues(tickets) : []),
     [ticketsQuery.isSuccess, tickets]
@@ -532,6 +550,11 @@ export default function AuditReportPage() {
           <p className="text-2xs text-ink-500 mt-0.5">
             8가지 룰 자동 검출 — 이상거래 · 큰금액 · 새벽 · 미분류 · 증빙없음 · 미확인 · 미포함 · 중복
           </p>
+          {filteredCount > 0 && (
+            <span className="text-2xs text-ink-400">
+              · 법인 계좌 간 이체 {filteredCount}건 제외됨
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           <PeriodPicker

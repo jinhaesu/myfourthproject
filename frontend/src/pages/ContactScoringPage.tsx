@@ -13,6 +13,7 @@ import {
   ArrowsRightLeftIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
+import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 import {
   PieChart,
   Pie,
@@ -959,7 +960,24 @@ export default function ContactScoringPage() {
     retry: false,
   })
 
-  const tickets: any[] = ticketsQuery.data?.tickets ?? []
+  // 본인 계좌 세트 (법인 계좌 간 이체 필터용)
+  const assetsQuery = useQuery({
+    queryKey: ['granter-all-assets'],
+    queryFn: () => granterApi.listAllAssets(true).then((r) => r.data),
+    enabled: !!isConfigured,
+    staleTime: 5 * 60_000,
+  })
+  const ownAccounts = useMemo(
+    () => buildOwnAccountSet(assetsQuery.data),
+    [assetsQuery.data]
+  )
+
+  const rawTickets: any[] = ticketsQuery.data?.tickets ?? []
+  const tickets: any[] = useMemo(
+    () => filterOutInternalTransfers(rawTickets, ownAccounts),
+    [rawTickets, ownAccounts]
+  )
+  const filteredCount = rawTickets.length - tickets.length
   const actualStart: string = ticketsQuery.data?.actualStart ?? from
 
   // 최근 거래 자동 탐색 (24개월 거꾸로)
@@ -1072,6 +1090,11 @@ export default function ContactScoringPage() {
           <p className="text-2xs text-ink-500 mt-0.5">
             결제 이력(OUT) + 거래 데이터 기반 자동 스코어링
           </p>
+          {filteredCount > 0 && (
+            <span className="text-2xs text-ink-400">
+              · 법인 계좌 간 이체 {filteredCount}건 제외됨
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           <PeriodPicker
