@@ -400,18 +400,17 @@ export default function AuditReportPage() {
     retry: false,
   })
 
-  // 빈 결과 자동 탐색 (useEffect + useRef 가드)
+  // 빈 결과 자동 탐색 — 빈 응답마다 다음 fallback으로 진행 (최대 24번)
   useEffect(() => {
     if (!isConfigured) return
     if (!ticketsQuery.isSuccess) return
     const tickets = normalizeTickets(ticketsQuery.data)
     if (tickets.length > 0) {
-      autoSearching.current = false
+      // 데이터 발견 — 자동 탐색 종료
       return
     }
-    if (autoSearching.current) return
+    // 빈 응답 — 다음 fallback period 시도
     if (fallbackIdx.current >= fallbackPeriods.current.length) return
-    autoSearching.current = true
     const next = fallbackPeriods.current[fallbackIdx.current++]
     setFbFrom(next.start)
     setFbTo(next.end)
