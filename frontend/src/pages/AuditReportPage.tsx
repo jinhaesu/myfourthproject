@@ -202,13 +202,14 @@ function detectIssues(tickets: any[]): Issue[] {
 
   const avgAmount = amountCount > 0 ? amountSum / amountCount : 0
 
-  // ── 2패스: 중복 사전 처리 (캐시된 contact/amount/ts 재사용) ─────────────
+  // ── 2패스: 중복 사전 처리 (100만원 이상만 — 소액 반복결제 노이즈 제거) ───
+  const DUP_MIN_AMOUNT = 1_000_000
   const dupMap = new Map<string, number[]>()
   for (let i = 0; i < N; i++) {
     const contact = contactArr[i]
     const amount  = amountArr[i]
     const ts      = tsArr[i]
-    if (!amount || contact === '(미지정)' || !ts) continue
+    if (amount < DUP_MIN_AMOUNT || contact === '(미지정)' || !ts) continue
     const key = `${contact}||${amount}`
     const arr = dupMap.get(key)
     if (arr) arr.push(ts)
@@ -220,7 +221,7 @@ function detectIssues(tickets: any[]): Issue[] {
     const contact = contactArr[i]
     const amount  = amountArr[i]
     const ts      = tsArr[i]
-    if (!amount || contact === '(미지정)' || !ts) continue
+    if (amount < DUP_MIN_AMOUNT || contact === '(미지정)' || !ts) continue
     const arr = dupMap.get(`${contact}||${amount}`)
     if (!arr || arr.length < 2) continue
     if (arr.some((other) => other !== ts && Math.abs(ts - other) <= 86400000)) {
@@ -293,7 +294,7 @@ function detectIssues(tickets: any[]): Issue[] {
         '회계 미포함 처리 (isIncluded: false)')
     }
 
-    // rule 8: duplicate
+    // rule 8: duplicate (100만원 이상)
     if (dupSet.has(i)) {
       push('duplicate', '중복', 'high',
         `24시간 내 동일 거래처·금액 중복 (${contact}, ${formatCurrency(amount, false)}원)`)
@@ -398,33 +399,41 @@ export default function AuditReportPage() {
     [ticketsQuery.isSuccess, tickets]
   )
 
-  // KPI
+  // KPI — 모든 합계는 ticketId 기준 unique 처리 (한 거래가 여러 룰에 걸려도 1회만 카운트)
   const kpi = useMemo(() => {
-    const totalCount   = issues.length
+    const totalCount   = issues.length  // 검출 건수는 룰 단위
     const highCount    = issues.filter((i) => i.severity === 'high').length
     const mediumCount  = issues.filter((i) => i.severity === 'medium').length
     const lowCount     = issues.filter((i) => i.severity === 'low').length
 
-    const revIssues = issues.filter((i) => i.side === 'revenue')
-    const expIssues = issues.filter((i) => i.side === 'expense')
+    // ticketId별 1회만 집계 (revenue/expense, totalAmount 모두)
+    const seenAll = new Set<number>()
+    const seenRev = new Set<number>()
+    const seenExp = new Set<number>()
+    let totalAmount = 0
+    let revAmount = 0
+    let expAmount = 0
 
-    const uniqueAmountSum = (() => {
-      const seen = new Set<number>()
-      let sum = 0
-      for (const i of issues) {
-        if (!seen.has(i.ticketId)) { seen.add(i.ticketId); sum += i.amount }
+    for (const i of issues) {
+      if (!seenAll.has(i.ticketId)) {
+        seenAll.add(i.ticketId)
+        totalAmount += i.amount
       }
-      return sum
-    })()
-
-    const revAmount = revIssues.reduce((s, i) => s + i.amount, 0)
-    const expAmount = expIssues.reduce((s, i) => s + i.amount, 0)
+      if (i.side === 'revenue' && !seenRev.has(i.ticketId)) {
+        seenRev.add(i.ticketId)
+        revAmount += i.amount
+      }
+      if (i.side === 'expense' && !seenExp.has(i.ticketId)) {
+        seenExp.add(i.ticketId)
+        expAmount += i.amount
+      }
+    }
 
     return {
       totalCount, highCount, mediumCount, lowCount,
-      revCount: revIssues.length, revAmount,
-      expCount: expIssues.length, expAmount,
-      totalAmount: uniqueAmountSum,
+      revCount: seenRev.size, revAmount,
+      expCount: seenExp.size, expAmount,
+      totalAmount,
     }
   }, [issues])
 
@@ -805,7 +814,7 @@ export default function AuditReportPage() {
       )}
 
       <div className="text-2xs text-ink-400 px-1">
-        ※ 검출 룰: anomalyStatus ANOMALY / 평균 5배 이상 / 새벽 0~6시 / 계정과목 미분류 / 100만원+ 첨부 없음 / NONE 30일+ / isIncluded false / 24시간 중복
+        ※ 검출 룰: anomalyStatus ANOMALY / 평균 5배 이상 / 새벽 0~6시 / 계정과목 미분류 / 100만원+ 첨부 없음 / NONE 30일+ / isIncluded false / 100만원+ 24시간 중복 · 합계는 ticketId 단위 unique (룰 다중매칭 1회 카운트)
       </div>
     </div>
   )
