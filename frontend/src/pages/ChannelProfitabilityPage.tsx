@@ -220,11 +220,10 @@ export default function ChannelProfitabilityPage() {
   const dataQuery = useQuery({
     queryKey: ['channel-profitability', actualFrom, to],
     queryFn: async () => {
-      const [bankRes, taxRes, expenseRes] = await Promise.all([
-        granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: actualFrom, endDate: to }),
-        granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET',      startDate: actualFrom, endDate: to }),
-        granterApi.listTickets({ ticketType: 'EXPENSE_TICKET',          startDate: actualFrom, endDate: to }),
-      ])
+      // 그랜터 동시 호출 시 간헐 401 회피 — 순차 호출
+      const bankRes = await granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: actualFrom, endDate: to })
+      const taxRes = await granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: actualFrom, endDate: to })
+      const expenseRes = await granterApi.listTickets({ ticketType: 'EXPENSE_TICKET', startDate: actualFrom, endDate: to })
       const bank    = Array.isArray(bankRes.data)    ? bankRes.data    : bankRes.data?.data    || []
       const tax     = Array.isArray(taxRes.data)     ? taxRes.data     : taxRes.data?.data     || []
       const expense = Array.isArray(expenseRes.data) ? expenseRes.data : expenseRes.data?.data || []
@@ -246,10 +245,8 @@ export default function ChannelProfitabilityPage() {
         const startStr = isoLocal(start)
         const endStr   = isoLocal(end)
         try {
-          const [bankR, taxR] = await Promise.all([
-            granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: startStr, endDate: endStr }),
-            granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET',      startDate: startStr, endDate: endStr }),
-          ])
+          const bankR = await granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: startStr, endDate: endStr })
+          const taxR = await granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: startStr, endDate: endStr })
           const bankItems = Array.isArray(bankR.data) ? bankR.data : bankR.data?.data || []
           const taxItems  = Array.isArray(taxR.data)  ? taxR.data  : taxR.data?.data  || []
           const inCount =

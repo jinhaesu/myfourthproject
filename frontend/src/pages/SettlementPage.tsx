@@ -527,10 +527,9 @@ export default function SettlementPage() {
   const dataQuery = useQuery({
     queryKey: ['settlement-v2', actualStart, to],
     queryFn: async () => {
-      const [taxRes, bankRes] = await Promise.all([
-        granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: actualStart, endDate: to }),
-        granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: actualStart, endDate: to }),
-      ])
+      // 그랜터 동시 호출 간헐 401 회피 — 순차 호출
+      const taxRes = await granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: actualStart, endDate: to })
+      const bankRes = await granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: actualStart, endDate: to })
       const tax = Array.isArray(taxRes.data) ? taxRes.data : (taxRes.data?.data || [])
       const bank = Array.isArray(bankRes.data) ? bankRes.data : (bankRes.data?.data || [])
       return { tax, bank }

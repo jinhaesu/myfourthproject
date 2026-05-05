@@ -17,7 +17,7 @@ import {
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatDateTime, isoLocal } from '@/utils/format'
-import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
+import { buildOwnAccountSet, filterOutInternalTransfers, isSelfContact } from '@/utils/internalTransfer'
 
 // ─── 안전한 직렬화 ────────────────────────────────────────────────────────────
 
@@ -242,11 +242,13 @@ function detectIssues(tickets: any[]): Issue[] {
     }
   }
 
-  // ── 3패스: 룰 검출 ────────────────────────────────────────────────────
+  // ── 3패스: 룰 검출 (본인 회사 거래는 검출 대상에서 제외) ─────────────
   for (let i = 0; i < N; i++) {
     const t = tickets[i]
     const ticketId = Number(t.id || 0)
     const contact  = contactArr[i]
+    // 본인 회사(조인앤조인)와의 거래는 자체 거래이므로 감사 대상 아님
+    if (isSelfContact(contact)) continue
     const amount   = amountArr[i]
     const date     = dateArr[i]
     const txType   = txTypeArr[i]

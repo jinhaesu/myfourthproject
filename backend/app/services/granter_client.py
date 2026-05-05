@@ -76,7 +76,14 @@ class GranterClient:
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
+        _retry_count: int = 0,
     ) -> Any:
+        """
+        그랜터 API 호출. 401/429/502/503/504 받으면 지수백오프 자동 재시도 (최대 2회).
+        그랜터가 동시 호출 시 간헐적으로 401 반환하는 케이스 자체 회복.
+        """
+        import asyncio
+
         if not self.is_configured:
             raise GranterAPIError("GRANTER_API_KEY 환경변수가 설정되지 않았습니다.", status_code=500)
 
@@ -91,9 +98,27 @@ class GranterClient:
         try:
             resp = await client.request(method, path, params=params, json=json, headers=headers)
         except httpx.TimeoutException as e:
+            # 타임아웃도 재시도 대상
+            if _retry_count < 2:
+                await asyncio.sleep(0.5 * (2 ** _retry_count))
+                return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
             raise GranterAPIError(f"그랜터 API 타임아웃: {path}", status_code=504) from e
         except httpx.HTTPError as e:
+            if _retry_count < 2:
+                await asyncio.sleep(0.5 * (2 ** _retry_count))
+                return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
             raise GranterAPIError(f"그랜터 API 통신 오류: {e}", status_code=502) from e
+
+        # 일시적 실패(401/429/5xx) 자동 재시도 — 그랜터 동시 호출 시 간헐 401 회복
+        RETRYABLE_STATUS = {401, 429, 502, 503, 504}
+        if resp.status_code in RETRYABLE_STATUS and _retry_count < 2:
+            wait = 0.5 * (2 ** _retry_count)
+            logger.info(
+                "Granter %s %s → %s, retry %d/2 after %.1fs",
+                method, path, resp.status_code, _retry_count + 1, wait,
+            )
+            await asyncio.sleep(wait)
+            return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
 
         if resp.status_code >= 400:
             try:
@@ -227,7 +252,11 @@ class GranterClient:
                 logger.warning("Granter tickets %s fetch failed: %s", t, e)
                 return t, []
 
-        results = await asyncio.gather(*[_fetch(t) for t in ticket_types])
+        # 그랜터 rate limit/간헐 401 회피 — 병렬 → 순차 처리 (각 호출 사이 0.2초 간격)
+        results = []
+        for t in ticket_types:
+            results.append(await _fetch(t))
+            await asyncio.sleep(0.2)
         result_dict = dict(results)
 
         # 모든 sub-call이 빈 배열이면 캐시에 저장하지 않음 (실패한 응답이 고착되는 문제 방지)
