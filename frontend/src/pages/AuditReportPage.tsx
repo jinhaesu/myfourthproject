@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import React, { useState, useMemo, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -310,6 +310,7 @@ export default function AuditReportPage() {
   const [selected,  setSelected]  = useState<Issue | null>(null)
   const [sortKey,   setSortKey]   = useState<SortKey>('severity')
   const [sortDir,   setSortDir]   = useState<SortDir>('asc')
+  const [chartsOpen, setChartsOpen] = useState(false)  // 차트는 default 접힘 — 성능
 
   // 빈 결과 자동 탐색
   const fallbackPeriods = useRef(buildFallbackPeriods())
@@ -432,6 +433,17 @@ export default function AuditReportPage() {
       return sortDir === 'asc' ? cmp : -cmp
     })
   }, [issues, activeTab, sortKey, sortDir])
+
+  // 페이지네이션 (성능 — DOM 폭발 방지)
+  const PAGE_SIZE = 50
+  const [pageNum, setPageNum] = useState(1)
+  // 탭/정렬 변경 시 1페이지로 리셋
+  useEffect(() => { setPageNum(1) }, [activeTab, sortKey, sortDir])
+  const totalPages = Math.max(1, Math.ceil(displayed.length / PAGE_SIZE))
+  const pagedIssues = useMemo(
+    () => displayed.slice((pageNum - 1) * PAGE_SIZE, pageNum * PAGE_SIZE),
+    [displayed, pageNum]
+  )
 
   // 차트 데이터
   const monthlyChartData = useMemo(() => {
@@ -579,93 +591,17 @@ export default function AuditReportPage() {
         </div>
       )}
 
-      {/* 차트 섹션 */}
+      {/* 차트 섹션 (사용자가 펼쳐야 렌더 — 성능) */}
       {!isLoading && issues.length > 0 && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-          {/* 월별 검출 추이 */}
-          <div className="panel p-3 lg:col-span-1">
-            <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
-              월별 검출 건수
-            </div>
-            {monthlyChartData.length === 0 ? (
-              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
-            ) : (
-              <ResponsiveContainer width="100%" height={140}>
-                <BarChart data={monthlyChartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="month" tick={{ fontSize: 9 }} />
-                  <YAxis tick={{ fontSize: 9 }} allowDecimals={false} />
-                  <Tooltip
-                    contentStyle={{ fontSize: 11 }}
-                    formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']}
-                  />
-                  <Bar dataKey="count" fill="#6366f1" radius={[2, 2, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          {/* 룰별 분포 */}
-          <div className="panel p-3 lg:col-span-1">
-            <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
-              룰별 검출 건수
-            </div>
-            {ruleChartData.length === 0 ? (
-              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
-            ) : (
-              <ResponsiveContainer width="100%" height={140}>
-                <BarChart data={ruleChartData} layout="vertical" margin={{ top: 0, right: 12, left: 4, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis type="number" tick={{ fontSize: 9 }} allowDecimals={false} />
-                  <YAxis dataKey="name" type="category" tick={{ fontSize: 9 }} width={52} />
-                  <Tooltip
-                    contentStyle={{ fontSize: 11 }}
-                    formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']}
-                  />
-                  <Bar dataKey="value" fill="#f43f5e" radius={[0, 2, 2, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </div>
-
-          {/* 사이드별 검출 */}
-          <div className="panel p-3 lg:col-span-1">
-            <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
-              매출 / 비용 사이드
-            </div>
-            {sideChartData.length === 0 ? (
-              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
-            ) : (
-              <ResponsiveContainer width="100%" height={140}>
-                <PieChart>
-                  <Pie
-                    data={sideChartData}
-                    dataKey="value"
-                    nameKey="name"
-                    cx="50%"
-                    cy="50%"
-                    outerRadius={52}
-                    label={({ name, percent }) =>
-                      `${name} ${(percent * 100).toFixed(0)}%`
-                    }
-                    labelLine={false}
-                  >
-                    {sideChartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Legend
-                    iconSize={8}
-                    formatter={(value) => <span style={{ fontSize: 10 }}>{value}</span>}
-                  />
-                  <Tooltip
-                    contentStyle={{ fontSize: 11 }}
-                    formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            )}
-          </div>
+        <div className="panel">
+          <button
+            onClick={() => setChartsOpen((v) => !v)}
+            className="w-full px-3 py-2 flex items-center justify-between text-2xs font-semibold text-ink-700 hover:bg-canvas-50"
+          >
+            <span>📊 시각화 (월별·룰별·사이드)</span>
+            {chartsOpen ? <ChevronUpIcon className="h-3 w-3" /> : <ChevronDownIcon className="h-3 w-3" />}
+          </button>
+          {chartsOpen && <ChartsSection issues={issues} monthlyChartData={monthlyChartData} ruleChartData={ruleChartData} sideChartData={sideChartData} />}
         </div>
       )}
 
@@ -741,7 +677,7 @@ export default function AuditReportPage() {
                         </td>
                       </tr>
                     )}
-                    {displayed.map((issue, idx) => {
+                    {pagedIssues.map((issue, idx) => {
                       const isSel = selected === issue
                       return (
                         <tr
@@ -785,6 +721,48 @@ export default function AuditReportPage() {
                   </tbody>
                 </table>
               </div>
+              {/* 페이지네이션 컨트롤 */}
+              {displayed.length > PAGE_SIZE && (
+                <div className="px-3 py-2 border-t border-ink-200 flex items-center justify-between text-2xs">
+                  <div className="text-ink-500">
+                    {(pageNum - 1) * PAGE_SIZE + 1}–{Math.min(pageNum * PAGE_SIZE, displayed.length)} /{' '}
+                    <span className="font-semibold text-ink-700">{displayed.length}</span>건
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setPageNum(1)}
+                      disabled={pageNum === 1}
+                      className="btn-secondary text-2xs px-2 py-0.5 disabled:opacity-40"
+                    >
+                      ‹‹
+                    </button>
+                    <button
+                      onClick={() => setPageNum((p) => Math.max(1, p - 1))}
+                      disabled={pageNum === 1}
+                      className="btn-secondary text-2xs px-2 py-0.5 disabled:opacity-40"
+                    >
+                      ‹
+                    </button>
+                    <span className="px-2 text-ink-700 font-mono">
+                      {pageNum} / {totalPages}
+                    </span>
+                    <button
+                      onClick={() => setPageNum((p) => Math.min(totalPages, p + 1))}
+                      disabled={pageNum >= totalPages}
+                      className="btn-secondary text-2xs px-2 py-0.5 disabled:opacity-40"
+                    >
+                      ›
+                    </button>
+                    <button
+                      onClick={() => setPageNum(totalPages)}
+                      disabled={pageNum >= totalPages}
+                      className="btn-secondary text-2xs px-2 py-0.5 disabled:opacity-40"
+                    >
+                      ››
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -963,3 +941,82 @@ function SideBadge({ side }: { side: Side }) {
 function RuleBadge({ ruleKey, label }: { ruleKey: RuleKey; label: string }) {
   return <span className={`badge ${RULE_COLOR[ruleKey]}`}>{label}</span>
 }
+
+// React.memo로 감싼 차트 섹션 — issues 동일하면 리렌더 안 됨 (성능)
+const ChartsSection = React.memo(function ChartsSection({
+  monthlyChartData,
+  ruleChartData,
+  sideChartData,
+}: {
+  issues: Issue[]
+  monthlyChartData: { month: string; count: number; amount: number }[]
+  ruleChartData: { name: string; value: number }[]
+  sideChartData: { name: string; value: number; color: string }[]
+}) {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 p-3">
+      {/* 월별 검출 */}
+      <div className="panel p-3">
+        <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">월별 검출 건수</div>
+        {monthlyChartData.length === 0 ? (
+          <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={140}>
+            <BarChart data={monthlyChartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="month" tick={{ fontSize: 9 }} />
+              <YAxis tick={{ fontSize: 9 }} allowDecimals={false} />
+              <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
+              <Bar dataKey="count" fill="#6366f1" radius={[2, 2, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+      {/* 룰별 */}
+      <div className="panel p-3">
+        <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">룰별 검출 건수</div>
+        {ruleChartData.length === 0 ? (
+          <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={140}>
+            <BarChart data={ruleChartData} layout="vertical" margin={{ top: 0, right: 12, left: 4, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis type="number" tick={{ fontSize: 9 }} allowDecimals={false} />
+              <YAxis dataKey="name" type="category" tick={{ fontSize: 9 }} width={52} />
+              <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
+              <Bar dataKey="value" fill="#f43f5e" radius={[0, 2, 2, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+      {/* 사이드 */}
+      <div className="panel p-3">
+        <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">매출 / 비용 사이드</div>
+        {sideChartData.length === 0 ? (
+          <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={140}>
+            <PieChart>
+              <Pie
+                data={sideChartData}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                outerRadius={52}
+                label={({ name, percent }: any) => `${name} ${(Number(percent) * 100).toFixed(0)}%`}
+                labelLine={false}
+              >
+                {sideChartData.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={entry.color} />
+                ))}
+              </Pie>
+              <Legend iconSize={8} formatter={(value) => <span style={{ fontSize: 10 }}>{value}</span>} />
+              <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
+            </PieChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+    </div>
+  )
+})
