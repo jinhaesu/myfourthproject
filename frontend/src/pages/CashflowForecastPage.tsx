@@ -274,7 +274,8 @@ function analyzeContactPatterns(tickets: any[]): { inPatterns: ContactPattern[];
       })
     }
 
-    return patterns.sort((a, b) => b.totalAmount - a.totalAmount).slice(0, 30)
+    // 모든 거래처 분석 (이전 30곳 제한 제거 — 사용자 요구)
+    return patterns.sort((a, b) => b.totalAmount - a.totalAmount)
   }
 
   return {
