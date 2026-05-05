@@ -91,3 +91,54 @@ export function filterOutInternalTransfers(tickets: any[], own: OwnAccountSet): 
   if (own.names.size === 0 && own.numbers.size === 0) return tickets
   return tickets.filter((t) => !isInternalTransfer(t, own))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 본인 회사 식별 (거래처 스코어링 등에서 자기 자신을 거래처로 잡는 것 방지)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 본인 회사 식별용 고정 정보 (조인앤조인 사업자등록증 기준) */
+export const SELF_COMPANY = {
+  businessNumbers: ['503-87-01038', '5038701038'],
+  nameVariants: [
+    '주식회사조인앤조인',
+    '(주)조인앤조인',
+    '㈜조인앤조인',
+    '조인앤조인',
+    'joinandjoin',
+    'join&join',
+  ],
+}
+
+const _selfBNSet = new Set(SELF_COMPANY.businessNumbers.map((s) => s.replace(/[^0-9]/g, '')))
+const _selfNameSet = new Set(
+  SELF_COMPANY.nameVariants.map((s) => s.replace(/\s+/g, '').toLowerCase())
+)
+
+/**
+ * 사업자번호 또는 회사명이 본인 회사인지 판정.
+ * - 사업자번호는 하이픈/공백 제거 후 매칭
+ * - 회사명은 공백 제거·소문자 후 매칭
+ */
+export function isSelfCompany(opts: {
+  businessNumber?: string | null
+  companyName?: string | null
+}): boolean {
+  const bn = String(opts.businessNumber || '').replace(/[^0-9]/g, '')
+  if (bn && _selfBNSet.has(bn)) return true
+
+  const name = String(opts.companyName || '').replace(/\s+/g, '').toLowerCase()
+  if (name && _selfNameSet.has(name)) return true
+
+  // 부분 일치 (예: "(주)조인앤조인 본사" 같은 변형)
+  if (name) {
+    for (const v of _selfNameSet) {
+      if (v.length >= 4 && name.includes(v)) return true
+    }
+  }
+  return false
+}
+
+/** 거래처(contact) 문자열 자체가 본인 회사인지 판정 */
+export function isSelfContact(contact: string | null | undefined): boolean {
+  return isSelfCompany({ companyName: contact })
+}

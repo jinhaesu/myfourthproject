@@ -105,12 +105,19 @@ function endOfMonth(iso: string): string {
   return isoLocal(d)
 }
 
-// 주말 → 다음 영업일(월요일) 이동. 거래는 보통 평일에 처리되므로.
-function shiftToWeekday(iso: string): string {
+// 주말 영업일 보정 — 방향에 따라 다른 관행:
+// - IN(입금): 토/일이면 직전 금요일로 당김 (거래처가 미리 입금하는 관행)
+// - OUT(출금): 토/일이면 다음 월요일로 미룸 (회사 자금 관리상 늦게 출금)
+function shiftToWeekday(iso: string, direction: 'IN' | 'OUT' = 'OUT'): string {
   const d = new Date(iso + 'T00:00:00')
   const dow = d.getDay()
-  if (dow === 6) return addDays(iso, 2) // 토 → 월
-  if (dow === 0) return addDays(iso, 1) // 일 → 월
+  if (direction === 'IN') {
+    if (dow === 6) return addDays(iso, -1) // 토 → 금
+    if (dow === 0) return addDays(iso, -2) // 일 → 금
+  } else {
+    if (dow === 6) return addDays(iso, 2)  // 토 → 월
+    if (dow === 0) return addDays(iso, 1)  // 일 → 월
+  }
   return iso
 }
 
@@ -317,18 +324,18 @@ function nextOccurrences(p: ContactPattern, forecastFrom: string, forecastTo: st
     raw.push(forecastFrom)
   }
 
-  // 주말 → 월요일 이동, 동일 일자 중복 제거
+  // 주말 보정 (IN: 직전 금요일로 당김 / OUT: 다음 월요일로 미룸), 중복 제거
   const seen = new Set<string>()
   const result: string[] = []
   for (const d of raw) {
-    const shifted = shiftToWeekday(d)
+    const shifted = shiftToWeekday(d, p.direction)
     if (shifted < forecastFrom || shifted > forecastTo) continue
     if (seen.has(shifted)) continue
     seen.add(shifted)
     result.push(shifted)
   }
   // 주말 이동 후 모두 사라졌으면 forecastFrom 시점에 한 번 배치
-  if (result.length === 0) result.push(shiftToWeekday(forecastFrom))
+  if (result.length === 0) result.push(shiftToWeekday(forecastFrom, p.direction))
   return result
 }
 
@@ -1581,7 +1588,7 @@ export default function CashflowForecastPage() {
       {/* Footer */}
       <p className="text-2xs text-ink-400 pb-2">
         예상일은 과거 거래처별 반복 패턴(매월 동일 일자 또는 평균 주기)으로 무조건 추정되며,
-        주말이면 다음 영업일(월요일)로 이동합니다. 일정 변동성은 정확도(높음/중간/낮음) 배지로 표기됩니다.
+        주말 보정: 입금 거래처는 직전 영업일(금요일)로 당기고, 출금은 다음 영업일(월요일)로 미룹니다. 일정 변동성은 정확도(높음/중간/낮음) 배지로 표기됩니다.
         모든 거래처가 합계·일별 예측에 반영됩니다. 사용자 예상 매출 입력 시 과거 거래처별 비율로 자동 분배.
       </p>
     </div>

@@ -28,9 +28,9 @@ const SUPPLIER_DEFAULT = {
   corporateNumber: '131411-0405152',
   companyName: '주식회사 조인앤조인',
   representativeName: '진해수',
-  address: '전북특별자치도 전주시 덕진구 가리내로 458, 2층 (반월동)',
-  businessType: '서비스',
-  businessItem: '기타 모유 식품 등',
+  address: '전북특별자치도 전주시 덕진구 가린대로 458, 2층',
+  businessType: '제조업',
+  businessItem: '식품 및 기타 식품제조업',
   email: '',
 }
 
@@ -98,6 +98,119 @@ function str(obj: any, ...keys: string[]): string {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// 거래처 조회 모달
+// ────────────────────────────────────────────────────────────────────────────
+
+function ContractorPickerModal({
+  open,
+  onClose,
+  onSelect,
+  contractors,
+}: {
+  open: boolean
+  onClose: () => void
+  onSelect: (c: ContractorSuggestion) => void
+  contractors: ContractorSuggestion[]
+}) {
+  const [search, setSearch] = useState('')
+  const filtered = useMemo(() => {
+    const s = search.trim().toLowerCase()
+    if (!s) return contractors
+    return contractors.filter(
+      (c) =>
+        c.companyName.toLowerCase().includes(s) ||
+        c.businessNumber.includes(s) ||
+        c.representativeName.toLowerCase().includes(s)
+    )
+  }, [contractors, search])
+
+  if (!open) return null
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* 헤더 */}
+        <div className="px-4 py-3 border-b border-ink-200 flex items-center justify-between">
+          <h3 className="text-sm font-semibold">거래처 조회</h3>
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+            <XMarkIcon className="h-4 w-4" />
+          </button>
+        </div>
+        {/* 검색 */}
+        <div className="px-4 py-2 border-b border-ink-100">
+          <input
+            type="text"
+            className="input w-full text-xs"
+            placeholder="회사명 / 사업자번호 / 대표자명으로 검색"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            autoFocus
+          />
+          <p className="text-2xs text-ink-400 mt-1">
+            과거 세금계산서에서 추출된 {contractors.length.toLocaleString('ko-KR')}곳 · 거래 빈도순 정렬
+          </p>
+        </div>
+        {/* 목록 */}
+        <div className="flex-1 overflow-y-auto">
+          {filtered.length === 0 ? (
+            <div className="p-6 text-center text-2xs text-ink-400">검색 결과 없음</div>
+          ) : (
+            <table className="min-w-full">
+              <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-200">
+                <tr>
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    회사명
+                  </th>
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    사업자번호
+                  </th>
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    대표자
+                  </th>
+                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    거래 빈도
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-ink-100">
+                {filtered.map((c) => (
+                  <tr
+                    key={c.businessNumber || c.companyName}
+                    onClick={() => {
+                      onSelect(c)
+                      onClose()
+                    }}
+                    className="cursor-pointer hover:bg-canvas-50"
+                  >
+                    <td className="px-3 py-1.5 text-xs text-ink-900 font-medium">
+                      {c.companyName || '-'}
+                    </td>
+                    <td className="px-3 py-1.5 text-2xs text-ink-700 font-mono">
+                      {c.businessNumber || '-'}
+                    </td>
+                    <td className="px-3 py-1.5 text-2xs text-ink-700">
+                      {c.representativeName || '-'}
+                    </td>
+                    <td className="px-3 py-1.5 text-right text-2xs text-ink-500 tabular-nums">
+                      {c.count}회
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // 세금계산서 발행 모달
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -147,18 +260,8 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors }: IssueTa
   const [contractorRep, setContractorRep] = useState('')
   const [contractorEmail, setContractorEmail] = useState('')
 
-  // 거래처 자동완성: 회사명 선택 시 관련 필드 일괄 적용
-  const handleContractorNameChange = (value: string) => {
-    const found = contractors.find((c) => c.companyName === value)
-    if (found) {
-      setContractorName(found.companyName)
-      if (found.businessNumber) setContractorBizNo(found.businessNumber)
-      if (found.representativeName) setContractorRep(found.representativeName)
-      if (found.email) setContractorEmail(found.email)
-    } else {
-      setContractorName(value)
-    }
-  }
+  // 거래처 조회 모달 열림 상태
+  const [contractorPickerOpen, setContractorPickerOpen] = useState(false)
 
   // 품목
   const [items, setItems] = useState<InvoiceItem[]>([emptyItem()])
@@ -374,23 +477,17 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors }: IssueTa
 
           {/* 공급받는자 */}
           <fieldset className="border border-ink-200 rounded-lg p-3 space-y-2">
-            <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+            <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider flex items-center gap-2">
               공급받는자 (거래처)
-              {contractors.length > 0 && (
-                <span className="ml-1.5 text-primary-600 normal-case font-normal">
-                  — 기존 거래처 {contractors.length}개 자동완성 가능
-                </span>
-              )}
+              <button
+                type="button"
+                className="btn-secondary text-2xs"
+                onClick={() => setContractorPickerOpen(true)}
+              >
+                <MagnifyingGlassIcon className="h-3 w-3 mr-1" />
+                거래처 조회 ({contractors.length}곳)
+              </button>
             </legend>
-            {/* datalist: 회사명 타이핑 시 기존 거래처 목록 제안 */}
-            <datalist id="contractor-suggestions">
-              {contractors.map((c) => (
-                <option
-                  key={c.businessNumber || c.companyName}
-                  value={c.companyName}
-                />
-              ))}
-            </datalist>
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="label">사업자번호 *</label>
@@ -404,10 +501,9 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors }: IssueTa
               <div>
                 <label className="label">회사명 *</label>
                 <input
-                  list="contractor-suggestions"
                   value={contractorName}
-                  onChange={(e) => handleContractorNameChange(e.target.value)}
-                  placeholder="회사명 입력 또는 선택"
+                  onChange={(e) => setContractorName(e.target.value)}
+                  placeholder="회사명 직접 입력 또는 거래처 조회"
                   className="input w-full"
                 />
               </div>
@@ -570,6 +666,21 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors }: IssueTa
           </button>
         </div>
       </div>
+
+      {/* 거래처 조회 팝오버 모달 */}
+      {contractorPickerOpen && (
+        <ContractorPickerModal
+          open={contractorPickerOpen}
+          onClose={() => setContractorPickerOpen(false)}
+          contractors={contractors}
+          onSelect={(c) => {
+            setContractorBizNo(c.businessNumber)
+            setContractorName(c.companyName)
+            setContractorRep(c.representativeName)
+            setContractorEmail(c.email)
+          }}
+        />
+      )}
     </div>
   )
 }

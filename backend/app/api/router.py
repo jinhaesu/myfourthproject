@@ -28,6 +28,7 @@ from app.api.endpoints import (
     connect,
     ledger,
     granter,
+    exchange_rates,
 )
 
 api_router = APIRouter()
@@ -190,4 +191,10 @@ api_router.include_router(
     granter.router,
     prefix="/granter",
     tags=["Granter"]
+)
+
+# 환율 시계열 프록시 (Frankfurter/ECB)
+api_router.include_router(
+    exchange_rates.router,
+    tags=["exchange-rates"]
 )

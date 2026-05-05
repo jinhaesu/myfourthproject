@@ -15,7 +15,7 @@ import {
   GlobeAltIcon,
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline'
-import { granterApi } from '@/services/api'
+import api, { granterApi } from '@/services/api'
 import { isoLocal } from '@/utils/format'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 
@@ -79,16 +79,21 @@ function addDays(iso: string, n: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Frankfurter 로 시계열 가져오기
+// 백엔드 프록시 경유 시계열 가져오기
 // from=KRW 방식: 1 KRW = x USD → 뒤집어서 1 USD = y KRW 로 변환
 // ---------------------------------------------------------------------------
 
 async function fetchFrankfurterRange(from: string, to: string): Promise<ExchangeRatePoint[]> {
-  // Frankfurter는 KRW를 base로 직접 지원하지 않으므로 USD를 base로 가져와서 역산
-  const url = `https://api.frankfurter.app/${from}..${to}?from=USD&to=KRW,JPY,CNY,SGD,EUR,GBP,HKD`
-  const resp = await fetch(url)
-  if (!resp.ok) throw new Error(`Frankfurter ${resp.status}`)
-  const data = await resp.json()
+  // 백엔드 프록시를 통해 Frankfurter 데이터 조회 (CORS/광고차단 우회)
+  const resp = await api.get('/exchange-rates/timeseries', {
+    params: {
+      start_date: from,
+      end_date: to,
+      base: 'USD',
+      targets: 'KRW,JPY,CNY,SGD,EUR,GBP,HKD',
+    },
+  })
+  const data = resp.data
 
   // data.base = "USD", data.rates[date] = { KRW: 1472.4, JPY: 148.5, ... }
   if (!data.rates) return []
@@ -379,7 +384,13 @@ export default function ExchangeRatesPage() {
         <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
           <span className="text-2xs text-rose-800">
-            환율 데이터를 불러오지 못했습니다 — Frankfurter(ECB) API 네트워크 상태를 점검하세요.
+            환율 데이터를 불러오지 못했습니다 — 백엔드 프록시 또는 Frankfurter(ECB) API 응답 실패. 잠시 후 다시 시도하세요.
+            {frankfurterQuery.error && (
+              <span className="block mt-0.5 text-rose-600 font-mono">
+                {(frankfurterQuery.error as any)?.response?.data?.detail ??
+                  (frankfurterQuery.error as any)?.message}
+              </span>
+            )}
           </span>
           <button
             className="btn-secondary text-2xs ml-auto"
@@ -457,7 +468,7 @@ export default function ExchangeRatesPage() {
         ) : chartData.length === 0 ? (
           <div className="h-60 flex items-center justify-center text-2xs text-ink-400">
             {frankfurterQuery.isError
-              ? 'Frankfurter(ECB) API 오류 — 잠시 후 재시도하세요.'
+              ? '백엔드 프록시 오류 — 잠시 후 재시도하세요.'
               : '선택 기간에 해당하는 영업일 데이터가 없습니다.'}
           </div>
         ) : (

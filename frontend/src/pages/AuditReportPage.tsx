@@ -126,6 +126,18 @@ interface Issue {
   message: string
 }
 
+/** 같은 ticketId가 여러 룰에 걸렸을 때 한 행으로 묶는 그룹 단위 */
+interface IssueGroup {
+  ticketId: number
+  ticket: any
+  contact: string
+  date: string
+  side: Side
+  amount: number
+  highestSeverity: Severity
+  issues: Issue[]
+}
+
 // ─── 탭 메타 ──────────────────────────────────────────────────────────────────
 
 type TabKey = 'all' | 'revenue' | 'expense' | RuleKey
@@ -330,7 +342,7 @@ export default function AuditReportPage() {
   const [from,   setFrom]       = useState(initPeriod.start)
   const [to,     setTo]         = useState(initPeriod.end)
   const [activeTab, setActiveTab] = useState<TabKey>('all')
-  const [selected,  setSelected]  = useState<Issue | null>(null)
+  const [selected,  setSelected]  = useState<IssueGroup | null>(null)
   const [sortKey,   setSortKey]   = useState<SortKey>('severity')
   const [sortDir,   setSortDir]   = useState<SortDir>('asc')
   const [chartsOpen, setChartsOpen] = useState(false)  // 차트는 default 접힘 — 성능
@@ -455,32 +467,67 @@ export default function AuditReportPage() {
     }
   }, [issues])
 
-  // 탭별 카운트
-  const tabCounts = useMemo(() => {
-    const c: Record<string, number> = { all: issues.length, revenue: 0, expense: 0 }
-    for (const i of issues) {
-      c[i.ruleKey] = (c[i.ruleKey] || 0) + 1
-      if (i.side === 'revenue') c.revenue++
-      if (i.side === 'expense') c.expense++
+  // ticketId별 그룹핑 — 같은 거래에 여러 룰 매칭 시 한 행으로 합침
+  const groupedIssues = useMemo<IssueGroup[]>(() => {
+    const map = new Map<number, IssueGroup>()
+    for (const issue of issues) {
+      const existing = map.get(issue.ticketId)
+      if (existing) {
+        existing.issues.push(issue)
+        if (SEV_ORDER[issue.severity] < SEV_ORDER[existing.highestSeverity]) {
+          existing.highestSeverity = issue.severity
+        }
+      } else {
+        map.set(issue.ticketId, {
+          ticketId: issue.ticketId,
+          ticket: issue.ticket,
+          contact: issue.contact,
+          date: issue.date,
+          side: issue.side,
+          amount: issue.amount,
+          highestSeverity: issue.severity,
+          issues: [issue],
+        })
+      }
     }
-    return c
+    return Array.from(map.values())
   }, [issues])
 
-  // 표시 목록 (탭 필터 + 정렬)
-  const displayed = useMemo(() => {
-    let list = issues
-    if (activeTab === 'revenue') list = issues.filter((i) => i.side === 'revenue')
-    else if (activeTab === 'expense') list = issues.filter((i) => i.side === 'expense')
-    else if (activeTab !== 'all') list = issues.filter((i) => i.ruleKey === activeTab)
+  // 탭별 카운트 — 룰 단위(전체/매출/비용 제외) 외엔 거래 단위 매칭
+  const tabCounts = useMemo(() => {
+    const c: Record<string, number> = {
+      all: groupedIssues.length,
+      revenue: 0,
+      expense: 0,
+    }
+    for (const g of groupedIssues) {
+      if (g.side === 'revenue') c.revenue++
+      if (g.side === 'expense') c.expense++
+      const seenRules = new Set<string>()
+      for (const i of g.issues) {
+        if (seenRules.has(i.ruleKey)) continue
+        seenRules.add(i.ruleKey)
+        c[i.ruleKey] = (c[i.ruleKey] || 0) + 1
+      }
+    }
+    return c
+  }, [groupedIssues])
+
+  // 표시 목록 (탭 필터 + 정렬) — 거래(IssueGroup) 단위
+  const displayed = useMemo<IssueGroup[]>(() => {
+    let list = groupedIssues
+    if (activeTab === 'revenue') list = list.filter((g) => g.side === 'revenue')
+    else if (activeTab === 'expense') list = list.filter((g) => g.side === 'expense')
+    else if (activeTab !== 'all') list = list.filter((g) => g.issues.some((i) => i.ruleKey === activeTab))
 
     return [...list].sort((a, b) => {
       let cmp = 0
       if (sortKey === 'date')     cmp = new Date(a.date).getTime() - new Date(b.date).getTime()
       if (sortKey === 'amount')   cmp = a.amount - b.amount
-      if (sortKey === 'severity') cmp = SEV_ORDER[a.severity] - SEV_ORDER[b.severity]
+      if (sortKey === 'severity') cmp = SEV_ORDER[a.highestSeverity] - SEV_ORDER[b.highestSeverity]
       return sortDir === 'asc' ? cmp : -cmp
     })
-  }, [issues, activeTab, sortKey, sortDir])
+  }, [groupedIssues, activeTab, sortKey, sortDir])
 
   // 페이지네이션 (성능 — DOM 폭발 방지)
   const PAGE_SIZE = 50
@@ -730,36 +777,47 @@ export default function AuditReportPage() {
                         </td>
                       </tr>
                     )}
-                    {pagedIssues.map((issue, idx) => {
-                      const isSel = selected === issue
+                    {pagedIssues.map((group, idx) => {
+                      const isSel = selected?.ticketId === group.ticketId
                       return (
                         <tr
-                          key={`${issue.ruleKey}-${issue.ticketId || idx}`}
-                          onClick={() => setSelected(issue)}
+                          key={`${group.ticketId || idx}`}
+                          onClick={() => setSelected(group)}
                           className={`cursor-pointer ${isSel ? 'bg-ink-50' : 'hover:bg-canvas-50'}`}
                         >
-                          <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
-                            {issue.date ? formatDateTime(issue.date) : '-'}
+                          <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono align-top">
+                            {group.date ? formatDateTime(group.date) : '-'}
                           </td>
-                          <td className="px-3 py-1.5 text-xs text-ink-900">
-                            <div className="font-medium truncate max-w-[130px]">{issue.contact}</div>
+                          <td className="px-3 py-1.5 text-xs text-ink-900 align-top">
+                            <div className="font-medium truncate max-w-[130px]">{group.contact}</div>
                           </td>
-                          <td className="px-3 py-1.5 whitespace-nowrap">
-                            <SideBadge side={issue.side} />
+                          <td className="px-3 py-1.5 whitespace-nowrap align-top">
+                            <SideBadge side={group.side} />
                           </td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900">
-                            {issue.amount > 0 ? formatCurrency(issue.amount, false) : '-'}
+                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900 align-top">
+                            {group.amount > 0 ? formatCurrency(group.amount, false) : '-'}
                           </td>
-                          <td className="px-3 py-1.5 whitespace-nowrap">
-                            <RuleBadge ruleKey={issue.ruleKey} label={issue.ruleLabel} />
+                          <td className="px-3 py-1.5 align-top">
+                            <div className="flex flex-wrap gap-0.5 max-w-[180px]">
+                              {group.issues.map((i, k) => (
+                                <RuleBadge key={`${i.ruleKey}-${k}`} ruleKey={i.ruleKey} label={i.ruleLabel} />
+                              ))}
+                            </div>
                           </td>
-                          <td className="px-3 py-1.5 text-center">
-                            <SeverityBadge severity={issue.severity} />
+                          <td className="px-3 py-1.5 text-center align-top">
+                            <SeverityBadge severity={group.highestSeverity} />
                           </td>
-                          <td className="px-3 py-1.5 text-2xs text-ink-700 max-w-[180px]">
-                            <div className="truncate" title={issue.message}>{issue.message}</div>
+                          <td className="px-3 py-1.5 text-2xs text-ink-700 max-w-[260px] align-top">
+                            <div className="space-y-0.5">
+                              {group.issues.map((i, k) => (
+                                <div key={`${i.ruleKey}-${k}`} className="flex items-start gap-1" title={i.message}>
+                                  <span className="text-ink-300">·</span>
+                                  <span className="truncate">{i.message}</span>
+                                </div>
+                              ))}
+                            </div>
                           </td>
-                          <td className="px-3 py-1.5 text-center">
+                          <td className="px-3 py-1.5 text-center align-top">
                             <button
                               onClick={(e) => e.stopPropagation()}
                               className="btn-secondary text-2xs px-2 py-0.5"
@@ -822,7 +880,7 @@ export default function AuditReportPage() {
           {/* 우측 디테일 패널 */}
           {selected && (
             <div className="col-span-5">
-              <DetailPanel issue={selected} onClose={() => setSelected(null)} />
+              <DetailPanel group={selected} onClose={() => setSelected(null)} />
             </div>
           )}
         </div>
@@ -845,10 +903,10 @@ export default function AuditReportPage() {
 
 // ─── 디테일 패널 ──────────────────────────────────────────────────────────────
 
-function DetailPanel({ issue, onClose }: { issue: Issue; onClose: () => void }) {
+function DetailPanel({ group, onClose }: { group: IssueGroup; onClose: () => void }) {
   const [rawOpen, setRawOpen] = useState(false)
 
-  const t = issue.ticket
+  const t = group.ticket
   const catStr = useMemo(() => {
     const c = t?.expenseCategory
     if (!c) return null
@@ -872,11 +930,11 @@ function DetailPanel({ issue, onClose }: { issue: Issue; onClose: () => void }) 
       <div className="px-3 py-2 border-b border-ink-200 flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <h2 className="text-sm font-semibold truncate">{issue.contact}</h2>
-            <SideBadge side={issue.side} />
+            <h2 className="text-sm font-semibold truncate">{group.contact}</h2>
+            <SideBadge side={group.side} />
           </div>
           <div className="text-2xs text-ink-500 mt-0.5 font-mono">
-            {issue.date ? formatDateTime(issue.date) : '-'}
+            {group.date ? formatDateTime(group.date) : '-'}
           </div>
         </div>
         <button
@@ -892,11 +950,11 @@ function DetailPanel({ issue, onClose }: { issue: Issue; onClose: () => void }) 
         <div className="px-3 pt-3 pb-0 grid grid-cols-2 gap-2">
           <InfoCard label="금액">
             <span className="font-mono font-bold text-sm text-ink-900 tabular-nums">
-              {issue.amount > 0 ? `${formatCurrency(issue.amount, false)}원` : '-'}
+              {group.amount > 0 ? `${formatCurrency(group.amount, false)}원` : '-'}
             </span>
           </InfoCard>
           <InfoCard label="구분">
-            <SideBadge side={issue.side} />
+            <SideBadge side={group.side} />
           </InfoCard>
           <InfoCard label="계정과목">
             <span className={`text-2xs ${catStr ? 'text-ink-800' : 'text-rose-500 font-medium'}`}>
@@ -908,16 +966,24 @@ function DetailPanel({ issue, onClose }: { issue: Issue; onClose: () => void }) 
           </InfoCard>
         </div>
 
-        {/* 검출된 룰 */}
+        {/* 검출된 룰 (모두 표시) */}
         <div className="px-3 pt-2">
-          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1">검출 룰</div>
-          <div className="flex flex-wrap gap-1">
-            <RuleBadge ruleKey={issue.ruleKey} label={issue.ruleLabel} />
-            <SeverityBadge severity={issue.severity} />
+          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1">
+            검출 룰 {group.issues.length > 1 && <span className="text-ink-400 font-normal">({group.issues.length}개)</span>}
           </div>
-          <div className="mt-1.5 text-2xs text-ink-700 flex items-start gap-1">
-            <span className="text-rose-400 mt-0.5">·</span>
-            <span>{issue.message}</span>
+          <div className="flex flex-wrap gap-1">
+            <SeverityBadge severity={group.highestSeverity} />
+            {group.issues.map((i, k) => (
+              <RuleBadge key={`${i.ruleKey}-${k}`} ruleKey={i.ruleKey} label={i.ruleLabel} />
+            ))}
+          </div>
+          <div className="mt-1.5 space-y-1">
+            {group.issues.map((i, k) => (
+              <div key={`${i.ruleKey}-${k}`} className="text-2xs text-ink-700 flex items-start gap-1">
+                <span className="text-rose-400 mt-0.5">·</span>
+                <span><span className="font-semibold text-ink-900">[{i.ruleLabel}]</span> {i.message}</span>
+              </div>
+            ))}
           </div>
         </div>
 
