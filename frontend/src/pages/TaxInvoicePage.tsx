@@ -351,11 +351,14 @@ export default function TaxInvoicePage() {
               {filtered.map((t, idx) => {
                 const isSales = str(t, 'transactionType') === 'IN'
                 const cat = t.expenseCategory || {}
-                const contact =
-                  str(t, 'contact') ||
-                  str(t?.taxInvoice, isSales ? 'receiverCompanyName' : 'supplierCompanyName',
-                      'companyName') ||
-                  str(t, 'merchantName', 'counterpartyName', 'vendor', 'content')
+                const ti = t?.taxInvoice
+                // 매출(IN): contractor(공급받는자) = 거래처 / 매입(OUT): supplier(공급자) = 거래처
+                const contact = isSales
+                  ? str(ti?.contractor, 'companyName') || str(t, 'contact', 'content')
+                  : str(ti?.supplier, 'companyName') || str(t, 'contact', 'content')
+                const counterRegNo = isSales
+                  ? str(ti?.contractor, 'registrationNumber')
+                  : str(ti?.supplier, 'registrationNumber')
                 return (
                   <tr key={t.id || idx} className="hover:bg-canvas-50">
                     <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
@@ -372,7 +375,12 @@ export default function TaxInvoicePage() {
                         {isSales ? '매출' : '매입'}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5 text-xs text-ink-900 font-medium">{contact || '-'}</td>
+                    <td className="px-3 py-1.5 text-xs text-ink-900">
+                      <div className="font-medium">{contact || '-'}</div>
+                      {counterRegNo && (
+                        <div className="text-2xs text-ink-500 font-mono">{counterRegNo}</div>
+                      )}
+                    </td>
                     <td className="px-3 py-1.5 text-xs text-ink-700 max-w-md truncate">
                       {str(t, 'content', 'description')}
                     </td>

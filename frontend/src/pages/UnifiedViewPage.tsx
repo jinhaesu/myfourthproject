@@ -864,16 +864,29 @@ export default function UnifiedViewPage() {
                       const outAmount = txType === 'OUT' ? amount : 0
                       const ticketType = str(t, 'ticketType')
                       const cat = t.expenseCategory || {}
-                      // 거래처: contact > bankTransaction.counterparty > cardUsage.storeName > content
-                      const contact =
-                        str(t, 'contact') ||
-                        str(t?.bankTransaction, 'counterparty') ||
-                        str(t?.cardUsage, 'storeName') ||
-                        str(t, 'merchantName', 'counterpartyName', 'vendor')
-                      const memo =
-                        str(t?.bankTransaction, 'descriptionType', 'description') ||
-                        str(t?.cardUsage, 'storeAddress') ||
-                        str(t, 'description', 'memo', 'content')
+                      // 거래처: ticketType별 정확한 위치
+                      let contact = str(t, 'contact')
+                      let memo = ''
+                      if (t?.taxInvoice) {
+                        const isSales = txType === 'IN'
+                        contact =
+                          contact ||
+                          (isSales
+                            ? str(t.taxInvoice?.contractor, 'companyName')
+                            : str(t.taxInvoice?.supplier, 'companyName'))
+                        memo = str(t.taxInvoice, 'content')
+                      } else if (t?.cashReceipt) {
+                        contact = contact || str(t.cashReceipt?.issuer, 'companyName', 'userName')
+                        memo = str(t.cashReceipt, 'content')
+                      } else if (t?.bankTransaction) {
+                        contact = contact || str(t.bankTransaction, 'counterparty')
+                        memo = str(t.bankTransaction, 'descriptionType', 'description')
+                      } else if (t?.cardUsage) {
+                        contact = contact || str(t.cardUsage, 'storeName')
+                        memo = str(t.cardUsage, 'storeAddress')
+                      }
+                      contact = contact || str(t, 'content')
+                      memo = memo || str(t, 'description', 'memo', 'content')
                       return (
                         <tr key={t.id || idx} className="hover:bg-canvas-50">
                           <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">

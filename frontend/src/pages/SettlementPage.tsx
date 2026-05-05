@@ -151,14 +151,28 @@ export default function SettlementPage() {
     },
   })
 
-  // 거래처 추출: contact 우선, 없으면 bankTransaction.counterparty / cardUsage.storeName / content
+  // 거래처 추출 (그랜터 가이드의 정확한 ticket 응답 구조 기준):
+  // - bankTransaction.counterparty (계좌)
+  // - cardUsage.storeName (카드)
+  // - taxInvoice: 매출(IN)이면 contractor.companyName, 매입(OUT)이면 supplier.companyName
+  // - cashReceipt: issuer.companyName
   const extractContact = (t: any): string => {
+    if (t?.taxInvoice) {
+      const ti = t.taxInvoice
+      if (str(t, 'transactionType') === 'IN') {
+        // 매출: 공급받는자(contractor)가 거래처
+        return str(ti?.contractor, 'companyName') || str(ti?.supplier, 'companyName') || '(미지정)'
+      }
+      // 매입: 공급자(supplier)가 거래처
+      return str(ti?.supplier, 'companyName') || str(ti?.contractor, 'companyName') || '(미지정)'
+    }
+    if (t?.cashReceipt) {
+      return str(t.cashReceipt?.issuer, 'companyName') || str(t.cashReceipt?.issuer, 'userName') || '(미지정)'
+    }
     return (
       str(t, 'contact') ||
       str(t?.bankTransaction, 'counterparty') ||
       str(t?.cardUsage, 'storeName') ||
-      str(t?.taxInvoice, 'supplierCompanyName', 'receiverCompanyName') ||
-      str(t?.cashReceipt, 'identifier') ||
       str(t?.bankTransaction, 'content') ||
       str(t, 'content', 'merchantName', 'counterpartyName', 'vendor') ||
       '(미지정)'
