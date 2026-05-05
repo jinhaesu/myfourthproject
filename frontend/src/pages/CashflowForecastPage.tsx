@@ -22,7 +22,7 @@ import {
   BanknotesIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency, formatCompactWon, formatDate } from '@/utils/format'
+import { formatCurrency, formatCompactWon, formatDate, isoLocal, flattenTickets } from '@/utils/format'
 import PeriodPicker, {
   periodForPreset,
   type PeriodPreset,
@@ -74,13 +74,13 @@ interface MonthlyRevBar {
 // ---------------------------------------------------------------------------
 
 function isoToday(): string {
-  return new Date().toISOString().slice(0, 10)
+  return isoLocal(new Date())
 }
 
 function addDays(iso: string, n: number): string {
   const d = new Date(iso)
   d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+  return isoLocal(d)
 }
 
 function diffDays(a: string, b: string): number {
@@ -415,10 +415,7 @@ export default function CashflowForecastPage() {
     queryFn: () =>
       granterApi
         .listTicketsAllTypes(effectiveStart, to)
-        .then((r) => {
-          const d = r.data
-          return Array.isArray(d) ? d : d?.tickets ?? d?.data ?? []
-        }),
+        .then((r) => flattenTickets(r.data)),
     enabled: !!isConfigured,
     retry: 1,
     staleTime: 120_000,

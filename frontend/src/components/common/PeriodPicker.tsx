@@ -38,7 +38,13 @@ export const PRESET_GROUPS: { label: string; presets: PeriodPreset[] }[] = [
   { label: '범위', presets: ['last_7d', 'last_30d'] },
 ]
 
-const iso = (d: Date) => d.toISOString().slice(0, 10)
+// 로컬 timezone 기준 yyyy-MM-dd (toISOString은 UTC 기준이라 KST 자정이 전날로 변환되는 버그 방지)
+const iso = (d: Date) => {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 export function periodForPreset(preset: PeriodPreset): { start: string; end: string } {
   const today = new Date()

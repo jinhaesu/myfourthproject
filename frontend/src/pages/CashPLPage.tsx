@@ -7,7 +7,7 @@ import {
 import { ScaleIcon } from '@heroicons/react/24/outline'
 import { cashPLApi } from '@/services/api'
 import StatCard from '@/components/common/StatCard'
-import { formatCurrency, formatCompactWon, formatPct, todayISO } from '@/utils/format'
+import { formatCurrency, formatCompactWon, formatPct, todayISO, isoLocal } from '@/utils/format'
 
 type Basis = 'cash' | 'accrual'
 type Period = 'monthly' | 'weekly' | 'quarterly' | 'yearly' | 'daily'
@@ -27,7 +27,7 @@ export default function CashPLPage() {
     const d = new Date()
     d.setMonth(d.getMonth() - 5)
     d.setDate(1)
-    return d.toISOString().slice(0, 10)
+    return isoLocal(d)
   })
   const [toDate, setToDate] = useState(todayISO())
 

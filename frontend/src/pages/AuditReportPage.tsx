@@ -10,7 +10,7 @@ import {
 } from '@heroicons/react/24/outline'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 import { granterApi } from '@/services/api'
-import { formatCurrency, formatDateTime } from '@/utils/format'
+import { formatCurrency, formatDateTime, isoLocal } from '@/utils/format'
 
 // ─── 날짜 유틸 ───────────────────────────────────────────────────────────────
 
@@ -271,7 +271,7 @@ export default function AuditReportPage() {
       let actualStart = from
       if (exceeds31) {
         const d = new Date(to); d.setDate(d.getDate() - 30)
-        actualStart = d.toISOString().slice(0, 10)
+        actualStart = isoLocal(d)
       }
       console.time('[audit] listTicketsAllTypes')
       return granterApi.listTicketsAllTypes(actualStart, to).then((r) => {

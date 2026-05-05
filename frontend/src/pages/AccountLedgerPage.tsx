@@ -13,7 +13,7 @@ import {
   ChevronRightIcon,
 } from '@heroicons/react/24/outline'
 import { ledgerApi } from '@/services/api'
-import { formatCurrency, formatCompactWon, formatDate } from '@/utils/format'
+import { formatCurrency, formatCompactWon, formatDate, isoLocal } from '@/utils/format'
 import EmptyState from '@/components/common/EmptyState'
 import LedgerEntryDetailPanel from './LedgerEntryDetailPanel'
 
@@ -29,7 +29,7 @@ const CATEGORY_META: Record<string, { label: string; dot: string; chip: string }
 const CATEGORY_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expense', 'non_operating']
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10)
+  return isoLocal(new Date())
 }
 function isoYearStart(year: number) {
   return `${year}-01-01`
@@ -40,7 +40,7 @@ function isoYearEnd(year: number) {
 function thisMonthStart() {
   const d = new Date()
   d.setDate(1)
-  return d.toISOString().slice(0, 10)
+  return isoLocal(d)
 }
 
 export default function AccountLedgerPage() {

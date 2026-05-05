@@ -53,14 +53,46 @@ export function formatRelativeTime(value: string | Date | undefined | null): str
   return formatDate(d)
 }
 
+/**
+ * granterApi.listTicketsAllTypes 응답을 평탄한 ticket 배열로 변환.
+ * 백엔드 응답: { EXPENSE_TICKET: [...], BANK_TRANSACTION_TICKET: [...], ... }
+ * 또는 단일 listTickets처럼 [...] 배열일 수도, { data: [...] } 형태일 수도.
+ */
+export function flattenTickets(raw: any): any[] {
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === 'object') {
+    // { ticketType: [...] } 객체
+    const all: any[] = []
+    for (const v of Object.values(raw)) {
+      if (Array.isArray(v)) all.push(...v)
+      else if (v && typeof v === 'object' && Array.isArray((v as any).data)) {
+        all.push(...(v as any).data)
+      }
+    }
+    if (all.length > 0) return all
+    // { data: [...] } fallback
+    if (Array.isArray((raw as any).data)) return (raw as any).data
+  }
+  return []
+}
+
+// 로컬 timezone 기준 yyyy-MM-dd (toISOString은 UTC라 KST 자정이 전날로 변환되는 버그 방지)
+export function isoLocal(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 export function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
+  return isoLocal(new Date())
 }
 
 export function firstDayOfMonth(): string {
   const d = new Date()
   d.setDate(1)
-  return d.toISOString().slice(0, 10)
+  return isoLocal(d)
 }
 
 export function maskBusinessNumber(num: string | undefined | null): string {

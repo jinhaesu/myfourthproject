@@ -11,15 +11,15 @@ import {
   BuildingLibraryIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency } from '@/utils/format'
+import { formatCurrency, isoLocal } from '@/utils/format'
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10)
+  return isoLocal(new Date())
 }
 function thisMonthStartISO() {
   const d = new Date()
   d.setDate(1)
-  return d.toISOString().slice(0, 10)
+  return isoLocal(d)
 }
 function daysBetween(a: string, b: string) {
   return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
@@ -47,7 +47,7 @@ export default function DailyReportPage() {
       if (exceeds31) {
         const d = new Date(to)
         d.setDate(d.getDate() - 30)
-        actualStart = d.toISOString().slice(0, 10)
+        actualStart = isoLocal(d)
       }
       return granterApi
         .getDailyReport({
@@ -74,8 +74,8 @@ export default function DailyReportPage() {
     const end = new Date()
     const start = new Date()
     start.setDate(end.getDate() - days + 1)
-    setFrom(start.toISOString().slice(0, 10))
-    setTo(end.toISOString().slice(0, 10))
+    setFrom(isoLocal(start))
+    setTo(isoLocal(end))
   }
 
   return (

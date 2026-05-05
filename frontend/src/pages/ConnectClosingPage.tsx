@@ -12,7 +12,7 @@ import {
 import { connectApi } from '@/services/api'
 import { useAuthStore } from '@/store/authStore'
 import StatCard from '@/components/common/StatCard'
-import { formatPct, formatDate, formatRelativeTime, todayISO } from '@/utils/format'
+import { formatPct, formatDate, formatRelativeTime, todayISO, isoLocal } from '@/utils/format'
 
 const STATUS_META: Record<string, { label: string; class: string }> = {
   not_started: { label: '대기', class: 'badge bg-gray-100 text-gray-700' },
@@ -278,7 +278,7 @@ function StartClosingModal({
   const [periodType, setPeriodType] = useState<'monthly' | 'quarterly' | 'yearly'>('monthly')
   const [start, setStart] = useState(() => {
     const d = new Date(today.getFullYear(), today.getMonth(), 1)
-    return d.toISOString().slice(0, 10)
+    return isoLocal(d)
   })
   const [end, setEnd] = useState(todayISO())
 

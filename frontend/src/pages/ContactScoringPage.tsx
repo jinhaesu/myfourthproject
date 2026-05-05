@@ -14,7 +14,7 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency, formatCompactWon } from '@/utils/format'
+import { formatCurrency, formatCompactWon, isoLocal, flattenTickets } from '@/utils/format'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 
 // ─────────────────────────────────────────────
@@ -569,11 +569,10 @@ export default function ContactScoringPage() {
       if (daysBetween(from, to) > 31) {
         const d = new Date(to)
         d.setDate(d.getDate() - 30)
-        actualStart = d.toISOString().slice(0, 10)
+        actualStart = isoLocal(d)
       }
       return granterApi.listTicketsAllTypes(actualStart, to).then((r) => {
-        const raw = r.data
-        const tickets: any[] = Array.isArray(raw) ? raw : raw?.data ?? []
+        const tickets = flattenTickets(r.data)
         return { tickets, actualStart }
       })
     },
@@ -593,11 +592,11 @@ export default function ContactScoringPage() {
         end.setDate(end.getDate() - offset * 31)
         const start = new Date(end)
         start.setDate(start.getDate() - 30)
-        const startStr = start.toISOString().slice(0, 10)
-        const endStr = end.toISOString().slice(0, 10)
+        const startStr = isoLocal(start)
+        const endStr = isoLocal(end)
         try {
           const res = await granterApi.listTicketsAllTypes(startStr, endStr)
-          const items: any[] = Array.isArray(res.data) ? res.data : res.data?.data ?? []
+          const items = flattenTickets(res.data)
           if (items.length > 0) return { start: startStr, end: endStr, count: items.length, offset }
         } catch {
           // 다음 구간 시도

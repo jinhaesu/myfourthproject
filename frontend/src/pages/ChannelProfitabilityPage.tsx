@@ -20,7 +20,7 @@ import {
   Legend,
 } from 'recharts'
 import { granterApi } from '@/services/api'
-import { formatCurrency, formatCompactWon, formatPct } from '@/utils/format'
+import { formatCurrency, formatCompactWon, formatPct, isoLocal } from '@/utils/format'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 
 // ─── 채널 분류 상수 ───────────────────────────────────────────────────────────
@@ -136,7 +136,7 @@ export default function ChannelProfitabilityPage() {
     if (!exceeds31) return from
     const d = new Date(to)
     d.setDate(d.getDate() - 30)
-    return d.toISOString().slice(0, 10)
+    return isoLocal(d)
   }, [from, to, exceeds31])
 
   // ─── 그랜터 설정 확인 ──────────────────────────────────────────────────────
@@ -174,8 +174,8 @@ export default function ChannelProfitabilityPage() {
         end.setDate(end.getDate() - offset * 31)
         const start = new Date(end)
         start.setDate(start.getDate() - 31)
-        const startStr = start.toISOString().slice(0, 10)
-        const endStr   = end.toISOString().slice(0, 10)
+        const startStr = isoLocal(start)
+        const endStr   = isoLocal(end)
         try {
           const [bankR, taxR] = await Promise.all([
             granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: startStr, endDate: endStr }),

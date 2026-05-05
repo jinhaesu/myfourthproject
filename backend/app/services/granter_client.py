@@ -182,6 +182,10 @@ class GranterClient:
         results = await asyncio.gather(*[_fetch(t) for t in asset_types])
         return dict(results)
 
+    # 메모리 TTL 캐시 (같은 (start, end, asset_id) 조합 60초 캐시)
+    _TICKETS_CACHE: Dict[str, Any] = {}
+    _CACHE_TTL = 60  # seconds
+
     async def list_tickets_all_types(
         self,
         start_date: str,
@@ -190,9 +194,17 @@ class GranterClient:
     ) -> Dict[str, Any]:
         """
         모든 ticketType을 병렬 호출해 합쳐서 반환.
-        그랜터 31일 제한 안내: 31일 이상이면 클라이언트가 분할 호출 권장.
+        60초 메모리 캐시 — 페이지 재방문 시 즉시 응답.
         """
         import asyncio
+        import time as _time
+
+        cache_key = f"all|{start_date}|{end_date}|{asset_id}"
+        now = _time.time()
+        cached = self._TICKETS_CACHE.get(cache_key)
+        if cached and (now - cached[0] < self._CACHE_TTL):
+            logger.info("Granter cache HIT: %s", cache_key)
+            return cached[1]
 
         ticket_types = [
             "EXPENSE_TICKET",            # 카드 사용
@@ -214,7 +226,15 @@ class GranterClient:
                 return t, []
 
         results = await asyncio.gather(*[_fetch(t) for t in ticket_types])
-        return dict(results)
+        result_dict = dict(results)
+        self._TICKETS_CACHE[cache_key] = (now, result_dict)
+        # 캐시 청소 (오래된 항목 제거 — 캐시가 100개 넘을 때만)
+        if len(self._TICKETS_CACHE) > 100:
+            cutoff = now - self._CACHE_TTL
+            self._TICKETS_CACHE = {
+                k: v for k, v in self._TICKETS_CACHE.items() if v[0] > cutoff
+            }
+        return result_dict
 
     # ============ 잔액 / 일일 리포트 / 환율 ============
 
