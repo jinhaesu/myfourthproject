@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
@@ -16,6 +16,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
+import { isSelfCompany } from '@/utils/internalTransfer'
 import PeriodPicker, { periodForPreset, type PeriodPreset } from '@/components/common/PeriodPicker'
 
 type Direction = 'all' | 'sales' | 'purchase'
@@ -57,24 +58,31 @@ function extractContractors(taxTickets: any[]): ContractorSuggestion[] {
     // 매출(IN): contractor=공급받는자, 매입(OUT): supplier=상대방 — 둘 다 거래처 풀로 수집
     const candidates = [ti.contractor, ti.supplier].filter(Boolean)
     for (const c of candidates) {
-      const bn = String(c?.businessNumber || '').trim()
+      // 그랜터 가이드 기준 필드: registrationNumber/companyName/ceoName/businessPlace/businessTypes/businessItems
+      const bn = String(c?.registrationNumber || c?.businessNumber || '').trim()
       const name = String(c?.companyName || '').trim()
       if (!bn && !name) continue
+      // 본인 회사 제외 — 사업자번호 단위 정확 매칭 + 회사명 변형 (isSelfCompany 사용)
+      if (isSelfCompany({ businessNumber: bn, companyName: name })) continue
       const key = bn || name
-      // 본인 회사는 제외
-      if (bn === SUPPLIER_DEFAULT.businessNumber || name === SUPPLIER_DEFAULT.companyName) continue
       const cur = map.get(key) || {
         businessNumber: bn,
         companyName: name,
-        representativeName: String(c?.representativeName || '').trim(),
-        address: String(c?.address || '').trim(),
+        representativeName: String(c?.ceoName || c?.representativeName || '').trim(),
+        address: String(c?.businessPlace || c?.address || '').trim(),
         email: String(c?.email || '').trim(),
+        phone: String(c?.phone || c?.tel || '').trim(),
+        businessType: String(c?.businessTypes || c?.businessType || '').trim(),
+        businessItem: String(c?.businessItems || c?.businessItem || '').trim(),
         count: 0,
       }
       cur.count += 1
-      if (!cur.representativeName && c?.representativeName) cur.representativeName = String(c.representativeName)
-      if (!cur.address && c?.address) cur.address = String(c.address)
-      if (!cur.email && c?.email) cur.email = String(c.email)
+      if (!cur.representativeName) cur.representativeName = String(c?.ceoName || c?.representativeName || '').trim()
+      if (!cur.address) cur.address = String(c?.businessPlace || c?.address || '').trim()
+      if (!cur.email) cur.email = String(c?.email || '').trim()
+      if (!cur.phone) cur.phone = String(c?.phone || c?.tel || '').trim()
+      if (!cur.businessType) cur.businessType = String(c?.businessTypes || c?.businessType || '').trim()
+      if (!cur.businessItem) cur.businessItem = String(c?.businessItems || c?.businessItem || '').trim()
       map.set(key, cur)
     }
   }
@@ -230,6 +238,8 @@ interface IssueTaxInvoiceModalProps {
   onClose: () => void
   onSuccess: () => void
   contractors: ContractorSuggestion[]
+  /** 거래처 정산 페이지에서 prefill 전달 시 사용 */
+  initialContractor?: Partial<ContractorSuggestion>
 }
 
 function todayStr() {
@@ -244,7 +254,7 @@ const emptyItem = (): InvoiceItem => ({
   taxAmount: 0,
 })
 
-function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors }: IssueTaxInvoiceModalProps) {
+function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialContractor }: IssueTaxInvoiceModalProps) {
   // 거래일자
   const [writeDate, setWriteDate] = useState(todayStr())
 
@@ -258,10 +268,20 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors }: IssueTa
   const [supplierBizItem, setSupplierBizItem] = useState(SUPPLIER_DEFAULT.businessItem)
 
   // 공급받는자 (거래처) 정보
-  const [contractorBizNo, setContractorBizNo] = useState('')
-  const [contractorName, setContractorName] = useState('')
-  const [contractorRep, setContractorRep] = useState('')
-  const [contractorEmail, setContractorEmail] = useState('')
+  const [contractorBizNo, setContractorBizNo] = useState(initialContractor?.businessNumber || '')
+  const [contractorName, setContractorName] = useState(initialContractor?.companyName || '')
+  const [contractorRep, setContractorRep] = useState(initialContractor?.representativeName || '')
+  const [contractorEmail, setContractorEmail] = useState(initialContractor?.email || '')
+
+  // initialContractor가 바뀌면 거래처 필드 동기화 (모달이 열릴 때 prefill 적용)
+  useEffect(() => {
+    if (open && initialContractor) {
+      if (initialContractor.businessNumber !== undefined) setContractorBizNo(initialContractor.businessNumber)
+      if (initialContractor.companyName !== undefined) setContractorName(initialContractor.companyName)
+      if (initialContractor.representativeName !== undefined) setContractorRep(initialContractor.representativeName)
+      if (initialContractor.email !== undefined) setContractorEmail(initialContractor.email)
+    }
+  }, [open, initialContractor])
 
   // 거래처 조회 모달 열림 상태
   const [contractorPickerOpen, setContractorPickerOpen] = useState(false)
@@ -700,6 +720,23 @@ export default function TaxInvoicePage() {
   const [direction, setDirection] = useState<Direction>('all')
   const [search, setSearch] = useState('')
   const [issueModalOpen, setIssueModalOpen] = useState(false)
+  const [prefillContractor, setPrefillContractor] = useState<Partial<ContractorSuggestion> | undefined>(undefined)
+
+  // 거래처 정산 페이지에서 navigate + sessionStorage prefill 처리
+  useEffect(() => {
+    const raw = sessionStorage.getItem('taxInvoicePrefill')
+    if (raw) {
+      try {
+        const data = JSON.parse(raw) as Partial<ContractorSuggestion>
+        setPrefillContractor(data)
+        setIssueModalOpen(true)
+      } catch {
+        // 파싱 실패 시 무시
+      } finally {
+        sessionStorage.removeItem('taxInvoicePrefill')
+      }
+    }
+  }, [])
 
   const ready = Boolean(from && to)
   const exceeds31 = ready && daysBetween(from, to) > 31
@@ -830,9 +867,10 @@ export default function TaxInvoicePage() {
       {/* 세금계산서 발행 모달 */}
       <IssueTaxInvoiceModal
         open={issueModalOpen}
-        onClose={() => setIssueModalOpen(false)}
+        onClose={() => { setIssueModalOpen(false); setPrefillContractor(undefined) }}
         onSuccess={() => ticketsQuery.refetch()}
         contractors={contractors}
+        initialContractor={prefillContractor}
       />
 
       {/* Header */}

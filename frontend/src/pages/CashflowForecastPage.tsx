@@ -10,7 +10,7 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts'
-import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
+import { buildOwnAccountSet, filterOutInternalTransfers, isSelfContact, isSelfCompany } from '@/utils/internalTransfer'
 import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
@@ -177,6 +177,16 @@ function analyzeContactPatterns(tickets: any[]): { inPatterns: ContactPattern[];
 
   for (const t of tickets) {
     const contact = extractContact(t)
+    if (isSelfContact(contact)) continue  // 본인 회사 제외
+    // 세금계산서면 사업자번호로도 본인 검증
+    if (t?.taxInvoice) {
+      const ti = t.taxInvoice
+      const cp = t.transactionType === 'IN' ? ti?.contractor : ti?.supplier
+      if (cp && isSelfCompany({
+        businessNumber: cp?.registrationNumber || cp?.businessNumber,
+        companyName: cp?.companyName,
+      })) continue
+    }
     const amount = Math.abs(Number(t.amount ?? 0))
     if (amount <= 0) continue
     const date = (t.transactAt ?? t.createdAt ?? '').slice(0, 10)

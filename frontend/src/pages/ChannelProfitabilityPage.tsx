@@ -9,7 +9,7 @@ import {
   ClockIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline'
-import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
+import { buildOwnAccountSet, filterOutInternalTransfers, isSelfContact, isSelfCompany } from '@/utils/internalTransfer'
 import {
   BarChart,
   Bar,
@@ -324,6 +324,16 @@ export default function ChannelProfitabilityPage() {
     const revenueMap: Record<string, { tickets: unknown[]; dailyMap: Record<string, number> }> = {}
     for (const t of salesTickets) {
       const contact = extractContact(t)
+      // 본인 회사(조인앤조인) 매출 제외
+      if (isSelfContact(contact)) continue
+      const ti = (t as any)?.taxInvoice
+      if (ti) {
+        const cp = String((t as any).transactionType) === 'IN' ? ti?.contractor : ti?.supplier
+        if (cp && isSelfCompany({
+          businessNumber: cp?.registrationNumber || cp?.businessNumber,
+          companyName: cp?.companyName,
+        })) continue
+      }
       const key = classifyChannel(contact)
       if (!revenueMap[key]) revenueMap[key] = { tickets: [], dailyMap: {} }
       revenueMap[key].tickets.push(t)
@@ -336,6 +346,16 @@ export default function ChannelProfitabilityPage() {
 
     for (const t of costTickets) {
       const contact = extractContact(t)
+      // 본인 회사 매입 제외 (자체 거래로 잡히면 안 됨)
+      if (isSelfContact(contact)) continue
+      const ti = (t as any)?.taxInvoice
+      if (ti) {
+        const cp = String((t as any).transactionType) === 'IN' ? ti?.contractor : ti?.supplier
+        if (cp && isSelfCompany({
+          businessNumber: cp?.registrationNumber || cp?.businessNumber,
+          companyName: cp?.companyName,
+        })) continue
+      }
       const key = classifyChannel(contact)
       if (key !== 'others') {
         if (!directCostMap[key]) directCostMap[key] = { tickets: [], total: 0 }
@@ -447,6 +467,17 @@ export default function ChannelProfitabilityPage() {
     const map: Record<string, { count: number; revenue: number }> = {}
     for (const t of salesTickets) {
       const name = extractContact(t)
+      if (!name) continue
+      // 본인 회사(조인앤조인) 제외 — 자체 발행 세금계산서 등이 매출 거래처로 잡히면 안 됨
+      if (isSelfContact(name)) continue
+      const ti = (t as any)?.taxInvoice
+      if (ti) {
+        const cp = String((t as any).transactionType) === 'IN' ? ti?.contractor : ti?.supplier
+        if (cp && isSelfCompany({
+          businessNumber: cp?.registrationNumber || cp?.businessNumber,
+          companyName: cp?.companyName,
+        })) continue
+      }
       if (!map[name]) map[name] = { count: 0, revenue: 0 }
       map[name].count += 1
       map[name].revenue += num(t, 'amount')
