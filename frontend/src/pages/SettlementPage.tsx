@@ -151,8 +151,21 @@ export default function SettlementPage() {
     },
   })
 
-  // 거래처별 매출 집계 (세금계산서 매출만 — IN)
-  // 통장 입금 집계 (BANK_TRANSACTION_TICKET, IN만)
+  // 거래처 추출: contact 우선, 없으면 bankTransaction.counterparty / cardUsage.storeName / content
+  const extractContact = (t: any): string => {
+    return (
+      str(t, 'contact') ||
+      str(t?.bankTransaction, 'counterparty') ||
+      str(t?.cardUsage, 'storeName') ||
+      str(t?.taxInvoice, 'supplierCompanyName', 'receiverCompanyName') ||
+      str(t?.cashReceipt, 'identifier') ||
+      str(t?.bankTransaction, 'content') ||
+      str(t, 'content', 'merchantName', 'counterpartyName', 'vendor') ||
+      '(미지정)'
+    )
+  }
+
+  // 거래처별 매출 집계 (세금계산서 IN) + 통장 입금 (BANK_TRANSACTION_TICKET IN)
   const contacts: ContactRow[] = useMemo(() => {
     const map: Record<string, ContactRow> = {}
 
@@ -175,8 +188,7 @@ export default function SettlementPage() {
 
     for (const t of taxTickets) {
       if (str(t, 'transactionType') !== 'IN') continue  // 매출만
-      const c = str(t, 'contact', 'merchantName', 'counterpartyName', 'vendor') || '(미지정)'
-      const row = ensure(c)
+      const row = ensure(extractContact(t))
       row.invoiceCount += 1
       row.invoiceTotal += num(t, 'amount')
       row.invoices.push(t)
@@ -184,8 +196,7 @@ export default function SettlementPage() {
 
     for (const t of bankTickets) {
       if (str(t, 'transactionType') !== 'IN') continue  // 입금만
-      const c = str(t, 'contact', 'merchantName', 'counterpartyName', 'vendor') || '(미지정)'
-      const row = ensure(c)
+      const row = ensure(extractContact(t))
       row.depositCount += 1
       row.depositTotal += num(t, 'amount')
       row.deposits.push(t)

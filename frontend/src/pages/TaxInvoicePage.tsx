@@ -351,7 +351,11 @@ export default function TaxInvoicePage() {
               {filtered.map((t, idx) => {
                 const isSales = str(t, 'transactionType') === 'IN'
                 const cat = t.expenseCategory || {}
-                const contact = str(t, 'contact', 'merchantName', 'counterpartyName', 'vendor')
+                const contact =
+                  str(t, 'contact') ||
+                  str(t?.taxInvoice, isSales ? 'receiverCompanyName' : 'supplierCompanyName',
+                      'companyName') ||
+                  str(t, 'merchantName', 'counterpartyName', 'vendor', 'content')
                 return (
                   <tr key={t.id || idx} className="hover:bg-canvas-50">
                     <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">

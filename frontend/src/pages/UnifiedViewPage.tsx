@@ -864,7 +864,16 @@ export default function UnifiedViewPage() {
                       const outAmount = txType === 'OUT' ? amount : 0
                       const ticketType = str(t, 'ticketType')
                       const cat = t.expenseCategory || {}
-                      const contact = str(t, 'contact', 'merchantName', 'counterpartyName', 'vendor')
+                      // 거래처: contact > bankTransaction.counterparty > cardUsage.storeName > content
+                      const contact =
+                        str(t, 'contact') ||
+                        str(t?.bankTransaction, 'counterparty') ||
+                        str(t?.cardUsage, 'storeName') ||
+                        str(t, 'merchantName', 'counterpartyName', 'vendor')
+                      const memo =
+                        str(t?.bankTransaction, 'descriptionType', 'description') ||
+                        str(t?.cardUsage, 'storeAddress') ||
+                        str(t, 'description', 'memo', 'content')
                       return (
                         <tr key={t.id || idx} className="hover:bg-canvas-50">
                           <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
@@ -879,9 +888,7 @@ export default function UnifiedViewPage() {
                             <div className="font-medium">
                               {contact || str(t, 'content') || '-'}
                             </div>
-                            <div className="text-2xs text-ink-500 truncate max-w-md">
-                              {str(t, 'description', 'memo', 'content')}
-                            </div>
+                            <div className="text-2xs text-ink-500 truncate max-w-md">{memo}</div>
                           </td>
                           <td className="px-3 py-1.5 whitespace-nowrap text-2xs">
                             {str(cat, 'name') ? (
