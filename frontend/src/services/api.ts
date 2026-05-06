@@ -703,6 +703,8 @@ export const granterApi = {
     api.post('/granter/tickets/all', null, {
       params: { start_date: startDate, end_date: endDate, asset_id: assetId },
     }),
+  listTicketsExtended: (months: number = 6) =>
+    api.get('/granter/tickets/extended', { params: { months } }),
   recentActivityPeriod: (assetId?: number) =>
     api.get('/granter/recent-activity-period', { params: { asset_id: assetId } }),
   listBalances: (payload: any) => api.post('/granter/balances', payload),

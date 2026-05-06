@@ -1177,15 +1177,16 @@ export default function CashflowForecastPage() {
     [assetsQuery.data]
   )
 
+  // 캐시플로우 예측은 장기 패턴 분석 — 6개월치 거래 사용 (사용자 요구: 거래처 수백곳 분석)
   const ticketsQuery = useQuery({
-    queryKey: ['cashflow-tickets', effectiveLookbackFrom, lookbackTo],
+    queryKey: ['cashflow-tickets-extended-6m'],
     queryFn: () =>
       granterApi
-        .listTicketsAllTypes(effectiveLookbackFrom, lookbackTo)
+        .listTicketsExtended(6)
         .then((r) => flattenTickets(r.data)),
     enabled: !!isConfigured,
     retry: 1,
-    staleTime: 120_000,
+    staleTime: 10 * 60_000,  // 6개월 데이터는 10분 캐시 (재호출 비용 큼)
   })
 
   // ---------------------------------------------------------------------------
@@ -1348,11 +1349,10 @@ export default function CashflowForecastPage() {
               { label: '범위', presets: ['last_7d', 'last_30d'] },
             ]}
           />
-          {lookbackSpan > 31 && (
-            <p className="text-2xs text-amber-700 mt-1">
-              그랜터 API 31일 한도 — 종료일 기준 31일({effectiveLookbackFrom} ~ {lookbackTo})만 조회됩니다.
-            </p>
-          )}
+          <p className="text-2xs text-ink-500 mt-1">
+            ※ 거래처 패턴은 지난 <span className="font-semibold text-ink-700">6개월치 전체 거래</span>로 분석합니다 (수백 거래처 포함).
+            상단 기간은 잔액 시계열 표시용.
+          </p>
         </div>
 
         {/* Forecast preset */}

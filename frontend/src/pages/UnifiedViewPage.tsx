@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
   Cog6ToothIcon,
@@ -103,6 +103,7 @@ const TICKET_TYPE_LABEL: Record<string, string> = {
 }
 
 export default function UnifiedViewPage() {
+  const queryClient = useQueryClient()
   const preset = usePeriodStore((s) => s.preset)
   const from = usePeriodStore((s) => s.from)
   const to = usePeriodStore((s) => s.to)
@@ -459,8 +460,21 @@ export default function UnifiedViewPage() {
               업데이트 {formatLastUpdated(ticketsQuery.dataUpdatedAt)}
             </span>
           )}
-          <button onClick={() => ticketsQuery.refetch()} className="btn-secondary" title="새로고침">
-            <ArrowPathIcon className="h-3 w-3" />
+          <button
+            onClick={async () => {
+              // backend 캐시 클리어 + 모든 페이지 query 무효화 → 강제 새로 fetch
+              try { await granterApi.clearCache() } catch { /* 무시 */ }
+              await queryClient.invalidateQueries({ queryKey: ['granter-tickets-usage'] })
+              await queryClient.invalidateQueries({ queryKey: ['unified-card-expenses'] })
+              await queryClient.invalidateQueries({ queryKey: ['granter-tickets-v2'] })
+              await queryClient.invalidateQueries({ queryKey: ['granter-assets-all'] })
+              toast.success('새로 조회 중...')
+            }}
+            disabled={ticketsQuery.isFetching}
+            className="btn-secondary"
+            title="새로고침"
+          >
+            <ArrowPathIcon className={`h-3 w-3 ${ticketsQuery.isFetching ? 'animate-spin' : ''}`} />
           </button>
           <button onClick={() => setShowSettings(true)} className="btn-secondary">
             <Cog6ToothIcon className="h-3 w-3 mr-1" />

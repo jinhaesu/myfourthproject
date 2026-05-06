@@ -909,8 +909,15 @@ export default function TaxInvoicePage() {
               업데이트 {formatLastUpdated(ticketsQuery.dataUpdatedAt)}
             </span>
           )}
-          <button onClick={() => ticketsQuery.refetch()} className="btn-secondary">
-            <ArrowPathIcon className="h-3 w-3" />
+          <button
+            onClick={async () => {
+              try { await granterApi.clearCache() } catch { /* 무시 */ }
+              await ticketsQuery.refetch()
+            }}
+            disabled={ticketsQuery.isFetching}
+            className="btn-secondary"
+          >
+            <ArrowPathIcon className={`h-3 w-3 ${ticketsQuery.isFetching ? 'animate-spin' : ''}`} />
           </button>
           {/* 세금계산서 발행 버튼 */}
           <button

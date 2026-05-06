@@ -291,6 +291,59 @@ async def recent_activity_period(
     return {"start": None, "end": None, "count": 0, "lookback_months": max_lookback_months}
 
 
+@router.get("/tickets/extended")
+async def list_tickets_extended(months: int = Query(6, ge=1, le=12)):
+    """
+    지난 N개월(default 6) 거래 데이터를 31일씩 분할 호출 후 합쳐서 반환.
+    캐시플로우 예측 등 장기 패턴 분석용. semaphore가 동시 호출 1로 직렬화.
+
+    응답: { EXPENSE_TICKET: [...], BANK_TRANSACTION_TICKET: [...], TAX_INVOICE_TICKET: [...], CASH_RECEIPT_TICKET: [...] }
+    """
+    from datetime import date, timedelta
+
+    client = get_granter_client()
+    if not client.is_configured:
+        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
+
+    today = date.today()
+    chunks = []
+    cursor = today
+    for _ in range(months):
+        chunk_end = cursor
+        chunk_start = chunk_end - timedelta(days=30)
+        chunks.append((chunk_start.isoformat(), chunk_end.isoformat()))
+        cursor = chunk_start - timedelta(days=1)
+
+    # 각 chunk마다 list_tickets_all_types 호출 (semaphore가 동시성 제어)
+    merged: Dict[str, list] = {
+        "EXPENSE_TICKET": [],
+        "BANK_TRANSACTION_TICKET": [],
+        "TAX_INVOICE_TICKET": [],
+        "CASH_RECEIPT_TICKET": [],
+    }
+    seen_ids: Dict[str, set] = {k: set() for k in merged}
+
+    for start, end in chunks:
+        try:
+            chunk_result = await client.list_tickets_all_types(start, end)
+            for ticket_type, items in chunk_result.items():
+                if not isinstance(items, list):
+                    continue
+                bucket = merged.setdefault(ticket_type, [])
+                ids = seen_ids.setdefault(ticket_type, set())
+                for t in items:
+                    tid = t.get("id") if isinstance(t, dict) else None
+                    if tid is not None and tid in ids:
+                        continue
+                    if tid is not None:
+                        ids.add(tid)
+                    bucket.append(t)
+        except GranterAPIError as e:
+            logger.warning("tickets/extended chunk %s~%s failed: %s", start, end, e)
+
+    return merged
+
+
 @router.post("/tickets/all")
 async def list_tickets_all_types(
     start_date: str = Query(..., description="yyyy-MM-dd"),

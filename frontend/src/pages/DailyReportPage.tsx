@@ -105,8 +105,15 @@ export default function DailyReportPage() {
               업데이트 {formatLastUpdated(reportQuery.dataUpdatedAt)}
             </span>
           )}
-          <button onClick={() => reportQuery.refetch()} className="btn-secondary">
-            <ArrowPathIcon className="h-3 w-3" />
+          <button
+            onClick={async () => {
+              try { await granterApi.clearCache() } catch { /* 무시 */ }
+              await reportQuery.refetch()
+            }}
+            disabled={reportQuery.isFetching}
+            className="btn-secondary"
+          >
+            <ArrowPathIcon className={`h-3 w-3 ${reportQuery.isFetching ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
