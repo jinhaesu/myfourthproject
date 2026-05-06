@@ -15,7 +15,7 @@ import {
   XMarkIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency, isoLocal } from '@/utils/format'
+import { formatCurrency, isoLocal, formatLastUpdated } from '@/utils/format'
 import { isSelfCompany } from '@/utils/internalTransfer'
 import PeriodPicker from '@/components/common/PeriodPicker'
 import { usePeriodStore } from '@/store/periodStore'
@@ -904,6 +904,11 @@ export default function TaxInvoicePage() {
             <ClockIcon className="h-3 w-3 mr-1" />
             {findRecentMut.isPending ? '탐색 중...' : '최근 거래 한 달'}
           </button>
+          {ticketsQuery.dataUpdatedAt > 0 && (
+            <span className="text-2xs text-ink-400 font-mono px-1">
+              업데이트 {formatLastUpdated(ticketsQuery.dataUpdatedAt)}
+            </span>
+          )}
           <button onClick={() => ticketsQuery.refetch()} className="btn-secondary">
             <ArrowPathIcon className="h-3 w-3" />
           </button>

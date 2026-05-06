@@ -37,6 +37,24 @@ export function formatDateTime(value: string | Date | undefined | null): string 
   })
 }
 
+/** 마지막 업데이트 시각: HH:MM (오늘) / MM/DD HH:MM (다른 날) */
+export function formatLastUpdated(ms: number | undefined | null): string {
+  if (!ms) return ''
+  const d = new Date(ms)
+  if (Number.isNaN(d.getTime())) return ''
+  const now = new Date()
+  const isSameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  if (isSameDay) return `${hh}:${mm}`
+  const M = String(d.getMonth() + 1).padStart(2, '0')
+  const D = String(d.getDate()).padStart(2, '0')
+  return `${M}/${D} ${hh}:${mm}`
+}
+
 export function formatRelativeTime(value: string | Date | undefined | null): string {
   if (!value) return '-'
   const d = typeof value === 'string' ? new Date(value) : value

@@ -17,7 +17,7 @@ import {
   ClockIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency, isoLocal } from '@/utils/format'
+import { formatCurrency, isoLocal, formatLastUpdated } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 import { usePeriodStore } from '@/store/periodStore'
 
@@ -454,6 +454,11 @@ export default function UnifiedViewPage() {
             <ClockIcon className="h-3 w-3 mr-1" />
             {findRecentMut.isPending ? '탐색 중...' : '최근 거래 한 달'}
           </button>
+          {ticketsQuery.dataUpdatedAt > 0 && (
+            <span className="text-2xs text-ink-400 font-mono px-1">
+              업데이트 {formatLastUpdated(ticketsQuery.dataUpdatedAt)}
+            </span>
+          )}
           <button onClick={() => ticketsQuery.refetch()} className="btn-secondary" title="새로고침">
             <ArrowPathIcon className="h-3 w-3" />
           </button>
@@ -957,14 +962,14 @@ export default function UnifiedViewPage() {
                 <div className="flex-1 overflow-y-auto overflow-x-hidden">
                   <table className="min-w-full table-fixed">
                     <colgroup>
-                      <col className="w-[68px]" />
+                      <col className="w-[110px]" />
                       <col />
                       <col className="w-[96px]" />
                       <col className="w-[44px]" />
                     </colgroup>
                     <thead className="bg-canvas-50 sticky top-0 z-10">
                       <tr>
-                        <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">일자</th>
+                        <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">일시</th>
                         <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">거래처</th>
                         <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500">금액</th>
                         <th className="px-2 py-1 text-center text-2xs font-semibold text-ink-500">구분</th>
@@ -985,9 +990,11 @@ export default function UnifiedViewPage() {
                           contact = contact || str(t.cashReceipt?.issuer, 'companyName', 'userName')
                         }
                         contact = contact || str(t, 'content') || '-'
-                        // 날짜 MM/DD
-                        const dateRaw = str(t, 'transactAt', 'transactionDate', 'date').slice(0, 10)
-                        const dateShort = dateRaw.length >= 7 ? dateRaw.slice(5, 10).replace('-', '/') : dateRaw
+                        // 일시 MM/DD HH:MM
+                        const dtRaw = str(t, 'transactAt', 'transactionDate', 'date')
+                        const dtMD = dtRaw.length >= 10 ? dtRaw.slice(5, 10).replace('-', '/') : dtRaw
+                        const dtHM = dtRaw.length >= 16 ? dtRaw.slice(11, 16) : ''
+                        const dateShort = dtHM ? `${dtMD} ${dtHM}` : dtMD
                         return (
                           <tr key={t.id || idx} className="hover:bg-canvas-50">
                             <td className="px-2 py-1 whitespace-nowrap text-2xs text-ink-500 font-mono">{dateShort}</td>
@@ -1014,7 +1021,7 @@ export default function UnifiedViewPage() {
               <div className="flex-1 overflow-y-auto overflow-x-hidden">
                 <table className="min-w-full table-fixed">
                   <colgroup>
-                    <col className="w-[68px]" />
+                    <col className="w-[110px]" />
                     <col className="w-[44px]" />
                     <col />
                     <col className="w-[96px]" />
@@ -1022,7 +1029,7 @@ export default function UnifiedViewPage() {
                   </colgroup>
                   <thead className="bg-canvas-50 sticky top-0 z-10">
                     <tr>
-                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">일자</th>
+                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">일시</th>
                       <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">유형</th>
                       <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">거래처/적요</th>
                       <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500">
@@ -1064,9 +1071,11 @@ export default function UnifiedViewPage() {
                       }
                       contact = contact || str(t, 'content')
                       memo = memo || str(t, 'description', 'memo', 'content')
-                      // 날짜 MM/DD
-                      const dateRaw = str(t, 'transactAt', 'transactionDate', 'date').slice(0, 10)
-                      const dateShort = dateRaw.length >= 7 ? dateRaw.slice(5, 10).replace('-', '/') : dateRaw
+                      // 일시 MM/DD HH:MM
+                      const dtRaw = str(t, 'transactAt', 'transactionDate', 'date')
+                      const dtMD = dtRaw.length >= 10 ? dtRaw.slice(5, 10).replace('-', '/') : dtRaw
+                      const dtHM = dtRaw.length >= 16 ? dtRaw.slice(11, 16) : ''
+                      const dateShort = dtHM ? `${dtMD} ${dtHM}` : dtMD
                       return (
                         <tr key={t.id || idx} className="hover:bg-canvas-50">
                           <td className="px-2 py-1 whitespace-nowrap text-2xs text-ink-500 font-mono">{dateShort}</td>

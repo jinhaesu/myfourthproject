@@ -10,7 +10,7 @@ import {
   BuildingLibraryIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency, isoLocal } from '@/utils/format'
+import { formatCurrency, isoLocal, formatLastUpdated } from '@/utils/format'
 import PeriodPicker from '@/components/common/PeriodPicker'
 import { usePeriodStore } from '@/store/periodStore'
 
@@ -100,6 +100,11 @@ export default function DailyReportPage() {
             />
             현재 환율 통일
           </label>
+          {reportQuery.dataUpdatedAt > 0 && (
+            <span className="text-2xs text-ink-400 font-mono px-1">
+              업데이트 {formatLastUpdated(reportQuery.dataUpdatedAt)}
+            </span>
+          )}
           <button onClick={() => reportQuery.refetch()} className="btn-secondary">
             <ArrowPathIcon className="h-3 w-3" />
           </button>
