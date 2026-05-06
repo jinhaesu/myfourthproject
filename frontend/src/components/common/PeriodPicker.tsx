@@ -13,6 +13,9 @@ export type PeriodPreset =
   | 'last_year'
   | 'last_7d'
   | 'last_30d'
+  | 'last_90d'
+  | 'last_180d'
+  | 'last_365d'
   | 'custom'
 
 const PRESET_LABEL: Record<PeriodPreset, string> = {
@@ -28,6 +31,9 @@ const PRESET_LABEL: Record<PeriodPreset, string> = {
   last_year: '작년',
   last_7d: '7일',
   last_30d: '30일',
+  last_90d: '90일',
+  last_180d: '6개월',
+  last_365d: '1년',
   custom: '사용자',
 }
 
@@ -35,7 +41,8 @@ export const PRESET_GROUPS: { label: string; presets: PeriodPreset[] }[] = [
   { label: '일/주', presets: ['today', 'yesterday', 'this_week', 'last_week'] },
   { label: '월', presets: ['this_month', 'last_month'] },
   { label: '분기/연', presets: ['this_quarter', 'last_quarter', 'this_year', 'last_year'] },
-  { label: '범위', presets: ['last_7d', 'last_30d'] },
+  { label: '단기', presets: ['last_7d', 'last_30d'] },
+  { label: '장기', presets: ['last_90d', 'last_180d', 'last_365d'] },
 ]
 
 // 로컬 timezone 기준 yyyy-MM-dd (toISOString은 UTC 기준이라 KST 자정이 전날로 변환되는 버그 방지)
@@ -105,6 +112,21 @@ export function periodForPreset(preset: PeriodPreset): { start: string; end: str
     case 'last_30d': {
       const start = new Date(today)
       start.setDate(d - 29)
+      return { start: iso(start), end: iso(today) }
+    }
+    case 'last_90d': {
+      const start = new Date(today)
+      start.setDate(d - 89)
+      return { start: iso(start), end: iso(today) }
+    }
+    case 'last_180d': {
+      const start = new Date(today)
+      start.setDate(d - 179)
+      return { start: iso(start), end: iso(today) }
+    }
+    case 'last_365d': {
+      const start = new Date(today)
+      start.setDate(d - 364)
       return { start: iso(start), end: iso(today) }
     }
     default:

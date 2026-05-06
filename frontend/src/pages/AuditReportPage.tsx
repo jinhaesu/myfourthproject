@@ -383,18 +383,12 @@ export default function AuditReportPage() {
     [assetsQuery.data]
   )
 
-  // 단일 31일 호출 (chunked 절대 금지)
+  // backend 자동 분할 — frontend 클램프 불필요
   const ticketsQuery = useQuery({
     queryKey: ['audit', effectiveFrom, effectiveTo],
     queryFn: () => {
-      let actualStart = effectiveFrom
-      if (exceeds31) {
-        const d = new Date(effectiveTo)
-        d.setDate(d.getDate() - 30)
-        actualStart = isoLocal(d)
-      }
       console.time('[audit] listTicketsAllTypes')
-      return granterApi.listTicketsAllTypes(actualStart, effectiveTo).then((r) => {
+      return granterApi.listTicketsAllTypes(effectiveFrom, effectiveTo).then((r) => {
         console.timeEnd('[audit] listTicketsAllTypes')
         return r.data
       })
@@ -647,11 +641,14 @@ export default function AuditReportPage() {
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
-          {(fbFrom || exceeds31) && (
+          {fbFrom && (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
-              {fbFrom
-                ? `데이터 없음 — ${fbFrom} ~ ${fbTo} 자동 탐색 중`
-                : '31일 초과 — 종료일 기준 최근 31일만 조회'}
+              {`데이터 없음 — ${fbFrom} ~ ${fbTo} 자동 탐색 중`}
+            </div>
+          )}
+          {!fbFrom && exceeds31 && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+              ⓘ {daysBetween(effectiveFrom, effectiveTo)}일 분석 — 31일씩 자동 분할 호출({Math.ceil(daysBetween(effectiveFrom, effectiveTo) / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
         </div>

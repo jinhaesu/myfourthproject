@@ -180,15 +180,8 @@ export default function ChannelProfitabilityPage() {
   const autoSearchFired = useRef(false)
 
   const ready = Boolean(from && to)
-  const exceeds31 = ready && daysBetween(from, to) > 31
-
-  // 31일 초과 시 종료일 기준 최근 31일
-  const actualFrom = useMemo(() => {
-    if (!exceeds31) return from
-    const d = new Date(to)
-    d.setDate(d.getDate() - 30)
-    return isoLocal(d)
-  }, [from, to, exceeds31])
+  const periodDays = ready ? daysBetween(from, to) : 0
+  const exceeds31 = ready && periodDays > 31
 
   // ─── 그랜터 설정 확인 ──────────────────────────────────────────────────────
   const healthQuery = useQuery({
@@ -210,14 +203,14 @@ export default function ChannelProfitabilityPage() {
     [assetsQuery.data]
   )
 
-  // ─── 티켓 조회 (단일 호출, chunked 절대 사용 금지) ────────────────────────
+  // ─── 티켓 조회 (backend 자동 분할 — frontend 클램프 불필요) ────────────────
   const dataQuery = useQuery({
-    queryKey: ['channel-profitability', actualFrom, to],
+    queryKey: ['channel-profitability', from, to],
     queryFn: async () => {
       // 그랜터 동시 호출 시 간헐 401 회피 — 순차 호출
-      const bankRes = await granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: actualFrom, endDate: to })
-      const taxRes = await granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: actualFrom, endDate: to })
-      const expenseRes = await granterApi.listTickets({ ticketType: 'EXPENSE_TICKET', startDate: actualFrom, endDate: to })
+      const bankRes = await granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: from, endDate: to })
+      const taxRes = await granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: from, endDate: to })
+      const expenseRes = await granterApi.listTickets({ ticketType: 'EXPENSE_TICKET', startDate: from, endDate: to })
       const bank    = Array.isArray(bankRes.data)    ? bankRes.data    : bankRes.data?.data    || []
       const tax     = Array.isArray(taxRes.data)     ? taxRes.data     : taxRes.data?.data     || []
       const expense = Array.isArray(expenseRes.data) ? expenseRes.data : expenseRes.data?.data || []
@@ -541,8 +534,8 @@ export default function ChannelProfitabilityPage() {
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
           {exceeds31 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
-              31일 초과 — 종료일 기준 최근 31일 ({actualFrom} ~ {to}) 자동 조회
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+              ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
         </div>
@@ -710,7 +703,7 @@ export default function ChannelProfitabilityPage() {
           {dailyStackedData.length > 0 && (
             <div className="panel p-3">
               <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
-                일별 채널 매출 추이 (기간: {actualFrom} ~ {to})
+                일별 채널 매출 추이 (기간: {from} ~ {to})
               </div>
               <div className="h-48">
                 <ResponsiveContainer width="100%" height="100%">
@@ -1052,7 +1045,7 @@ export default function ChannelProfitabilityPage() {
         <div className="panel overflow-hidden">
           <div className="px-3 py-2 border-b border-ink-200">
             <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
-              기간 합계 ({actualFrom} ~ {to})
+              기간 합계 ({from} ~ {to})
             </span>
           </div>
           <div className="overflow-x-auto">

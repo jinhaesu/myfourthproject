@@ -752,16 +752,10 @@ export default function TaxInvoicePage() {
   const ticketsQuery = useQuery({
     queryKey: ['granter-tax-invoices', from, to],
     queryFn: () => {
-      let actualStart = from
-      if (exceeds31) {
-        const d = new Date(to)
-        d.setDate(d.getDate() - 30)
-        actualStart = isoLocal(d)
-      }
       return granterApi
         .listTickets({
           ticketType: 'TAX_INVOICE_TICKET',
-          startDate: actualStart,
+          startDate: from,
           endDate: to,
         })
         .then((r) => r.data)
@@ -961,8 +955,8 @@ export default function TaxInvoicePage() {
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
           {exceeds31 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
-              31일 초과 — 종료일 기준 최근 31일만 자동 조회
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+              ⓘ {daysBetween(from, to)}일 분석 — 31일씩 자동 분할 호출({Math.ceil(daysBetween(from, to) / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
         </div>

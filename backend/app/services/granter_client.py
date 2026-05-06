@@ -234,10 +234,12 @@ class GranterClient:
     ) -> Dict[str, Any]:
         """
         모든 ticketType을 병렬 호출해 합쳐서 반환.
-        60초 메모리 캐시 — 페이지 재방문 시 즉시 응답.
+        그랜터 31일 한도 자동 우회 — 31일 초과 시 31일씩 분할 호출 후 중복 제거 합치기.
+        5분 메모리 캐시 — 페이지 재방문 시 즉시 응답.
         """
         import asyncio
         import time as _time
+        from datetime import date as _date, timedelta
 
         cache_key = f"all|{start_date}|{end_date}|{asset_id}"
         now = _time.time()
@@ -245,6 +247,56 @@ class GranterClient:
         if cached and (now - cached[0] < self._CACHE_TTL):
             logger.info("Granter cache HIT: %s", cache_key)
             return cached[1]
+
+        # 31일 초과 시 자동 분할
+        try:
+            sd = _date.fromisoformat(start_date)
+            ed = _date.fromisoformat(end_date)
+            span_days = (ed - sd).days + 1
+        except Exception:
+            sd = ed = None
+            span_days = 0
+
+        if sd and ed and span_days > 31:
+            # 31일씩 분할 (뒤에서부터)
+            chunks = []
+            cursor_end = ed
+            while cursor_end >= sd:
+                cursor_start = max(sd, cursor_end - timedelta(days=30))
+                chunks.append((cursor_start.isoformat(), cursor_end.isoformat()))
+                cursor_end = cursor_start - timedelta(days=1)
+
+            merged: Dict[str, list] = {
+                "EXPENSE_TICKET": [],
+                "BANK_TRANSACTION_TICKET": [],
+                "TAX_INVOICE_TICKET": [],
+                "CASH_RECEIPT_TICKET": [],
+            }
+            seen_ids: Dict[str, set] = {k: set() for k in merged}
+            for s, e in chunks:
+                try:
+                    chunk_result = await self._fetch_one_period(s, e, asset_id)
+                    for tt, items in chunk_result.items():
+                        if not isinstance(items, list):
+                            continue
+                        bucket = merged.setdefault(tt, [])
+                        ids = seen_ids.setdefault(tt, set())
+                        for t in items:
+                            tid = t.get("id") if isinstance(t, dict) else None
+                            if tid is not None and tid in ids:
+                                continue
+                            if tid is not None:
+                                ids.add(tid)
+                            bucket.append(t)
+                except GranterAPIError as e:
+                    logger.warning("tickets_all chunk %s~%s failed: %s", s, e, e)
+
+            # 합산 결과 캐시 (빈 응답이 아니면)
+            total_count = sum(len(v) for v in merged.values() if isinstance(v, list))
+            if total_count > 0:
+                self._TICKETS_CACHE[cache_key] = (now, merged)
+            logger.info("tickets_all auto-split %d chunks → %d total", len(chunks), total_count)
+            return merged
 
         ticket_types = [
             "EXPENSE_TICKET",            # 카드 사용
@@ -292,6 +344,40 @@ class GranterClient:
         self._TICKETS_CACHE.clear()
         logger.info("Granter cache cleared (%d entries)", n)
         return n
+
+    async def _fetch_one_period(
+        self,
+        start_date: str,
+        end_date: str,
+        asset_id: Optional[int] = None,
+    ) -> Dict[str, list]:
+        """단일 31일 이내 기간의 모든 ticketType 호출 (캐시 미사용 — 자동 분할에서 사용)"""
+        import asyncio
+
+        ticket_types = [
+            "EXPENSE_TICKET",
+            "BANK_TRANSACTION_TICKET",
+            "TAX_INVOICE_TICKET",
+            "CASH_RECEIPT_TICKET",
+        ]
+
+        async def _fetch(t: str):
+            payload = {"ticketType": t, "startDate": start_date, "endDate": end_date}
+            if asset_id is not None:
+                payload["assetId"] = asset_id
+            try:
+                r = await self.list_tickets(payload)
+                items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+                return t, items
+            except GranterAPIError as e:
+                logger.warning("Granter tickets %s fetch failed: %s", t, e)
+                return t, []
+
+        results = []
+        for t in ticket_types:
+            results.append(await _fetch(t))
+            await asyncio.sleep(0.2)
+        return dict(results)
 
     # ============ 잔액 / 일일 리포트 / 환율 ============
 

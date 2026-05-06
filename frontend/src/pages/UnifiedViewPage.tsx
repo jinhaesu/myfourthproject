@@ -203,15 +203,8 @@ export default function UnifiedViewPage() {
   // 31일 초과 시 백엔드가 종료일 기준 31일만 반환
   const usageQuery = useQuery({
     queryKey: ['granter-tickets-usage', from, to],
-    queryFn: () => {
-      let actualStart = from
-      if (exceeds31Days) {
-        const d = new Date(to)
-        d.setDate(d.getDate() - 30)
-        actualStart = isoLocal(d)
-      }
-      return granterApi.listTicketsAllTypes(actualStart, to).then((r) => r.data)
-    },
+    // backend가 31일 초과 시 자동 분할 호출 (사용자 선택 기간 그대로 전달)
+    queryFn: () => granterApi.listTicketsAllTypes(from, to).then((r) => r.data),
     enabled: !!isConfigured && ready,
     retry: false,
   })
@@ -240,19 +233,12 @@ export default function UnifiedViewPage() {
   // 카드(EXPENSE_TICKET) 전용 조회 — 페이지 진입 시 즉시 카드 사용금액 표시
   const cardExpenseQuery = useQuery({
     queryKey: ['unified-card-expenses', from, to],
-    queryFn: () => {
-      let actualStart = from
-      if (exceeds31Days) {
-        const d = new Date(to)
-        d.setDate(d.getDate() - 30)
-        actualStart = isoLocal(d)
-      }
-      return granterApi.listTickets({
+    queryFn: () =>
+      granterApi.listTickets({
         ticketType: 'EXPENSE_TICKET',
-        startDate: actualStart,
+        startDate: from,
         endDate: to,
-      }).then((r) => r.data)
-    },
+      }).then((r) => r.data),
     enabled: !!isConfigured && ready,
     retry: false,
   })
@@ -304,24 +290,15 @@ export default function UnifiedViewPage() {
   const ticketsQuery = useQuery({
     queryKey: ['granter-tickets-v2', selected, from, to],
     queryFn: () => {
-      // 31일 초과 시 자동으로 마지막 31일만 (사용자에게 안내)
-      let actualStart = from
-      if (exceeds31Days) {
-        const d = new Date(to)
-        d.setDate(d.getDate() - 30)
-        actualStart = isoLocal(d)
-      }
-      // ticketType이 있으면 무조건 단일 타입 호출 (세금계산서/현금영수증/카드/계좌 등)
-      // ticketType이 없을 때만 모든 타입 통합 호출 (전체 거래 보기)
+      // backend가 31일 초과 시 자동 분할 호출 — 사용자 선택 기간 그대로 전달
       if (!selected.ticketType) {
         return granterApi
-          .listTicketsAllTypes(actualStart, to, selected.assetId)
+          .listTicketsAllTypes(from, to, selected.assetId)
           .then((r) => r.data)
       }
-      // 단일 타입
       const payload: any = {
         ticketType: selected.ticketType,
-        startDate: actualStart,
+        startDate: from,
         endDate: to,
       }
       if (selected.assetId) payload.assetId = selected.assetId
@@ -502,8 +479,8 @@ export default function UnifiedViewPage() {
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
           {exceeds31Days && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
-              ⓘ 그랜터는 1회 조회 최대 31일 — 자동으로 종료일 기준 최근 31일만 조회됩니다
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+              ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
           <label className="ml-auto flex items-center gap-1.5 text-2xs text-ink-600 cursor-pointer">

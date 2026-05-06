@@ -28,7 +28,7 @@ import {
   BuildingOffice2Icon,
 } from '@heroicons/react/24/outline'
 import { granterApi } from '@/services/api'
-import { formatCurrency, formatCompactWon, isoLocal } from '@/utils/format'
+import { formatCurrency, formatCompactWon } from '@/utils/format'
 import PeriodPicker from '@/components/common/PeriodPicker'
 import { usePeriodStore } from '@/store/periodStore'
 import { buildOwnAccountSet, filterOutInternalTransfers, isSelfCompany } from '@/utils/internalTransfer'
@@ -76,11 +76,6 @@ function daysBetween(a: string, b: string) {
   return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
 }
 
-function addDays(d: Date, n: number): Date {
-  const r = new Date(d)
-  r.setDate(r.getDate() + n)
-  return r
-}
 
 /** 거래처 집계 */
 function buildContactRows(taxTickets: any[], bankTickets: any[]): ContactRow[] {
@@ -511,10 +506,9 @@ export default function SettlementPage() {
 
   const ready = Boolean(from && to)
 
-  // 31일 클램프
+  // backend 자동 분할 — frontend 클램프 불필요
   const periodSpan = ready ? daysBetween(from, to) : 0
   const exceeds31 = periodSpan > 31
-  const actualStart = exceeds31 ? isoLocal(addDays(new Date(to), -30)) : from
 
   // 그랜터 연결 상태
   const healthQuery = useQuery({
@@ -524,13 +518,13 @@ export default function SettlementPage() {
   })
   const isConfigured = healthQuery.data?.configured
 
-  // 세금계산서 + 통장 거래 동시 조회
+  // 세금계산서 + 통장 거래 동시 조회 (backend 자동 분할)
   const dataQuery = useQuery({
-    queryKey: ['settlement-v2', actualStart, to],
+    queryKey: ['settlement-v2', from, to],
     queryFn: async () => {
       // 그랜터 동시 호출 간헐 401 회피 — 순차 호출
-      const taxRes = await granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: actualStart, endDate: to })
-      const bankRes = await granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: actualStart, endDate: to })
+      const taxRes = await granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: from, endDate: to })
+      const bankRes = await granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: from, endDate: to })
       const tax = Array.isArray(taxRes.data) ? taxRes.data : (taxRes.data?.data || [])
       const bank = Array.isArray(bankRes.data) ? bankRes.data : (bankRes.data?.data || [])
       return { tax, bank }
@@ -675,8 +669,8 @@ export default function SettlementPage() {
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
           {exceeds31 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
-              31일 초과 — 종료일 기준 최근 31일만 조회
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+              ⓘ {periodSpan}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodSpan / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
         </div>

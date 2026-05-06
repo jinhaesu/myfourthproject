@@ -368,17 +368,60 @@ async def list_tickets_all_types(
 async def list_tickets(payload: Dict[str, Any] = Body(default_factory=dict)):
     """
     카드·계좌·세금계산서·현금영수증·결재 등 모든 거래/증빙 통합 조회.
+    그랜터 31일 한도 자동 우회 — startDate/endDate 차이가 31일 초과면 31일씩 분할 호출 후 합침.
 
     예시 payload:
     {
-      "fromDate": "2026-04-01",
-      "toDate": "2026-04-30",
-      "ticketTypes": ["CARD_TICKET","BANK_TICKET","TAX_INVOICE_TICKET","CASH_RECEIPT_TICKET"],
-      "limit": 100
+      "ticketType": "TAX_INVOICE_TICKET",
+      "startDate": "2026-04-01",
+      "endDate": "2026-04-30"
     }
-    실제 필드는 그랜터 가이드의 Request Fields 참조.
     """
+    from datetime import date as _date, timedelta
+
     client = get_granter_client()
+
+    # 자동 분할 (startDate/endDate 명시 + 31일 초과 시)
+    sd_str = payload.get("startDate")
+    ed_str = payload.get("endDate")
+    if sd_str and ed_str:
+        try:
+            sd = _date.fromisoformat(sd_str)
+            ed = _date.fromisoformat(ed_str)
+            span = (ed - sd).days + 1
+        except Exception:
+            sd = ed = None
+            span = 0
+
+        if sd and ed and span > 31:
+            chunks = []
+            cursor_end = ed
+            while cursor_end >= sd:
+                cursor_start = max(sd, cursor_end - timedelta(days=30))
+                chunks.append((cursor_start.isoformat(), cursor_end.isoformat()))
+                cursor_end = cursor_start - timedelta(days=1)
+
+            merged: list = []
+            seen_ids: set = set()
+            for s, e in chunks:
+                chunk_payload = dict(payload)
+                chunk_payload["startDate"] = s
+                chunk_payload["endDate"] = e
+                try:
+                    r = await client.list_tickets(chunk_payload)
+                    items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+                    for t in items:
+                        tid = t.get("id") if isinstance(t, dict) else None
+                        if tid is not None and tid in seen_ids:
+                            continue
+                        if tid is not None:
+                            seen_ids.add(tid)
+                        merged.append(t)
+                except GranterAPIError as ex:
+                    logger.warning("list_tickets chunk %s~%s failed: %s", s, e, ex)
+            logger.info("list_tickets auto-split %d chunks → %d items", len(chunks), len(merged))
+            return merged
+
     try:
         return await client.list_tickets(payload)
     except GranterAPIError as e:

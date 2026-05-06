@@ -944,21 +944,10 @@ export default function ContactScoringPage() {
   })
   const isConfigured = healthQuery.data?.configured
 
-  // 단일 31일 호출 (필수 - chunked 절대 사용 안 함)
+  // backend 자동 분할 — frontend 클램프 불필요
   const ticketsQuery = useQuery({
     queryKey: ['contact-scoring', from, to],
-    queryFn: () => {
-      let actualStart = from
-      if (daysBetween(from, to) > 31) {
-        const d = new Date(to)
-        d.setDate(d.getDate() - 30)
-        actualStart = isoLocal(d)
-      }
-      return granterApi.listTicketsAllTypes(actualStart, to).then((r) => {
-        const tickets = flattenTickets(r.data)
-        return { tickets, actualStart }
-      })
-    },
+    queryFn: () => granterApi.listTicketsAllTypes(from, to).then((r) => flattenTickets(r.data)),
     enabled: ready && !!isConfigured,
     retry: false,
   })
@@ -975,13 +964,12 @@ export default function ContactScoringPage() {
     [assetsQuery.data]
   )
 
-  const rawTickets: any[] = ticketsQuery.data?.tickets ?? []
+  const rawTickets: any[] = ticketsQuery.data ?? []
   const tickets: any[] = useMemo(
     () => filterOutInternalTransfers(rawTickets, ownAccounts),
     [rawTickets, ownAccounts]
   )
   const filteredCount = rawTickets.length - tickets.length
-  const actualStart: string = ticketsQuery.data?.actualStart ?? from
 
   // 최근 거래 자동 탐색 (24개월 거꾸로)
   const findRecentMut = useMutation({
@@ -1020,7 +1008,7 @@ export default function ContactScoringPage() {
     if (
       !autoTriedRef.current &&
       ticketsQuery.isSuccess &&
-      ticketsQuery.data?.tickets?.length === 0 &&
+      (ticketsQuery.data?.length ?? 0) === 0 &&
       !findRecentMut.isPending
     ) {
       autoTriedRef.current = true
@@ -1139,9 +1127,8 @@ export default function ContactScoringPage() {
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
           {exceeds31 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
-              31일 초과 선택 — 종료일 기준 최근 31일로 자동 조정
-              {actualStart !== from && ` (실제 조회: ${actualStart} ~ ${to})`}
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+              ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
           {ticketsQuery.isError && (
