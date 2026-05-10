@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   LineChart,
   Line,
@@ -1091,6 +1091,8 @@ const FORECAST_PRESET_LABELS: Record<ForecastPreset, string> = {
 
 export default function CashflowForecastPage() {
   const today = isoToday()
+  const queryClient = useQueryClient()
+  const [refreshing, setRefreshing] = useState(false)
 
   // -- Lookback (분석 기간) — 글로벌 periodStore 사용 --
   const lookbackPreset = usePeriodStore((s) => s.preset)
@@ -1321,14 +1323,28 @@ export default function CashflowForecastPage() {
           )}
         </div>
         <button
-          onClick={() => {
-            reportQuery.refetch()
-            ticketsQuery.refetch()
+          onClick={async () => {
+            setRefreshing(true)
+            try {
+              // backend 그랜터 메모리 캐시 강제 무효화 (10분 TTL 무시)
+              try { await granterApi.clearCache() } catch {}
+              // react-query 캐시도 무효화 후 재조회
+              await queryClient.invalidateQueries({ queryKey: ['cashflow-tickets-extended-6m-slim'] })
+              await queryClient.invalidateQueries({ queryKey: ['cashflow-balance'] })
+              await queryClient.invalidateQueries({ queryKey: ['granter-all-assets'] })
+              await Promise.all([
+                reportQuery.refetch(),
+                ticketsQuery.refetch(),
+                assetsQuery.refetch(),
+              ])
+            } finally {
+              setRefreshing(false)
+            }
           }}
-          disabled={isLoading}
+          disabled={isLoading || refreshing}
           className="btn-secondary"
         >
-          <ArrowPathIcon className={`h-3 w-3 ${isLoading ? 'animate-spin' : ''}`} />
+          <ArrowPathIcon className={`h-3 w-3 ${isLoading || refreshing ? 'animate-spin' : ''}`} />
           새로고침
         </button>
       </div>
