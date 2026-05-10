@@ -706,7 +706,7 @@ export const granterApi = {
   listTicketsExtended: (months: number = 6, slim: boolean = false) =>
     api.get('/granter/tickets/extended', {
       params: { months, slim },
-      timeout: 180_000,  // 6개월 분할 호출은 시간 걸림
+      timeout: 300_000,  // 6개월 분할 호출은 시간 걸림 (cold cache 시 ~3분, gzip 적용 후 더 빠름)
     }),
   recentActivityPeriod: (assetId?: number) =>
     api.get('/granter/recent-activity-period', { params: { asset_id: assetId } }),

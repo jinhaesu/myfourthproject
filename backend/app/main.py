@@ -12,6 +12,7 @@ print(f"[STARTUP] CWD={os.getcwd()} PORT={os.environ.get('PORT', 'not set')}", f
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 import logging
 
@@ -99,6 +100,9 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan
 )
+
+# GZip 압축 — 큰 응답(특히 캐시플로우 6개월 ~50MB → ~5MB) 전송 시간 대폭 단축
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
 # CORS 설정 - Vercel + localhost 허용
 app.add_middleware(
