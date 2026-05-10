@@ -1178,11 +1178,12 @@ export default function CashflowForecastPage() {
   )
 
   // 캐시플로우 예측은 장기 패턴 분석 — 6개월치 거래 사용 (사용자 요구: 거래처 수백곳 분석)
+  // slim=true: raw 카드사 응답·첨부 등 무거운 필드 제외 (응답 ~300MB → ~5MB)
   const ticketsQuery = useQuery({
-    queryKey: ['cashflow-tickets-extended-6m'],
+    queryKey: ['cashflow-tickets-extended-6m-slim'],
     queryFn: () =>
       granterApi
-        .listTicketsExtended(6)
+        .listTicketsExtended(6, true)
         .then((r) => flattenTickets(r.data)),
     enabled: !!isConfigured,
     retry: 1,

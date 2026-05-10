@@ -291,12 +291,73 @@ async def recent_activity_period(
     return {"start": None, "end": None, "count": 0, "lookback_months": max_lookback_months}
 
 
+def _slim_ticket(t: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    캐시플로우 패턴 분석에 필요한 핵심 필드만 추출.
+    원본 ticket은 카드사 raw response, 첨부, 메시지 등 무거운 필드를 포함하므로
+    6개월치를 그대로 보내면 응답이 수백 MB가 된다 → slim으로 ~5MB 수준으로 축소.
+
+    유지 필드 (frontend의 extractContact + filterOutInternalTransfers + analyzeContactPatterns가 사용하는 것 전부):
+    - id, ticketType, transactionType, amount, transactAt, createdAt
+    - contact (그랜터 직접 입력값)
+    - bankTransaction.{counterparty, content, counterpartyAccountNumber, opponent, opponentAccountNumber, counterpartyName}
+    - cardUsage.{storeName}
+    - taxInvoice.{contractor, supplier} 의 companyName + registrationNumber/businessNumber
+    - cashReceipt.issuer.companyName
+    """
+    out: Dict[str, Any] = {
+        "id": t.get("id"),
+        "ticketType": t.get("ticketType"),
+        "transactionType": t.get("transactionType"),
+        "amount": t.get("amount"),
+        "transactAt": t.get("transactAt"),
+        "createdAt": t.get("createdAt"),
+        "contact": t.get("contact"),
+    }
+    bt = t.get("bankTransaction")
+    if isinstance(bt, dict):
+        out["bankTransaction"] = {
+            "counterparty": bt.get("counterparty"),
+            "content": bt.get("content"),
+            "counterpartyAccountNumber": bt.get("counterpartyAccountNumber"),
+            "opponent": bt.get("opponent"),
+            "opponentAccountNumber": bt.get("opponentAccountNumber"),
+            "counterpartyName": bt.get("counterpartyName"),
+        }
+    cu = t.get("cardUsage")
+    if isinstance(cu, dict):
+        out["cardUsage"] = {"storeName": cu.get("storeName")}
+    ti = t.get("taxInvoice")
+    if isinstance(ti, dict):
+        def _slim_party(p: Any) -> Dict[str, Any]:
+            if not isinstance(p, dict):
+                return {}
+            return {
+                "companyName": p.get("companyName"),
+                "registrationNumber": p.get("registrationNumber"),
+                "businessNumber": p.get("businessNumber"),
+            }
+        out["taxInvoice"] = {
+            "contractor": _slim_party(ti.get("contractor")),
+            "supplier": _slim_party(ti.get("supplier")),
+        }
+    cr = t.get("cashReceipt")
+    if isinstance(cr, dict):
+        issuer = cr.get("issuer") if isinstance(cr.get("issuer"), dict) else {}
+        out["cashReceipt"] = {"issuer": {"companyName": issuer.get("companyName")}}
+    return out
+
+
 @router.get("/tickets/extended")
-async def list_tickets_extended(months: int = Query(6, ge=1, le=12)):
+async def list_tickets_extended(
+    months: int = Query(6, ge=1, le=12),
+    slim: bool = Query(False, description="패턴 분석용 핵심 필드만 반환 (응답 크기 ~98% 축소)"),
+):
     """
     지난 N개월(default 6) 거래 데이터를 31일씩 분할 호출 후 합쳐서 반환.
     캐시플로우 예측 등 장기 패턴 분석용. semaphore가 동시 호출 1로 직렬화.
 
+    slim=true: 거래처/금액/날짜/방향 등 패턴 분석에 필요한 필드만 (raw 카드사 응답·첨부·메시지 제외).
     응답: { EXPENSE_TICKET: [...], BANK_TRANSACTION_TICKET: [...], TAX_INVOICE_TICKET: [...], CASH_RECEIPT_TICKET: [...] }
     """
     from datetime import date, timedelta
@@ -337,7 +398,7 @@ async def list_tickets_extended(months: int = Query(6, ge=1, le=12)):
                         continue
                     if tid is not None:
                         ids.add(tid)
-                    bucket.append(t)
+                    bucket.append(_slim_ticket(t) if slim else t)
         except GranterAPIError as e:
             logger.warning("tickets/extended chunk %s~%s failed: %s", start, end, e)
 

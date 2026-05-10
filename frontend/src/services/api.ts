@@ -703,8 +703,11 @@ export const granterApi = {
     api.post('/granter/tickets/all', null, {
       params: { start_date: startDate, end_date: endDate, asset_id: assetId },
     }),
-  listTicketsExtended: (months: number = 6) =>
-    api.get('/granter/tickets/extended', { params: { months } }),
+  listTicketsExtended: (months: number = 6, slim: boolean = false) =>
+    api.get('/granter/tickets/extended', {
+      params: { months, slim },
+      timeout: 180_000,  // 6개월 분할 호출은 시간 걸림
+    }),
   recentActivityPeriod: (assetId?: number) =>
     api.get('/granter/recent-activity-period', { params: { asset_id: assetId } }),
   listBalances: (payload: any) => api.post('/granter/balances', payload),
