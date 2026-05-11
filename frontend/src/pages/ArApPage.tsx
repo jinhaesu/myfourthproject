@@ -21,6 +21,7 @@ import {
 } from 'recharts'
 import { ledgerApi } from '@/services/api'
 import { formatCurrency, formatCompactWon } from '@/utils/format'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 
 type ArApType = 'receivable' | 'payable'
 
@@ -75,13 +76,6 @@ const TYPE_DESCRIPTION: Record<ArApType, string> = {
 
 export default function ArApPage() {
   const currentYear = new Date().getFullYear()
-  // 사용자 요구: 당해 포함 5개년 (2022~2026)
-  const years = useMemo(() => {
-    const arr: number[] = []
-    for (let i = 4; i >= 0; i--) arr.push(currentYear - i)
-    return arr
-  }, [currentYear])
-
   const [year, setYear] = useState<number>(currentYear)
   const [type, setType] = useState<ArApType>('receivable')
   const [search, setSearch] = useState('')
@@ -174,20 +168,7 @@ export default function ArApPage() {
           <div className="text-2xs font-semibold text-ink-600 mb-1.5 uppercase tracking-wider">
             회계연도
           </div>
-          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200 w-fit">
-            {years.map((y) => (
-              <button
-                key={y}
-                onClick={() => setYear(y)}
-                className={`px-3 py-1 rounded text-2xs font-semibold transition ${
-                  year === y ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
-                }`}
-              >
-                {y}
-                {y === currentYear && <span className="ml-1 text-2xs opacity-70">(당해)</span>}
-              </button>
-            ))}
-          </div>
+          <FiscalYearTabs year={year} onChange={setYear} />
         </div>
 
         <div>

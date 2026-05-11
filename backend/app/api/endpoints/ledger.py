@@ -828,15 +828,17 @@ async def get_ar_ap_summary(
     counterparties.sort(key=lambda x: -abs(x['closing_balance']))
 
     # 월별 시계열 — transaction_date의 앞 7자리(YYYY-MM 또는 YYYY.MM)
+    # PostgreSQL은 GROUP BY/ORDER BY에 SELECT의 표현식과 정확히 같은 객체를 요구하므로 변수로 통일
+    ym_expr = func.substr(AIRawTransactionData.transaction_date, 1, 7)
     month_rows = (await db.execute(
         select(
-            func.substr(AIRawTransactionData.transaction_date, 1, 7).label('ym'),
+            ym_expr.label('ym'),
             func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
             func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
             func.count(AIRawTransactionData.id).label('cnt'),
         ).where(period_filter)
-         .group_by(func.substr(AIRawTransactionData.transaction_date, 1, 7))
-         .order_by(func.substr(AIRawTransactionData.transaction_date, 1, 7))
+         .group_by(ym_expr)
+         .order_by(ym_expr)
     )).all()
 
     monthly = []
