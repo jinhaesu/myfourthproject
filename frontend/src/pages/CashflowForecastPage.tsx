@@ -827,6 +827,10 @@ function UserInputPanel({
 
 // -- ContactPatternTable --
 
+type SortKey = 'contact' | 'avgAmount' | 'txCount' | 'cycle' | 'nextDate' | 'confidence' | 'shareRatio'
+type SortDir = 'asc' | 'desc'
+const CONF_ORDER: Record<Confidence, number> = { low: 0, medium: 1, high: 2 }
+
 interface ContactPatternTableProps {
   patterns: ContactPattern[]
   direction: 'IN' | 'OUT'
@@ -841,6 +845,59 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo }: 
       ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
       : 'bg-rose-50 text-rose-700 border-rose-200'
 
+  // 기본: 합계금액(비율) desc — 현재 patterns가 이미 totalAmount desc로 정렬돼 들어옴
+  const [sortKey, setSortKey] = useState<SortKey>('shareRatio')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      // 텍스트는 asc 우선, 숫자/날짜는 desc 우선이 직관적
+      setSortDir(key === 'contact' || key === 'nextDate' ? 'asc' : 'desc')
+    }
+  }
+
+  const sortedPatterns = useMemo(() => {
+    const arr = patterns.map((p) => ({
+      p,
+      nextDate: firstNextOccurrence(p, forecastFrom, forecastTo),
+    }))
+    arr.sort((a, b) => {
+      let cmp = 0
+      switch (sortKey) {
+        case 'contact':
+          cmp = a.p.contact.localeCompare(b.p.contact, 'ko')
+          break
+        case 'avgAmount':
+          cmp = a.p.avgAmount - b.p.avgAmount
+          break
+        case 'txCount':
+          cmp = a.p.txCount - b.p.txCount
+          break
+        case 'cycle': {
+          // 매월 고정일이 우선 (작은 값일수록 짧은 주기)
+          const av = a.p.preferredDayOfMonth ?? a.p.cycleDays
+          const bv = b.p.preferredDayOfMonth ?? b.p.cycleDays
+          cmp = av - bv
+          break
+        }
+        case 'nextDate':
+          cmp = a.nextDate.localeCompare(b.nextDate)
+          break
+        case 'confidence':
+          cmp = CONF_ORDER[a.p.confidence] - CONF_ORDER[b.p.confidence]
+          break
+        case 'shareRatio':
+          cmp = a.p.shareRatio - b.p.shareRatio
+          break
+      }
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+    return arr
+  }, [patterns, forecastFrom, forecastTo, sortKey, sortDir])
+
   if (patterns.length === 0) {
     return (
       <div className="px-3 py-5 text-center text-2xs text-ink-400">
@@ -849,63 +906,73 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo }: 
     )
   }
 
+  function SortHeader({
+    label,
+    sk,
+    align,
+  }: {
+    label: string
+    sk: SortKey
+    align: 'left' | 'right' | 'center'
+  }) {
+    const active = sortKey === sk
+    const arrow = active ? (sortDir === 'asc' ? '▲' : '▼') : ''
+    const justify =
+      align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : 'justify-start'
+    return (
+      <th
+        className={`px-3 py-1.5 text-${align} text-2xs font-semibold uppercase tracking-wider cursor-pointer select-none transition ${
+          active ? 'text-ink-900 bg-canvas-100' : 'text-ink-500 hover:text-ink-700 hover:bg-canvas-100'
+        }`}
+        onClick={() => handleSort(sk)}
+        title="클릭하여 정렬"
+      >
+        <span className={`inline-flex items-center gap-1 ${justify}`}>
+          {label}
+          <span className="text-[8px] w-2 inline-block">{arrow}</span>
+        </span>
+      </th>
+    )
+  }
+
   return (
     <div className="overflow-x-auto max-h-60 overflow-y-auto">
       <table className="min-w-full">
         <thead className="bg-canvas-50 sticky top-0 z-10">
           <tr>
-            <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-              거래처
-            </th>
-            <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-              과거 평균
-            </th>
-            <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-              건수
-            </th>
-            <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-              주기
-            </th>
-            <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-              다음 예상일
-            </th>
-            <th className="px-3 py-1.5 text-center text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-              정확도
-            </th>
-            <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-              비율
-            </th>
+            <SortHeader label="거래처" sk="contact" align="left" />
+            <SortHeader label="과거 평균" sk="avgAmount" align="right" />
+            <SortHeader label="건수" sk="txCount" align="right" />
+            <SortHeader label="주기" sk="cycle" align="right" />
+            <SortHeader label="다음 예상일" sk="nextDate" align="right" />
+            <SortHeader label="정확도" sk="confidence" align="center" />
+            <SortHeader label="비율" sk="shareRatio" align="right" />
           </tr>
         </thead>
         <tbody className="divide-y divide-ink-100">
-          {patterns.map((p) => {
-            const nextDate = firstNextOccurrence(p, forecastFrom, forecastTo)
-            return (
-              <tr key={p.contact} className="hover:bg-canvas-50">
-                <td className="px-3 py-1.5 text-xs text-ink-800 max-w-[140px] truncate">
-                  {p.contact}
-                </td>
-                <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-800">
-                  {formatCurrency(p.avgAmount, false)}
-                </td>
-                <td className="px-3 py-1.5 text-right text-2xs text-ink-600">{p.txCount}회</td>
-                <td className="px-3 py-1.5 text-right text-2xs text-ink-600">
-                  {p.preferredDayOfMonth !== null
-                    ? `매월 ${p.preferredDayOfMonth}일`
-                    : `~${p.cycleDays}일`}
-                </td>
-                <td className="px-3 py-1.5 text-right text-2xs">
-                  <span className={`badge ${badgeCls}`}>{nextDate}</span>
-                </td>
-                <td className="px-3 py-1.5 text-center text-2xs">
-                  <ConfidenceBadge confidence={p.confidence} />
-                </td>
-                <td className="px-3 py-1.5 text-right text-2xs text-ink-500">
-                  {(p.shareRatio * 100).toFixed(1)}%
-                </td>
-              </tr>
-            )
-          })}
+          {sortedPatterns.map(({ p, nextDate }) => (
+            <tr key={p.contact} className="hover:bg-canvas-50">
+              <td className="px-3 py-1.5 text-xs text-ink-800 max-w-[140px] truncate">{p.contact}</td>
+              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-800">
+                {formatCurrency(p.avgAmount, false)}
+              </td>
+              <td className="px-3 py-1.5 text-right text-2xs text-ink-600">{p.txCount}회</td>
+              <td className="px-3 py-1.5 text-right text-2xs text-ink-600">
+                {p.preferredDayOfMonth !== null
+                  ? `매월 ${p.preferredDayOfMonth}일`
+                  : `~${p.cycleDays}일`}
+              </td>
+              <td className="px-3 py-1.5 text-right text-2xs">
+                <span className={`badge ${badgeCls}`}>{nextDate}</span>
+              </td>
+              <td className="px-3 py-1.5 text-center text-2xs">
+                <ConfidenceBadge confidence={p.confidence} />
+              </td>
+              <td className="px-3 py-1.5 text-right text-2xs text-ink-500">
+                {(p.shareRatio * 100).toFixed(1)}%
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
