@@ -32,6 +32,36 @@ router = APIRouter()
 
 # ============ 진단용 ============
 
+@router.post("/admin-reset-all")
+async def admin_reset_all(
+    confirm: str = Query(..., description="안전 토큰"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    [임시] 모든 ai_raw_transaction_data + AIDataUploadHistory 초기화.
+    confirm=DELETE_ALL_RAW_DATA_2026_05_11 일 때만 동작.
+    cleanup 완료 후 이 엔드포인트는 제거됨.
+    """
+    if confirm != "DELETE_ALL_RAW_DATA_2026_05_11":
+        raise HTTPException(status_code=403, detail="잘못된 confirm 토큰")
+
+    from app.models.ai import AIDataUploadHistory
+    from sqlalchemy import delete as sa_delete
+
+    raw_count = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
+    hist_count = await db.scalar(select(func.count(AIDataUploadHistory.id))) or 0
+
+    await db.execute(sa_delete(AIRawTransactionData))
+    await db.execute(sa_delete(AIDataUploadHistory))
+    await db.commit()
+
+    return {
+        "deleted_raw_rows": raw_count,
+        "deleted_history_rows": hist_count,
+        "next_step": "위하고에서 새 원장 파일을 한 번에 다운로드해 업로드해주세요.",
+    }
+
+
 @router.get("/diag")
 async def diagnose(
     sample_account_code: Optional[str] = None,

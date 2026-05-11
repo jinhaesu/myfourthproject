@@ -513,6 +513,21 @@ def _parse_file_sync(content: bytes, filename: str, upload_id: int):
     else:
         df['amount'] = 0
 
+    # 단일 업로드 내 중복 제거 — 위하고 멀티시트 양식에서 동일 거래가 여러 시트에 등장하면
+    # 우리 파서가 모두 누적 저장되어 차변/대변 합계가 위하고와 안 맞는 문제 해결.
+    # 동일 (날짜, 차변, 대변, 거래처, 적요, 상대계정, 원장계정) 인 row를 1개만 보존.
+    dedupe_cols = []
+    for col in ('date', 'debit', 'credit', 'merchant_name',
+                'description', 'account_code', 'source_account_code'):
+        if col in df.columns:
+            dedupe_cols.append(col)
+    if dedupe_cols:
+        before = len(df)
+        df = df.drop_duplicates(subset=dedupe_cols, keep='first').reset_index(drop=True)
+        after = len(df)
+        if before != after:
+            logger.info(f"[BG Upload {upload_id}] 중복 제거: {before} → {after} ({before-after}건 dropped)")
+
     logger.info(f"[BG Upload {upload_id}] 파싱 완료: {len(df)}행")
 
     return {
