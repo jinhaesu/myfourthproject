@@ -702,19 +702,26 @@ AP_CODES = ["251", "253"]
 @router.get("/ar-ap/summary")
 async def get_ar_ap_summary(
     fiscal_year: int = Query(..., ge=2020, le=2030, description="회계연도"),
-    type: str = Query(..., regex="^(receivable|payable)$", description="receivable=매출채권 / payable=매입채무"),
+    type: str = Query(..., regex="^(receivable|payable)$", description="receivable=매출채권 / payable=매입채무 (부호 처리용)"),
+    codes: Optional[str] = Query(None, description="조회할 계정 코드 csv (예: '108,110'). 미지정 시 type별 default 사용"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    매출채권(108/110) 또는 매입채무(251/253) 의 거래처별·월별 요약.
+    매출채권/매입채무 거래처별·월별 요약.
 
-    응답:
-    - opening_balance / closing_balance: 회계연도 기초/기말 총잔액
-    - period_debit / period_credit / period_change: 기간 차/대변 합계, 순증감
-    - monthly: 월별 차/대변·기말잔액 시계열
-    - counterparties: 거래처별 기초/차/대/기말잔액 + 거래건수 + 최근거래일
+    type은 부호 처리용 (자산=차변증가, 부채=대변증가).
+    codes로 계정 단위 선택 가능 — 예:
+    - 매출채권: 108(외상매출금), 110(받을어음) → 둘 중 하나 또는 둘 다 선택
+    - 매입채무: 251(외상매입금), 253(미지급금) → 둘 중 하나 또는 둘 다 선택
     """
-    codes = AR_CODES if type == "receivable" else AP_CODES
+    default_codes = AR_CODES if type == "receivable" else AP_CODES
+    if codes:
+        requested = [c.strip() for c in codes.split(',') if c.strip()]
+        # 허용된 계정만 통과 (보안: 임의 코드 조회 방지)
+        filtered = [c for c in requested if c in default_codes]
+        active_codes = filtered if filtered else default_codes
+    else:
+        active_codes = default_codes
     start = date(fiscal_year, 1, 1)
     end = date(fiscal_year, 12, 31)
     start_iso = start.strftime('%Y-%m-%d')
@@ -728,7 +735,7 @@ async def get_ar_ap_summary(
         d, c = Decimal(str(d or 0)), Decimal(str(c or 0))
         return (d - c) if type == "receivable" else (c - d)
 
-    base_filter = AIRawTransactionData.source_account_code.in_(codes)
+    base_filter = AIRawTransactionData.source_account_code.in_(active_codes)
     opening_filter = and_(
         base_filter,
         or_(
@@ -860,7 +867,7 @@ async def get_ar_ap_summary(
     return {
         'fiscal_year': fiscal_year,
         'type': type,
-        'account_codes': codes,
+        'account_codes': active_codes,
         'opening_balance': float(opening_balance),
         'closing_balance': float(opening_balance + period_change),
         'period_debit': float(total_debit),

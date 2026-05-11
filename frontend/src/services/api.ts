@@ -997,9 +997,15 @@ export const ledgerApi = {
       params: { period_start: periodStart, period_end: periodEnd },
     }),
 
-  // 매출채권/매입채무 거래처별·월별 요약
-  getArApSummary: (fiscalYear: number, type: 'receivable' | 'payable') =>
-    api.get('/ledger/ar-ap/summary', { params: { fiscal_year: fiscalYear, type } }),
+  // 매출채권/매입채무 거래처별·월별 요약 — codes로 계정 단위 선택 가능
+  getArApSummary: (fiscalYear: number, type: 'receivable' | 'payable', codes?: string[]) =>
+    api.get('/ledger/ar-ap/summary', {
+      params: {
+        fiscal_year: fiscalYear,
+        type,
+        ...(codes && codes.length > 0 ? { codes: codes.join(',') } : {}),
+      },
+    }),
 }
 
 // Financial Reports API (기간 기반 재무보고서)

@@ -69,22 +69,58 @@ const TYPE_LABEL: Record<ArApType, string> = {
   payable: '매입채무',
 }
 
-const TYPE_DESCRIPTION: Record<ArApType, string> = {
-  receivable: '외상매출금(108) + 받을어음(110) — 회수해야 할 자산',
-  payable: '외상매입금(251) + 미지급금(253) — 지급해야 할 부채',
+interface SubAccount {
+  code: string
+  label: string
+}
+
+const SUB_ACCOUNTS: Record<ArApType, SubAccount[]> = {
+  receivable: [
+    { code: '108', label: '외상매출금' },
+    { code: '110', label: '받을어음' },
+  ],
+  payable: [
+    { code: '251', label: '외상매입금' },
+    { code: '253', label: '미지급금' },
+  ],
+}
+
+const TYPE_HINT: Record<ArApType, string> = {
+  receivable: '회수해야 할 자산',
+  payable: '지급해야 할 부채',
 }
 
 export default function ArApPage() {
   const currentYear = new Date().getFullYear()
   const [year, setYear] = useState<number>(currentYear)
   const [type, setType] = useState<ArApType>('receivable')
+  // 계정 단위 선택 — 기본은 type의 모든 계정 (둘 다)
+  const [selectedCodes, setSelectedCodes] = useState<string[]>(SUB_ACCOUNTS.receivable.map((s) => s.code))
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('closing')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 
+  // type 변경 시 codes를 새 type의 default(전체)로 reset
+  function handleTypeChange(t: ArApType) {
+    setType(t)
+    setSelectedCodes(SUB_ACCOUNTS[t].map((s) => s.code))
+  }
+
+  function toggleCode(code: string) {
+    setSelectedCodes((prev) => {
+      if (prev.includes(code)) {
+        // 마지막 한 개는 해제 불가 (최소 1개 보장)
+        if (prev.length === 1) return prev
+        return prev.filter((c) => c !== code)
+      }
+      return [...prev, code]
+    })
+  }
+
   const summaryQuery = useQuery({
-    queryKey: ['ar-ap-summary', year, type],
-    queryFn: () => ledgerApi.getArApSummary(year, type).then((r) => r.data as ArApSummary),
+    queryKey: ['ar-ap-summary', year, type, selectedCodes.join(',')],
+    queryFn: () =>
+      ledgerApi.getArApSummary(year, type, selectedCodes).then((r) => r.data as ArApSummary),
     staleTime: 5 * 60_000,
     retry: 1,
   })
@@ -175,12 +211,12 @@ export default function ArApPage() {
           <div className="text-2xs font-semibold text-ink-600 mb-1.5 uppercase tracking-wider">
             계정 구분
           </div>
-          <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
             <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
               {(['receivable', 'payable'] as ArApType[]).map((t) => (
                 <button
                   key={t}
-                  onClick={() => setType(t)}
+                  onClick={() => handleTypeChange(t)}
                   className={`px-3 py-1 rounded text-2xs font-semibold transition ${
                     type === t ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
                   }`}
@@ -189,7 +225,31 @@ export default function ArApPage() {
                 </button>
               ))}
             </div>
-            <span className="text-2xs text-ink-500 ml-2">{TYPE_DESCRIPTION[type]}</span>
+            <span className="text-2xs text-ink-400">·</span>
+            {/* 세부 계정 선택 (multi-toggle) */}
+            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+              {SUB_ACCOUNTS[type].map((s) => {
+                const active = selectedCodes.includes(s.code)
+                return (
+                  <button
+                    key={s.code}
+                    onClick={() => toggleCode(s.code)}
+                    className={`px-2.5 py-1 rounded text-2xs font-medium transition ${
+                      active
+                        ? 'bg-primary-700 text-white'
+                        : 'text-ink-500 hover:bg-ink-50 hover:text-ink-700'
+                    }`}
+                    title={active ? '클릭하여 제외' : '클릭하여 포함'}
+                  >
+                    <span className="font-mono text-2xs opacity-70 mr-1">{s.code}</span>
+                    {s.label}
+                  </button>
+                )
+              })}
+            </div>
+            <span className="text-2xs text-ink-500">
+              {TYPE_HINT[type]} · 선택 계정 {selectedCodes.length}개
+            </span>
           </div>
         </div>
       </div>
