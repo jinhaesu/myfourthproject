@@ -171,18 +171,44 @@ function extractContact(t: any): string {
 // Pattern analysis
 // ---------------------------------------------------------------------------
 
-function analyzeContactPatterns(tickets: any[]): { inPatterns: ContactPattern[]; outPatterns: ContactPattern[] } {
+/**
+ * 정교화된 거래처 패턴 분석.
+ *
+ * 핵심 원칙:
+ * 1. 카드결제(EXPENSE_TICKET)는 거래처 패턴 분석에서 제외 — 식당/주유소 등 1회성 거래가
+ *    "월간 반복"으로 잡혀 예측을 망침. 대신 일평균 변동성 지출로 별도 처리.
+ * 2. 거래 횟수 ≥2회 (또는 합계 ≥30만원) 인 거래처만 반복 패턴으로 인정.
+ *    1회성 거래는 패턴 분석에서 제외 (forecast에 반복 발생시키지 않음).
+ * 3. cycleDays 최소 7일 (매일·격일 패턴은 1회성 노이즈 가능성 큼).
+ * 4. 신뢰도(high/medium/low)에 따라 buildForecast에서 가중치 적용.
+ */
+function analyzeContactPatterns(tickets: any[]): {
+  inPatterns: ContactPattern[]
+  outPatterns: ContactPattern[]
+  cardDailyAvg: number       // 카드결제 일평균 지출 (변동성 buffer)
+  cardOneTimeTotal: number   // 분석기간 내 카드결제 총합 (참고)
+} {
   type Group = { dates: string[]; amounts: number[] }
   const inMap = new Map<string, Group>()
   const outMap = new Map<string, Group>()
+  let cardTotal = 0
+  const cardDates = new Set<string>()  // 카드결제 발생 일자 — 일평균 산정용
 
   for (const t of tickets) {
-    const contact = extractContact(t)
-    if (isSelfContact(contact)) continue  // 본인 회사 제외 (extractContact가 거래상대방 반환)
     const amount = Math.abs(Number(t.amount ?? 0))
     if (amount <= 0) continue
     const date = (t.transactAt ?? t.createdAt ?? '').slice(0, 10)
     if (!date) continue
+
+    // 카드결제는 거래처 패턴 분석에서 제외, 별도 buffer로 처리
+    if (t.ticketType === 'EXPENSE_TICKET') {
+      cardTotal += amount
+      cardDates.add(date)
+      continue
+    }
+
+    const contact = extractContact(t)
+    if (isSelfContact(contact)) continue
     const dir: 'IN' | 'OUT' = t.transactionType === 'IN' ? 'IN' : 'OUT'
     const map = dir === 'IN' ? inMap : outMap
     if (!map.has(contact)) map.set(contact, { dates: [], amounts: [] })
@@ -191,25 +217,34 @@ function analyzeContactPatterns(tickets: any[]): { inPatterns: ContactPattern[];
     g.amounts.push(amount)
   }
 
+  // 카드결제 일평균 — 분석기간 길이로 정규화
+  const periodDays = cardDates.size > 0 ? cardDates.size : 60
+  const cardDailyAvg = cardTotal / periodDays
+
   function buildPatterns(map: Map<string, Group>, direction: 'IN' | 'OUT'): ContactPattern[] {
     const totalAll = Array.from(map.values()).reduce(
       (sum, g) => sum + g.amounts.reduce((s, a) => s + a, 0),
       0
     )
     const patterns: ContactPattern[] = []
+    const MIN_TX_FOR_PATTERN = 2
+    const MIN_TOTAL_FOR_PATTERN = 300_000  // 30만원
 
     for (const [contact, g] of map.entries()) {
       const txCount = g.dates.length
       const totalAmount = g.amounts.reduce((s, a) => s + a, 0)
+
+      // 1회성 거래 또는 소액 거래는 패턴 분석 제외 (forecast에 반복 발생시키지 않음)
+      if (txCount < MIN_TX_FOR_PATTERN && totalAmount < MIN_TOTAL_FOR_PATTERN) continue
+
       const avgAmount = totalAmount / txCount
 
       const sorted = g.dates
         .map((d, i) => ({ date: d, amount: g.amounts[i] }))
         .sort((a, b) => a.date.localeCompare(b.date))
-
       const lastDate = sorted[sorted.length - 1].date
 
-      // Cycle detection — 거래 ≥2건이면 항상 추정. 변동성은 CV로 별도 표기.
+      // Cycle detection — 최소 주기 7일 (1회성·노이즈 방지)
       let cycleDays = 30
       let intervalCV: number | null = null
       if (sorted.length >= 2) {
@@ -219,14 +254,17 @@ function analyzeContactPatterns(tickets: any[]): { inPatterns: ContactPattern[];
         }
         const meanInterval = intervals.reduce((s, v) => s + v, 0) / intervals.length
         if (meanInterval > 0) {
-          // 1일 미만 또는 90일 초과 평균은 비정상 → 30일로 클램프
-          cycleDays = Math.max(1, Math.min(60, Math.round(meanInterval)))
+          // 최소 7일 (매일·격일 패턴 차단), 최대 60일
+          cycleDays = Math.max(7, Math.min(60, Math.round(meanInterval)))
         }
         if (intervals.length >= 2 && meanInterval > 0) {
           const variance =
             intervals.reduce((s, v) => s + (v - meanInterval) ** 2, 0) / intervals.length
           intervalCV = Math.sqrt(variance) / meanInterval
         }
+      } else {
+        // 1회 거래지만 합계 ≥30만원이라 통과 — 월 1회 가정
+        cycleDays = 30
       }
 
       // Preferred day-of-month detection (≥2 same day)
@@ -245,17 +283,19 @@ function analyzeContactPatterns(tickets: any[]): { inPatterns: ContactPattern[];
         }
       }
 
-      // Confidence: 매월 고정일자 일치율 ≥ 75% → high,
-      // 변동계수(CV) < 0.15 → high, < 0.40 → medium, 그 외 low.
+      // Confidence: 매월 고정일자 ≥75% → high, CV<0.15 → high, <0.40 → medium, 그 외 low
+      // 1회 거래는 무조건 low (1회로 패턴 단정 불가)
       let confidence: Confidence = 'low'
-      if (preferredDayOfMonth !== null && preferredDayMatchRatio >= 0.75) {
-        confidence = 'high'
-      } else if (intervalCV !== null && intervalCV < 0.15) {
-        confidence = 'high'
-      } else if (intervalCV !== null && intervalCV < 0.4) {
-        confidence = 'medium'
-      } else if (sorted.length >= 3) {
-        confidence = 'medium'
+      if (sorted.length >= 2) {
+        if (preferredDayOfMonth !== null && preferredDayMatchRatio >= 0.75) {
+          confidence = 'high'
+        } else if (intervalCV !== null && intervalCV < 0.15) {
+          confidence = 'high'
+        } else if (intervalCV !== null && intervalCV < 0.4) {
+          confidence = 'medium'
+        } else if (sorted.length >= 3) {
+          confidence = 'medium'
+        }
       }
 
       const shareRatio = totalAll > 0 ? totalAmount / totalAll : 0
@@ -275,14 +315,22 @@ function analyzeContactPatterns(tickets: any[]): { inPatterns: ContactPattern[];
       })
     }
 
-    // 모든 거래처 분석 (이전 30곳 제한 제거 — 사용자 요구)
     return patterns.sort((a, b) => b.totalAmount - a.totalAmount)
   }
 
   return {
     inPatterns: buildPatterns(inMap, 'IN'),
     outPatterns: buildPatterns(outMap, 'OUT'),
+    cardDailyAvg,
+    cardOneTimeTotal: cardTotal,
   }
+}
+
+/** 신뢰도별 예측 발생 가중치 — 낮은 정확도는 부분만 반영 */
+function confidenceWeight(c: Confidence): number {
+  if (c === 'high') return 1.0
+  if (c === 'medium') return 0.7
+  return 0.3
 }
 
 // ---------------------------------------------------------------------------
@@ -353,13 +401,14 @@ function firstNextOccurrence(p: ContactPattern, forecastFrom: string, forecastTo
 interface ForecastInput {
   inPatterns: ContactPattern[]
   outPatterns: ContactPattern[]
-  overrideInAmounts: Record<string, number>   // contact -> amount
+  overrideInAmounts: Record<string, number>
   overrideOutAmounts: Record<string, number>
   oneTimeCosts: OneTimeCost[]
-  expectedRevenue: number | null              // null = auto
+  expectedRevenue: number | null
   startBalance: number
   forecastFrom: string
   forecastTo: string
+  cardDailyAvg: number  // 카드결제 일평균 (변동성 buffer로 매일 차감)
 }
 
 function buildForecast(input: ForecastInput): ForecastDay[] {
@@ -373,11 +422,10 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     startBalance,
     forecastFrom,
     forecastTo,
+    cardDailyAvg,
   } = input
 
   const totalHistoricalIn = inPatterns.reduce((s, p) => s + p.totalAmount, 0)
-
-  // Map: date -> { in: number; out: number }
   const eventMap = new Map<string, { totalIn: number; totalOut: number }>()
 
   function addEvent(date: string, dir: 'IN' | 'OUT', amount: number) {
@@ -388,34 +436,32 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     else ev.totalOut += amount
   }
 
-  // IN patterns — 모든 거래처가 합계/일별에 반영됨 (예상일 무조건 추정)
+  // IN patterns — 신뢰도 가중치 적용
   for (const p of inPatterns) {
+    const w = confidenceWeight(p.confidence)
     const baseAmount =
       overrideInAmounts[p.contact] !== undefined
         ? overrideInAmounts[p.contact]
         : expectedRevenue !== null
         ? expectedRevenue * p.shareRatio
-        : p.avgAmount
+        : p.avgAmount * w
     if (baseAmount <= 0) continue
 
     const dates = nextOccurrences(p, forecastFrom, forecastTo)
-    // 다회 반복일 경우 1회당 amount = avgAmount (총 횟수만큼 발생)
-    // 단 expectedRevenue 모드일 땐 분배된 양을 1회만 반영
     const perOccurrence =
       overrideInAmounts[p.contact] !== undefined || expectedRevenue !== null
         ? baseAmount / Math.max(1, dates.length)
         : baseAmount
-    for (const d of dates) {
-      addEvent(d, 'IN', perOccurrence)
-    }
+    for (const d of dates) addEvent(d, 'IN', perOccurrence)
   }
 
-  // OUT patterns — 동일하게 모두 반영
+  // OUT patterns — 신뢰도 가중치 적용
   for (const p of outPatterns) {
+    const w = confidenceWeight(p.confidence)
     const baseAmount =
       overrideOutAmounts[p.contact] !== undefined
         ? overrideOutAmounts[p.contact]
-        : p.avgAmount
+        : p.avgAmount * w
     if (baseAmount <= 0) continue
 
     const dates = nextOccurrences(p, forecastFrom, forecastTo)
@@ -423,8 +469,18 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
       overrideOutAmounts[p.contact] !== undefined
         ? baseAmount / Math.max(1, dates.length)
         : baseAmount
-    for (const d of dates) {
-      addEvent(d, 'OUT', perOccurrence)
+    for (const d of dates) addEvent(d, 'OUT', perOccurrence)
+  }
+
+  // 카드결제 일평균 — 평일에만 발생한다고 가정(주말 카드 사용 적음)하여 buffer로 매일 차감
+  if (cardDailyAvg > 0) {
+    const span = diffDays(forecastFrom, forecastTo) + 1
+    for (let i = 0; i < span; i++) {
+      const d = addDays(forecastFrom, i)
+      const dow = new Date(d + 'T00:00:00').getDay()
+      // 평일(월~금)에만 반영, 주말은 60%로 감소
+      const dayMultiplier = dow >= 1 && dow <= 5 ? 1.0 : 0.6
+      addEvent(d, 'OUT', cardDailyAvg * dayMultiplier)
     }
   }
 
@@ -435,7 +491,7 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     addEvent(cost.date, 'OUT', amt)
   }
 
-  // If expectedRevenue provided but no patterns matched, distribute evenly
+  // expectedRevenue 입력했는데 IN 패턴 없으면 균등 분배
   if (expectedRevenue !== null && totalHistoricalIn === 0) {
     const span = diffDays(forecastFrom, forecastTo) + 1
     const perDay = expectedRevenue / span
@@ -445,7 +501,7 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     }
   }
 
-  // Build day series
+  // Day series 누적
   const span = diffDays(forecastFrom, forecastTo) + 1
   const result: ForecastDay[] = []
   let running = startBalance
@@ -1179,20 +1235,20 @@ export default function CashflowForecastPage() {
     [assetsQuery.data]
   )
 
-  // 캐시플로우 예측은 장기 패턴 분석 — 6개월치 거래를 1개월 단위로 6번 분할 호출.
-  // 각 chunk는 ~10초 + gzip ~0.5MB → 큰 단일 호출보다 훨씬 안정 (timeout/끊김 회피).
-  // 한 chunk 실패해도 나머지로 분석 가능 (점진적 표시).
+  // 캐시플로우 예측 — 지난 2개월(직전 ~62일) 거래만 분석.
+  // 단기 트렌드가 더 정확하고, 6개월 → 2개월로 줄여 응답 시간 1/3.
+  // 각 chunk ~10초 (cold), 총 ~20초 (cold) / ~4초 (cache hit).
+  const LOOKBACK_CHUNKS = 2
   const chunkRanges = useMemo(() => {
     const ranges: Array<{ start: string; end: string }> = []
     const baseDate = new Date(today + 'T00:00:00')
     let endCursor = baseDate
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < LOOKBACK_CHUNKS; i++) {
       const endIso = isoLocal(endCursor)
       const startDate = new Date(endCursor)
       startDate.setDate(startDate.getDate() - 30)
       const startIso = isoLocal(startDate)
       ranges.push({ start: startIso, end: endIso })
-      // 다음 chunk는 이 chunk 시작일 하루 전부터
       const next = new Date(startDate)
       next.setDate(next.getDate() - 1)
       endCursor = next
@@ -1272,7 +1328,7 @@ export default function CashflowForecastPage() {
   )
   const filteredCount = rawTicketsData.length - filteredTicketsData.length
 
-  const { inPatterns, outPatterns } = useMemo(
+  const { inPatterns, outPatterns, cardDailyAvg, cardOneTimeTotal } = useMemo(
     () => analyzeContactPatterns(filteredTicketsData),
     [filteredTicketsData]
   )
@@ -1300,6 +1356,7 @@ export default function CashflowForecastPage() {
         startBalance: currentBalance,
         forecastFrom,
         forecastTo,
+        cardDailyAvg,
       }),
     [
       inPatterns,
@@ -1311,6 +1368,7 @@ export default function CashflowForecastPage() {
       currentBalance,
       forecastFrom,
       forecastTo,
+      cardDailyAvg,
     ]
   )
 
@@ -1401,8 +1459,8 @@ export default function CashflowForecastPage() {
             ]}
           />
           <p className="text-2xs text-ink-500 mt-1">
-            ※ 거래처 패턴은 지난 <span className="font-semibold text-ink-700">6개월치 전체 거래</span>로 분석합니다 (수백 거래처 포함).
-            상단 기간은 잔액 시계열 표시용.
+            ※ 거래처 패턴은 지난 <span className="font-semibold text-ink-700">2개월치 전체 거래</span>로 분석합니다 (단기 트렌드 반영).
+            상단 기간은 잔액 시계열 표시용. 카드결제(EXPENSE_TICKET)는 별도 변동성 지출로 처리.
           </p>
         </div>
 
@@ -1483,7 +1541,7 @@ export default function CashflowForecastPage() {
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 shrink-0" />
           <span className="text-2xs text-amber-800">
-            일부 기간(6개월 중 {chunkResults.filter((q) => q.isError).length}개월) 로드 실패 —
+            일부 기간({LOOKBACK_CHUNKS}개월 중 {chunkResults.filter((q) => q.isError).length}개월) 로드 실패 —
             나머지 {loadedChunks}개월로 분석 진행됩니다.
           </span>
           <button
@@ -1497,7 +1555,7 @@ export default function CashflowForecastPage() {
       {ticketsAllError && (
         <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
-          <span className="text-2xs text-rose-800">거래 데이터 로드 실패 (6개월 전 구간)</span>
+          <span className="text-2xs text-rose-800">거래 데이터 로드 실패 ({LOOKBACK_CHUNKS}개월 전 구간)</span>
           <button
             className="btn-secondary text-2xs ml-auto"
             onClick={() => chunkResults.forEach((q) => q.refetch())}
@@ -1510,7 +1568,7 @@ export default function CashflowForecastPage() {
         <div className="rounded-md border border-ink-200 bg-canvas-50 px-3 py-2 flex items-center gap-2">
           <ArrowPathIcon className="h-4 w-4 text-ink-500 animate-spin shrink-0" />
           <span className="text-2xs text-ink-700">
-            6개월 거래 로드 중… ({loadedChunks}/6개월 완료, 첫 로드는 ~60초 소요)
+            {LOOKBACK_CHUNKS}개월 거래 로드 중… ({loadedChunks}/{LOOKBACK_CHUNKS}개월 완료, 첫 로드는 ~20초)
           </span>
         </div>
       )}
@@ -1660,11 +1718,24 @@ export default function CashflowForecastPage() {
       <DailyDetailTable forecastDays={forecastDays} />
 
       {/* Footer */}
-      <p className="text-2xs text-ink-400 pb-2">
-        예상일은 과거 거래처별 반복 패턴(매월 동일 일자 또는 평균 주기)으로 무조건 추정되며,
-        주말 보정: 입금 거래처는 직전 영업일(금요일)로 당기고, 출금은 다음 영업일(월요일)로 미룹니다. 일정 변동성은 정확도(높음/중간/낮음) 배지로 표기됩니다.
-        모든 거래처가 합계·일별 예측에 반영됩니다. 사용자 예상 매출 입력 시 과거 거래처별 비율로 자동 분배.
-      </p>
+      <div className="text-2xs text-ink-500 pb-2 space-y-1">
+        <p>
+          <span className="font-semibold text-ink-700">분석 기준:</span> 지난 2개월 거래 ·
+          거래처 ≥2회 또는 합계 ≥30만원 인 패턴만 인정 (1회성 일회성 거래 제외) ·
+          본인 회사(조인앤조인 사업자번호/회사명 변형/통장 간 이체)는 분석에서 자동 제외.
+        </p>
+        <p>
+          <span className="font-semibold text-ink-700">예측 가중치:</span> 정확도 높음 ×1.0 /
+          중간 ×0.7 / 낮음 ×0.3 — 신뢰도 낮은 패턴은 부분만 반영하여 과대 추정 방지.
+        </p>
+        <p>
+          <span className="font-semibold text-ink-700">카드결제(EXPENSE_TICKET):</span> 식당·주유소 등
+          1회성 거래가 많아 거래처 패턴 분석에서 제외, 일평균 변동성 지출
+          (<span className="font-mono">{formatCurrency(cardDailyAvg, false)}원/일</span>,
+          분석기간 총 <span className="font-mono">{formatCurrency(cardOneTimeTotal, false)}원</span>)로
+          평일 100% / 주말 60% 차감. 주말 보정: 입금은 직전 금요일, 출금은 다음 월요일.
+        </p>
+      </div>
     </div>
   )
 }

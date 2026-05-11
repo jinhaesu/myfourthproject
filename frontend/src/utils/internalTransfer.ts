@@ -92,6 +92,17 @@ export function isInternalTransfer(ticket: any, own: OwnAccountSet): boolean {
     }
   }
 
+  // 4. 본인회사명이 counterparty 또는 content에 포함 — "조인앤조인" 등 변형 모두 검사
+  //    (그랜터가 통장 내역에 "(주)조인앤조인", "조인앤조인" 등 다양하게 기록)
+  const cpNameNorm = norm(cpNameRaw)
+  const contentNorm = norm(bt.content || '')
+  for (const variant of SELF_COMPANY.nameVariants) {
+    const v = norm(variant)
+    if (!v) continue
+    if (cpNameNorm && cpNameNorm.includes(v)) return true
+    if (contentNorm && contentNorm.includes(v)) return true
+  }
+
   return false
 }
 
