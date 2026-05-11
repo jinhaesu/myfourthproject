@@ -10,6 +10,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { cashPLApi, ledgerApi } from '@/services/api'
 import { formatCurrency, formatPct } from '@/utils/format'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 
 type PeriodType = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly'
 
@@ -93,6 +94,7 @@ export default function FinancialReportsPage() {
   const [periodType, setPeriodType] = useState<PeriodType>('monthly')
   const _today = new Date()
   const _thisYear = _today.getFullYear()
+  const [fiscalYear, setFiscalYear] = useState(_thisYear)
   const [fromDate, setFromDate] = useState(startOfYearISO(_thisYear))
   const [toDate, setToDate] = useState(endOfYearISO(_thisYear))
 
@@ -175,6 +177,14 @@ export default function FinancialReportsPage() {
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
+          <FiscalYearTabs
+            year={fiscalYear}
+            onChange={(y) => {
+              setFiscalYear(y)
+              setFromDate(startOfYearISO(y))
+              setToDate(y === _thisYear ? new Date().toISOString().slice(0, 10) : endOfYearISO(y))
+            }}
+          />
           {/* Period type 토글 */}
           <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
             {(['daily', 'weekly', 'monthly', 'quarterly', 'yearly'] as PeriodType[]).map((p) => (

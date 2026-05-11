@@ -8,6 +8,7 @@ import { ScaleIcon } from '@heroicons/react/24/outline'
 import { cashPLApi } from '@/services/api'
 import StatCard from '@/components/common/StatCard'
 import { formatCurrency, formatCompactWon, formatPct, todayISO, isoLocal } from '@/utils/format'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 
 type Basis = 'cash' | 'accrual'
 type Period = 'monthly' | 'weekly' | 'quarterly' | 'yearly' | 'daily'
@@ -21,6 +22,8 @@ const PERIOD_LABEL: Record<Period, string> = {
 }
 
 export default function CashPLPage() {
+  const currentYear = new Date().getFullYear()
+  const [fiscalYear, setFiscalYear] = useState(currentYear)
   const [basis, setBasis] = useState<Basis>('cash')
   const [periodType, setPeriodType] = useState<Period>('monthly')
   const [fromDate, setFromDate] = useState(() => {
@@ -82,6 +85,14 @@ export default function CashPLPage() {
       {/* Filters */}
       <div className="card">
         <div className="flex flex-wrap items-center gap-3">
+          <FiscalYearTabs
+            year={fiscalYear}
+            onChange={(y) => {
+              setFiscalYear(y)
+              setFromDate(`${y}-01-01`)
+              setToDate(y === currentYear ? todayISO() : `${y}-12-31`)
+            }}
+          />
           <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
             <button
               onClick={() => setBasis('cash')}

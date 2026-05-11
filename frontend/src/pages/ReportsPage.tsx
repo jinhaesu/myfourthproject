@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { reportsApi } from '@/services/api'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 import {
   DocumentChartBarIcon,
   ArrowDownTrayIcon,
@@ -18,6 +19,7 @@ function downloadBlob(blob: Blob, filename: string) {
 
 export default function ReportsPage() {
   const currentYear = new Date().getFullYear()
+  const [fiscalYear, setFiscalYear] = useState(currentYear)
   const [loading, setLoading] = useState<string | null>(null)
 
   // Voucher report params
@@ -121,11 +123,30 @@ export default function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">보고서</h1>
-        <p className="text-gray-500 mt-1">
-          다양한 재무 보고서를 생성하고 내보냅니다.
-        </p>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">보고서</h1>
+          <p className="text-gray-500 mt-1">
+            다양한 재무 보고서를 생성하고 내보냅니다.
+          </p>
+        </div>
+        <FiscalYearTabs
+          year={fiscalYear}
+          onChange={(y) => {
+            setFiscalYear(y)
+            setVoucherParams((prev) => ({
+              ...prev,
+              fromDate: `${y}-01-01`,
+              toDate: y === currentYear ? new Date().toISOString().slice(0, 10) : `${y}-12-31`,
+            }))
+            setBudgetYear(y)
+            setDouzoneParams((prev) => ({
+              ...prev,
+              fromDate: `${y}-01-01`,
+              toDate: y === currentYear ? new Date().toISOString().slice(0, 10) : `${y}-12-31`,
+            }))
+          }}
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

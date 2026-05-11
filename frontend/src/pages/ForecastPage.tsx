@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { forecastApi } from '@/services/api'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 import {
   ArrowTrendingUpIcon,
   ArrowTrendingDownIcon,
@@ -31,6 +32,7 @@ type TabType = 'dashboard' | 'pl' | 'cashflow' | 'scenario'
 export default function ForecastPage() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard')
   const currentDate = new Date()
+  const currentYear = currentDate.getFullYear()
   const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1)
     .toISOString()
     .split('T')[0]
@@ -38,6 +40,7 @@ export default function ForecastPage() {
     .toISOString()
     .split('T')[0]
 
+  const [fiscalYear, setFiscalYear] = useState(currentYear)
   const [plPeriod, setPlPeriod] = useState({
     start: firstDayOfMonth,
     end: lastDayOfMonth,
@@ -94,11 +97,23 @@ export default function ForecastPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">예측 / 시뮬레이션</h1>
-        <p className="text-gray-500 mt-1">
-          손익 예측 및 시나리오 시뮬레이션을 수행합니다.
-        </p>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">예측 / 시뮬레이션</h1>
+          <p className="text-gray-500 mt-1">
+            손익 예측 및 시나리오 시뮬레이션을 수행합니다.
+          </p>
+        </div>
+        <FiscalYearTabs
+          year={fiscalYear}
+          onChange={(y) => {
+            setFiscalYear(y)
+            setPlPeriod({
+              start: `${y}-01-01`,
+              end: y === currentYear ? new Date().toISOString().slice(0, 10) : `${y}-12-31`,
+            })
+          }}
+        />
       </div>
 
       {/* Tabs */}

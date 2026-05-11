@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { salesApi } from '@/services/api'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 import {
   PlusIcon,
   ArrowDownTrayIcon,
@@ -229,6 +230,13 @@ function SalesDashboardTab() {
       {/* Year/Month Selector */}
       <div className="card">
         <div className="flex items-center gap-4 flex-wrap">
+          <FiscalYearTabs
+            year={year}
+            onChange={(y) => {
+              setYear(y)
+              setMonth(1)
+            }}
+          />
           <div className="flex items-center gap-2">
             <label className="text-sm font-medium text-gray-700">연도</label>
             <select

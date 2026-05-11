@@ -16,6 +16,7 @@ import { ledgerApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, formatDate, isoLocal } from '@/utils/format'
 import EmptyState from '@/components/common/EmptyState'
 import LedgerEntryDetailPanel from './LedgerEntryDetailPanel'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 
 const CATEGORY_META: Record<string, { label: string; dot: string; chip: string }> = {
   asset: { label: '자산', dot: 'bg-blue-500', chip: 'bg-blue-50 text-blue-700 border-blue-200' },
@@ -256,30 +257,15 @@ export default function AccountLedgerPage() {
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          {/* 가용 년도 빠른 선택 */}
-          {availableYears.length > 0 && (
-            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
-              {availableYears.slice(0, 5).map((y) => {
-                const isActive = periodStart === isoYearStart(y) && periodEnd === isoYearEnd(y)
-                return (
-                  <button
-                    key={y}
-                    onClick={() => {
-                      setPeriodStart(isoYearStart(y))
-                      setPeriodEnd(isoYearEnd(y))
-                    }}
-                    className={`px-2 py-1 rounded text-2xs font-semibold transition ${
-                      isActive
-                        ? 'bg-ink-900 text-white'
-                        : 'text-ink-600 hover:bg-ink-50 hover:text-ink-900'
-                    }`}
-                  >
-                    {y}
-                  </button>
-                )
-              })}
-            </div>
-          )}
+          {/* 회계연도 빠른 선택 (당해 포함 5개년) */}
+          <FiscalYearTabs
+            year={fiscalYear}
+            onChange={(y) => {
+              const currentY = new Date().getFullYear()
+              setPeriodStart(isoYearStart(y))
+              setPeriodEnd(y === currentY ? todayISO() : isoYearEnd(y))
+            }}
+          />
           <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
             <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
             <input

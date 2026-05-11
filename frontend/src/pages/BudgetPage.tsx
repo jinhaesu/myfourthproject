@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { budgetApi, usersApi, vouchersApi } from '@/services/api'
 import { useAuthStore } from '@/store/authStore'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 import {
   CalculatorIcon,
   ChartBarIcon,
@@ -124,6 +125,10 @@ export default function BudgetPage() {
       {/* Filters */}
       <div className="card">
         <div className="flex items-center gap-4 flex-wrap">
+          <FiscalYearTabs
+            year={fiscalYear}
+            onChange={setFiscalYear}
+          />
           <div className="flex items-center gap-2">
             <label className="text-sm font-medium text-gray-700">회계연도</label>
             <select

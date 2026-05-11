@@ -15,6 +15,7 @@ import {
 import { unifiedApi, ledgerApi } from '@/services/api'
 import { useAuthStore } from '@/store/authStore'
 import { formatCurrency, formatCompactWon } from '@/utils/format'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 
 type Direction = 'all' | 'debit' | 'credit'
 type ViewMode = 'period' | 'monthly'
@@ -103,6 +104,14 @@ export default function VouchersPage() {
 
       {/* Filter bar */}
       <div className="panel p-2 flex flex-wrap items-center gap-2">
+        <FiscalYearTabs
+          year={year}
+          onChange={(y) => {
+            setYear(y)
+            setViewMode('monthly')
+            setMonth(1)
+          }}
+        />
         <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200">
           <button
             onClick={() => setViewMode('monthly')}
