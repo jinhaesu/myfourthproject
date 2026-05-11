@@ -87,6 +87,20 @@ async def diagnose(
             for h in hist_rows
         }
 
+    # 업로드별 날짜 범위 + 계정 분포
+    upload_date_rows = (await db.execute(
+        select(
+            AIRawTransactionData.upload_id,
+            func.min(AIRawTransactionData.transaction_date).label('min_d'),
+            func.max(AIRawTransactionData.transaction_date).label('max_d'),
+            func.count(func.distinct(AIRawTransactionData.source_account_code)).label('accts'),
+        ).group_by(AIRawTransactionData.upload_id)
+    )).all()
+    date_range_map = {
+        d.upload_id: {"min_date": d.min_d, "max_date": d.max_d, "distinct_accounts": d.accts}
+        for d in upload_date_rows
+    }
+
     uploads_breakdown = [
         {
             "upload_id": u.upload_id,
@@ -94,6 +108,7 @@ async def diagnose(
             "debit_sum": float(u.debit or 0),
             "credit_sum": float(u.credit or 0),
             **(history_map.get(u.upload_id, {})),
+            **(date_range_map.get(u.upload_id, {})),
         }
         for u in upload_rows
     ]
