@@ -94,21 +94,21 @@ def _is_non_operating_income(code: Optional[str], name: str = '') -> bool:
 
 
 def _date_filters(period_start: Optional[date], period_end: Optional[date]):
+    """
+    transaction_date 형식이 'YYYY-MM-DD' 또는 'YYYY.MM.DD' 섞여 있어도 안전 비교.
+    이전 OR 패턴(>= s OR >= s2)은 ASCII '-'(0x2D) < '.'(0x2E)이라
+    'YYYY-MM-DD' 데이터가 '< YYYY.MM.DD' 끝 조건에 항상 True가 되어
+    미래 데이터까지 포함시키는 치명적 버그가 있었음.
+    → func.replace로 '.'를 '-'로 정규화한 후 ISO 형식과 비교.
+    """
     filters = []
+    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
     if period_start:
         s = period_start.strftime('%Y-%m-%d')
-        s2 = period_start.strftime('%Y.%m.%d')
-        filters.append(or_(
-            AIRawTransactionData.transaction_date >= s,
-            AIRawTransactionData.transaction_date >= s2,
-        ))
+        filters.append(norm_date >= s)
     if period_end:
         e_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-        e_next2 = (period_end + timedelta(days=1)).strftime('%Y.%m.%d')
-        filters.append(or_(
-            AIRawTransactionData.transaction_date < e_next,
-            AIRawTransactionData.transaction_date < e_next2,
-        ))
+        filters.append(norm_date < e_next)
     return filters
 
 

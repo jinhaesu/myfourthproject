@@ -345,22 +345,16 @@ def _date_to_iso(s: Optional[str]) -> Optional[str]:
 
 
 def _date_range_filters(period_start: Optional[date], period_end: Optional[date]):
-    """transaction_date(string)에 대한 기간 필터 (yyyy-MM-dd / yyyy.MM.dd 모두 매칭)"""
+    """transaction_date(string)에 대한 기간 필터 (yyyy-MM-dd / yyyy.MM.dd 모두 매칭).
+    OR 패턴은 ASCII '-' < '.' 때문에 끝 조건이 깨지므로 정규화 후 비교."""
     filters = []
+    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
     if period_start:
         s = period_start.strftime('%Y-%m-%d')
-        s2 = period_start.strftime('%Y.%m.%d')
-        filters.append(or_(
-            AIRawTransactionData.transaction_date >= s,
-            AIRawTransactionData.transaction_date >= s2,
-        ))
+        filters.append(norm_date >= s)
     if period_end:
-        e = period_end.strftime('%Y-%m-%d')
-        e2 = period_end.strftime('%Y.%m.%d')
-        filters.append(or_(
-            AIRawTransactionData.transaction_date <= e + ' ~',
-            AIRawTransactionData.transaction_date <= e2 + ' ~',
-        ))
+        e_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
+        filters.append(norm_date < e_next)
     return filters
 
 
@@ -398,20 +392,13 @@ async def list_accounts(
             AIRawTransactionData.transaction_date.like(f"{fiscal_year}.%"),
         ))
 
+    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
     if period_start:
         s = period_start.strftime('%Y-%m-%d')
-        s2 = period_start.strftime('%Y.%m.%d')
-        filters.append(or_(
-            AIRawTransactionData.transaction_date >= s,
-            AIRawTransactionData.transaction_date >= s2,
-        ))
+        filters.append(norm_date >= s)
     if period_end:
         e_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-        e_next2 = (period_end + timedelta(days=1)).strftime('%Y.%m.%d')
-        filters.append(or_(
-            AIRawTransactionData.transaction_date < e_next,
-            AIRawTransactionData.transaction_date < e_next2,
-        ))
+        filters.append(norm_date < e_next)
 
     if search:
         like = f"%{search}%"
@@ -521,21 +508,15 @@ async def get_account_summary(
     cat = _category_of(account_code)
 
     # 기간 내 합계 (source 기준 — 원장 시점)
+    # transaction_date 형식 'YYYY-MM-DD'/'YYYY.MM.DD' 혼재 안전 비교
+    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
     end_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-    end_next2 = (period_end + timedelta(days=1)).strftime('%Y.%m.%d')
     start_iso = period_start.strftime('%Y-%m-%d')
-    start_iso2 = period_start.strftime('%Y.%m.%d')
 
     period_filter = and_(
         AIRawTransactionData.source_account_code == account_code,
-        or_(
-            AIRawTransactionData.transaction_date >= start_iso,
-            AIRawTransactionData.transaction_date >= start_iso2,
-        ),
-        or_(
-            AIRawTransactionData.transaction_date < end_next,
-            AIRawTransactionData.transaction_date < end_next2,
-        ),
+        norm_date >= start_iso,
+        norm_date < end_next,
     )
 
     period_row = (await db.execute(
@@ -552,10 +533,7 @@ async def get_account_summary(
     # 기초 잔액 (기간 시작 이전 누적)
     opening_filter = and_(
         AIRawTransactionData.source_account_code == account_code,
-        or_(
-            AIRawTransactionData.transaction_date < start_iso,
-            AIRawTransactionData.transaction_date < start_iso2,
-        ),
+        norm_date < start_iso,
     )
     opening_row = (await db.execute(
         select(
@@ -626,21 +604,14 @@ async def get_account_entries(
     summary = await get_account_summary(account_code, period_start, period_end, db)
     cat = summary.category
 
+    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
     end_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-    end_next2 = (period_end + timedelta(days=1)).strftime('%Y.%m.%d')
     start_iso = period_start.strftime('%Y-%m-%d')
-    start_iso2 = period_start.strftime('%Y.%m.%d')
 
     filters = [
         AIRawTransactionData.source_account_code == account_code,
-        or_(
-            AIRawTransactionData.transaction_date >= start_iso,
-            AIRawTransactionData.transaction_date >= start_iso2,
-        ),
-        or_(
-            AIRawTransactionData.transaction_date < end_next,
-            AIRawTransactionData.transaction_date < end_next2,
-        ),
+        norm_date >= start_iso,
+        norm_date < end_next,
     ]
     if counterparty:
         filters.append(AIRawTransactionData.merchant_name.ilike(f"%{counterparty}%"))
@@ -868,34 +839,24 @@ async def get_ar_ap_summary(
     start = date(fiscal_year, 1, 1)
     end = date(fiscal_year, 12, 31)
     start_iso = start.strftime('%Y-%m-%d')
-    start_iso2 = start.strftime('%Y.%m.%d')
-    end_next = (end + timedelta(days=1))
-    end_next_iso = end_next.strftime('%Y-%m-%d')
-    end_next_iso2 = end_next.strftime('%Y.%m.%d')
+    end_next_iso = (end + timedelta(days=1)).strftime('%Y-%m-%d')
 
     # 부호 처리: 자산은 차변=증가/대변=감소, 부채는 반대
     def signed(d: Any, c: Any) -> Decimal:
         d, c = Decimal(str(d or 0)), Decimal(str(c or 0))
         return (d - c) if type == "receivable" else (c - d)
 
+    # transaction_date 형식 정규화 — '.' → '-' (yyyy.mm.dd/yyyy-mm-dd 혼재 안전 비교)
+    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
     base_filter = AIRawTransactionData.source_account_code.in_(active_codes)
     opening_filter = and_(
         base_filter,
-        or_(
-            AIRawTransactionData.transaction_date < start_iso,
-            AIRawTransactionData.transaction_date < start_iso2,
-        ),
+        norm_date < start_iso,
     )
     period_filter = and_(
         base_filter,
-        or_(
-            AIRawTransactionData.transaction_date >= start_iso,
-            AIRawTransactionData.transaction_date >= start_iso2,
-        ),
-        or_(
-            AIRawTransactionData.transaction_date < end_next_iso,
-            AIRawTransactionData.transaction_date < end_next_iso2,
-        ),
+        norm_date >= start_iso,
+        norm_date < end_next_iso,
     )
 
     # 기초 총잔액

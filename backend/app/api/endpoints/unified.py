@@ -54,21 +54,15 @@ def _direction_of(debit: Decimal, credit: Decimal) -> DirectionType:
 
 
 def _date_filters(period_start: Optional[date], period_end: Optional[date]):
+    """transaction_date '.' '/'/'-' 형식 혼재 안전 비교 (OR 패턴 ASCII 버그 회피)."""
     filters = []
+    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
     if period_start:
         s = period_start.strftime('%Y-%m-%d')
-        s2 = period_start.strftime('%Y.%m.%d')
-        filters.append(or_(
-            AIRawTransactionData.transaction_date >= s,
-            AIRawTransactionData.transaction_date >= s2,
-        ))
+        filters.append(norm_date >= s)
     if period_end:
         e_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-        e_next2 = (period_end + timedelta(days=1)).strftime('%Y.%m.%d')
-        filters.append(or_(
-            AIRawTransactionData.transaction_date < e_next,
-            AIRawTransactionData.transaction_date < e_next2,
-        ))
+        filters.append(norm_date < e_next)
     return filters
 
 
