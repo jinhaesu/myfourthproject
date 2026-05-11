@@ -1,6 +1,9 @@
 /**
  * 클라이언트 사이드 엑셀 파싱 유틸리티
- * 더존 계정별 원장 형식 지원 (다양한 헤더 패턴)
+ * 지원 양식:
+ *  1) 위하고/더존 '분개장' — 상대계정·차/대변 양면 모두 포함 (가장 완전)
+ *  2) 위하고/더존 '계정별 원장' — 한 계정의 거래만 (상대계정 정보 없음)
+ *  3) 일반 엑셀 (헤더가 첫 행에 있는 표준 양식)
  */
 import * as XLSX from 'xlsx'
 
@@ -40,7 +43,17 @@ export function parseExcelForUpload(file: File): Promise<ParseResult> {
 
           if (rawRows.length < 2) continue
 
-          // 계정별 원장 감지: 항상 먼저 시도
+          // 분개장 양식 우선 (상대계정까지 완전한 정보)
+          if (isJournalFormat(rawRows)) {
+            const parsed = parseJournal(rawRows)
+            if (parsed.length > 0) {
+              allRows.push(...parsed)
+              sheetsProcessed++
+              continue
+            }
+          }
+
+          // 계정별 원장 감지
           if (isAccountLedgerFormat(rawRows)) {
             const parsed = parseAccountLedger(rawRows)
             if (parsed.length > 0) {
@@ -66,6 +79,220 @@ export function parseExcelForUpload(file: File): Promise<ParseResult> {
     reader.onerror = () => reject(new Error('파일 읽기 실패'))
     reader.readAsArrayBuffer(file)
   })
+}
+
+
+// ============ 분개장(전표) 양식 ============
+
+// 한국 K-GAAP 표준 계정과목명 → 3자리 코드
+const ACCT_NAME_TO_CODE: Record<string, string> = {
+  // 자산
+  '현금': '101', '당좌예금': '102', '보통예금': '103', '제예금': '104',
+  '단기금융상품': '105', '단기매매증권': '107',
+  '외상매출금': '108', '받을어음': '110', '단기대여금': '114', '미수금': '120',
+  '미수수익': '116', '선급금': '131', '선급비용': '133', '가지급금': '134',
+  '부가세대급금': '135',
+  '원재료': '153', '재공품': '169', '제품': '150', '상품': '146',
+  '저장품': '173', '소모품': '173',
+  '토지': '201', '건물': '202', '구축물': '204', '기계장치': '206',
+  '차량운반구': '208', '비품': '212', '공구와기구': '210', '시설장치': '214',
+  '감가상각누계액': '203', '개발비': '218', '특허권': '231',
+  '임차보증금': '232', '전세권': '233', '보증금': '232',
+  // 부채
+  '외상매입금': '251', '지급어음': '252', '미지급금': '253',
+  '예수금': '254', '부가세예수금': '255', '선수금': '255',
+  '미지급비용': '262', '미지급세금': '261',
+  '단기차입금': '260', '장기차입금': '293', '사채': '291',
+  '퇴직급여충당부채': '295',
+  // 자본
+  '자본금': '331', '주식발행초과금': '341', '이익잉여금': '375',
+  // 수익
+  '상품매출': '401', '제품매출': '404', '용역매출': '403',
+  '공사매출': '402', '임대료수익': '904', '수출매출': '404',
+  '이자수익': '901', '배당금수익': '902', '잡이익': '930',
+  '외환차익': '907', '외화환산이익': '906',
+  // 비용 - 매출원가/제조원가 (제)
+  '상품매출원가': '451', '제품매출원가': '455',
+  '원재료비': '501', '복리후생비': '511', '여비교통비': '512',
+  '접대비': '513', '통신비': '514', '수도광열비': '515', '세금과공과': '517',
+  '감가상각비(제)': '518', '지급임차료': '519', '수선비': '520',
+  '보험료': '521', '차량유지비': '522', '교육훈련비': '525',
+  '도서인쇄비': '526', '소모품비(제)': '530',
+  '지급수수료(제)': '531',
+  '광고선전비(제)': '533', '운반비(제)': '524',
+  // 비용 - 판관비 (판)
+  '직원급여': '801', '급여': '801', '잡급': '803',
+  '복리후생비(판)': '811', '여비교통비(판)': '812', '접대비(판)': '813',
+  '통신비(판)': '814', '수도광열비(판)': '815', '세금과공과(판)': '817',
+  '감가상각비(판)': '818', '지급임차료(판)': '819', '수선비(판)': '820',
+  '보험료(판)': '821', '차량유지비(판)': '822', '경상연구개발비': '823',
+  '운반비': '824', '운반비(판)': '824', '교육훈련비(판)': '825',
+  '도서인쇄비(판)': '826', '회의비(판)': '827',
+  '판매수수료': '839', '지급수수료': '831', '지급수수료(판)': '831',
+  '광고선전비': '833', '광고선전비(판)': '833',
+  '소모품비': '830', '소모품비(판)': '830',
+  '대손상각비': '835',
+  '이자비용': '951', '외환차손': '952', '잡손실': '980',
+  '기부금': '953', '재해손실': '961',
+}
+
+function accountNameToCode(name: string): string {
+  if (!name) return ''
+  const n = String(name).trim()
+  if (ACCT_NAME_TO_CODE[n]) return ACCT_NAME_TO_CODE[n]
+  // 접미사 변형 ('소모품비(제)' → '소모품비')
+  const base = n.replace(/\([^)]*\)\s*$/, '').trim()
+  if (base !== n && ACCT_NAME_TO_CODE[base]) return ACCT_NAME_TO_CODE[base]
+  return ''
+}
+
+function isJournalFormat(rows: any[][]): boolean {
+  if (rows.length < 5) return false
+  let hasJournalTitle = false
+  let hasDrCrHeader = false
+  for (let r = 0; r < Math.min(10, rows.length); r++) {
+    const row = rows[r]
+    if (!row) continue
+    for (const cell of row) {
+      if (cell == null || cell === '') continue
+      const normalized = String(cell).replace(/\s/g, '').trim()
+      if (normalized.includes('분개장')) hasJournalTitle = true
+      if (normalized === '차변' || normalized === '대변') hasDrCrHeader = true
+    }
+    if (hasJournalTitle && hasDrCrHeader) return true
+  }
+  return hasJournalTitle
+}
+
+function parseJournal(rows: any[][]): ParsedRow[] {
+  const result: ParsedRow[] = []
+
+  // 연도 추출
+  let year = String(new Date().getFullYear())
+  for (let r = 0; r < Math.min(5, rows.length); r++) {
+    for (const cell of rows[r] || []) {
+      if (cell != null) {
+        const m = String(cell).match(/(20\d{2})\s*년/)
+        if (m) { year = m[1]; break }
+      }
+    }
+  }
+
+  // 위하고 분개장은 항상 6컬럼: [0]월일 [1]번호 [2]차변금액 [3]차변계정 [4]대변계정 [5]대변금액
+  const COL_MD = 0, COL_NUM = 1, COL_DR_AMT = 2, COL_DR_ACC = 3, COL_CR_ACC = 4, COL_CR_AMT = 5
+
+  const toFloat = (v: any): number => {
+    if (v == null || v === '') return 0
+    const n = parseFloat(String(v).replace(/,/g, '').trim())
+    return isNaN(n) ? 0 : n
+  }
+
+  interface Entry { amount: number; account: string }
+  interface Voucher {
+    date: string; number: string
+    debits: Entry[]; credits: Entry[]
+    description: string; merchant: string
+  }
+
+  let voucher: Voucher | null = null
+  let headerFound = false
+
+  const flush = (v: Voucher | null) => {
+    if (!v) return
+    if (v.debits.length === 0 && v.credits.length === 0) return
+    const crMain = v.credits.length
+      ? v.credits.reduce((a, b) => Math.abs(b.amount) > Math.abs(a.amount) ? b : a).account
+      : ''
+    const drMain = v.debits.length
+      ? v.debits.reduce((a, b) => Math.abs(b.amount) > Math.abs(a.amount) ? b : a).account
+      : ''
+    for (const d of v.debits) {
+      result.push({
+        description: v.description || d.account,
+        account_code: accountNameToCode(crMain),
+        merchant_name: v.merchant || '',
+        amount: Math.abs(d.amount),
+        debit: d.amount >= 0 ? d.amount : 0,
+        credit: d.amount < 0 ? -d.amount : 0,
+        date: v.date,
+        account_name: crMain,
+        source_account_code: accountNameToCode(d.account),
+        source_account_name: d.account,
+      })
+    }
+    for (const c of v.credits) {
+      result.push({
+        description: v.description || c.account,
+        account_code: accountNameToCode(drMain),
+        merchant_name: v.merchant || '',
+        amount: Math.abs(c.amount),
+        debit: c.amount < 0 ? -c.amount : 0,
+        credit: c.amount >= 0 ? c.amount : 0,
+        date: v.date,
+        account_name: drMain,
+        source_account_code: accountNameToCode(c.account),
+        source_account_name: c.account,
+      })
+    }
+  }
+
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx] || []
+    const padded = row.length < 6 ? [...row, ...new Array(6 - row.length).fill('')] : row
+
+    const mdRaw = padded[COL_MD]
+    const numRaw = padded[COL_NUM]
+    const drAmtRaw = padded[COL_DR_AMT]
+    const drAccRaw = padded[COL_DR_ACC]
+    const crAccRaw = padded[COL_CR_ACC]
+    const crAmtRaw = padded[COL_CR_AMT]
+
+    const md = mdRaw != null ? String(mdRaw).trim() : ''
+    const num = numRaw != null ? String(numRaw).trim() : ''
+    const drAcc = drAccRaw != null ? String(drAccRaw).trim() : ''
+    const crAcc = crAccRaw != null ? String(crAccRaw).trim() : ''
+
+    // 페이지 헤더 반복 skip
+    const cellText = padded.filter((c) => c != null && c !== '').map(String).join(' ')
+    if (
+      cellText.includes('분   개   장') || cellText.includes('분개장') ||
+      cellText.includes('회사명') || cellText.includes('구     분') ||
+      cellText.includes('월/일')
+    ) {
+      headerFound = true
+      continue
+    }
+
+    if (!headerFound) continue
+
+    // 새 분개 시작 — 월/일 패턴
+    if (/^\d{1,2}\/\d{1,2}$/.test(md)) {
+      flush(voucher)
+      voucher = {
+        date: `${year}-${md.replace('/', '-')}`,
+        number: num,
+        debits: [], credits: [],
+        description: '', merchant: '',
+      }
+    }
+
+    if (!voucher) continue
+
+    const drAmt = toFloat(drAmtRaw)
+    const crAmt = toFloat(crAmtRaw)
+
+    if (drAmt !== 0 && drAcc) voucher.debits.push({ amount: drAmt, account: drAcc })
+    if (crAmt !== 0 && crAcc) voucher.credits.push({ amount: crAmt, account: crAcc })
+
+    // 금액 0인 행 + 양쪽 텍스트만 있는 경우 → 적요+거래처
+    if (drAmt === 0 && crAmt === 0) {
+      if (drAcc && !voucher.description) voucher.description = drAcc
+      if (crAcc && !voucher.merchant) voucher.merchant = crAcc
+    }
+  }
+
+  flush(voucher)
+  return result
 }
 
 
