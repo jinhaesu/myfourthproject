@@ -410,15 +410,27 @@ async def list_tickets_all_types(
     start_date: str = Query(..., description="yyyy-MM-dd"),
     end_date: str = Query(..., description="yyyy-MM-dd"),
     asset_id: Optional[int] = Query(None),
+    slim: bool = Query(False, description="패턴 분석용 핵심 필드만 (응답 ~90% 축소)"),
 ):
     """
     모든 ticketType을 병렬 호출해 합쳐서 반환.
     EXPENSE_TICKET / BANK_TRANSACTION_TICKET / TAX_INVOICE_TICKET / CASH_RECEIPT_TICKET
     그랜터 31일 제한 — 클라이언트에서 31일 이하 구간으로 호출.
+
+    slim=true: 거래처/금액/날짜/방향 등 패턴 분석 필요 필드만 반환.
     """
     client = get_granter_client()
     try:
-        return await client.list_tickets_all_types(start_date, end_date, asset_id)
+        result = await client.list_tickets_all_types(start_date, end_date, asset_id)
+        if slim:
+            slimmed: Dict[str, list] = {}
+            for ticket_type, items in result.items():
+                if isinstance(items, list):
+                    slimmed[ticket_type] = [_slim_ticket(t) if isinstance(t, dict) else t for t in items]
+                else:
+                    slimmed[ticket_type] = items
+            return slimmed
+        return result
     except GranterAPIError as e:
         raise _err(e)
 

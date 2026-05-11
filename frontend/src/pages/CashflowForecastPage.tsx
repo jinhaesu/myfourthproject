@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   LineChart,
   Line,
@@ -1179,18 +1179,52 @@ export default function CashflowForecastPage() {
     [assetsQuery.data]
   )
 
-  // 캐시플로우 예측은 장기 패턴 분석 — 6개월치 거래 사용 (사용자 요구: 거래처 수백곳 분석)
-  // slim=true: raw 카드사 응답·첨부 등 무거운 필드 제외 (응답 ~300MB → ~5MB)
-  const ticketsQuery = useQuery({
-    queryKey: ['cashflow-tickets-extended-6m-slim'],
-    queryFn: () =>
-      granterApi
-        .listTicketsExtended(6, true)
-        .then((r) => flattenTickets(r.data)),
-    enabled: !!isConfigured,
-    retry: 1,
-    staleTime: 10 * 60_000,  // 6개월 데이터는 10분 캐시 (재호출 비용 큼)
+  // 캐시플로우 예측은 장기 패턴 분석 — 6개월치 거래를 1개월 단위로 6번 분할 호출.
+  // 각 chunk는 ~10초 + gzip ~0.5MB → 큰 단일 호출보다 훨씬 안정 (timeout/끊김 회피).
+  // 한 chunk 실패해도 나머지로 분석 가능 (점진적 표시).
+  const chunkRanges = useMemo(() => {
+    const ranges: Array<{ start: string; end: string }> = []
+    const baseDate = new Date(today + 'T00:00:00')
+    let endCursor = baseDate
+    for (let i = 0; i < 6; i++) {
+      const endIso = isoLocal(endCursor)
+      const startDate = new Date(endCursor)
+      startDate.setDate(startDate.getDate() - 30)
+      const startIso = isoLocal(startDate)
+      ranges.push({ start: startIso, end: endIso })
+      // 다음 chunk는 이 chunk 시작일 하루 전부터
+      const next = new Date(startDate)
+      next.setDate(next.getDate() - 1)
+      endCursor = next
+    }
+    return ranges
+  }, [today])
+
+  const chunkResults = useQueries({
+    queries: chunkRanges.map((r) => ({
+      queryKey: ['cashflow-chunk-slim', r.start, r.end],
+      queryFn: () =>
+        granterApi
+          .listTicketsAllTypes(r.start, r.end, undefined, true)
+          .then((res) => flattenTickets(res.data)),
+      enabled: !!isConfigured,
+      retry: 1,
+      staleTime: 10 * 60_000,
+    })),
   })
+
+  const ticketsData: any[] = useMemo(() => {
+    const all: any[] = []
+    for (const q of chunkResults) {
+      if (Array.isArray(q.data)) all.push(...q.data)
+    }
+    return all
+  }, [chunkResults])
+
+  const ticketsLoading = chunkResults.some((q) => q.isLoading)
+  const ticketsAllError = chunkResults.length > 0 && chunkResults.every((q) => q.isError)
+  const ticketsAnySuccess = chunkResults.some((q) => Array.isArray(q.data) && q.data.length > 0)
+  const loadedChunks = chunkResults.filter((q) => Array.isArray(q.data)).length
 
   // ---------------------------------------------------------------------------
   // Historical balance series
@@ -1231,7 +1265,7 @@ export default function CashflowForecastPage() {
   // Contact pattern analysis (법인 계좌 간 이체 제외 후 분석)
   // ---------------------------------------------------------------------------
 
-  const rawTicketsData = ticketsQuery.data ?? []
+  const rawTicketsData = ticketsData
   const filteredTicketsData = useMemo(
     () => filterOutInternalTransfers(rawTicketsData, ownAccounts),
     [rawTicketsData, ownAccounts]
@@ -1289,8 +1323,8 @@ export default function CashflowForecastPage() {
   // Loading / error
   // ---------------------------------------------------------------------------
 
-  const isLoading = reportQuery.isLoading || ticketsQuery.isLoading
-  const hasError = reportQuery.isError || ticketsQuery.isError
+  const isLoading = reportQuery.isLoading || (ticketsLoading && !ticketsAnySuccess)
+  const hasError = reportQuery.isError || (ticketsAllError && !ticketsAnySuccess)
 
   // ---------------------------------------------------------------------------
   // Period picker handlers
@@ -1328,14 +1362,14 @@ export default function CashflowForecastPage() {
             try {
               // backend 그랜터 메모리 캐시 강제 무효화 (10분 TTL 무시)
               try { await granterApi.clearCache() } catch {}
-              // react-query 캐시도 무효화 후 재조회
-              await queryClient.invalidateQueries({ queryKey: ['cashflow-tickets-extended-6m-slim'] })
+              // react-query 캐시 무효화 후 재조회 (6개 chunk + balance + assets)
+              await queryClient.invalidateQueries({ queryKey: ['cashflow-chunk-slim'] })
               await queryClient.invalidateQueries({ queryKey: ['cashflow-balance'] })
               await queryClient.invalidateQueries({ queryKey: ['granter-all-assets'] })
               await Promise.all([
                 reportQuery.refetch(),
-                ticketsQuery.refetch(),
                 assetsQuery.refetch(),
+                ...chunkResults.map((q) => q.refetch()),
               ])
             } finally {
               setRefreshing(false)
@@ -1444,16 +1478,40 @@ export default function CashflowForecastPage() {
         </div>
       )}
 
-      {ticketsQuery.isError && (
-        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
-          <span className="text-2xs text-rose-800">거래 데이터 로드 실패</span>
+      {/* 일부 chunk만 실패: 부분 분석 가능하므로 경고만 표시 (전부 실패 시에만 진짜 에러) */}
+      {chunkResults.some((q) => q.isError) && !ticketsAllError && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 shrink-0" />
+          <span className="text-2xs text-amber-800">
+            일부 기간(6개월 중 {chunkResults.filter((q) => q.isError).length}개월) 로드 실패 —
+            나머지 {loadedChunks}개월로 분석 진행됩니다.
+          </span>
           <button
             className="btn-secondary text-2xs ml-auto"
-            onClick={() => ticketsQuery.refetch()}
+            onClick={() => chunkResults.filter((q) => q.isError).forEach((q) => q.refetch())}
+          >
+            실패한 기간만 재시도
+          </button>
+        </div>
+      )}
+      {ticketsAllError && (
+        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
+          <span className="text-2xs text-rose-800">거래 데이터 로드 실패 (6개월 전 구간)</span>
+          <button
+            className="btn-secondary text-2xs ml-auto"
+            onClick={() => chunkResults.forEach((q) => q.refetch())}
           >
             재시도
           </button>
+        </div>
+      )}
+      {ticketsLoading && (
+        <div className="rounded-md border border-ink-200 bg-canvas-50 px-3 py-2 flex items-center gap-2">
+          <ArrowPathIcon className="h-4 w-4 text-ink-500 animate-spin shrink-0" />
+          <span className="text-2xs text-ink-700">
+            6개월 거래 로드 중… ({loadedChunks}/6개월 완료, 첫 로드는 ~60초 소요)
+          </span>
         </div>
       )}
 

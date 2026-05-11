@@ -699,9 +699,10 @@ export const granterApi = {
   listAssets: (payload: { assetType: string }) => api.post('/granter/assets', payload),
   listAllAssets: (onlyActive: boolean = true) =>
     api.get('/granter/assets/all', { params: { only_active: onlyActive } }),
-  listTicketsAllTypes: (startDate: string, endDate: string, assetId?: number) =>
+  listTicketsAllTypes: (startDate: string, endDate: string, assetId?: number, slim: boolean = false) =>
     api.post('/granter/tickets/all', null, {
-      params: { start_date: startDate, end_date: endDate, asset_id: assetId },
+      params: { start_date: startDate, end_date: endDate, asset_id: assetId, slim },
+      timeout: 60_000,  // 1개월 단위 호출은 ~10초, 여유있게 60초
     }),
   listTicketsExtended: (months: number = 6, slim: boolean = false) =>
     api.get('/granter/tickets/extended', {
