@@ -415,11 +415,18 @@ function analyzeContactPatterns(tickets: any[]): {
   }
 }
 
-/** 신뢰도별 예측 발생 가중치 — 낮은 정확도는 부분만 반영 */
+/**
+ * 신뢰도별 예측 발생 가중치 — 정기 거래는 (정기성과 무관하게) 매월 발생함.
+ * 가중치는 "발생 확률"이 아닌 "금액 추정 정확도" 개념으로 조정:
+ *   high(매월 동일 일자/CV<0.15): 1.0
+ *   medium(CV<0.4 또는 ≥3회): 0.9 (변동성 약간 반영, 0.7 → 0.9 격상)
+ *   low: 0.6 (1~2회 거래, 0.3 → 0.6 격상)
+ * — 사용자 피드백 "급여가 1.7억으로 표시" 문제는 가중치 과소 + avg 깎임 합작.
+ */
 function confidenceWeight(c: Confidence): number {
   if (c === 'high') return 1.0
-  if (c === 'medium') return 0.7
-  return 0.3
+  if (c === 'medium') return 0.9
+  return 0.6
 }
 
 // ---------------------------------------------------------------------------
@@ -478,10 +485,6 @@ function nextOccurrences(p: ContactPattern, forecastFrom: string, forecastTo: st
   return result
 }
 
-function firstNextOccurrence(p: ContactPattern, forecastFrom: string, forecastTo: string): string {
-  return nextOccurrences(p, forecastFrom, forecastTo)[0]
-}
-
 // ---------------------------------------------------------------------------
 // Forecast builder
 // ---------------------------------------------------------------------------
@@ -496,9 +499,10 @@ interface ForecastInput {
   startBalance: number
   forecastFrom: string
   forecastTo: string
-  cardDailyAvg: number           // 카드결제 일평균 OUT buffer
-  cashReceiptDailyAvg: number    // 현금영수증 일평균 IN buffer
-  selfBankNetInDailyAvg: number  // 본인회사 BANK net IN 일평균 (외부 매출 추정)
+  analysisPeriodDays: number     // 분석 기간 (총 거래 ÷ 이 값 = 일평균)
+  cardDailyAvg: number
+  cashReceiptDailyAvg: number
+  selfBankNetInDailyAvg: number
 }
 
 function buildForecast(input: ForecastInput): ForecastDay[] {
@@ -512,6 +516,7 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     startBalance,
     forecastFrom,
     forecastTo,
+    analysisPeriodDays,
     cardDailyAvg,
     cashReceiptDailyAvg,
     selfBankNetInDailyAvg,
@@ -528,39 +533,41 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     else ev.totalOut += amount
   }
 
-  // IN patterns — 신뢰도 가중치 적용
+  const forecastSpanDays = diffDays(forecastFrom, forecastTo) + 1
+  // 거래처별 forecast 총액 = (분석기간 총 거래액 × forecastSpan / analysisSpan) × 신뢰도 가중치
+  // 이를 발생 예정일(영업일 보정 후)에 균등 분산. avg×occ 방식 대비 bimodal 분포에서도 정확.
+
+  // IN patterns
   for (const p of inPatterns) {
     const w = confidenceWeight(p.confidence)
-    const baseAmount =
-      overrideInAmounts[p.contact] !== undefined
-        ? overrideInAmounts[p.contact]
-        : expectedRevenue !== null
-        ? expectedRevenue * p.shareRatio
-        : p.avgAmount * w
-    if (baseAmount <= 0) continue
+    let forecastTotal: number
+    if (overrideInAmounts[p.contact] !== undefined) {
+      forecastTotal = overrideInAmounts[p.contact]
+    } else if (expectedRevenue !== null) {
+      forecastTotal = expectedRevenue * p.shareRatio
+    } else {
+      forecastTotal = p.totalAmount * (forecastSpanDays / analysisPeriodDays) * w
+    }
+    if (forecastTotal <= 0) continue
 
     const dates = nextOccurrences(p, forecastFrom, forecastTo)
-    const perOccurrence =
-      overrideInAmounts[p.contact] !== undefined || expectedRevenue !== null
-        ? baseAmount / Math.max(1, dates.length)
-        : baseAmount
+    const perOccurrence = forecastTotal / Math.max(1, dates.length)
     for (const d of dates) addEvent(d, 'IN', perOccurrence)
   }
 
-  // OUT patterns — 신뢰도 가중치 적용
+  // OUT patterns
   for (const p of outPatterns) {
     const w = confidenceWeight(p.confidence)
-    const baseAmount =
-      overrideOutAmounts[p.contact] !== undefined
-        ? overrideOutAmounts[p.contact]
-        : p.avgAmount * w
-    if (baseAmount <= 0) continue
+    let forecastTotal: number
+    if (overrideOutAmounts[p.contact] !== undefined) {
+      forecastTotal = overrideOutAmounts[p.contact]
+    } else {
+      forecastTotal = p.totalAmount * (forecastSpanDays / analysisPeriodDays) * w
+    }
+    if (forecastTotal <= 0) continue
 
     const dates = nextOccurrences(p, forecastFrom, forecastTo)
-    const perOccurrence =
-      overrideOutAmounts[p.contact] !== undefined
-        ? baseAmount / Math.max(1, dates.length)
-        : baseAmount
+    const perOccurrence = forecastTotal / Math.max(1, dates.length)
     for (const d of dates) addEvent(d, 'OUT', perOccurrence)
   }
 
@@ -827,7 +834,7 @@ function UserInputPanel({
 
 // -- ContactPatternTable --
 
-type SortKey = 'contact' | 'avgAmount' | 'txCount' | 'cycle' | 'nextDate' | 'confidence' | 'shareRatio'
+type SortKey = 'contact' | 'avgAmount' | 'forecastAmt' | 'txCount' | 'cycle' | 'nextDate' | 'confidence' | 'shareRatio'
 type SortDir = 'asc' | 'desc'
 const CONF_ORDER: Record<Confidence, number> = { low: 0, medium: 1, high: 2 }
 
@@ -836,9 +843,10 @@ interface ContactPatternTableProps {
   direction: 'IN' | 'OUT'
   forecastFrom: string
   forecastTo: string
+  analysisPeriodDays: number
 }
 
-function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo }: ContactPatternTableProps) {
+function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo, analysisPeriodDays }: ContactPatternTableProps) {
   const label = direction === 'IN' ? '입금' : '출금'
   const badgeCls =
     direction === 'IN'
@@ -859,11 +867,19 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo }: 
     }
   }
 
+  const forecastSpan = diffDays(forecastFrom, forecastTo) + 1
   const sortedPatterns = useMemo(() => {
-    const arr = patterns.map((p) => ({
-      p,
-      nextDate: firstNextOccurrence(p, forecastFrom, forecastTo),
-    }))
+    const arr = patterns.map((p) => {
+      const dates = nextOccurrences(p, forecastFrom, forecastTo)
+      const forecastAmt =
+        p.totalAmount * (forecastSpan / Math.max(1, analysisPeriodDays)) * confidenceWeight(p.confidence)
+      return {
+        p,
+        nextDate: dates[0] ?? '',
+        forecastAmt,
+        occurrences: dates.length,
+      }
+    })
     arr.sort((a, b) => {
       let cmp = 0
       switch (sortKey) {
@@ -873,11 +889,13 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo }: 
         case 'avgAmount':
           cmp = a.p.avgAmount - b.p.avgAmount
           break
+        case 'forecastAmt':
+          cmp = a.forecastAmt - b.forecastAmt
+          break
         case 'txCount':
           cmp = a.p.txCount - b.p.txCount
           break
         case 'cycle': {
-          // 매월 고정일이 우선 (작은 값일수록 짧은 주기)
           const av = a.p.preferredDayOfMonth ?? a.p.cycleDays
           const bv = b.p.preferredDayOfMonth ?? b.p.cycleDays
           cmp = av - bv
@@ -896,7 +914,7 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo }: 
       return sortDir === 'asc' ? cmp : -cmp
     })
     return arr
-  }, [patterns, forecastFrom, forecastTo, sortKey, sortDir])
+  }, [patterns, forecastFrom, forecastTo, sortKey, sortDir, forecastSpan, analysisPeriodDays])
 
   if (patterns.length === 0) {
     return (
@@ -942,6 +960,7 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo }: 
           <tr>
             <SortHeader label="거래처" sk="contact" align="left" />
             <SortHeader label="과거 평균" sk="avgAmount" align="right" />
+            <SortHeader label="forecast 추정" sk="forecastAmt" align="right" />
             <SortHeader label="건수" sk="txCount" align="right" />
             <SortHeader label="주기" sk="cycle" align="right" />
             <SortHeader label="다음 예상일" sk="nextDate" align="right" />
@@ -950,11 +969,17 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo }: 
           </tr>
         </thead>
         <tbody className="divide-y divide-ink-100">
-          {sortedPatterns.map(({ p, nextDate }) => (
+          {sortedPatterns.map(({ p, nextDate, forecastAmt, occurrences }) => (
             <tr key={p.contact} className="hover:bg-canvas-50">
               <td className="px-3 py-1.5 text-xs text-ink-800 max-w-[140px] truncate">{p.contact}</td>
-              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-800">
+              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-500">
                 {formatCurrency(p.avgAmount, false)}
+              </td>
+              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-900 font-semibold">
+                {formatCurrency(forecastAmt, false)}
+                {occurrences > 1 && (
+                  <span className="ml-1 text-2xs text-ink-400 font-normal">({occurrences}회)</span>
+                )}
               </td>
               <td className="px-3 py-1.5 text-right text-2xs text-ink-600">{p.txCount}회</td>
               <td className="px-3 py-1.5 text-right text-2xs text-ink-600">
@@ -1533,6 +1558,7 @@ export default function CashflowForecastPage() {
         startBalance: currentBalance,
         forecastFrom,
         forecastTo,
+        analysisPeriodDays,
         cardDailyAvg,
         cashReceiptDailyAvg,
         selfBankNetInDailyAvg,
@@ -1547,6 +1573,7 @@ export default function CashflowForecastPage() {
       currentBalance,
       forecastFrom,
       forecastTo,
+      analysisPeriodDays,
       cardDailyAvg,
       cashReceiptDailyAvg,
       selfBankNetInDailyAvg,
@@ -1879,6 +1906,7 @@ export default function CashflowForecastPage() {
             direction="IN"
             forecastFrom={forecastFrom}
             forecastTo={forecastTo}
+            analysisPeriodDays={analysisPeriodDays}
           />
         </div>
         <div className="panel overflow-hidden">
@@ -1891,6 +1919,7 @@ export default function CashflowForecastPage() {
             direction="OUT"
             forecastFrom={forecastFrom}
             forecastTo={forecastTo}
+            analysisPeriodDays={analysisPeriodDays}
           />
         </div>
       </div>
@@ -1906,8 +1935,9 @@ export default function CashflowForecastPage() {
           본인 회사(조인앤조인 사업자번호/회사명 변형/통장 간 이체)는 분석에서 자동 제외.
         </p>
         <p>
-          <span className="font-semibold text-ink-700">예측 가중치:</span> 정확도 높음 ×1.0 /
-          중간 ×0.7 / 낮음 ×0.3 — 신뢰도 낮은 패턴은 부분만 반영하여 과대 추정 방지.
+          <span className="font-semibold text-ink-700">예측 산정식:</span>
+          거래처별 forecast = (분석기간 총거래액 × forecast기간/분석기간) × 신뢰도 가중치 (높음 ×1.0 / 중간 ×0.9 / 낮음 ×0.6).
+          이를 발생 예정일에 균등 분산. 평균(avg)이 아닌 총액 기반이라 bimodal 분포(예: 본 급여 + 상여) 평균 왜곡 방지.
         </p>
         <p>
           <span className="font-semibold text-ink-700">카드결제(OUT buffer):</span> 식당·주유소 등
