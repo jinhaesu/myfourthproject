@@ -186,17 +186,21 @@ function extractContact(t: any): string {
 function analyzeContactPatterns(tickets: any[]): {
   inPatterns: ContactPattern[]
   outPatterns: ContactPattern[]
-  cardDailyAvg: number          // 카드결제 일평균 지출
-  cardOneTimeTotal: number      // 분석기간 카드결제 총합
-  cashReceiptDailyAvg: number   // 현금영수증 일평균 매출
-  cashReceiptTotal: number      // 분석기간 현금영수증 매출 총합
-  analysisPeriodDays: number    // 분석 기간 일수
+  cardDailyAvg: number
+  cardOneTimeTotal: number
+  cashReceiptDailyAvg: number
+  cashReceiptTotal: number
+  analysisPeriodDays: number
+  selfBankNetInDailyAvg: number     // 본인회사 BANK IN-OUT 잔여 (외부 매출 추정) 일평균
+  selfBankNetIn: number             // 분석기간 본인회사 BANK net IN 합계
 } {
   type Group = { dates: string[]; amounts: number[] }
   const inMap = new Map<string, Group>()
   const outMap = new Map<string, Group>()
   let cardTotal = 0
   let cashReceiptTotal = 0
+  let selfBankInTotal = 0
+  let selfBankOutTotal = 0
   const allDates = new Set<string>()
 
   for (const t of tickets) {
@@ -213,14 +217,23 @@ function analyzeContactPatterns(tickets: any[]): {
     }
 
     // 현금영수증 — issuer가 우리 회사라 contact 분석 불가, 일평균 IN buffer로 처리
-    // (transactionType과 무관하게 SALES 매출 합계로 누적)
     if (t.ticketType === 'CASH_RECEIPT_TICKET') {
       cashReceiptTotal += amount
       continue
     }
 
     const contact = extractContact(t)
-    if (isSelfContact(contact)) continue
+
+    // 본인회사 BANK 거래: 통장간 이체 + 일부 외부매출 contact 오표기 혼재.
+    // IN-OUT net 양수면 외부 매출로 추정 → 일평균 IN buffer로 누적.
+    if (isSelfContact(contact)) {
+      if (t.ticketType === 'BANK_TRANSACTION_TICKET') {
+        if (t.transactionType === 'IN') selfBankInTotal += amount
+        else selfBankOutTotal += amount
+      }
+      continue
+    }
+
     const dir: 'IN' | 'OUT' = t.transactionType === 'IN' ? 'IN' : 'OUT'
     const map = dir === 'IN' ? inMap : outMap
     if (!map.has(contact)) map.set(contact, { dates: [], amounts: [] })
@@ -237,6 +250,9 @@ function analyzeContactPatterns(tickets: any[]): {
   }
   const cardDailyAvg = cardTotal / analysisPeriodDays
   const cashReceiptDailyAvg = cashReceiptTotal / analysisPeriodDays
+  // 본인회사 BANK net IN — 양수만 외부 매출로 인정 (음수는 무시)
+  const selfBankNetIn = Math.max(0, selfBankInTotal - selfBankOutTotal)
+  const selfBankNetInDailyAvg = selfBankNetIn / analysisPeriodDays
 
   function buildPatterns(map: Map<string, Group>, direction: 'IN' | 'OUT'): ContactPattern[] {
     const totalAll = Array.from(map.values()).reduce(
@@ -261,7 +277,8 @@ function analyzeContactPatterns(tickets: any[]): {
         .sort((a, b) => a.date.localeCompare(b.date))
       const lastDate = sorted[sorted.length - 1].date
 
-      // Cycle detection — 최소 주기 7일 (1회성·노이즈 방지)
+      // Cycle detection — 자주 발생하는 정상 매출(쿠팡·카카오 등)을 위해 최소 1일.
+      // 1회성 노이즈는 이미 위 txCount/total 필터로 차단됨.
       let cycleDays = 30
       let intervalCV: number | null = null
       if (sorted.length >= 2) {
@@ -271,8 +288,7 @@ function analyzeContactPatterns(tickets: any[]): {
         }
         const meanInterval = intervals.reduce((s, v) => s + v, 0) / intervals.length
         if (meanInterval > 0) {
-          // 최소 7일 (매일·격일 패턴 차단), 최대 60일
-          cycleDays = Math.max(7, Math.min(60, Math.round(meanInterval)))
+          cycleDays = Math.max(1, Math.min(60, Math.round(meanInterval)))
         }
         if (intervals.length >= 2 && meanInterval > 0) {
           const variance =
@@ -280,8 +296,7 @@ function analyzeContactPatterns(tickets: any[]): {
           intervalCV = Math.sqrt(variance) / meanInterval
         }
       } else {
-        // 1회 거래지만 합계 ≥30만원이라 통과 — 월 1회 가정
-        cycleDays = 30
+        cycleDays = 30  // 1회 거래는 월 1회 가정
       }
 
       // Preferred day-of-month detection (≥2 same day)
@@ -300,8 +315,9 @@ function analyzeContactPatterns(tickets: any[]): {
         }
       }
 
-      // Confidence: 매월 고정일자 ≥75% → high, CV<0.15 → high, <0.40 → medium, 그 외 low
-      // 1회 거래는 무조건 low (1회로 패턴 단정 불가)
+      // Confidence: 매월 고정일자 ≥75% → high, CV<0.15 → high, <0.40 → medium, 그 외 low.
+      // 1회 거래라도 합계가 크면(≥1억) medium 격상 — 급여·법인세 등 매월 1회 큰 정기지출은
+      // 한 분석기간에 1회만 보여도 정확도 medium으로 인정.
       let confidence: Confidence = 'low'
       if (sorted.length >= 2) {
         if (preferredDayOfMonth !== null && preferredDayMatchRatio >= 0.75) {
@@ -313,6 +329,9 @@ function analyzeContactPatterns(tickets: any[]): {
         } else if (sorted.length >= 3) {
           confidence = 'medium'
         }
+      } else if (totalAmount >= 100_000_000) {
+        // 1회 거래지만 큰 정기 지출/매출로 추정
+        confidence = 'medium'
       }
 
       const shareRatio = totalAll > 0 ? totalAmount / totalAll : 0
@@ -430,6 +449,7 @@ interface ForecastInput {
   forecastTo: string
   cardDailyAvg: number           // 카드결제 일평균 OUT buffer
   cashReceiptDailyAvg: number    // 현금영수증 일평균 IN buffer
+  selfBankNetInDailyAvg: number  // 본인회사 BANK net IN 일평균 (외부 매출 추정)
 }
 
 function buildForecast(input: ForecastInput): ForecastDay[] {
@@ -445,6 +465,7 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     forecastTo,
     cardDailyAvg,
     cashReceiptDailyAvg,
+    selfBankNetInDailyAvg,
   } = input
 
   const totalHistoricalIn = inPatterns.reduce((s, p) => s + p.totalAmount, 0)
@@ -507,6 +528,10 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
       }
       if (cashReceiptDailyAvg > 0) {
         addEvent(d, 'IN', cashReceiptDailyAvg * (isWeekend ? 0.8 : 1.0))
+      }
+      // 본인회사 BANK net IN — 외부 매출인데 그랜터가 contact를 자기회사명으로 잘못 기록한 분
+      if (selfBankNetInDailyAvg > 0) {
+        addEvent(d, 'IN', selfBankNetInDailyAvg * (isWeekend ? 0.5 : 1.0))
       }
     }
   }
@@ -1363,6 +1388,8 @@ export default function CashflowForecastPage() {
     cashReceiptDailyAvg,
     cashReceiptTotal,
     analysisPeriodDays,
+    selfBankNetInDailyAvg,
+    selfBankNetIn,
   } = useMemo(() => analyzeContactPatterns(filteredTicketsData), [filteredTicketsData])
 
   // ---------------------------------------------------------------------------
@@ -1390,6 +1417,7 @@ export default function CashflowForecastPage() {
         forecastTo,
         cardDailyAvg,
         cashReceiptDailyAvg,
+        selfBankNetInDailyAvg,
       }),
     [
       inPatterns,
@@ -1403,6 +1431,7 @@ export default function CashflowForecastPage() {
       forecastTo,
       cardDailyAvg,
       cashReceiptDailyAvg,
+      selfBankNetInDailyAvg,
     ]
   )
 
@@ -1775,6 +1804,14 @@ export default function CashflowForecastPage() {
           (기간 총 <span className="font-mono">{formatCurrency(cashReceiptTotal, false)}원</span>)로
           평일 100% / 주말 80% 가산.
         </p>
+        {selfBankNetIn > 0 && (
+          <p>
+            <span className="font-semibold text-ink-700">외부 매출 추정(IN buffer):</span> 그랜터가
+            contact을 자기 회사명으로 잘못 기록한 BANK 입금 중 통장간 이체로 매칭 안 되는 net 분.
+            기간 총 <span className="font-mono">{formatCurrency(selfBankNetIn, false)}원</span> →
+            일평균 <span className="font-mono">{formatCurrency(selfBankNetInDailyAvg, false)}원/일</span> 가산.
+          </p>
+        )}
         <p>
           주말 보정: 입금 거래처는 직전 금요일로 당기고, 출금은 다음 월요일로 미룸.
         </p>
