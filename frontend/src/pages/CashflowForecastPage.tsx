@@ -177,33 +177,45 @@ function extractContact(t: any): string {
  * 핵심 원칙:
  * 1. 카드결제(EXPENSE_TICKET)는 거래처 패턴 분석에서 제외 — 식당/주유소 등 1회성 거래가
  *    "월간 반복"으로 잡혀 예측을 망침. 대신 일평균 변동성 지출로 별도 처리.
- * 2. 거래 횟수 ≥2회 (또는 합계 ≥30만원) 인 거래처만 반복 패턴으로 인정.
- *    1회성 거래는 패턴 분석에서 제외 (forecast에 반복 발생시키지 않음).
- * 3. cycleDays 최소 7일 (매일·격일 패턴은 1회성 노이즈 가능성 큼).
- * 4. 신뢰도(high/medium/low)에 따라 buildForecast에서 가중치 적용.
+ * 2. 현금영수증(CASH_RECEIPT_TICKET)도 거래처 패턴 분석에서 제외 — issuer가 우리 회사라
+ *    contact으로 잡으면 isSelfContact에 걸려 매출이 통째로 누락됨. 일평균 매출 buffer로 처리.
+ * 3. 거래 횟수 ≥2회 (또는 합계 ≥30만원) 인 거래처만 반복 패턴으로 인정.
+ * 4. cycleDays 최소 7일.
+ * 5. 신뢰도(high/medium/low)에 따라 buildForecast에서 가중치 적용.
  */
 function analyzeContactPatterns(tickets: any[]): {
   inPatterns: ContactPattern[]
   outPatterns: ContactPattern[]
-  cardDailyAvg: number       // 카드결제 일평균 지출 (변동성 buffer)
-  cardOneTimeTotal: number   // 분석기간 내 카드결제 총합 (참고)
+  cardDailyAvg: number          // 카드결제 일평균 지출
+  cardOneTimeTotal: number      // 분석기간 카드결제 총합
+  cashReceiptDailyAvg: number   // 현금영수증 일평균 매출
+  cashReceiptTotal: number      // 분석기간 현금영수증 매출 총합
+  analysisPeriodDays: number    // 분석 기간 일수
 } {
   type Group = { dates: string[]; amounts: number[] }
   const inMap = new Map<string, Group>()
   const outMap = new Map<string, Group>()
   let cardTotal = 0
-  const cardDates = new Set<string>()  // 카드결제 발생 일자 — 일평균 산정용
+  let cashReceiptTotal = 0
+  const allDates = new Set<string>()
 
   for (const t of tickets) {
     const amount = Math.abs(Number(t.amount ?? 0))
     if (amount <= 0) continue
     const date = (t.transactAt ?? t.createdAt ?? '').slice(0, 10)
     if (!date) continue
+    allDates.add(date)
 
-    // 카드결제는 거래처 패턴 분석에서 제외, 별도 buffer로 처리
+    // 카드결제 — 거래처 패턴에서 제외, 일평균 OUT buffer로 처리
     if (t.ticketType === 'EXPENSE_TICKET') {
       cardTotal += amount
-      cardDates.add(date)
+      continue
+    }
+
+    // 현금영수증 — issuer가 우리 회사라 contact 분석 불가, 일평균 IN buffer로 처리
+    // (transactionType과 무관하게 SALES 매출 합계로 누적)
+    if (t.ticketType === 'CASH_RECEIPT_TICKET') {
+      cashReceiptTotal += amount
       continue
     }
 
@@ -217,9 +229,14 @@ function analyzeContactPatterns(tickets: any[]): {
     g.amounts.push(amount)
   }
 
-  // 카드결제 일평균 — 분석기간 길이로 정규화
-  const periodDays = cardDates.size > 0 ? cardDates.size : 60
-  const cardDailyAvg = cardTotal / periodDays
+  // 분석 기간 — 거래 발생 첫날~마지막날 기준 (기본 62일)
+  let analysisPeriodDays = 62
+  if (allDates.size >= 2) {
+    const sorted = Array.from(allDates).sort()
+    analysisPeriodDays = Math.max(7, diffDays(sorted[0], sorted[sorted.length - 1]) + 1)
+  }
+  const cardDailyAvg = cardTotal / analysisPeriodDays
+  const cashReceiptDailyAvg = cashReceiptTotal / analysisPeriodDays
 
   function buildPatterns(map: Map<string, Group>, direction: 'IN' | 'OUT'): ContactPattern[] {
     const totalAll = Array.from(map.values()).reduce(
@@ -323,6 +340,9 @@ function analyzeContactPatterns(tickets: any[]): {
     outPatterns: buildPatterns(outMap, 'OUT'),
     cardDailyAvg,
     cardOneTimeTotal: cardTotal,
+    cashReceiptDailyAvg,
+    cashReceiptTotal,
+    analysisPeriodDays,
   }
 }
 
@@ -408,7 +428,8 @@ interface ForecastInput {
   startBalance: number
   forecastFrom: string
   forecastTo: string
-  cardDailyAvg: number  // 카드결제 일평균 (변동성 buffer로 매일 차감)
+  cardDailyAvg: number           // 카드결제 일평균 OUT buffer
+  cashReceiptDailyAvg: number    // 현금영수증 일평균 IN buffer
 }
 
 function buildForecast(input: ForecastInput): ForecastDay[] {
@@ -423,6 +444,7 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     forecastFrom,
     forecastTo,
     cardDailyAvg,
+    cashReceiptDailyAvg,
   } = input
 
   const totalHistoricalIn = inPatterns.reduce((s, p) => s + p.totalAmount, 0)
@@ -472,15 +494,20 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     for (const d of dates) addEvent(d, 'OUT', perOccurrence)
   }
 
-  // 카드결제 일평균 — 평일에만 발생한다고 가정(주말 카드 사용 적음)하여 buffer로 매일 차감
-  if (cardDailyAvg > 0) {
+  // 카드결제 일평균 — 평일 100% / 주말 60% (회사 카드 사용은 평일 위주)
+  // 현금영수증 매출 일평균 — 평일 100% / 주말 80% (매장형 매출은 주말도 유사 패턴)
+  {
     const span = diffDays(forecastFrom, forecastTo) + 1
     for (let i = 0; i < span; i++) {
       const d = addDays(forecastFrom, i)
       const dow = new Date(d + 'T00:00:00').getDay()
-      // 평일(월~금)에만 반영, 주말은 60%로 감소
-      const dayMultiplier = dow >= 1 && dow <= 5 ? 1.0 : 0.6
-      addEvent(d, 'OUT', cardDailyAvg * dayMultiplier)
+      const isWeekend = dow === 0 || dow === 6
+      if (cardDailyAvg > 0) {
+        addEvent(d, 'OUT', cardDailyAvg * (isWeekend ? 0.6 : 1.0))
+      }
+      if (cashReceiptDailyAvg > 0) {
+        addEvent(d, 'IN', cashReceiptDailyAvg * (isWeekend ? 0.8 : 1.0))
+      }
     }
   }
 
@@ -1328,10 +1355,15 @@ export default function CashflowForecastPage() {
   )
   const filteredCount = rawTicketsData.length - filteredTicketsData.length
 
-  const { inPatterns, outPatterns, cardDailyAvg, cardOneTimeTotal } = useMemo(
-    () => analyzeContactPatterns(filteredTicketsData),
-    [filteredTicketsData]
-  )
+  const {
+    inPatterns,
+    outPatterns,
+    cardDailyAvg,
+    cardOneTimeTotal,
+    cashReceiptDailyAvg,
+    cashReceiptTotal,
+    analysisPeriodDays,
+  } = useMemo(() => analyzeContactPatterns(filteredTicketsData), [filteredTicketsData])
 
   // ---------------------------------------------------------------------------
   // Forecast
@@ -1357,6 +1389,7 @@ export default function CashflowForecastPage() {
         forecastFrom,
         forecastTo,
         cardDailyAvg,
+        cashReceiptDailyAvg,
       }),
     [
       inPatterns,
@@ -1369,6 +1402,7 @@ export default function CashflowForecastPage() {
       forecastFrom,
       forecastTo,
       cardDailyAvg,
+      cashReceiptDailyAvg,
     ]
   )
 
@@ -1729,11 +1763,20 @@ export default function CashflowForecastPage() {
           중간 ×0.7 / 낮음 ×0.3 — 신뢰도 낮은 패턴은 부분만 반영하여 과대 추정 방지.
         </p>
         <p>
-          <span className="font-semibold text-ink-700">카드결제(EXPENSE_TICKET):</span> 식당·주유소 등
-          1회성 거래가 많아 거래처 패턴 분석에서 제외, 일평균 변동성 지출
-          (<span className="font-mono">{formatCurrency(cardDailyAvg, false)}원/일</span>,
-          분석기간 총 <span className="font-mono">{formatCurrency(cardOneTimeTotal, false)}원</span>)로
-          평일 100% / 주말 60% 차감. 주말 보정: 입금은 직전 금요일, 출금은 다음 월요일.
+          <span className="font-semibold text-ink-700">카드결제(OUT buffer):</span> 식당·주유소 등
+          1회성. 일평균 <span className="font-mono">{formatCurrency(cardDailyAvg, false)}원/일</span>
+          (기간 총 <span className="font-mono">{formatCurrency(cardOneTimeTotal, false)}원</span> ÷ {analysisPeriodDays}일),
+          평일 100% / 주말 60% 차감.
+        </p>
+        <p>
+          <span className="font-semibold text-ink-700">현금영수증(IN buffer):</span> 매장형 일다수 매출.
+          발행자가 본인회사라 거래처 분석 불가 → 일평균
+          <span className="font-mono"> {formatCurrency(cashReceiptDailyAvg, false)}원/일</span>
+          (기간 총 <span className="font-mono">{formatCurrency(cashReceiptTotal, false)}원</span>)로
+          평일 100% / 주말 80% 가산.
+        </p>
+        <p>
+          주말 보정: 입금 거래처는 직전 금요일로 당기고, 출금은 다음 월요일로 미룸.
         </p>
       </div>
     </div>
