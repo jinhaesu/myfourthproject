@@ -41,8 +41,10 @@ async def diagnose(
     """
     원장 데이터 상태 진단 — 차변/대변 mismatch 등 검증용.
 
-    sample_account_code 지정 시 해당 계정의 raw 데이터 5건 반환 (더존 화면과 직접 비교).
+    sample_account_code 지정 시 해당 계정의 raw 데이터 + 차변/대변 합계 + 중복 후보 반환.
     """
+    from app.models.ai import AIDataUploadHistory
+
     total = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
     with_source = await db.scalar(
         select(func.count(AIRawTransactionData.id)).where(
@@ -59,6 +61,57 @@ async def diagnose(
     min_date = await db.scalar(select(func.min(AIRawTransactionData.transaction_date)))
     max_date = await db.scalar(select(func.max(AIRawTransactionData.transaction_date)))
 
+    # 업로드별 행 수 (최근 20개) — 중복 업로드 즉시 감지
+    upload_rows = (await db.execute(
+        select(
+            AIRawTransactionData.upload_id,
+            func.count(AIRawTransactionData.id).label('cnt'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+        ).group_by(AIRawTransactionData.upload_id).order_by(AIRawTransactionData.upload_id.desc()).limit(20)
+    )).all()
+
+    # 업로드 history join (filename, created_at)
+    upload_ids = [u.upload_id for u in upload_rows if u.upload_id is not None]
+    history_map = {}
+    if upload_ids:
+        hist_rows = (await db.execute(
+            select(AIDataUploadHistory).where(AIDataUploadHistory.id.in_(upload_ids))
+        )).scalars().all()
+        history_map = {
+            h.id: {
+                "filename": h.filename,
+                "created_at": h.created_at.isoformat() if h.created_at else None,
+                "status": h.status.value if hasattr(h.status, 'value') else str(h.status),
+            }
+            for h in hist_rows
+        }
+
+    uploads_breakdown = [
+        {
+            "upload_id": u.upload_id,
+            "rows": u.cnt,
+            "debit_sum": float(u.debit or 0),
+            "credit_sum": float(u.credit or 0),
+            **(history_map.get(u.upload_id, {})),
+        }
+        for u in upload_rows
+    ]
+
+    # 날짜 형식 분포 — 'YYYY-MM-DD'(10자) 정상, 그 외는 비정상 후보
+    date_len_rows = (await db.execute(
+        select(
+            func.length(AIRawTransactionData.transaction_date).label('len'),
+            func.count(AIRawTransactionData.id).label('cnt'),
+        ).where(AIRawTransactionData.transaction_date.isnot(None))
+        .group_by(func.length(AIRawTransactionData.transaction_date))
+        .order_by(func.length(AIRawTransactionData.transaction_date))
+    )).all()
+    date_length_distribution = [
+        {"len": r.len, "rows": r.cnt}
+        for r in date_len_rows
+    ]
+
     # 샘플 row (DB raw 그대로 — 더존 원본과 직접 비교용)
     sample_q = select(AIRawTransactionData)
     if sample_account_code:
@@ -71,6 +124,7 @@ async def diagnose(
     samples = [
         {
             "id": r.id,
+            "upload_id": r.upload_id,
             "row_number": r.row_number,
             "transaction_date": r.transaction_date,
             "description": r.original_description,
@@ -85,6 +139,59 @@ async def diagnose(
         }
         for r in sample_rows
     ]
+
+    # 특정 계정 선택 시: 차변/대변 합계 + 중복 후보
+    account_totals = None
+    duplicate_candidates: list = []
+    if sample_account_code:
+        totals_row = (await db.execute(
+            select(
+                func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+                func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+                func.count(AIRawTransactionData.id).label('cnt'),
+            ).where(AIRawTransactionData.source_account_code == sample_account_code)
+        )).one()
+        account_totals = {
+            "account_code": sample_account_code,
+            "total_rows": totals_row.cnt,
+            "debit_sum": float(totals_row.debit or 0),
+            "credit_sum": float(totals_row.credit or 0),
+            "diff": float((totals_row.debit or 0) - (totals_row.credit or 0)),
+        }
+
+        # 중복 후보: 동일 (날짜, 차변, 대변, 거래처, 적요) 가 2회 이상 등장
+        dup_rows = (await db.execute(
+            select(
+                AIRawTransactionData.transaction_date,
+                AIRawTransactionData.debit_amount,
+                AIRawTransactionData.credit_amount,
+                AIRawTransactionData.merchant_name,
+                AIRawTransactionData.original_description,
+                func.count(AIRawTransactionData.id).label('cnt'),
+                func.array_agg(AIRawTransactionData.upload_id).label('upload_ids'),
+            ).where(AIRawTransactionData.source_account_code == sample_account_code)
+            .group_by(
+                AIRawTransactionData.transaction_date,
+                AIRawTransactionData.debit_amount,
+                AIRawTransactionData.credit_amount,
+                AIRawTransactionData.merchant_name,
+                AIRawTransactionData.original_description,
+            ).having(func.count(AIRawTransactionData.id) > 1)
+            .order_by(func.count(AIRawTransactionData.id).desc())
+            .limit(20)
+        )).all()
+        duplicate_candidates = [
+            {
+                "transaction_date": d.transaction_date,
+                "debit": float(d.debit_amount or 0),
+                "credit": float(d.credit_amount or 0),
+                "merchant": d.merchant_name,
+                "description": d.original_description[:80] if d.original_description else None,
+                "occurrences": d.cnt,
+                "upload_ids": list(set(d.upload_ids)) if d.upload_ids else [],
+            }
+            for d in dup_rows
+        ]
 
     # source_account_code별 row 수 (상위 20개)
     by_account = (await db.execute(
@@ -108,12 +215,16 @@ async def diagnose(
         "distinct_source_accounts": distinct_accounts,
         "earliest_transaction_date": min_date,
         "latest_transaction_date": max_date,
+        "uploads_breakdown": uploads_breakdown,
+        "date_length_distribution": date_length_distribution,
         "top_accounts_by_volume": [
             {"code": a.source_account_code, "name": a.name, "count": a.cnt}
             for a in by_account
         ],
         "samples": samples,
         "samples_for_account": sample_account_code,
+        "account_totals": account_totals,
+        "duplicate_candidates": duplicate_candidates,
     }
 
 
