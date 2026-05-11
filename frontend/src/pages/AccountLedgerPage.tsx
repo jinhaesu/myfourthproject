@@ -509,27 +509,47 @@ export default function AccountLedgerPage() {
                   </div>
                 </div>
 
-                {/* KPI strip — 4 stats horizontally */}
-                <div className="mt-3.5 grid grid-cols-4 divide-x divide-ink-100 border border-ink-200 rounded-md bg-canvas-50">
-                  <KPIBlock label="기초 잔액" value={summary.opening_balance} />
-                  <KPIBlock label="차변" value={summary.period_debit} accent="primary" />
-                  <KPIBlock label="대변" value={summary.period_credit} accent="danger" />
-                  <KPIBlock
-                    label="기말 잔액"
-                    value={summary.closing_balance}
-                    accent={Number(summary.closing_balance) >= 0 ? 'success' : 'danger'}
-                    bold
-                    delta={
-                      summary.opening_balance && Number(summary.opening_balance) !== 0
-                        ? {
-                            value: `${(((Number(summary.closing_balance) - Number(summary.opening_balance)) / Math.abs(Number(summary.opening_balance))) * 100).toFixed(1)}%`,
-                            positive:
-                              Number(summary.closing_balance) - Number(summary.opening_balance) >= 0,
-                          }
-                        : undefined
-                    }
-                  />
-                </div>
+                {/* KPI strip — 손익 계정(수익/비용/영업외)은 기간 발생액만 의미있음.
+                    자산/부채/자본은 기초+증감=기말 (잔액 기반). */}
+                {(() => {
+                  const isPL = ['revenue', 'expense', 'non_operating'].includes(summary.category)
+                  if (isPL) {
+                    return (
+                      <div className="mt-3.5 grid grid-cols-3 divide-x divide-ink-100 border border-ink-200 rounded-md bg-canvas-50">
+                        <KPIBlock label="차변 발생" value={summary.period_debit} accent="primary" />
+                        <KPIBlock label="대변 발생" value={summary.period_credit} accent="danger" />
+                        <KPIBlock
+                          label="기간 발생액"
+                          value={summary.period_change}
+                          accent="success"
+                          bold
+                        />
+                      </div>
+                    )
+                  }
+                  return (
+                    <div className="mt-3.5 grid grid-cols-4 divide-x divide-ink-100 border border-ink-200 rounded-md bg-canvas-50">
+                      <KPIBlock label="기초 잔액" value={summary.opening_balance} />
+                      <KPIBlock label="차변" value={summary.period_debit} accent="primary" />
+                      <KPIBlock label="대변" value={summary.period_credit} accent="danger" />
+                      <KPIBlock
+                        label="기말 잔액"
+                        value={summary.closing_balance}
+                        accent={Number(summary.closing_balance) >= 0 ? 'success' : 'danger'}
+                        bold
+                        delta={
+                          summary.opening_balance && Number(summary.opening_balance) !== 0
+                            ? {
+                                value: `${(((Number(summary.closing_balance) - Number(summary.opening_balance)) / Math.abs(Number(summary.opening_balance))) * 100).toFixed(1)}%`,
+                                positive:
+                                  Number(summary.closing_balance) - Number(summary.opening_balance) >= 0,
+                              }
+                            : undefined
+                        }
+                      />
+                    </div>
+                  )
+                })()}
               </div>
 
               {/* Excel-like grid */}

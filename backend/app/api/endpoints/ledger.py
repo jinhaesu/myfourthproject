@@ -567,11 +567,17 @@ async def get_account_summary(
     # 이름 받아온 후 카테고리 재분류 (이름 우선)
     cat = _category_of(account_code, period_row.name or '')
 
-    opening_balance = _signed_change(
-        cat,
-        Decimal(str(opening_row.debit or 0)),
-        Decimal(str(opening_row.credit or 0)),
-    )
+    # 회계 원칙: 수익·비용·영업외 계정은 매년 기말에 손익으로 마감되어 0으로 리셋된다.
+    # 기간 시작 이전 누적을 "기초 잔액"으로 잡으면 매출이 과대 표시되는 오류 발생.
+    # → 손익 계정은 opening_balance=0 (기간 발생액만 표시)
+    if cat in ('revenue', 'expense', 'non_operating'):
+        opening_balance = Decimal('0')
+    else:
+        opening_balance = _signed_change(
+            cat,
+            Decimal(str(opening_row.debit or 0)),
+            Decimal(str(opening_row.credit or 0)),
+        )
     debit = Decimal(str(period_row.debit or 0))
     credit = Decimal(str(period_row.credit or 0))
     change = _signed_change(cat, debit, credit)
