@@ -30,55 +30,6 @@ from app.schemas.ledger import (
 router = APIRouter()
 
 
-# ============ 임시 admin (1회용 cleanup) ============
-
-@router.post("/admin-dedupe")
-async def admin_dedupe(
-    confirm: str = Query(..., description="안전 토큰"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    [임시] ai_raw_transaction_data에서 cross-upload 중복 제거.
-    동일 (source_account_code, transaction_date, debit_amount, credit_amount,
-    merchant_name, original_description) row 그룹에서 MIN(id) 1건만 유지.
-    confirm=DEDUPE_2026_05_11 일 때만 동작.
-    """
-    if confirm != "DEDUPE_2026_05_11":
-        raise HTTPException(status_code=403, detail="잘못된 confirm 토큰")
-
-    from sqlalchemy import delete as sa_delete
-
-    before = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
-
-    keep_ids_sq = (
-        select(func.min(AIRawTransactionData.id))
-        .group_by(
-            AIRawTransactionData.source_account_code,
-            AIRawTransactionData.transaction_date,
-            AIRawTransactionData.debit_amount,
-            AIRawTransactionData.credit_amount,
-            AIRawTransactionData.merchant_name,
-            AIRawTransactionData.original_description,
-        )
-    )
-
-    await db.execute(
-        sa_delete(AIRawTransactionData).where(
-            AIRawTransactionData.id.notin_(keep_ids_sq)
-        )
-    )
-    await db.commit()
-
-    after = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
-
-    return {
-        "before_rows": before,
-        "after_rows": after,
-        "deleted_rows": before - after,
-        "reduction_ratio": f"{((before - after) / before * 100):.1f}%" if before else "0%",
-    }
-
-
 # ============ 진단용 ============
 
 @router.get("/diag")
