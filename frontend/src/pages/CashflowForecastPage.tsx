@@ -362,6 +362,8 @@ function analyzeContactPatterns(tickets: any[]): {
     cashReceiptDailyAvg,
     cashReceiptTotal,
     analysisPeriodDays,
+    selfBankNetInDailyAvg,
+    selfBankNetIn,
   }
 }
 
