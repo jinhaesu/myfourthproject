@@ -244,6 +244,254 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ============ 분개장(전표) 파싱 헬퍼 ============
+
+# 한국 K-GAAP 표준 계정과목명 → 3자리 코드 매핑.
+# 위하고/더존 분개장은 계정코드 없이 이름만 노출하므로 우리 시스템 코드로 변환 필요.
+# (판)·(제) 등 접미사는 그대로 두고 base 매핑 후 fallback 처리.
+_ACCT_NAME_TO_CODE = {
+    # 자산
+    '현금': '101', '당좌예금': '102', '보통예금': '103', '제예금': '104',
+    '단기금융상품': '105', '단기매매증권': '107',
+    '외상매출금': '108', '받을어음': '110', '단기대여금': '114', '미수금': '120',
+    '미수수익': '116', '선급금': '131', '선급비용': '133', '가지급금': '134',
+    '부가세대급금': '135', '예수금':'254',
+    '원재료': '153', '재공품': '169', '제품': '150', '상품': '146',
+    '저장품': '173', '소모품': '173',
+    '토지': '201', '건물': '202', '구축물': '204', '기계장치': '206',
+    '차량운반구': '208', '비품': '212', '공구와기구': '210', '시설장치': '214',
+    '감가상각누계액': '203', '개발비': '218', '특허권': '231',
+    '임차보증금': '232', '전세권': '233', '보증금': '232',
+    # 부채
+    '외상매입금': '251', '지급어음': '252', '미지급금': '253',
+    '예수금(부채)': '254', '부가세예수금': '255', '선수금': '255',
+    '미지급비용': '262', '미지급세금': '261',
+    '단기차입금': '260', '장기차입금': '293', '사채': '291',
+    '퇴직급여충당부채': '295',
+    # 자본
+    '자본금': '331', '주식발행초과금': '341', '이익잉여금': '375',
+    # 수익 (매출)
+    '상품매출': '401', '제품매출': '404', '용역매출': '403',
+    '공사매출': '402', '임대료수익': '904', '수출매출': '404',
+    # 영업외수익
+    '이자수익': '901', '배당금수익': '902', '잡이익': '930',
+    '외환차익': '907', '외화환산이익': '906',
+    # 비용 - 매출원가
+    '상품매출원가': '451', '제품매출원가': '455',
+    # 비용 - 제조원가 (제)
+    '원재료비': '501', '복리후생비': '511', '여비교통비': '512',
+    '접대비': '513', '통신비': '514', '수도광열비': '515', '세금과공과': '517',
+    '감가상각비(제)': '518', '지급임차료': '519', '수선비': '520',
+    '보험료': '521', '차량유지비': '522', '교육훈련비': '525',
+    '도서인쇄비': '526', '소모품비(제)': '530',
+    '지급수수료(제)': '531',
+    '광고선전비(제)': '533', '운반비(제)': '524',
+    # 비용 - 판관비 (판)
+    '직원급여': '801', '급여': '801', '잡급': '803',
+    '복리후생비(판)': '811', '여비교통비(판)': '812', '접대비(판)': '813',
+    '통신비(판)': '814', '수도광열비(판)': '815', '세금과공과(판)': '817',
+    '감가상각비(판)': '818', '지급임차료(판)': '819', '수선비(판)': '820',
+    '보험료(판)': '821', '차량유지비(판)': '822', '경상연구개발비': '823',
+    '운반비': '824', '운반비(판)': '824', '교육훈련비(판)': '825',
+    '도서인쇄비(판)': '826', '회의비(판)': '827',
+    '판매수수료': '839', '지급수수료': '831', '지급수수료(판)': '831',
+    '광고선전비': '833', '광고선전비(판)': '833',
+    '소모품비': '830', '소모품비(판)': '830',
+    '대손상각비': '835',
+    # 영업외비용
+    '이자비용': '951', '외환차손': '952', '잡손실': '980',
+    '기부금': '953', '재해손실': '961',
+}
+
+
+def _account_name_to_code(name: str) -> Optional[str]:
+    """계정과목명 → 3자리 코드. 매핑 실패 시 None."""
+    if not name:
+        return None
+    n = str(name).strip()
+    # 정확 매칭
+    if n in _ACCT_NAME_TO_CODE:
+        return _ACCT_NAME_TO_CODE[n]
+    # 접미사 변형 (예: '소모품비(제)' → '소모품비')
+    base = re.sub(r'\([^)]*\)\s*$', '', n).strip()
+    if base != n and base in _ACCT_NAME_TO_CODE:
+        return _ACCT_NAME_TO_CODE[base]
+    return None
+
+
+def _is_journal_format(df_raw: pd.DataFrame) -> bool:
+    """위하고/더존 '분개장' 양식 감지 — 첫 10행에 '분개장' + 차변·대변 컬럼 헤더"""
+    if df_raw.shape[0] < 5:
+        return False
+    has_journal_title = False
+    has_dr_cr_header = False
+    for r in range(min(10, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                normalized = str(cell).replace(" ", "").strip()
+                if "분개장" in normalized:
+                    has_journal_title = True
+                if normalized == "차변" or normalized == "대변":
+                    has_dr_cr_header = True
+        if has_journal_title and has_dr_cr_header:
+            return True
+    return has_journal_title  # 제목만 있어도 일단 분개장으로 시도
+
+
+def _parse_journal(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    위하고 '분개장' 양식 파싱.
+    구조 (6 컬럼 고정):
+      [0] 월/일, [1] 번호, [2] 차변 금액, [3] 차변 계정과목, [4] 대변 계정과목, [5] 대변 금액
+
+    분개 단위로 그룹화. 한 분개에 차변 N개·대변 M개 가능.
+    한 분개의 마지막에 적요/거래처 행 가능: [3] = 적요, [4] = 거래처명, 금액 없음.
+    페이지 헤더(분개장/회사명/구분/월일·번호) 반복 등장 → 자동 skip.
+
+    출력 DataFrame 컬럼은 _parse_account_ledger와 동일 — downstream 호환.
+    상대계정은 분개에서 자동 도출 (단일 vs 단일 / 다 vs 1 / 1 vs 다 / 다 vs 다).
+    """
+    rows = []
+    journal_year = None
+    header_found = False
+
+    # 기간행에서 연도 추출
+    for r in range(min(5, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                m = re.search(r'(20\d{2})\s*년', str(cell))
+                if m:
+                    journal_year = m.group(1)
+                    break
+        if journal_year:
+            break
+
+    if not journal_year:
+        from datetime import datetime
+        journal_year = str(datetime.now().year)
+
+    COL_MD, COL_NUM, COL_DR_AMT, COL_DR_ACC, COL_CR_ACC, COL_CR_AMT = 0, 1, 2, 3, 4, 5
+
+    def _to_float(v) -> float:
+        if v is None or pd.isna(v):
+            return 0.0
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            try:
+                return float(str(v).replace(',', '').strip())
+            except (ValueError, TypeError):
+                return 0.0
+
+    def _flush(v):
+        if not v or (not v['debits'] and not v['credits']):
+            return
+        debits = v['debits']
+        credits = v['credits']
+        # 상대계정 식별 — 단일 vs 단일이면 명확. 그 외는 가장 큰 반대편 우선.
+        cr_main = max(credits, key=lambda x: abs(x['amount']))['account'] if credits else None
+        dr_main = max(debits, key=lambda x: abs(x['amount']))['account'] if debits else None
+        for d in debits:
+            rows.append({
+                "적요란": v.get('description') or d['account'],
+                "거래처": v.get('merchant') or "",
+                "금액": abs(d['amount']),
+                "코드": _account_name_to_code(cr_main) or "",
+                "차변": d['amount'] if d['amount'] >= 0 else 0,
+                "대변": -d['amount'] if d['amount'] < 0 else 0,
+                "날짜": v['date'],
+                "원장계정코드": _account_name_to_code(d['account']) or "",
+                "원장계정명": d['account'],
+                "_상대계정명": cr_main or "",
+                "_전표번호": v.get('number') or "",
+            })
+        for c in credits:
+            rows.append({
+                "적요란": v.get('description') or c['account'],
+                "거래처": v.get('merchant') or "",
+                "금액": abs(c['amount']),
+                "코드": _account_name_to_code(dr_main) or "",
+                "차변": -c['amount'] if c['amount'] < 0 else 0,
+                "대변": c['amount'] if c['amount'] >= 0 else 0,
+                "날짜": v['date'],
+                "원장계정코드": _account_name_to_code(c['account']) or "",
+                "원장계정명": c['account'],
+                "_상대계정명": dr_main or "",
+                "_전표번호": v.get('number') or "",
+            })
+
+    voucher = None
+
+    for idx in range(df_raw.shape[0]):
+        row = df_raw.iloc[idx].tolist()
+        if len(row) < 6:
+            row = row + [None] * (6 - len(row))
+
+        md_raw = row[COL_MD]
+        num_raw = row[COL_NUM]
+        dr_amt_raw = row[COL_DR_AMT]
+        dr_acc_raw = row[COL_DR_ACC]
+        cr_acc_raw = row[COL_CR_ACC]
+        cr_amt_raw = row[COL_CR_AMT]
+
+        md = str(md_raw).strip() if pd.notna(md_raw) else ''
+        num = str(num_raw).strip() if pd.notna(num_raw) else ''
+        dr_acc = str(dr_acc_raw).strip() if pd.notna(dr_acc_raw) else ''
+        cr_acc = str(cr_acc_raw).strip() if pd.notna(cr_acc_raw) else ''
+
+        # 페이지 헤더 반복 skip — '분개장', '회사명', '구분', '월/일', '차변', '대변' 단어
+        cell_text = ' '.join([str(c) for c in row if pd.notna(c)])
+        if any(k in cell_text for k in ('분   개   장', '분개장', '회사명', '구     분', '월/일')):
+            if not header_found:
+                header_found = True
+            continue
+
+        if not header_found:
+            continue
+
+        # 새 분개 시작 — 월/일 (예: 01/15)
+        if re.match(r'^\d{1,2}/\d{1,2}$', md):
+            _flush(voucher)
+            iso_date = f"{journal_year}-{md.replace('/', '-')}"
+            voucher = {
+                'date': iso_date,
+                'number': num,
+                'debits': [],
+                'credits': [],
+                'description': None,
+                'merchant': None,
+            }
+
+        if voucher is None:
+            continue
+
+        dr_amt = _to_float(dr_amt_raw)
+        cr_amt = _to_float(cr_amt_raw)
+
+        # 차변 추가
+        if dr_amt != 0 and dr_acc:
+            voucher['debits'].append({'amount': dr_amt, 'account': dr_acc})
+        # 대변 추가
+        if cr_amt != 0 and cr_acc:
+            voucher['credits'].append({'amount': cr_amt, 'account': cr_acc})
+
+        # 금액 없고 양쪽 텍스트만 있으면 적요+거래처 행
+        if dr_amt == 0 and cr_amt == 0:
+            if dr_acc and not voucher.get('description'):
+                voucher['description'] = dr_acc
+            if cr_acc and not voucher.get('merchant'):
+                voucher['merchant'] = cr_acc
+
+    _flush(voucher)
+
+    if not rows:
+        raise ValueError("분개장에서 유효한 분개 데이터를 찾을 수 없습니다.")
+
+    return pd.DataFrame(rows)
+
+
 # ============ Pydantic Models ============
 
 class TrainingDataItem(BaseModel):
@@ -458,7 +706,16 @@ def _parse_file_sync(content: bytes, filename: str, upload_id: int):
         for sheet_name, df_raw in all_sheets.items():
             if df_raw.shape[0] < 2:
                 continue
-            if _is_account_ledger_format(df_raw):
+            # 분개장 양식 우선 (상대계정까지 완전한 정보 포함)
+            if _is_journal_format(df_raw):
+                is_ledger_format = True  # downstream에서 ledger 컬럼 처리 재사용
+                try:
+                    parsed = _parse_journal(df_raw)
+                    ledger_dfs.append(parsed)
+                    logger.info(f"[BG Upload {upload_id}] 분개장 시트 '{sheet_name}': {len(parsed)}행 파싱")
+                except Exception as e:
+                    sheet_errors.append(f"분개장 시트 '{sheet_name}': {str(e)[:100]}")
+            elif _is_account_ledger_format(df_raw):
                 is_ledger_format = True
                 try:
                     parsed = _parse_account_ledger(df_raw)
