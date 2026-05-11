@@ -996,6 +996,10 @@ export const ledgerApi = {
     api.get(`/ledger/accounts/${accountCode}/export`, {
       params: { period_start: periodStart, period_end: periodEnd },
     }),
+
+  // 매출채권/매입채무 거래처별·월별 요약
+  getArApSummary: (fiscalYear: number, type: 'receivable' | 'payable') =>
+    api.get('/ledger/ar-ap/summary', { params: { fiscal_year: fiscalYear, type } }),
 }
 
 // Financial Reports API (기간 기반 재무보고서)

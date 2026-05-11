@@ -59,6 +59,7 @@ const baseNavigation: NavItem[] = [
   { name: '자금관리', href: '/treasury', icon: BanknotesIcon },
   { name: '예산관리', href: '/budget', icon: CalculatorIcon },
   { name: '매출 자동화', href: '/sales', icon: PresentationChartBarIcon },
+  { name: '매출채권·매입채무', href: '/ar-ap', icon: ScaleIcon },
   { name: '예측/시뮬레이션', href: '/forecast', icon: ChartBarIcon },
   { name: '보고서', href: '/reports', icon: DocumentChartBarIcon },
 

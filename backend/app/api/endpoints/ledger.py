@@ -10,7 +10,7 @@ AI 분류 메뉴에서 업로드된 거래 데이터(ai_raw_transaction_data)를
 import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Any
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -688,4 +688,184 @@ async def export_ledger_excel(
         "period": f"{period_start} ~ {period_end}",
         "url": f"/api/v1/financial/account-detail/export/excel?account_code={account_code}",
         "note": "기존 /financial/account-detail/export/excel 사용 권장",
+    }
+
+
+# ============ 매출채권 / 매입채무 거래처별 요약 ============
+
+# 매출채권: 외상매출금(108), 받을어음(110)
+# 매입채무: 외상매입금(251), 미지급금(253) — 미지급금은 매입성 부채라 함께
+AR_CODES = ["108", "110"]
+AP_CODES = ["251", "253"]
+
+
+@router.get("/ar-ap/summary")
+async def get_ar_ap_summary(
+    fiscal_year: int = Query(..., ge=2020, le=2030, description="회계연도"),
+    type: str = Query(..., regex="^(receivable|payable)$", description="receivable=매출채권 / payable=매입채무"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    매출채권(108/110) 또는 매입채무(251/253) 의 거래처별·월별 요약.
+
+    응답:
+    - opening_balance / closing_balance: 회계연도 기초/기말 총잔액
+    - period_debit / period_credit / period_change: 기간 차/대변 합계, 순증감
+    - monthly: 월별 차/대변·기말잔액 시계열
+    - counterparties: 거래처별 기초/차/대/기말잔액 + 거래건수 + 최근거래일
+    """
+    codes = AR_CODES if type == "receivable" else AP_CODES
+    start = date(fiscal_year, 1, 1)
+    end = date(fiscal_year, 12, 31)
+    start_iso = start.strftime('%Y-%m-%d')
+    start_iso2 = start.strftime('%Y.%m.%d')
+    end_next = (end + timedelta(days=1))
+    end_next_iso = end_next.strftime('%Y-%m-%d')
+    end_next_iso2 = end_next.strftime('%Y.%m.%d')
+
+    # 부호 처리: 자산은 차변=증가/대변=감소, 부채는 반대
+    def signed(d: Any, c: Any) -> Decimal:
+        d, c = Decimal(str(d or 0)), Decimal(str(c or 0))
+        return (d - c) if type == "receivable" else (c - d)
+
+    base_filter = AIRawTransactionData.source_account_code.in_(codes)
+    opening_filter = and_(
+        base_filter,
+        or_(
+            AIRawTransactionData.transaction_date < start_iso,
+            AIRawTransactionData.transaction_date < start_iso2,
+        ),
+    )
+    period_filter = and_(
+        base_filter,
+        or_(
+            AIRawTransactionData.transaction_date >= start_iso,
+            AIRawTransactionData.transaction_date >= start_iso2,
+        ),
+        or_(
+            AIRawTransactionData.transaction_date < end_next_iso,
+            AIRawTransactionData.transaction_date < end_next_iso2,
+        ),
+    )
+
+    # 기초 총잔액
+    opening_row = (await db.execute(
+        select(
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
+        ).where(opening_filter)
+    )).one()
+    opening_balance = signed(opening_row.d, opening_row.c)
+
+    # 거래처별 기초 잔액
+    cp_open_rows = (await db.execute(
+        select(
+            AIRawTransactionData.merchant_name.label('cp'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
+        ).where(opening_filter)
+         .group_by(AIRawTransactionData.merchant_name)
+    )).all()
+    cp_opening = {(r.cp or '(미지정)'): signed(r.d, r.c) for r in cp_open_rows}
+
+    # 거래처별 기간 합계
+    cp_rows = (await db.execute(
+        select(
+            AIRawTransactionData.merchant_name.label('cp'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
+            func.count(AIRawTransactionData.id).label('cnt'),
+            func.max(AIRawTransactionData.transaction_date).label('latest'),
+            func.min(AIRawTransactionData.transaction_date).label('earliest'),
+        ).where(period_filter)
+         .group_by(AIRawTransactionData.merchant_name)
+    )).all()
+
+    counterparties = []
+    total_debit = Decimal('0')
+    total_credit = Decimal('0')
+    total_count = 0
+    for r in cp_rows:
+        name = r.cp or '(미지정)'
+        cp_open = cp_opening.get(name, Decimal('0'))
+        cp_d = Decimal(str(r.d or 0))
+        cp_c = Decimal(str(r.c or 0))
+        cp_change = signed(cp_d, cp_c)
+        total_debit += cp_d
+        total_credit += cp_c
+        total_count += r.cnt or 0
+        counterparties.append({
+            'name': name,
+            'opening_balance': float(cp_open),
+            'period_debit': float(cp_d),
+            'period_credit': float(cp_c),
+            'period_change': float(cp_change),
+            'closing_balance': float(cp_open + cp_change),
+            'transaction_count': r.cnt or 0,
+            'latest_date': str(r.latest) if r.latest else None,
+            'earliest_date': str(r.earliest) if r.earliest else None,
+        })
+
+    # 기초만 있고 기간내 거래 없는 거래처도 포함 (잔액 carry-over)
+    period_cp_names = {r.cp or '(미지정)' for r in cp_rows}
+    for name, bal in cp_opening.items():
+        if name in period_cp_names:
+            continue
+        if bal == 0:
+            continue
+        counterparties.append({
+            'name': name,
+            'opening_balance': float(bal),
+            'period_debit': 0.0,
+            'period_credit': 0.0,
+            'period_change': 0.0,
+            'closing_balance': float(bal),
+            'transaction_count': 0,
+            'latest_date': None,
+            'earliest_date': None,
+        })
+
+    counterparties.sort(key=lambda x: -abs(x['closing_balance']))
+
+    # 월별 시계열 — transaction_date의 앞 7자리(YYYY-MM 또는 YYYY.MM)
+    month_rows = (await db.execute(
+        select(
+            func.substr(AIRawTransactionData.transaction_date, 1, 7).label('ym'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
+            func.count(AIRawTransactionData.id).label('cnt'),
+        ).where(period_filter)
+         .group_by(func.substr(AIRawTransactionData.transaction_date, 1, 7))
+         .order_by(func.substr(AIRawTransactionData.transaction_date, 1, 7))
+    )).all()
+
+    monthly = []
+    running = opening_balance
+    for r in month_rows:
+        change = signed(r.d, r.c)
+        running = running + change
+        ym_raw = (r.ym or '')[:7].replace('.', '-')
+        monthly.append({
+            'month': ym_raw,
+            'period_debit': float(Decimal(str(r.d or 0))),
+            'period_credit': float(Decimal(str(r.c or 0))),
+            'period_change': float(change),
+            'closing_balance': float(running),
+            'transaction_count': r.cnt or 0,
+        })
+
+    period_change = signed(total_debit, total_credit)
+    return {
+        'fiscal_year': fiscal_year,
+        'type': type,
+        'account_codes': codes,
+        'opening_balance': float(opening_balance),
+        'closing_balance': float(opening_balance + period_change),
+        'period_debit': float(total_debit),
+        'period_credit': float(total_credit),
+        'period_change': float(period_change),
+        'counterparty_count': len(counterparties),
+        'transaction_count': total_count,
+        'monthly': monthly,
+        'counterparties': counterparties,
     }

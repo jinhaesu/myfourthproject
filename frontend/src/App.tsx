@@ -27,6 +27,7 @@ import ContactScoringPage from '@/pages/ContactScoringPage'
 import CashflowForecastPage from '@/pages/CashflowForecastPage'
 import AuditReportPage from '@/pages/AuditReportPage'
 import ExchangeRatesPage from '@/pages/ExchangeRatesPage'
+import ArApPage from '@/pages/ArApPage'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -70,6 +71,7 @@ function App() {
         <Route path="contact-scoring" element={<ContactScoringPage />} />
         <Route path="cashflow-forecast" element={<CashflowForecastPage />} />
         <Route path="audit-report" element={<AuditReportPage />} />
+        <Route path="ar-ap" element={<ArApPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="admin" element={<AdminPage />} />
       </Route>
