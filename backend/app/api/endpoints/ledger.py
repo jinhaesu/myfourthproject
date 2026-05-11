@@ -30,6 +30,55 @@ from app.schemas.ledger import (
 router = APIRouter()
 
 
+# ============ 임시 admin (1회용 cleanup) ============
+
+@router.post("/admin-dedupe")
+async def admin_dedupe(
+    confirm: str = Query(..., description="안전 토큰"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    [임시] ai_raw_transaction_data에서 cross-upload 중복 제거.
+    동일 (source_account_code, transaction_date, debit_amount, credit_amount,
+    merchant_name, original_description) row 그룹에서 MIN(id) 1건만 유지.
+    confirm=DEDUPE_2026_05_11 일 때만 동작.
+    """
+    if confirm != "DEDUPE_2026_05_11":
+        raise HTTPException(status_code=403, detail="잘못된 confirm 토큰")
+
+    from sqlalchemy import delete as sa_delete
+
+    before = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
+
+    keep_ids_sq = (
+        select(func.min(AIRawTransactionData.id))
+        .group_by(
+            AIRawTransactionData.source_account_code,
+            AIRawTransactionData.transaction_date,
+            AIRawTransactionData.debit_amount,
+            AIRawTransactionData.credit_amount,
+            AIRawTransactionData.merchant_name,
+            AIRawTransactionData.original_description,
+        )
+    )
+
+    await db.execute(
+        sa_delete(AIRawTransactionData).where(
+            AIRawTransactionData.id.notin_(keep_ids_sq)
+        )
+    )
+    await db.commit()
+
+    after = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
+
+    return {
+        "before_rows": before,
+        "after_rows": after,
+        "deleted_rows": before - after,
+        "reduction_ratio": f"{((before - after) / before * 100):.1f}%" if before else "0%",
+    }
+
+
 # ============ 진단용 ============
 
 @router.get("/diag")
@@ -683,6 +732,17 @@ async def get_account_entries(
         debit_amt = Decimal(str(r.debit_amount or 0))
         credit_amt = Decimal(str(r.credit_amount or 0))
         running += _signed_change(cat, debit_amt, credit_amt)
+        # 위하고 "계정별 원장" 양식엔 상대계정 정보가 없다.
+        # account_code가 거래처코드(6자리)거나 source와 동일하면 상대계정 자리 비움.
+        ac = (r.account_code or '').strip()
+        src = (r.source_account_code or '').strip()
+        is_counterparty_code = ac.isdigit() and len(ac) >= 5
+        if not ac or ac == src or is_counterparty_code:
+            cp_code = None
+            cp_name = None
+        else:
+            cp_code = r.account_code
+            cp_name = r.account_name
         entries.append(LedgerEntry(
             id=r.id,
             voucher_id=None,
@@ -693,8 +753,8 @@ async def get_account_entries(
             debit=debit_amt,
             credit=credit_amt,
             running_balance=running,
-            counterparty_account_code=r.account_code,
-            counterparty_account_name=r.account_name,
+            counterparty_account_code=cp_code,
+            counterparty_account_name=cp_name,
             department_name=None,
             project_tag=None,
             memo=None,

@@ -218,9 +218,10 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
                     date_val = raw_date
                 break
 
-        # account_code: 코드 열 사용 (상대 계정), 없으면 현재 계정 코드 사용
-        account_code = code_val if code_val else current_account_code
-        if not account_code:
+        # 위하고 "계정별 원장" 양식의 "코드" 컬럼은 거래처 코드(6자리 숫자)다.
+        # 회계 계정과목 코드(상대계정)가 아니므로 account_code로 쓰면 안 된다.
+        # → account_code는 원장 계정 자체(source)로 두고, code_val(거래처 코드)은 거래처명 보조 정보로만 사용.
+        if not current_account_code:
             continue
 
         amount = debit_val if debit_val > 0 else credit_val
@@ -229,7 +230,7 @@ def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
             "적요란": desc_str,
             "거래처": merchant_val or "",
             "금액": amount,
-            "코드": account_code,
+            "코드": current_account_code,  # 위하고 양식엔 상대계정 정보 없음 → source 자기 자신
             "차변": debit_val,
             "대변": credit_val,
             "날짜": date_val or "",
@@ -515,10 +516,10 @@ def _parse_file_sync(content: bytes, filename: str, upload_id: int):
 
     # 단일 업로드 내 중복 제거 — 위하고 멀티시트 양식에서 동일 거래가 여러 시트에 등장하면
     # 우리 파서가 모두 누적 저장되어 차변/대변 합계가 위하고와 안 맞는 문제 해결.
-    # 동일 (날짜, 차변, 대변, 거래처, 적요, 상대계정, 원장계정) 인 row를 1개만 보존.
+    # 위하고 양식엔 상대계정 정보 없으니 account_code는 dedupe 키에서 제외.
     dedupe_cols = []
     for col in ('date', 'debit', 'credit', 'merchant_name',
-                'description', 'account_code', 'source_account_code'):
+                'description', 'source_account_code'):
         if col in df.columns:
             dedupe_cols.append(col)
     if dedupe_cols:
