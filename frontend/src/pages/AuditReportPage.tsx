@@ -367,7 +367,9 @@ export default function AuditReportPage() {
   const healthQuery = useQuery({
     queryKey: ['granter-health'],
     queryFn: () => granterApi.health().then((r) => r.data),
-    retry: false,
+    retry: 3,
+    retryDelay: (n) => Math.min(1000 * 2 ** n, 10000),
+    staleTime: 60_000,
   })
   const isConfigured = healthQuery.data?.configured
 
@@ -628,7 +630,11 @@ export default function AuditReportPage() {
       </div>
 
       {/* 연결 상태 배너 */}
-      {!isConfigured ? (
+      {!healthQuery.isFetched ? (
+        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        </div>
+      ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 flex-shrink-0" />
           <span className="text-2xs text-amber-800">

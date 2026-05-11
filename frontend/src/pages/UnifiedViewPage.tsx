@@ -122,7 +122,9 @@ export default function UnifiedViewPage() {
   const healthQuery = useQuery({
     queryKey: ['granter-health'],
     queryFn: () => granterApi.health().then((r) => r.data),
-    retry: false,
+    retry: 3,
+    retryDelay: (n) => Math.min(1000 * 2 ** n, 10000),
+    staleTime: 60_000,
   })
   const isConfigured = healthQuery.data?.configured
 
@@ -461,7 +463,11 @@ export default function UnifiedViewPage() {
       </div>
 
       {/* Status / 31일 제한 안내 */}
-      {!isConfigured ? (
+      {!healthQuery.isFetched ? (
+        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        </div>
+      ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
           <div className="flex-1 text-2xs">
@@ -885,7 +891,11 @@ export default function UnifiedViewPage() {
               </div>
             </div>
 
-            {!isConfigured ? (
+            {!healthQuery.isFetched ? (
+              <div className="flex-1 flex items-center justify-center text-2xs text-ink-400 p-6 text-center">
+                그랜터 연결 확인 중…
+              </div>
+            ) : !isConfigured ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400 p-6 text-center">
                 그랜터 API 키 등록 후 실시간 거래가 표시됩니다.
               </div>

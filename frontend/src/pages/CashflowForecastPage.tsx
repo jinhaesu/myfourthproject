@@ -1403,7 +1403,8 @@ export default function CashflowForecastPage() {
   const healthQuery = useQuery({
     queryKey: ['granter-health'],
     queryFn: () => granterApi.health().then((r) => r.data),
-    retry: false,
+    retry: 3,
+    retryDelay: (n) => Math.min(1000 * 2 ** n, 10000),
     staleTime: 60_000,
   })
   const isConfigured = healthQuery.data?.configured
