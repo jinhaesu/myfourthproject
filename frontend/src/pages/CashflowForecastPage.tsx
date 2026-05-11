@@ -106,20 +106,64 @@ function endOfMonth(iso: string): string {
   return isoLocal(d)
 }
 
-// 주말 영업일 보정 — 방향에 따라 다른 관행:
-// - IN(입금): 토/일이면 직전 금요일로 당김 (거래처가 미리 입금하는 관행)
-// - OUT(출금): 토/일이면 다음 월요일로 미룸 (회사 자금 관리상 늦게 출금)
-function shiftToWeekday(iso: string, direction: 'IN' | 'OUT' = 'OUT'): string {
+// 한국 공휴일 (2025~2027) — 음력 이동 공휴일은 직접 입력
+const KR_HOLIDAYS = new Set<string>([
+  // 2025
+  '2025-01-01', '2025-01-28', '2025-01-29', '2025-01-30',
+  '2025-03-01', '2025-03-03', '2025-05-05', '2025-05-06',
+  '2025-06-06', '2025-08-15', '2025-10-03', '2025-10-06',
+  '2025-10-07', '2025-10-08', '2025-10-09', '2025-12-25',
+  // 2026
+  '2026-01-01', '2026-02-16', '2026-02-17', '2026-02-18',
+  '2026-03-01', '2026-03-02', '2026-05-05', '2026-05-25',
+  '2026-06-03', '2026-06-06', '2026-08-15', '2026-08-17',
+  '2026-09-24', '2026-09-25', '2026-09-26', '2026-10-03',
+  '2026-10-05', '2026-10-09', '2026-12-25',
+  // 2027
+  '2027-01-01', '2027-02-06', '2027-02-07', '2027-02-08',
+  '2027-02-09', '2027-03-01', '2027-05-05', '2027-05-13',
+  '2027-06-06', '2027-06-07', '2027-08-15', '2027-08-16',
+  '2027-10-03', '2027-10-04', '2027-10-09', '2027-10-11',
+  '2027-12-25',
+])
+
+function isBusinessDay(iso: string): boolean {
   const d = new Date(iso + 'T00:00:00')
   const dow = d.getDay()
-  if (direction === 'IN') {
-    if (dow === 6) return addDays(iso, -1) // 토 → 금
-    if (dow === 0) return addDays(iso, -2) // 일 → 금
-  } else {
-    if (dow === 6) return addDays(iso, 2)  // 토 → 월
-    if (dow === 0) return addDays(iso, 1)  // 일 → 월
+  if (dow === 0 || dow === 6) return false
+  if (KR_HOLIDAYS.has(iso)) return false
+  return true
+}
+
+// 영업일 보정 — 주말/공휴일이면 방향에 따라 가장 가까운 영업일로 이동
+// - IN(입금): 직전 영업일로 당김 (거래처가 휴일 전에 미리 입금)
+// - OUT(출금): 다음 영업일로 미룸 (회사가 휴일 후 출금)
+function shiftToBusinessDay(iso: string, direction: 'IN' | 'OUT' = 'OUT'): string {
+  let cur = iso
+  let safety = 0
+  while (!isBusinessDay(cur) && safety++ < 15) {
+    cur = addDays(cur, direction === 'IN' ? -1 : 1)
   }
-  return iso
+  return cur
+}
+/**
+ * 거래처(contact) 정규화 — 그랜터가 같은 종류 거래를 매번 다른 description으로 보내는
+ * 케이스(예: "급여 132건", "급여 144건") 통합. 카드사 출금 등도 동일 정규화.
+ */
+function normalizeContact(raw: string): string {
+  const s = String(raw || '').trim()
+  if (!s) return '(미지정)'
+
+  // "급여 N건" / "상여금 N건" / "수당 N건" → "급여" / "상여금" / "수당"
+  const payrollMatch = s.match(/^(급여|상여금|수당|퇴직금|연차수당|연말정산)\s*\d+/)
+  if (payrollMatch) return payrollMatch[1]
+
+  // "카드대금 결제 yyyy.mm" / "BC바로카드45" — 카드사명만 추출
+  const cardPrefix = s.match(/^(BC바로카드|비씨카드|하나카드|국민카드|신한카드|삼성카드|롯데카드|현대카드|KB카드|우리카드|농협카드)/)
+  if (cardPrefix) return cardPrefix[1] + ' 결제'
+
+  // 통장 거래에서 회사명 + 숫자/접미사 — 끝의 숫자(괄호 내 포함)와 공백 제거
+  return s.replace(/\s+\(?\d+\)?\s*$/, '').trim() || s
 }
 
 function forecastRangeForPreset(preset: ForecastPreset, today: string): { from: string; to: string } {
@@ -150,21 +194,25 @@ function forecastRangeForPreset(preset: ForecastPreset, today: string): { from: 
 // ---------------------------------------------------------------------------
 
 function extractContact(t: any): string {
+  let raw: string
   if (t?.taxInvoice) {
     const ti = t.taxInvoice
     if (t.transactionType === 'IN') {
-      return ti?.contractor?.companyName || ti?.supplier?.companyName || '(미지정)'
+      raw = ti?.contractor?.companyName || ti?.supplier?.companyName || '(미지정)'
+    } else {
+      raw = ti?.supplier?.companyName || ti?.contractor?.companyName || '(미지정)'
     }
-    return ti?.supplier?.companyName || ti?.contractor?.companyName || '(미지정)'
+  } else if (t?.cashReceipt) {
+    raw = t.cashReceipt?.issuer?.companyName || '(미지정)'
+  } else {
+    raw =
+      t.contact ||
+      t?.bankTransaction?.counterparty ||
+      t?.cardUsage?.storeName ||
+      t?.bankTransaction?.content ||
+      '(미지정)'
   }
-  if (t?.cashReceipt) return t.cashReceipt?.issuer?.companyName || '(미지정)'
-  return (
-    t.contact ||
-    t?.bankTransaction?.counterparty ||
-    t?.cardUsage?.storeName ||
-    t?.bankTransaction?.content ||
-    '(미지정)'
-  )
+  return normalizeContact(raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -416,18 +464,17 @@ function nextOccurrences(p: ContactPattern, forecastFrom: string, forecastTo: st
     raw.push(forecastFrom)
   }
 
-  // 주말 보정 (IN: 직전 금요일로 당김 / OUT: 다음 월요일로 미룸), 중복 제거
+  // 영업일 보정 (주말 + 공휴일) — IN은 직전 영업일로 당김, OUT은 다음 영업일로 미룸
   const seen = new Set<string>()
   const result: string[] = []
   for (const d of raw) {
-    const shifted = shiftToWeekday(d, p.direction)
+    const shifted = shiftToBusinessDay(d, p.direction)
     if (shifted < forecastFrom || shifted > forecastTo) continue
     if (seen.has(shifted)) continue
     seen.add(shifted)
     result.push(shifted)
   }
-  // 주말 이동 후 모두 사라졌으면 forecastFrom 시점에 한 번 배치
-  if (result.length === 0) result.push(shiftToWeekday(forecastFrom, p.direction))
+  if (result.length === 0) result.push(shiftToBusinessDay(forecastFrom, p.direction))
   return result
 }
 
@@ -517,24 +564,21 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     for (const d of dates) addEvent(d, 'OUT', perOccurrence)
   }
 
-  // 카드결제 일평균 — 평일 100% / 주말 60% (회사 카드 사용은 평일 위주)
-  // 현금영수증 매출 일평균 — 평일 100% / 주말 80% (매장형 매출은 주말도 유사 패턴)
+  // 카드결제·현금영수증·본인BANK net IN buffer — 영업일에만 발생 (주말/공휴일 0)
+  // 영업일 수만큼 totalAmount를 분산하기 위해 일평균을 (총일수/영업일수)로 보정.
   {
     const span = diffDays(forecastFrom, forecastTo) + 1
+    let businessDayCount = 0
+    for (let i = 0; i < span; i++) {
+      if (isBusinessDay(addDays(forecastFrom, i))) businessDayCount++
+    }
+    const businessRatio = businessDayCount > 0 ? span / businessDayCount : 1
     for (let i = 0; i < span; i++) {
       const d = addDays(forecastFrom, i)
-      const dow = new Date(d + 'T00:00:00').getDay()
-      const isWeekend = dow === 0 || dow === 6
-      if (cardDailyAvg > 0) {
-        addEvent(d, 'OUT', cardDailyAvg * (isWeekend ? 0.6 : 1.0))
-      }
-      if (cashReceiptDailyAvg > 0) {
-        addEvent(d, 'IN', cashReceiptDailyAvg * (isWeekend ? 0.8 : 1.0))
-      }
-      // 본인회사 BANK net IN — 외부 매출인데 그랜터가 contact를 자기회사명으로 잘못 기록한 분
-      if (selfBankNetInDailyAvg > 0) {
-        addEvent(d, 'IN', selfBankNetInDailyAvg * (isWeekend ? 0.5 : 1.0))
-      }
+      if (!isBusinessDay(d)) continue
+      if (cardDailyAvg > 0) addEvent(d, 'OUT', cardDailyAvg * businessRatio)
+      if (cashReceiptDailyAvg > 0) addEvent(d, 'IN', cashReceiptDailyAvg * businessRatio)
+      if (selfBankNetInDailyAvg > 0) addEvent(d, 'IN', selfBankNetInDailyAvg * businessRatio)
     }
   }
 
@@ -545,12 +589,17 @@ function buildForecast(input: ForecastInput): ForecastDay[] {
     addEvent(cost.date, 'OUT', amt)
   }
 
-  // expectedRevenue 입력했는데 IN 패턴 없으면 균등 분배
+  // expectedRevenue 입력했는데 IN 패턴 없으면 영업일에만 균등 분배
   if (expectedRevenue !== null && totalHistoricalIn === 0) {
     const span = diffDays(forecastFrom, forecastTo) + 1
-    const perDay = expectedRevenue / span
+    let businessDays = 0
+    for (let i = 0; i < span; i++) {
+      if (isBusinessDay(addDays(forecastFrom, i))) businessDays++
+    }
+    const perDay = businessDays > 0 ? expectedRevenue / businessDays : 0
     for (let i = 0; i < span; i++) {
       const d = addDays(forecastFrom, i)
+      if (!isBusinessDay(d)) continue
       addEvent(d, 'IN', perDay)
     }
   }
@@ -1815,7 +1864,15 @@ export default function CashflowForecastPage() {
           </p>
         )}
         <p>
-          주말 보정: 입금 거래처는 직전 금요일로 당기고, 출금은 다음 월요일로 미룸.
+          <span className="font-semibold text-ink-700">영업일 보정:</span> 주말(토/일)·한국 공휴일은
+          입출금 0으로 처리. 거래처 발생일이 휴일이면 입금은 직전 영업일로 당기고,
+          출금은 다음 영업일로 미룸. 일평균 buffer(카드/현금영수증/본인BANK)도 영업일에만 가산
+          (휴일 수만큼 영업일에 분산).
+        </p>
+        <p>
+          <span className="font-semibold text-ink-700">거래처 정규화:</span> "급여 132건"·"급여 144건"
+          같이 매번 description이 달라 분리되는 거래는 합쳐서 한 거래처로 분석
+          (급여/상여금/카드사 결제 등).
         </p>
       </div>
     </div>
