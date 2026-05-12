@@ -559,6 +559,155 @@ async def get_balance_sheet(
     }
 
 
+@router.get("/balance-sheet-monthly")
+async def get_balance_sheet_monthly(
+    year: int = Query(..., ge=2020, le=2030),
+    upload_id: Optional[int] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    월별 재무상태표 — 해당 연도 1~12월 각 월말의 누적 BS 시계열.
+    한 번의 SQL로 (월, 계정) 그룹화 후 코드 단 누적으로 효율적 처리.
+    데이터 없는 월은 skip — 마지막 데이터 월까지만 반환.
+    """
+    from collections import defaultdict
+
+    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
+    month_key = func.substr(norm_date, 1, 7)  # 'YYYY-MM'
+
+    base_filters = [
+        norm_date.like(f"{year}-%"),
+        AIRawTransactionData.source_account_code.isnot(None),
+        AIRawTransactionData.source_account_code != "",
+    ]
+
+    mode = await _detect_ledger_mode(db, base_filters)
+    group_col = (
+        AIRawTransactionData.source_account_code if mode == "multi"
+        else AIRawTransactionData.account_code
+    )
+
+    # 한 번의 SQL — (월, 계정) 합산
+    monthly_rows = (await db.execute(
+        select(
+            month_key.label('ym'),
+            group_col.label('code'),
+            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+        )
+        .where(*base_filters)
+        .group_by(month_key, group_col)
+    )).all()
+
+    if not monthly_rows:
+        return {"year": year, "ledger_mode": mode, "months": []}
+
+    # 월별 그룹화
+    monthly_data: dict = defaultdict(dict)  # {ym: {code: {debit, credit}}}
+    all_codes: set = set()
+    months_with_data: set = set()
+    for r in monthly_rows:
+        if not r.ym or not r.code:
+            continue
+        monthly_data[r.ym][r.code] = {'debit': float(r.debit or 0), 'credit': float(r.credit or 0)}
+        all_codes.add(r.code)
+        months_with_data.add(r.ym)
+
+    # 자산·부채·자본 계정만 BS 대상 (1xx, 2xx, 3xx)
+    bs_codes = [c for c in all_codes if _classify_code(c)[0] in ('1', '2', '3')]
+    names = await _resolve_names(db, bs_codes, mode)
+
+    # 마지막 데이터 월
+    last_m = max(int(ym.split('-')[1]) for ym in months_with_data)
+
+    months_result = []
+    cumulative: dict = {code: {'debit': 0.0, 'credit': 0.0} for code in bs_codes}
+
+    for m in range(1, last_m + 1):
+        ym = f"{year}-{m:02d}"
+        # 이번 월 데이터 누적
+        month_data = monthly_data.get(ym, {})
+        for code in bs_codes:
+            if code in month_data:
+                cumulative[code]['debit'] += month_data[code]['debit']
+                cumulative[code]['credit'] += month_data[code]['credit']
+
+        # BS 분류
+        current_asset_items, noncurrent_asset_items = [], []
+        current_liab_items, noncurrent_liab_items = [], []
+        equity_items = []
+
+        for code in bs_codes:
+            d = cumulative[code]['debit']
+            c = cumulative[code]['credit']
+            if d == 0 and c == 0:
+                continue
+            first, second, stripped, _cat = _classify_code(code)
+            acct_name = names.get(code, f"계정 {stripped}")
+
+            if first == '1':
+                amount = d - c if mode == "multi" else c - d
+                item = {"code": code, "name": acct_name, "amount": amount}
+                if second <= 4:
+                    current_asset_items.append(item)
+                else:
+                    noncurrent_asset_items.append(item)
+            elif first == '2':
+                amount = c - d if mode == "multi" else d - c
+                item = {"code": code, "name": acct_name, "amount": amount}
+                if second <= 6:
+                    current_liab_items.append(item)
+                else:
+                    noncurrent_liab_items.append(item)
+            elif first == '3':
+                amount = c - d if mode == "multi" else d - c
+                equity_items.append({"code": code, "name": acct_name, "amount": amount})
+
+        # 잔액 0 제외 (단 표시는 그대로 — sort)
+        for items in (current_asset_items, noncurrent_asset_items,
+                       current_liab_items, noncurrent_liab_items, equity_items):
+            items.sort(key=lambda x: -abs(x["amount"]))
+
+        ca_total = sum(i["amount"] for i in current_asset_items)
+        nca_total = sum(i["amount"] for i in noncurrent_asset_items)
+        cl_total = sum(i["amount"] for i in current_liab_items)
+        ncl_total = sum(i["amount"] for i in noncurrent_liab_items)
+        eq_total = sum(i["amount"] for i in equity_items)
+
+        # 월말 일자
+        from calendar import monthrange
+        last_day = monthrange(year, m)[1]
+
+        months_result.append({
+            "month": m,
+            "month_label": f"{year}-{m:02d}",
+            "month_end": f"{year}-{m:02d}-{last_day:02d}",
+            "sections": [
+                {"id": "assets", "name": "자산", "subsections": [
+                    {"name": "I. 유동자산", "items": current_asset_items, "total": ca_total},
+                    {"name": "II. 비유동자산", "items": noncurrent_asset_items, "total": nca_total},
+                ], "total": ca_total + nca_total},
+                {"id": "liabilities", "name": "부채", "subsections": [
+                    {"name": "I. 유동부채", "items": current_liab_items, "total": cl_total},
+                    {"name": "II. 비유동부채", "items": noncurrent_liab_items, "total": ncl_total},
+                ], "total": cl_total + ncl_total},
+                {"id": "equity", "name": "자본", "subsections": [
+                    {"name": "자본 항목", "items": equity_items, "total": eq_total},
+                ], "total": eq_total},
+            ],
+            "total_assets": ca_total + nca_total,
+            "total_liabilities": cl_total + ncl_total,
+            "total_equity": eq_total,
+        })
+
+    return {
+        "year": year,
+        "ledger_mode": mode,
+        "months": months_result,
+    }
+
+
 @router.get("/monthly-trend")
 async def get_monthly_trend(
     year: Optional[int] = Query(None),

@@ -1019,6 +1019,8 @@ export const financialApi = {
     api.get('/financial/income-statement', { params: { year, month } }),
   getBalanceSheet: (year?: number) =>
     api.get('/financial/balance-sheet', { params: { year } }),
+  getBalanceSheetMonthly: (year: number) =>
+    api.get('/financial/balance-sheet-monthly', { params: { year } }),
   getMonthlyTrend: (year?: number, accountCode?: string) =>
     api.get('/financial/monthly-trend', { params: { year, account_code: accountCode } }),
   getAccountDetail: (accountCode: string, year?: number, page?: number, size?: number, month?: number) =>

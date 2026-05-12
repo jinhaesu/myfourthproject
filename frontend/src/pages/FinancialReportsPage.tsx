@@ -8,9 +8,11 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
 } from '@heroicons/react/24/outline'
-import { cashPLApi, ledgerApi } from '@/services/api'
+import { cashPLApi, ledgerApi, financialApi } from '@/services/api'
 import { formatCurrency, formatPct } from '@/utils/format'
 import FiscalYearTabs from '@/components/common/FiscalYearTabs'
+
+type ViewMode = 'pl' | 'bs'
 
 type PeriodType = 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly'
 
@@ -120,6 +122,14 @@ export default function FinancialReportsPage() {
     enabled: ready,
   })
 
+  const [viewMode, setViewMode] = useState<ViewMode>('pl')
+
+  const bsQuery = useQuery({
+    queryKey: ['financial-bs-monthly', fiscalYear],
+    queryFn: () => financialApi.getBalanceSheetMonthly(fiscalYear).then((r) => r.data),
+    enabled: viewMode === 'bs',
+  })
+
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['opex']))
   const toggle = (key: string) => {
     const next = new Set(expanded)
@@ -173,10 +183,29 @@ export default function FinancialReportsPage() {
             재무보고서
           </h1>
           <p className="text-2xs text-ink-500 mt-0.5">
-            기간별 손익 비교표 (cross-tab) · 현금주의 기준
+            {viewMode === 'pl' ? '기간별 손익계산서 (cross-tab) · 현금주의' : '월별 재무상태표 — 각 월말의 누적 잔액'}
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
+          {/* View 토글 (P&L / BS) */}
+          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+            <button
+              onClick={() => setViewMode('pl')}
+              className={`px-2.5 py-1 rounded text-2xs font-semibold transition ${
+                viewMode === 'pl' ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+              }`}
+            >
+              손익계산서
+            </button>
+            <button
+              onClick={() => setViewMode('bs')}
+              className={`px-2.5 py-1 rounded text-2xs font-semibold transition ${
+                viewMode === 'bs' ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+              }`}
+            >
+              재무상태표
+            </button>
+          </div>
           <FiscalYearTabs
             year={fiscalYear}
             onChange={(y) => {
@@ -229,6 +258,16 @@ export default function FinancialReportsPage() {
         </div>
       </div>
 
+      {viewMode === 'bs' && (
+        <MonthlyBSPanel
+          data={bsQuery.data}
+          loading={bsQuery.isLoading}
+          availableYears={availableYears}
+          onPickYear={(y) => setFiscalYear(y)}
+        />
+      )}
+
+      {viewMode === 'pl' && (<>
       {/* Cross-tab P&L */}
       <div className="panel overflow-hidden">
         {plQuery.isLoading ? (
@@ -403,10 +442,218 @@ export default function FinancialReportsPage() {
           </div>
         )}
       </div>
+      </>)}
 
       {/* Footnote */}
       <div className="text-2xs text-ink-400 px-1">
-        ※ 현금주의 기준. 발생주의(세금계산서 발생일)와 다를 수 있습니다. 음수는 ( )로 표시.
+        {viewMode === 'pl'
+          ? '※ 현금주의 기준. 발생주의(세금계산서 발생일)와 다를 수 있습니다. 음수는 ( )로 표시.'
+          : '※ 각 컬럼은 해당 월말까지의 누적 잔액. 자산은 + (차변 우세), 부채·자본은 + (대변 우세) 기준.'}
+      </div>
+    </div>
+  )
+}
+
+// ====================== 월별 재무상태표 ======================
+
+interface BSItem { code: string; name: string; amount: number }
+interface BSSub { name: string; items: BSItem[]; total: number }
+interface BSSection { id: string; name: string; subsections: BSSub[]; total: number }
+interface BSMonth {
+  month: number
+  month_label: string
+  month_end: string
+  sections: BSSection[]
+  total_assets: number
+  total_liabilities: number
+  total_equity: number
+}
+interface BSData { year: number; ledger_mode: string; months: BSMonth[] }
+
+function MonthlyBSPanel({
+  data,
+  loading,
+  availableYears,
+  onPickYear,
+}: {
+  data?: BSData
+  loading: boolean
+  availableYears: number[]
+  onPickYear: (y: number) => void
+}) {
+  // 모든 월의 (sectionId, subName)별 계정 union — 계정별 월별 금액 매트릭스
+  const matrix = useMemo(() => {
+    if (!data?.months?.length) return null
+    const months = data.months
+    type Row = { code: string; name: string; amounts: Record<number, number> }
+    const collect = (sectionId: string, subName: string): Row[] => {
+      const map = new Map<string, Row>()
+      for (const m of months) {
+        const sec = m.sections.find((s) => s.id === sectionId)
+        const sub = sec?.subsections.find((s) => s.name === subName)
+        if (!sub) continue
+        for (const it of sub.items) {
+          if (!map.has(it.code)) {
+            map.set(it.code, { code: it.code, name: it.name, amounts: {} })
+          }
+          map.get(it.code)!.amounts[m.month] = Number(it.amount)
+        }
+      }
+      // 최근 월 금액 절대값 기준 정렬
+      return Array.from(map.values()).sort(
+        (a, b) =>
+          Math.abs(b.amounts[months[months.length - 1].month] || 0) -
+          Math.abs(a.amounts[months[months.length - 1].month] || 0)
+      )
+    }
+    const subSum = (sectionId: string, subName: string, m: number) => {
+      const month = months.find((x) => x.month === m)
+      const sec = month?.sections.find((s) => s.id === sectionId)
+      const sub = sec?.subsections.find((s) => s.name === subName)
+      return Number(sub?.total || 0)
+    }
+    return { months, collect, subSum }
+  }, [data])
+
+  if (loading) {
+    return (
+      <div className="panel p-8 text-center text-2xs text-ink-400">불러오는 중…</div>
+    )
+  }
+
+  if (!matrix || matrix.months.length === 0) {
+    return (
+      <div className="panel p-8 text-center text-2xs text-ink-400">
+        <div>이 회계연도에 데이터가 없습니다.</div>
+        {availableYears.length > 0 && (
+          <div className="mt-3 inline-flex items-center gap-1.5">
+            <span>데이터 있는 년도:</span>
+            {availableYears.slice(0, 5).map((y) => (
+              <button
+                key={y}
+                onClick={() => onPickYear(y)}
+                className="px-2 py-0.5 rounded border border-ink-200 bg-white text-ink-700 hover:bg-ink-50 font-semibold"
+              >
+                {y}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const { months, collect, subSum } = matrix
+  const cellRight =
+    'px-3 py-1.5 text-right font-mono tabular-nums text-ink-800'
+  const headerCell =
+    'px-3 py-2 text-right font-semibold text-ink-500 uppercase tracking-wider min-w-[110px]'
+
+  const SECTIONS = [
+    {
+      id: 'assets',
+      label: '자산',
+      tone: 'text-blue-700 bg-blue-50',
+      subs: ['I. 유동자산', 'II. 비유동자산'],
+      totalKey: 'total_assets' as const,
+    },
+    {
+      id: 'liabilities',
+      label: '부채',
+      tone: 'text-rose-700 bg-rose-50',
+      subs: ['I. 유동부채', 'II. 비유동부채'],
+      totalKey: 'total_liabilities' as const,
+    },
+    {
+      id: 'equity',
+      label: '자본',
+      tone: 'text-purple-700 bg-purple-50',
+      subs: ['자본 항목'],
+      totalKey: 'total_equity' as const,
+    },
+  ]
+
+  return (
+    <div className="panel overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-2xs">
+          <thead>
+            <tr className="bg-canvas-50 border-b border-ink-200">
+              <th className="sticky left-0 bg-canvas-50 z-10 px-3 py-2 text-left font-semibold text-ink-500 uppercase tracking-wider min-w-[220px] border-r border-ink-200">
+                계정과목
+              </th>
+              {months.map((m) => (
+                <th key={m.month_label} className={headerCell}>
+                  {m.month_label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {SECTIONS.map((sec) => (
+              <>
+                {/* 섹션 헤더 */}
+                <tr key={`sec-${sec.id}`} className={`${sec.tone} border-y border-ink-200`}>
+                  <td className={`sticky left-0 z-10 px-3 py-1.5 font-semibold ${sec.tone}`}>
+                    {sec.label}
+                  </td>
+                  {months.map((m) => (
+                    <td key={m.month} className={`${cellRight} font-bold`}>
+                      {formatCurrency(Number(m[sec.totalKey] || 0), false)}
+                    </td>
+                  ))}
+                </tr>
+                {sec.subs.map((subName) => {
+                  const rows = collect(sec.id, subName)
+                  if (rows.length === 0) return null
+                  return (
+                    <>
+                      <tr key={`sub-${sec.id}-${subName}`} className="bg-ink-50/50 border-y border-ink-200/40">
+                        <td className="sticky left-0 bg-ink-50/50 z-10 px-3 py-1 font-semibold text-ink-700">
+                          {subName}
+                        </td>
+                        {months.map((m) => (
+                          <td key={m.month} className={`${cellRight} font-semibold`}>
+                            {formatCurrency(subSum(sec.id, subName, m.month), false)}
+                          </td>
+                        ))}
+                      </tr>
+                      {rows.map((r) => (
+                        <tr key={`${sec.id}-${r.code}`} className="hover:bg-ink-50/30 border-b border-ink-100">
+                          <td className="sticky left-0 bg-white z-10 px-3 py-1 pl-6 text-ink-700">
+                            <span className="font-mono text-ink-400 mr-1.5">{r.code}</span>
+                            {r.name}
+                          </td>
+                          {months.map((m) => (
+                            <td key={m.month} className={cellRight}>
+                              {r.amounts[m.month]
+                                ? formatCurrency(r.amounts[m.month], false)
+                                : '-'}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </>
+                  )
+                })}
+              </>
+            ))}
+            {/* 합계 행 (부채+자본) */}
+            <tr className="bg-ink-900 text-white border-t-2 border-ink-900">
+              <td className="sticky left-0 bg-ink-900 z-10 px-3 py-2 font-bold">
+                부채 + 자본
+              </td>
+              {months.map((m) => (
+                <td key={m.month} className={`${cellRight} text-white font-bold`}>
+                  {formatCurrency(
+                    Number(m.total_liabilities || 0) + Number(m.total_equity || 0),
+                    false
+                  )}
+                </td>
+              ))}
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   )
