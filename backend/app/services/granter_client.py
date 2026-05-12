@@ -120,12 +120,17 @@ class GranterClient:
 
         # 일시적 실패(401/429/5xx) 자동 재시도 — 그랜터 동시 호출 시 간헐 401 회복
         RETRYABLE_STATUS = {401, 429, 502, 503, 504}
-        if resp.status_code in RETRYABLE_STATUS and _retry_count < 3:
-            # 그랜터 차단 회복 시간이 길 수 있어 더 긴 백오프 (1s/3s/9s)
-            wait = 1.0 * (3 ** _retry_count)
+        MAX_RETRIES = 5
+        if resp.status_code in RETRYABLE_STATUS and _retry_count < MAX_RETRIES:
+            # 401은 그랜터 차단 — 더 길게 대기. 429/5xx는 짧게.
+            if resp.status_code == 401:
+                # 5s, 10s, 20s, 40s, 60s (총 ~135s) — 그랜터 IP 차단 회복용
+                wait = min(5.0 * (2 ** _retry_count), 60.0)
+            else:
+                wait = min(1.0 * (3 ** _retry_count), 30.0)
             logger.info(
-                "Granter %s %s → %s, retry %d/3 after %.1fs",
-                method, path, resp.status_code, _retry_count + 1, wait,
+                "Granter %s %s → %s, retry %d/%d after %.1fs",
+                method, path, resp.status_code, _retry_count + 1, MAX_RETRIES, wait,
             )
             await asyncio.sleep(wait)
             return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
@@ -136,6 +141,13 @@ class GranterClient:
             except Exception:
                 body = resp.text
             logger.warning("Granter %s %s → %s: %s", method, path, resp.status_code, body)
+            # 401 retry 모두 실패 시 — 그랜터 차단 추정. 사용자에게 친절한 안내.
+            if resp.status_code == 401:
+                raise GranterAPIError(
+                    "그랜터 서버가 일시적으로 차단했습니다. 1~2분 후 새로고침하면 자동 복구됩니다.",
+                    status_code=429,  # 429로 변환 — frontend가 retry 가능 신호로 인식
+                    body=body,
+                )
             raise GranterAPIError(
                 f"그랜터 API {resp.status_code}: {body}",
                 status_code=resp.status_code,
