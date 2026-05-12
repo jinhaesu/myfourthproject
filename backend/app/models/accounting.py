@@ -279,6 +279,102 @@ class VoucherLine(Base):
         return f"<VoucherLine {self.voucher_id}:{self.line_number}>"
 
 
+class AutoVoucherSourceType(enum.Enum):
+    """자동 전표 후보의 원본 거래 유형"""
+    SALES_TAX_INVOICE = "sales_tax_invoice"      # 매출 세금계산서
+    PURCHASE_TAX_INVOICE = "purchase_tax_invoice"  # 매입 세금계산서
+    SALES_INVOICE = "sales_invoice"               # 매출 전자계산서(영세율/면세)
+    PURCHASE_INVOICE = "purchase_invoice"         # 매입 전자계산서
+    CARD = "card"                                 # 신용카드 매입
+    BANK = "bank"                                 # 통장 거래
+    CASH_RECEIPT = "cash_receipt"                 # 현금영수증
+
+
+class AutoVoucherStatus(enum.Enum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    DUPLICATE = "duplicate"  # 카드↔통장 중복 매칭으로 제외
+
+
+class AutoVoucherCandidate(Base):
+    """
+    자동 생성된 분개 후보 — 그랜터 수집 거래 + AI 분류 결과를 묶어
+    회계담당자 검수 큐에 올리고, 확정 시 Voucher로 전환.
+    """
+    __tablename__ = "auto_voucher_candidates"
+    __table_args__ = (
+        Index("ix_avc_status_date", "status", "transaction_date"),
+        Index("ix_avc_source", "source_type", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    source_type: Mapped[AutoVoucherSourceType] = mapped_column(
+        SQLEnum(AutoVoucherSourceType, name="auto_voucher_source_type")
+    )
+    source_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True,
+        comment="원본 거래 식별자 (그랜터 ticket id, ai_raw row_id 등)"
+    )
+
+    status: Mapped[AutoVoucherStatus] = mapped_column(
+        SQLEnum(AutoVoucherStatus, name="auto_voucher_status"),
+        default=AutoVoucherStatus.PENDING,
+    )
+
+    # 거래 기본
+    transaction_date: Mapped[date] = mapped_column(Date)
+    counterparty: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    supply_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
+    vat_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
+
+    # AI 분류 결과
+    confidence: Mapped[float] = mapped_column(Numeric(5, 4), default=0.0,
+                                              comment="0~1, 1에 가까울수록 정확도 ↑")
+    suggested_account_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True,
+                                                                  comment="AI가 제안한 비용·자산·수익 계정 (반대편은 거래유형으로 결정)")
+    suggested_account_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
+    # 분개 라인 (확정 시 VoucherLine으로 변환)
+    # JSON 포맷: [{"side": "debit"|"credit", "account_code": "...", "account_name": "...",
+    #             "amount": "...", "memo": "..."}]
+    debit_lines: Mapped[Optional[dict]] = mapped_column(
+        Text, nullable=True, comment="JSON 배열, 차변 라인들"
+    )
+    credit_lines: Mapped[Optional[dict]] = mapped_column(
+        Text, nullable=True, comment="JSON 배열, 대변 라인들"
+    )
+
+    # 중복 매칭 (카드↔통장)
+    duplicate_of_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("auto_voucher_candidates.id"), nullable=True,
+        comment="이 후보가 다른 후보의 중복일 때 그 후보 id (카드 사용→통장 결제 매칭)"
+    )
+
+    # 확정 시 생성된 Voucher 연결
+    confirmed_voucher_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("vouchers.id"), nullable=True
+    )
+
+    # 메타
+    raw_data: Mapped[Optional[dict]] = mapped_column(
+        Text, nullable=True, comment="원본 거래 JSON 스냅샷 (트레이스용)"
+    )
+    rejected_reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    confirmed_by: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True
+    )
+
+    def __repr__(self):
+        return f"<AutoVoucherCandidate {self.id} {self.source_type.value} {self.status.value}>"
+
+
 class VoucherAttachment(Base):
     """전표 첨부파일"""
     __tablename__ = "voucher_attachments"

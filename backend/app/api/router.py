@@ -29,6 +29,7 @@ from app.api.endpoints import (
     ledger,
     granter,
     exchange_rates,
+    auto_voucher,
 )
 
 api_router = APIRouter()
@@ -197,4 +198,11 @@ api_router.include_router(
 api_router.include_router(
     exchange_rates.router,
     tags=["exchange-rates"]
+)
+
+# 자동 전표 검수 큐 (그랜터 → AI 분개 → 검수 → 확정)
+api_router.include_router(
+    auto_voucher.router,
+    prefix="/auto-voucher",
+    tags=["자동전표"]
 )
