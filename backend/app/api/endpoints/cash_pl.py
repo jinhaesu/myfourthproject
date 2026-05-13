@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.ai import AIRawTransactionData
+from app.services.unified_ledger import unified_aggregation_subquery
 from app.schemas.cash_pl import (
     CashPLRequest,
     CashPLResponse,
@@ -128,6 +129,7 @@ async def _aggregate_by_category(
 ) -> Dict[str, Decimal]:
     """
     기간 내 카테고리별 합계.
+    ai_raw + Voucher 통합 데이터(unified_aggregation_subquery)에서 집계.
 
     분류는 코드 + 계정명으로 결정 (_category_of):
     - revenue: 401, 404 등 매출 계정
@@ -135,19 +137,14 @@ async def _aggregate_by_category(
     - opex: 8xx (판관비)
     - non_operating: 9xx 또는 이자수익/이자비용/외환 등
     """
+    sub = unified_aggregation_subquery(period_start, period_end)
     rows = (await db.execute(
         select(
-            AIRawTransactionData.source_account_code,
-            func.max(AIRawTransactionData.source_account_name).label('name'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
-        )
-        .where(
-            AIRawTransactionData.source_account_code.isnot(None),
-            AIRawTransactionData.source_account_code != '',
-            *_date_filters(period_start, period_end),
-        )
-        .group_by(AIRawTransactionData.source_account_code)
+            sub.c.source_account_code,
+            func.max(sub.c.source_account_name).label('name'),
+            func.coalesce(func.sum(sub.c.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(sub.c.credit_amount), 0).label('credit'),
+        ).group_by(sub.c.source_account_code)
     )).all()
 
     totals = defaultdict(lambda: Decimal('0'))
@@ -342,20 +339,15 @@ async def get_cash_pl(
             req.from_date, req.to_date, f"{req.from_date} ~ {req.to_date}", totals
         ))
 
-    # Line items (전 기간 합계, 계정별)
+    # Line items (전 기간 합계, 계정별) — ai_raw + Voucher 통합
+    sub_li = unified_aggregation_subquery(req.from_date, req.to_date)
     rows = (await db.execute(
         select(
-            AIRawTransactionData.source_account_code,
-            func.max(AIRawTransactionData.source_account_name).label('name'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
-        )
-        .where(
-            AIRawTransactionData.source_account_code.isnot(None),
-            AIRawTransactionData.source_account_code != '',
-            *_date_filters(req.from_date, req.to_date),
-        )
-        .group_by(AIRawTransactionData.source_account_code)
+            sub_li.c.source_account_code,
+            func.max(sub_li.c.source_account_name).label('name'),
+            func.coalesce(func.sum(sub_li.c.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(sub_li.c.credit_amount), 0).label('credit'),
+        ).group_by(sub_li.c.source_account_code)
     )).all()
 
     total_revenue = sum(s.revenue for s in summaries) or Decimal('1')
@@ -400,23 +392,18 @@ async def _aggregate_by_account_in_period(
     period_end: date,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    기간 내 source_account_code별 합계.
+    기간 내 source_account_code별 합계 (ai_raw + Voucher 통합).
     Returns: { code: { name, category, amount } }
     amount: 카테고리에 따라 부호 적용된 값
     """
+    sub = unified_aggregation_subquery(period_start, period_end)
     rows = (await db.execute(
         select(
-            AIRawTransactionData.source_account_code,
-            func.max(AIRawTransactionData.source_account_name).label('name'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
-        )
-        .where(
-            AIRawTransactionData.source_account_code.isnot(None),
-            AIRawTransactionData.source_account_code != '',
-            *_date_filters(period_start, period_end),
-        )
-        .group_by(AIRawTransactionData.source_account_code)
+            sub.c.source_account_code,
+            func.max(sub.c.source_account_name).label('name'),
+            func.coalesce(func.sum(sub.c.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(sub.c.credit_amount), 0).label('credit'),
+        ).group_by(sub.c.source_account_code)
     )).all()
 
     out = {}
