@@ -5,6 +5,7 @@ import LoginPage from '@/pages/LoginPage'
 import DashboardPage from '@/pages/DashboardPage'
 import VouchersPage from '@/pages/VouchersPage'
 import AutoVoucherPage from '@/pages/AutoVoucherPage'
+import TaxVoucherEntryPage from '@/pages/TaxVoucherEntryPage'
 import VoucherDetailPage from '@/pages/VoucherDetailPage'
 import TreasuryPage from '@/pages/TreasuryPage'
 import BudgetPage from '@/pages/BudgetPage'
@@ -59,6 +60,7 @@ function App() {
         <Route path="vouchers" element={<VouchersPage />} />
         <Route path="vouchers/:id" element={<VoucherDetailPage />} />
         <Route path="auto-voucher" element={<AutoVoucherPage />} />
+        <Route path="tax-voucher-entry" element={<TaxVoucherEntryPage />} />
         <Route path="treasury" element={<TreasuryPage />} />
         <Route path="budget" element={<BudgetPage />} />
         <Route path="forecast" element={<ForecastPage />} />

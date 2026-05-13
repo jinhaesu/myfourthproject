@@ -1104,6 +1104,17 @@ export const autoVoucherApi = {
     api.post(`/auto-voucher/${id}/confirm`, null, { params: { user_id } }),
   confirmBatch: (candidate_ids: number[], user_id: number = 1) =>
     api.post('/auto-voucher/confirm-batch', { candidate_ids, user_id }),
+  directVoucher: (payload: {
+    transaction_date: string
+    source_type: string
+    counterparty?: string
+    description?: string
+    supply_amount?: number | string
+    vat_amount?: number | string
+    debit_lines: AutoVoucherLine[]
+    credit_lines: AutoVoucherLine[]
+    external_ref?: string
+  }) => api.post('/auto-voucher/direct-voucher', payload),
 }
 
 export default api

@@ -436,6 +436,113 @@ async def confirm_candidate(
     return {"candidate_id": c.id, "voucher_id": voucher.id, "status": c.status.value}
 
 
+class DirectVoucherLine(BaseModel):
+    side: str  # 'debit' | 'credit'
+    account_code: str
+    account_name: str
+    amount: Decimal
+    memo: Optional[str] = ""
+
+
+class DirectVoucherRequest(BaseModel):
+    """매입매출 전표 직접 입력 — candidate 단계 skip, 즉시 Voucher 생성."""
+    transaction_date: date
+    source_type: str = Field(..., description="거래 유형 (sales_tax_invoice|purchase_tax_invoice|card|cash_receipt 등)")
+    counterparty: Optional[str] = None
+    description: Optional[str] = None
+    supply_amount: Decimal = Decimal("0")
+    vat_amount: Decimal = Decimal("0")
+    debit_lines: List[DirectVoucherLine]
+    credit_lines: List[DirectVoucherLine]
+    external_ref: Optional[str] = None
+
+
+@router.post("/direct-voucher")
+async def create_direct_voucher(
+    req: DirectVoucherRequest,
+    user_id: int = Query(1),
+    department_id: int = Query(1),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    매입매출 전표 입력 화면에서 사용 — 사용자가 입력한 라인을 바로 Voucher로 변환.
+    AutoVoucherCandidate 단계를 거치지 않음 (audit 위해 raw_data만 보관).
+    """
+    total_debit = sum(Decimal(str(l.amount)) for l in req.debit_lines)
+    total_credit = sum(Decimal(str(l.amount)) for l in req.credit_lines)
+    if total_debit != total_credit:
+        raise HTTPException(status_code=400,
+                            detail=f"차변 합({total_debit}) ≠ 대변 합({total_credit})")
+    if total_debit == 0:
+        raise HTTPException(status_code=400, detail="금액이 0입니다.")
+
+    try:
+        src = AutoVoucherSourceType(req.source_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid source_type: {req.source_type}")
+
+    txn_type_map = {
+        AutoVoucherSourceType.CARD: TransactionType.CARD,
+        AutoVoucherSourceType.BANK: TransactionType.BANK_TRANSFER,
+        AutoVoucherSourceType.CASH_RECEIPT: TransactionType.CASH,
+        AutoVoucherSourceType.SALES_TAX_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.PURCHASE_TAX_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.SALES_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.PURCHASE_INVOICE: TransactionType.TAX_INVOICE,
+    }
+    txn_type = txn_type_map.get(src, TransactionType.GENERAL)
+
+    voucher = Voucher(
+        voucher_number=await _voucher_number(db, req.transaction_date),
+        voucher_date=req.transaction_date,
+        transaction_date=req.transaction_date,
+        description=(req.description or req.counterparty or "")[:500],
+        transaction_type=txn_type,
+        external_ref=req.external_ref,
+        department_id=department_id,
+        created_by=user_id,
+        total_debit=total_debit,
+        total_credit=total_credit,
+        status=VoucherStatus.CONFIRMED,
+        merchant_name=req.counterparty,
+        confirmed_at=datetime.utcnow(),
+        confirmed_by=user_id,
+    )
+    db.add(voucher)
+    await db.flush()
+
+    line_no = 1
+    for l in req.debit_lines + req.credit_lines:
+        is_debit = l.side == "debit"
+        amt = Decimal(str(l.amount))
+        account_id = await _resolve_account_id(db, l.account_code, l.account_name)
+        if account_id is None:
+            raise HTTPException(status_code=400,
+                                detail=f"계정 매핑 실패: code={l.account_code}")
+        vat_acc = l.account_code in ("135", "255")
+        db.add(VoucherLine(
+            voucher_id=voucher.id,
+            line_number=line_no,
+            account_id=account_id,
+            debit_amount=amt if is_debit else Decimal("0"),
+            credit_amount=amt if not is_debit else Decimal("0"),
+            vat_amount=amt if vat_acc else Decimal("0"),
+            supply_amount=amt if not vat_acc else Decimal("0"),
+            description=l.memo or "",
+            counterparty_name=req.counterparty,
+        ))
+        line_no += 1
+
+    await db.commit()
+    return {
+        "voucher_id": voucher.id,
+        "voucher_number": voucher.voucher_number,
+        "status": voucher.status.value,
+        "total_debit": str(total_debit),
+        "total_credit": str(total_credit),
+    }
+
+
 @router.post("/confirm-batch")
 async def confirm_batch(
     candidate_ids: List[int] = Body(...),
