@@ -1116,7 +1116,10 @@ export const autoVoucherApi = {
     debit_lines: AutoVoucherLine[]
     credit_lines: AutoVoucherLine[]
     external_ref?: string
+    force?: boolean
   }) => api.post('/auto-voucher/direct-voucher', payload),
+  checkDuplicate: (transaction_date: string, total_amount: number, counterparty?: string) =>
+    api.post('/auto-voucher/check-duplicate', { transaction_date, total_amount, counterparty }),
 }
 
 export default api

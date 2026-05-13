@@ -159,8 +159,10 @@ export default function TaxVoucherEntryPage() {
     return { debits, credits }
   }, [form, supplyNum, vatNum])
 
+  const [duplicates, setDuplicates] = useState<any[] | null>(null)
+
   const submitMut = useMutation({
-    mutationFn: () => autoVoucherApi.directVoucher({
+    mutationFn: (force: boolean = false) => autoVoucherApi.directVoucher({
       transaction_date: form.transaction_date,
       source_type: form.kind,
       counterparty: form.counterparty,
@@ -169,11 +171,12 @@ export default function TaxVoucherEntryPage() {
       vat_amount: vatNum,
       debit_lines: previewLines.debits,
       credit_lines: previewLines.credits,
+      force,
     }),
     onSuccess: (res) => {
       setLastVoucherNo(res.data?.voucher_number || null)
+      setDuplicates(null)
       if (continueMode) {
-        // 연속 입력: 거래처/공급가 등 reset, 일자는 유지
         setForm((f) => ({
           ...f,
           counterparty: '',
@@ -182,6 +185,12 @@ export default function TaxVoucherEntryPage() {
           vat: '',
         }))
         setTimeout(() => counterpartyRef.current?.focus(), 50)
+      }
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail
+      if (err?.response?.status === 409 && detail?.code === 'duplicate_candidates') {
+        setDuplicates(detail.duplicates || [])
       }
     },
   })
@@ -195,7 +204,7 @@ export default function TaxVoucherEntryPage() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        if (canSubmit() && !submitMut.isPending) submitMut.mutate()
+        if (canSubmit() && !submitMut.isPending) submitMut.mutate(false)
       }
       if (e.key === 'F2') {
         e.preventDefault()
@@ -369,7 +378,7 @@ export default function TaxVoucherEntryPage() {
 
           <div className="flex items-center gap-2 pt-3 border-t border-ink-200">
             <button
-              onClick={() => submitMut.mutate()}
+              onClick={() => submitMut.mutate(false)}
               disabled={!canSubmit() || submitMut.isPending}
               className="btn-primary"
             >
@@ -383,12 +392,51 @@ export default function TaxVoucherEntryPage() {
               <ArrowPathIcon className="h-3.5 w-3.5 mr-1" />
               초기화
             </button>
-            {submitMut.isError && (
+            {submitMut.isError && !duplicates && (
               <span className="text-2xs text-rose-600">
-                {((submitMut.error as any)?.response?.data?.detail) || '저장 실패'}
+                {(() => {
+                  const d = (submitMut.error as any)?.response?.data?.detail
+                  if (typeof d === 'string') return d
+                  if (d?.message) return d.message
+                  return '저장 실패'
+                })()}
               </span>
             )}
           </div>
+
+          {duplicates && duplicates.length > 0 && (
+            <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-3 space-y-2">
+              <div className="text-xs font-semibold text-amber-900 flex items-center gap-1">
+                ⚠️ 비슷한 거래 {duplicates.length}건 이미 존재
+              </div>
+              <div className="space-y-1 max-h-32 overflow-y-auto">
+                {duplicates.map((d, i) => (
+                  <div key={i} className="text-2xs text-amber-800 flex items-center gap-2">
+                    <span className="font-mono">{d.transaction_date}</span>
+                    <span className="font-semibold">{d.counterparty || '-'}</span>
+                    <span className="font-mono">{Number(d.total_amount).toLocaleString('ko-KR')}원</span>
+                    <span className="text-amber-600">
+                      ({d.kind === 'voucher' ? `확정 #${d.voucher_number || d.id}` : `대기 후보 ${d.source_type}`})
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center gap-2 pt-1 border-t border-amber-200">
+                <button
+                  onClick={() => { setDuplicates(null); submitMut.reset() }}
+                  className="text-2xs font-semibold text-ink-700 underline"
+                >
+                  취소
+                </button>
+                <button
+                  onClick={() => submitMut.mutate(true)}
+                  className="text-2xs font-semibold text-rose-700 underline"
+                >
+                  중복이어도 강제 저장
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 분개 미리보기 */}

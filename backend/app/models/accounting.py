@@ -178,7 +178,11 @@ class Voucher(Base):
     transaction_type: Mapped[TransactionType] = mapped_column(SQLEnum(TransactionType, native_enum=False))
     external_ref: Mapped[Optional[str]] = mapped_column(
         String(100), nullable=True
-    )  # 외부 참조번호 (카드승인번호 등)
+    )  # 외부 참조번호 (그랜터 ticket id, 카드승인번호 등)
+    source: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True,
+        comment="데이터 출처: granter_auto/manual/douzone_journal/api 등 (중복 검사용)"
+    )
 
     # Organization
     department_id: Mapped[int] = mapped_column(Integer, ForeignKey("departments.id"))

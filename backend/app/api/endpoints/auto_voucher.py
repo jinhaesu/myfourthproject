@@ -402,6 +402,7 @@ async def _confirm_candidate_inner(
         description=(c.description or c.counterparty or "")[:500],
         transaction_type=txn_type,
         external_ref=c.source_id,
+        source="granter_auto",
         department_id=department_id,
         created_by=user_id,
         total_debit=total_debit,
@@ -481,6 +482,83 @@ class DirectVoucherRequest(BaseModel):
     debit_lines: List[DirectVoucherLine]
     credit_lines: List[DirectVoucherLine]
     external_ref: Optional[str] = None
+    force: bool = Field(False, description="중복 후보가 있어도 강제 저장")
+
+
+async def _find_duplicate_candidates(
+    db: AsyncSession,
+    transaction_date: date,
+    total_amount: Decimal,
+    counterparty: Optional[str],
+    amount_tolerance: Decimal = Decimal("1"),
+) -> List[dict]:
+    """
+    같은 (날짜±3일, 금액±tolerance, 거래처 일부일치)인 기존 거래 검색.
+    그랜터 자동 후보 + 확정 Voucher 모두 검사.
+    """
+    from datetime import timedelta as _td
+    results = []
+
+    # 1) PENDING / CONFIRMED AutoVoucherCandidate
+    q = select(AutoVoucherCandidate).where(
+        AutoVoucherCandidate.transaction_date.between(
+            transaction_date - _td(days=3), transaction_date + _td(days=3)
+        ),
+        AutoVoucherCandidate.status.in_([AutoVoucherStatus.PENDING, AutoVoucherStatus.CONFIRMED]),
+        AutoVoucherCandidate.total_amount.between(
+            total_amount - amount_tolerance, total_amount + amount_tolerance
+        ),
+    )
+    if counterparty:
+        q = q.where(AutoVoucherCandidate.counterparty.ilike(f"%{counterparty[:10]}%"))
+    cands = (await db.execute(q.limit(5))).scalars().all()
+    for c in cands:
+        results.append({
+            "kind": "auto_candidate",
+            "id": c.id,
+            "status": c.status.value,
+            "transaction_date": c.transaction_date.isoformat(),
+            "counterparty": c.counterparty,
+            "total_amount": str(c.total_amount),
+            "source_type": c.source_type.value,
+        })
+
+    # 2) 확정 Voucher
+    vq = select(Voucher).where(
+        Voucher.transaction_date.between(
+            transaction_date - _td(days=3), transaction_date + _td(days=3)
+        ),
+        Voucher.status == VoucherStatus.CONFIRMED,
+        Voucher.total_debit.between(
+            total_amount - amount_tolerance, total_amount + amount_tolerance
+        ),
+    )
+    if counterparty:
+        vq = vq.where(Voucher.merchant_name.ilike(f"%{counterparty[:10]}%"))
+    vouchers = (await db.execute(vq.limit(5))).scalars().all()
+    for v in vouchers:
+        results.append({
+            "kind": "voucher",
+            "id": v.id,
+            "voucher_number": v.voucher_number,
+            "transaction_date": v.transaction_date.isoformat(),
+            "counterparty": v.merchant_name,
+            "total_amount": str(v.total_debit),
+            "source": v.source,
+        })
+    return results
+
+
+@router.post("/check-duplicate")
+async def check_duplicate(
+    transaction_date: date = Body(...),
+    total_amount: Decimal = Body(...),
+    counterparty: Optional[str] = Body(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """수기 입력 화면에서 호출 — 같은 거래가 이미 있는지 사전 확인."""
+    dups = await _find_duplicate_candidates(db, transaction_date, total_amount, counterparty)
+    return {"duplicates": dups, "count": len(dups)}
 
 
 @router.post("/direct-voucher")
@@ -501,6 +579,21 @@ async def create_direct_voucher(
                             detail=f"차변 합({total_debit}) ≠ 대변 합({total_credit})")
     if total_debit == 0:
         raise HTTPException(status_code=400, detail="금액이 0입니다.")
+
+    # 중복 검사 — 그랜터 자동 후보·기존 확정 전표와 매칭
+    if not req.force:
+        dups = await _find_duplicate_candidates(
+            db, req.transaction_date, total_debit, req.counterparty,
+        )
+        if dups:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "duplicate_candidates",
+                    "message": f"비슷한 거래 {len(dups)}건이 이미 있습니다. 다시 등록하려면 force=true.",
+                    "duplicates": dups,
+                },
+            )
 
     try:
         src = AutoVoucherSourceType(req.source_type)
@@ -525,6 +618,7 @@ async def create_direct_voucher(
         description=(req.description or req.counterparty or "")[:500],
         transaction_type=txn_type,
         external_ref=req.external_ref,
+        source="manual",
         department_id=department_id,
         created_by=user_id,
         total_debit=total_debit,
