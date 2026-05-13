@@ -1041,4 +1041,69 @@ export const financialApi = {
     api.get('/financial/ai-account-check', { params: { year, account_codes: accountCodes?.join(',') }, timeout: 300000 }),
 }
 
+
+// ==================== 자동 전표 검수 큐 API ====================
+export interface AutoVoucherLine {
+  side: 'debit' | 'credit'
+  account_code: string
+  account_name: string
+  amount: number | string
+  memo?: string
+}
+
+export interface AutoVoucherCandidate {
+  id: number
+  source_type: string
+  source_id: string | null
+  status: 'pending' | 'confirmed' | 'rejected' | 'duplicate'
+  transaction_date: string
+  counterparty: string | null
+  description: string | null
+  supply_amount: number | string
+  vat_amount: number | string
+  total_amount: number | string
+  confidence: number
+  suggested_account_code: string | null
+  suggested_account_name: string | null
+  debit_lines: AutoVoucherLine[]
+  credit_lines: AutoVoucherLine[]
+  duplicate_of_id: number | null
+  confirmed_voucher_id: number | null
+  created_at: string
+}
+
+export const autoVoucherApi = {
+  generateCandidates: (params: { start_date: string; end_date: string; asset_id?: number; auto_match_duplicates?: boolean }) =>
+    api.post('/auto-voucher/generate-candidates', params, { timeout: 600_000 }),
+  matchDuplicates: (start_date: string, end_date: string, day_window: number = 35) =>
+    api.post('/auto-voucher/match-duplicates', null, { params: { start_date, end_date, day_window } }),
+  list: (params: {
+    status?: string
+    source_type?: string
+    start_date?: string
+    end_date?: string
+    confidence_lt?: number
+    confidence_gte?: number
+    counterparty?: string
+    sort?: string
+    page?: number
+    size?: number
+  }) => api.get('/auto-voucher/list', { params }),
+  get: (id: number) => api.get(`/auto-voucher/${id}`),
+  patch: (id: number, patch: Partial<{
+    debit_lines: AutoVoucherLine[]
+    credit_lines: AutoVoucherLine[]
+    counterparty: string
+    description: string
+    suggested_account_code: string
+    suggested_account_name: string
+  }>) => api.patch(`/auto-voucher/${id}`, patch),
+  reject: (id: number, reason?: string) =>
+    api.post(`/auto-voucher/${id}/reject`, { reason }),
+  confirm: (id: number, user_id: number = 1) =>
+    api.post(`/auto-voucher/${id}/confirm`, null, { params: { user_id } }),
+  confirmBatch: (candidate_ids: number[], user_id: number = 1) =>
+    api.post('/auto-voucher/confirm-batch', { candidate_ids, user_id }),
+}
+
 export default api

@@ -28,6 +28,7 @@ import {
   ArrowTrendingUpIcon,
   ShieldCheckIcon,
   GlobeAltIcon,
+  BoltIcon,
 } from '@heroicons/react/24/outline'
 
 type NavItem =
@@ -55,6 +56,7 @@ const baseNavigation: NavItem[] = [
   { name: '계정별 원장', href: '/ledger', icon: BookOpenIcon },
   { name: '현금주의 손익', href: '/cash-pl', icon: ScaleIcon },
   { name: '재무보고서', href: '/financial', icon: TableCellsIcon },
+  { name: '자동 전표 검수', href: '/auto-voucher', icon: BoltIcon },
   { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
   { name: '자금관리', href: '/treasury', icon: BanknotesIcon },
   { name: '예산관리', href: '/budget', icon: CalculatorIcon },

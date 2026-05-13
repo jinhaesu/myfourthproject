@@ -4,6 +4,7 @@ import Layout from '@/components/common/Layout'
 import LoginPage from '@/pages/LoginPage'
 import DashboardPage from '@/pages/DashboardPage'
 import VouchersPage from '@/pages/VouchersPage'
+import AutoVoucherPage from '@/pages/AutoVoucherPage'
 import VoucherDetailPage from '@/pages/VoucherDetailPage'
 import TreasuryPage from '@/pages/TreasuryPage'
 import BudgetPage from '@/pages/BudgetPage'
@@ -57,6 +58,7 @@ function App() {
         <Route path="exchange-rates" element={<ExchangeRatesPage />} />
         <Route path="vouchers" element={<VouchersPage />} />
         <Route path="vouchers/:id" element={<VoucherDetailPage />} />
+        <Route path="auto-voucher" element={<AutoVoucherPage />} />
         <Route path="treasury" element={<TreasuryPage />} />
         <Route path="budget" element={<BudgetPage />} />
         <Route path="forecast" element={<ForecastPage />} />
