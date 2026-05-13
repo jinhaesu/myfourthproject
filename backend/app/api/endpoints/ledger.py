@@ -379,45 +379,33 @@ async def list_accounts(
 ):
     """
     계정과목 리스트 — source_account_code 기준 GROUP BY.
-    AI 분류 메뉴에 업로드된 데이터에서 원장 계정만 추출.
+    ai_raw_transaction_data + Voucher(CONFIRMED) 통합 데이터에서 집계.
     """
-    filters = [
-        AIRawTransactionData.source_account_code.isnot(None),
-        AIRawTransactionData.source_account_code != '',
-    ]
+    from app.services.unified_ledger import unified_aggregation_subquery
 
+    # fiscal_year → period 변환
     if fiscal_year and not period_start and not period_end:
-        filters.append(or_(
-            AIRawTransactionData.transaction_date.like(f"{fiscal_year}-%"),
-            AIRawTransactionData.transaction_date.like(f"{fiscal_year}.%"),
-        ))
+        period_start = date(fiscal_year, 1, 1)
+        period_end = date(fiscal_year, 12, 31)
 
-    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
-    if period_start:
-        s = period_start.strftime('%Y-%m-%d')
-        filters.append(norm_date >= s)
-    if period_end:
-        e_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-        filters.append(norm_date < e_next)
+    sub = unified_aggregation_subquery(period_start, period_end)
+
+    q = select(
+        sub.c.source_account_code,
+        func.max(sub.c.source_account_name).label('name'),
+        func.coalesce(func.sum(sub.c.debit_amount), 0).label('debit'),
+        func.coalesce(func.sum(sub.c.credit_amount), 0).label('credit'),
+        func.count().label('cnt'),
+    ).group_by(sub.c.source_account_code)
 
     if search:
         like = f"%{search}%"
-        filters.append(or_(
-            AIRawTransactionData.source_account_code.like(like),
-            AIRawTransactionData.source_account_name.like(like),
+        q = q.where(or_(
+            sub.c.source_account_code.like(like),
+            sub.c.source_account_name.like(like),
         ))
 
-    result = await db.execute(
-        select(
-            AIRawTransactionData.source_account_code,
-            func.max(AIRawTransactionData.source_account_name).label('name'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
-            func.count(AIRawTransactionData.id).label('cnt'),
-        )
-        .where(and_(*filters))
-        .group_by(AIRawTransactionData.source_account_code)
-    )
+    result = await db.execute(q)
     rows = result.all()
 
     accounts: List[LedgerAccount] = []
@@ -507,39 +495,28 @@ async def get_account_summary(
     # 임시로 코드만 — 아래에서 name 받아온 후 재분류
     cat = _category_of(account_code)
 
-    # 기간 내 합계 (source 기준 — 원장 시점)
-    # transaction_date 형식 'YYYY-MM-DD'/'YYYY.MM.DD' 혼재 안전 비교
-    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
-    end_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-    start_iso = period_start.strftime('%Y-%m-%d')
-
-    period_filter = and_(
-        AIRawTransactionData.source_account_code == account_code,
-        norm_date >= start_iso,
-        norm_date < end_next,
-    )
+    # 기간 내 합계 — ai_raw + Voucher 통합
+    from app.services.unified_ledger import unified_aggregation_subquery
+    sub = unified_aggregation_subquery(period_start, period_end)
 
     period_row = (await db.execute(
         select(
-            func.max(AIRawTransactionData.source_account_name).label('name'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
-            func.count(AIRawTransactionData.id).label('cnt'),
-            func.max(AIRawTransactionData.debit_amount).label('max_debit'),
-            func.max(AIRawTransactionData.credit_amount).label('max_credit'),
-        ).where(period_filter)
+            func.max(sub.c.source_account_name).label('name'),
+            func.coalesce(func.sum(sub.c.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(sub.c.credit_amount), 0).label('credit'),
+            func.count().label('cnt'),
+            func.max(sub.c.debit_amount).label('max_debit'),
+            func.max(sub.c.credit_amount).label('max_credit'),
+        ).where(sub.c.source_account_code == account_code)
     )).one()
 
-    # 기초 잔액 (기간 시작 이전 누적)
-    opening_filter = and_(
-        AIRawTransactionData.source_account_code == account_code,
-        norm_date < start_iso,
-    )
+    # 기초 잔액 (기간 시작 이전 누적) — ai_raw + Voucher 통합
+    sub_open = unified_aggregation_subquery(None, period_start - timedelta(days=1))
     opening_row = (await db.execute(
         select(
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
-        ).where(opening_filter)
+            func.coalesce(func.sum(sub_open.c.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(sub_open.c.credit_amount), 0).label('credit'),
+        ).where(sub_open.c.source_account_code == account_code)
     )).one()
 
     # 이름 받아온 후 카테고리 재분류 (이름 우선)
@@ -604,55 +581,49 @@ async def get_account_entries(
     summary = await get_account_summary(account_code, period_start, period_end, db)
     cat = summary.category
 
-    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
-    end_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-    start_iso = period_start.strftime('%Y-%m-%d')
+    from app.services.unified_ledger import unified_rows_subquery
+    sub = unified_rows_subquery(period_start, period_end)
 
-    filters = [
-        AIRawTransactionData.source_account_code == account_code,
-        norm_date >= start_iso,
-        norm_date < end_next,
-    ]
+    filters = [sub.c.source_account_code == account_code]
     if counterparty:
-        filters.append(AIRawTransactionData.merchant_name.ilike(f"%{counterparty}%"))
+        filters.append(sub.c.merchant_name.ilike(f"%{counterparty}%"))
     if direction == 'debit':
-        filters.append(AIRawTransactionData.debit_amount > 0)
+        filters.append(sub.c.debit_amount > 0)
     elif direction == 'credit':
-        filters.append(AIRawTransactionData.credit_amount > 0)
+        filters.append(sub.c.credit_amount > 0)
     if min_amount is not None:
         filters.append(or_(
-            AIRawTransactionData.debit_amount >= min_amount,
-            AIRawTransactionData.credit_amount >= min_amount,
+            sub.c.debit_amount >= min_amount,
+            sub.c.credit_amount >= min_amount,
         ))
     if max_amount is not None:
         filters.append(or_(
-            AIRawTransactionData.debit_amount <= max_amount,
-            AIRawTransactionData.credit_amount <= max_amount,
+            sub.c.debit_amount <= max_amount,
+            sub.c.credit_amount <= max_amount,
         ))
     if search:
         like = f"%{search}%"
         filters.append(or_(
-            AIRawTransactionData.original_description.ilike(like),
-            AIRawTransactionData.merchant_name.ilike(like),
-            AIRawTransactionData.account_name.ilike(like),
+            sub.c.description.ilike(like),
+            sub.c.merchant_name.ilike(like),
+            sub.c.counterparty_account_name.ilike(like),
         ))
 
     total = await db.scalar(
-        select(func.count(AIRawTransactionData.id)).where(and_(*filters))
+        select(func.count()).select_from(sub).where(and_(*filters))
     ) or 0
 
     offset = (page - 1) * size
     rows = (await db.execute(
-        select(AIRawTransactionData)
+        select(sub)
         .where(and_(*filters))
         .order_by(
-            AIRawTransactionData.transaction_date.asc(),
-            AIRawTransactionData.row_number.asc(),
-            AIRawTransactionData.id.asc(),
+            sub.c.transaction_date.asc(),
+            sub.c.row_number.asc(),
+            sub.c.id.asc(),
         )
-        .offset(offset)
-        .limit(size)
-    )).scalars().all()
+        .offset(offset).limit(size)
+    )).all()
 
     running = Decimal(str(summary.opening_balance))
     entries: List[LedgerEntry] = []
@@ -660,24 +631,35 @@ async def get_account_entries(
         debit_amt = Decimal(str(r.debit_amount or 0))
         credit_amt = Decimal(str(r.credit_amount or 0))
         running += _signed_change(cat, debit_amt, credit_amt)
-        # 위하고 "계정별 원장" 양식엔 상대계정 정보가 없다.
-        # account_code가 거래처코드(6자리)거나 source와 동일하면 상대계정 자리 비움.
-        ac = (r.account_code or '').strip()
-        src = (r.source_account_code or '').strip()
+        # 상대계정 처리: 6자리 거래처코드거나 source와 동일하면 비움
+        ac = (r.counterparty_account_code or '').strip()
+        src_code = (r.source_account_code or '').strip()
         is_counterparty_code = ac.isdigit() and len(ac) >= 5
-        if not ac or ac == src or is_counterparty_code:
+        if not ac or ac == src_code or is_counterparty_code:
             cp_code = None
             cp_name = None
         else:
-            cp_code = r.account_code
-            cp_name = r.account_name
+            cp_code = r.counterparty_account_code
+            cp_name = r.counterparty_account_name
+
+        # 날짜 파싱
+        try:
+            txn_date = date.fromisoformat(r.transaction_date) if r.transaction_date else period_start
+        except (ValueError, TypeError):
+            txn_date = period_start
+
+        # ai_raw인지 voucher인지 표시 (id 충돌 방지 위해 source 접두사)
+        is_voucher = r.source == 'voucher'
+        entry_id = (r.id or 0) + (10_000_000 if is_voucher else 0)
+        txn_num = f"V#{r.row_number}" if is_voucher else f"#{r.row_number}"
+
         entries.append(LedgerEntry(
-            id=r.id,
-            voucher_id=None,
-            transaction_date=date.fromisoformat(_date_to_iso(r.transaction_date) or period_start.isoformat()),
-            transaction_number=f"#{r.row_number}",
+            id=entry_id,
+            voucher_id=r.id if is_voucher else None,
+            transaction_date=txn_date,
+            transaction_number=txn_num,
             counterparty=r.merchant_name,
-            description=r.original_description,
+            description=r.description or "",
             debit=debit_amt,
             credit=credit_amt,
             running_balance=running,
@@ -686,8 +668,8 @@ async def get_account_entries(
             department_name=None,
             project_tag=None,
             memo=None,
-            is_locked=False,
-            created_at=r.created_at,
+            is_locked=is_voucher,  # voucher 라인은 PATCH 불가
+            created_at=None,
         ))
 
     return LedgerEntriesResponse(

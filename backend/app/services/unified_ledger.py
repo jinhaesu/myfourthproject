@@ -13,7 +13,7 @@
 현금주의 손익·재무보고서·계정별 원장 등 모든 분석 메뉴가 단일 진실을 본다.
 """
 from typing import Optional, Any
-from sqlalchemy import select, union_all, literal_column, func, cast, String, and_
+from sqlalchemy import select, union_all, literal_column, func, cast, String, and_, null
 
 from app.models.accounting import (
     Voucher, VoucherLine, Account, VoucherStatus,
@@ -86,3 +86,73 @@ def unified_aggregation_subquery(
         voucher_q = voucher_q.where(Voucher.transaction_date <= period_end)
 
     return union_all(raw_q, voucher_q).subquery('unified_txn')
+
+
+def unified_rows_subquery(
+    period_start: Optional[Any] = None,
+    period_end: Optional[Any] = None,
+):
+    """
+    행 보존용 unified — 거래 그리드(LedgerEntry) 표시용.
+    집계용 컬럼 + id / row_number / 상대계정 정보 포함.
+
+    Voucher 라인은 같은 voucher 내 다른 라인이 상대계정이라 단순히 NULL로 둠
+    (UI에서 '-' 표시). ai_raw는 account_code/account_name 그대로 보존.
+    """
+    norm_raw_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
+
+    raw_q = select(
+        AIRawTransactionData.id.label('id'),
+        literal_column("'raw'").label('source'),
+        AIRawTransactionData.row_number.label('row_number'),
+        norm_raw_date.label('transaction_date'),
+        AIRawTransactionData.source_account_code.label('source_account_code'),
+        AIRawTransactionData.source_account_name.label('source_account_name'),
+        AIRawTransactionData.account_code.label('counterparty_account_code'),
+        AIRawTransactionData.account_name.label('counterparty_account_name'),
+        AIRawTransactionData.debit_amount.label('debit_amount'),
+        AIRawTransactionData.credit_amount.label('credit_amount'),
+        AIRawTransactionData.merchant_name.label('merchant_name'),
+        AIRawTransactionData.original_description.label('description'),
+    ).where(
+        AIRawTransactionData.source_account_code.isnot(None),
+        AIRawTransactionData.source_account_code != '',
+    )
+    if period_start:
+        s = period_start.strftime('%Y-%m-%d') if hasattr(period_start, 'strftime') else str(period_start)
+        raw_q = raw_q.where(norm_raw_date >= s)
+    if period_end:
+        from datetime import timedelta
+        e = (period_end + timedelta(days=1)).strftime('%Y-%m-%d') if hasattr(period_end, 'strftime') else str(period_end)
+        raw_q = raw_q.where(norm_raw_date < e)
+
+    voucher_date_str = func.to_char(Voucher.transaction_date, 'YYYY-MM-DD')
+
+    voucher_q = select(
+        VoucherLine.id.label('id'),
+        literal_column("'voucher'").label('source'),
+        VoucherLine.line_number.label('row_number'),
+        voucher_date_str.label('transaction_date'),
+        Account.code.label('source_account_code'),
+        Account.name.label('source_account_name'),
+        cast(null(), String).label('counterparty_account_code'),
+        cast(null(), String).label('counterparty_account_name'),
+        VoucherLine.debit_amount.label('debit_amount'),
+        VoucherLine.credit_amount.label('credit_amount'),
+        VoucherLine.counterparty_name.label('merchant_name'),
+        VoucherLine.description.label('description'),
+    ).select_from(VoucherLine).join(
+        Voucher, VoucherLine.voucher_id == Voucher.id
+    ).join(
+        Account, VoucherLine.account_id == Account.id
+    ).where(
+        Voucher.status == VoucherStatus.CONFIRMED,
+        Account.code.isnot(None),
+        Account.code != '',
+    )
+    if period_start:
+        voucher_q = voucher_q.where(Voucher.transaction_date >= period_start)
+    if period_end:
+        voucher_q = voucher_q.where(Voucher.transaction_date <= period_end)
+
+    return union_all(raw_q, voucher_q).subquery('unified_rows')

@@ -50,7 +50,7 @@ class LedgerEntry(BaseModel):
     project_tag: Optional[str] = None
     memo: Optional[str] = None
     is_locked: bool = False  # 결산 락
-    created_at: datetime
+    created_at: Optional[datetime] = None
 
 
 class LedgerSummary(BaseModel):
