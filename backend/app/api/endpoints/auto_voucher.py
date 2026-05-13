@@ -28,7 +28,9 @@ from app.models.accounting import (
 )
 from app.services.auto_voucher_service import (
     generate_candidates_for_period,
+    generate_candidates_background,
     match_card_bank_duplicates,
+    get_progress,
 )
 
 
@@ -160,25 +162,49 @@ def _candidate_to_out(c: AutoVoucherCandidate) -> CandidateOut:
 @router.post("/generate-candidates")
 async def generate_candidates(
     req: GenerateRequest,
+    background: bool = Query(True, description="true: 즉시 task_id 반환 후 백그라운드 처리"),
     db: AsyncSession = Depends(get_db),
 ):
-    """기간 내 그랜터 거래를 분개 후보로 일괄 생성."""
+    """
+    기간 내 그랜터 거래를 분개 후보로 일괄 생성.
+    background=true (default): task_id 즉시 반환 → /progress/{task_id} 폴링으로 진행률 추적.
+    background=false: 동기 처리 (소규모 기간용, 응답까지 대기).
+    """
     if req.end_date < req.start_date:
         raise HTTPException(status_code=400, detail="end_date < start_date")
     if (req.end_date - req.start_date).days > 366:
         raise HTTPException(status_code=400, detail="기간이 1년을 초과할 수 없습니다.")
 
+    if background:
+        task_id = await generate_candidates_background(
+            req.start_date, req.end_date,
+            asset_id=req.asset_id,
+            auto_match_duplicates=req.auto_match_duplicates,
+        )
+        return {
+            "task_id": task_id,
+            "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}",
+        }
+
     result = await generate_candidates_for_period(
         db, req.start_date, req.end_date, asset_id=req.asset_id,
     )
-
     if req.auto_match_duplicates:
         match_result = await match_card_bank_duplicates(
             db, req.start_date, req.end_date,
         )
         result["duplicate_matching"] = match_result
-
     return result
+
+
+@router.get("/progress/{task_id}")
+async def get_task_progress(task_id: str):
+    """백그라운드 후보 생성 진행률 조회."""
+    p = get_progress(task_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="task를 찾을 수 없습니다 (만료 또는 잘못된 id).")
+    return p
 
 
 @router.post("/match-duplicates")

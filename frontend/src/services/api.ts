@@ -1073,8 +1073,10 @@ export interface AutoVoucherCandidate {
 }
 
 export const autoVoucherApi = {
-  generateCandidates: (params: { start_date: string; end_date: string; asset_id?: number; auto_match_duplicates?: boolean }) =>
-    api.post('/auto-voucher/generate-candidates', params, { timeout: 600_000 }),
+  generateCandidates: (params: { start_date: string; end_date: string; asset_id?: number; auto_match_duplicates?: boolean }, background: boolean = true) =>
+    api.post('/auto-voucher/generate-candidates', params, { params: { background }, timeout: 60_000 }),
+  getProgress: (task_id: string) =>
+    api.get(`/auto-voucher/progress/${task_id}`),
   matchDuplicates: (start_date: string, end_date: string, day_window: number = 35) =>
     api.post('/auto-voucher/match-duplicates', null, { params: { start_date, end_date, day_window } }),
   list: (params: {

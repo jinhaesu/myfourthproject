@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   CheckCircleIcon, XCircleIcon, ArrowPathIcon, BoltIcon,
@@ -79,13 +79,51 @@ export default function AutoVoucherPage() {
   const total: number = listQuery.data?.total || 0
   const summary: Record<string, Record<string, number>> = listQuery.data?.summary || {}
 
+  const [taskId, setTaskId] = useState<string | null>(null)
+  const [taskProgress, setTaskProgress] = useState<any>(null)
+
   const generateMut = useMutation({
     mutationFn: () =>
       autoVoucherApi.generateCandidates({
         start_date: from, end_date: to, auto_match_duplicates: true,
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['auto-voucher-list'] }),
+      }, true),  // background mode
+    onSuccess: (res) => {
+      const tid = res.data?.task_id
+      if (tid) {
+        setTaskId(tid)
+        setTaskProgress({ status: 'queued', percent: 0, message: '큐 진입 중…' })
+      }
+    },
   })
+
+  // 진행률 폴링 (1초 간격)
+  useEffect(() => {
+    if (!taskId) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const r = await autoVoucherApi.getProgress(taskId)
+        if (cancelled) return
+        setTaskProgress(r.data)
+        if (r.data?.status === 'completed' || r.data?.status === 'failed') {
+          qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
+          // 완료 후 5초 뒤 자동 닫기
+          setTimeout(() => {
+            if (!cancelled) { setTaskId(null); setTaskProgress(null) }
+          }, 5000)
+          return
+        }
+        setTimeout(tick, 1000)
+      } catch {
+        if (!cancelled) {
+          setTaskProgress({ status: 'failed', message: '진행률 조회 실패' })
+          setTimeout(() => { if (!cancelled) { setTaskId(null); setTaskProgress(null) } }, 3000)
+        }
+      }
+    }
+    tick()
+    return () => { cancelled = true }
+  }, [taskId, qc])
 
   const confirmMut = useMutation({
     mutationFn: (id: number) => autoVoucherApi.confirm(id),
@@ -173,16 +211,48 @@ export default function AutoVoucherPage() {
         </div>
       </div>
 
-      {/* Generate result */}
-      {generateMut.data && (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-2xs text-emerald-800">
-          <strong>{generateMut.data.data?.total_created || 0}건</strong> 후보 생성
-          (매출 {generateMut.data.data?.sales_tax_invoice || 0} / 매입 {generateMut.data.data?.purchase_tax_invoice || 0}
-          {' '}/ 카드 {generateMut.data.data?.card || 0} / 통장 {generateMut.data.data?.bank || 0}
-          {' '}/ 현금 {generateMut.data.data?.cash_receipt || 0})
-          {generateMut.data.data?.skipped > 0 && <span className="ml-2">· {generateMut.data.data?.skipped}건 중복 skip</span>}
-          {generateMut.data.data?.duplicate_matching?.matched_pairs > 0 && (
-            <span className="ml-2">· 카드↔통장 매칭 {generateMut.data.data?.duplicate_matching?.matched_pairs}쌍</span>
+      {/* Progress */}
+      {taskProgress && (
+        <div className={`rounded-md border px-3 py-2 ${
+          taskProgress.status === 'completed' ? 'border-emerald-200 bg-emerald-50' :
+          taskProgress.status === 'failed' ? 'border-rose-200 bg-rose-50' :
+          'border-blue-200 bg-blue-50'
+        }`}>
+          <div className="flex items-center justify-between text-2xs mb-1">
+            <span className={`font-semibold ${
+              taskProgress.status === 'completed' ? 'text-emerald-800' :
+              taskProgress.status === 'failed' ? 'text-rose-800' :
+              'text-blue-800'
+            }`}>
+              {taskProgress.status === 'completed' ? '✓ 완료' :
+               taskProgress.status === 'failed' ? '✗ 실패' :
+               '⏳ 진행 중'} · {taskProgress.message}
+            </span>
+            <span className="text-2xs font-mono text-ink-600">{taskProgress.percent || 0}%</span>
+          </div>
+          <div className="h-1.5 bg-white rounded-full overflow-hidden border border-ink-100">
+            <div
+              className={`h-full transition-all ${
+                taskProgress.status === 'failed' ? 'bg-rose-500' :
+                taskProgress.status === 'completed' ? 'bg-emerald-500' :
+                'bg-blue-500'
+              }`}
+              style={{ width: `${taskProgress.percent || 0}%` }}
+            />
+          </div>
+          {taskProgress.result && (
+            <div className="mt-1.5 text-2xs text-emerald-800">
+              <strong>{taskProgress.result.total_created || 0}건</strong> 생성
+              (매출 {taskProgress.result.sales_tax_invoice || 0} /
+              {' '}매입 {taskProgress.result.purchase_tax_invoice || 0} /
+              {' '}카드 {taskProgress.result.card || 0} /
+              {' '}통장 {taskProgress.result.bank || 0} /
+              {' '}현금 {taskProgress.result.cash_receipt || 0})
+              {taskProgress.result.skipped > 0 && <span className="ml-2">· {taskProgress.result.skipped}건 중복 skip</span>}
+              {taskProgress.result.duplicate_matching?.matched_pairs > 0 && (
+                <span className="ml-2">· 카드↔통장 매칭 {taskProgress.result.duplicate_matching.matched_pairs}쌍</span>
+              )}
+            </div>
           )}
         </div>
       )}

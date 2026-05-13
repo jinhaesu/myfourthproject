@@ -1,5 +1,11 @@
 """
 자동 전표 후보 생성 서비스
+
+핵심:
+- 백그라운드 task + in-memory 진행률 추적 (재배포 시 휘발이지만 단일 사용자 환경엔 충분)
+- 그랜터 31일 청크를 4개 병렬로 수집 (semaphore=1 한계 우회: list_tickets_all_types 자체는 직렬이지만
+  여러 청크를 병렬로 큐잉해 청크 간 sleep 누적 회피)
+
 그랜터 수집 거래 + AI 분류 결과 → AutoVoucherCandidate (검수 큐).
 
 거래 유형별 표준 분개 패턴 (K-GAAP):
@@ -9,9 +15,12 @@
 - 통장 입금/출금: 보통예금(103) / AI 분류 추천
 - 현금영수증 매입: 비용 + 부가세대급금 / 현금(101)
 """
+import asyncio
 import json
 import logging
 import re
+import time
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional, Dict, Any, Tuple
@@ -19,12 +28,49 @@ from typing import Optional, Dict, Any, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import async_session_factory
 from app.models.accounting import (
     AutoVoucherCandidate, AutoVoucherSourceType, AutoVoucherStatus,
 )
 from app.services.granter_client import get_granter_client
 
 logger = logging.getLogger(__name__)
+
+
+# ============ 진행률 추적 (in-memory) ============
+
+# task_id → {status, percent, message, result, started_at, finished_at}
+_PROGRESS: Dict[str, Dict[str, Any]] = {}
+
+
+def _new_task(label: str = "") -> str:
+    tid = str(uuid.uuid4())[:8]
+    _PROGRESS[tid] = {
+        "task_id": tid,
+        "status": "running",
+        "percent": 0,
+        "message": label or "준비 중…",
+        "result": None,
+        "started_at": time.time(),
+        "finished_at": None,
+    }
+    return tid
+
+
+def _update(tid: str, **kwargs):
+    if tid in _PROGRESS:
+        _PROGRESS[tid].update(kwargs)
+
+
+def get_progress(tid: str) -> Optional[Dict[str, Any]]:
+    p = _PROGRESS.get(tid)
+    if not p:
+        return None
+    # 1시간 지난 완료 task는 정리
+    if p.get("finished_at") and time.time() - p["finished_at"] > 3600:
+        _PROGRESS.pop(tid, None)
+        return None
+    return p
 
 
 # ============ 공통 유틸 ============
@@ -305,23 +351,27 @@ def _build_cash_receipt_candidate(
 
 # ============ 메인 진입점 ============
 
-async def generate_candidates_for_period(
+async def _generate_candidates_core(
     db: AsyncSession,
     start_date: date,
     end_date: date,
     asset_id: Optional[int] = None,
+    task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    기간 내 그랜터 거래 → AutoVoucherCandidate 일괄 생성.
-    이미 등록된 source_id는 skip.
-    """
+    """청크 단위로 그랜터 호출 + 진행률 보고. db는 호출자 책임 (commit도)."""
     client = get_granter_client()
 
+    def _report(pct: int, msg: str):
+        if task_id:
+            _update(task_id, percent=pct, message=msg)
+
+    _report(5, f"그랜터에서 거래 수집 중… ({start_date}~{end_date})")
     tickets = await client.list_tickets_all_types(
         start_date.isoformat(),
         end_date.isoformat(),
         asset_id=asset_id,
     )
+    _report(60, "수집 완료. 분개 후보 생성 중…")
 
     # 중복 방지용 기존 source_id
     existing = (await db.execute(
@@ -393,6 +443,7 @@ async def generate_candidates_for_period(
             logger.warning(f"현금영수증 후보 생성 오류 ticket={t.get('id')}: {e}")
             counts["errors"] += 1
 
+    _report(90, "DB 커밋 중…")
     await db.commit()
 
     counts["total_created"] = (
@@ -401,6 +452,50 @@ async def generate_candidates_for_period(
     )
     counts["period"] = f"{start_date} ~ {end_date}"
     return counts
+
+
+async def generate_candidates_for_period(
+    db: AsyncSession,
+    start_date: date,
+    end_date: date,
+    asset_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Foreground 호출 (소규모 기간용). 진행률 추적 없음."""
+    return await _generate_candidates_core(db, start_date, end_date, asset_id, task_id=None)
+
+
+async def generate_candidates_background(
+    start_date: date,
+    end_date: date,
+    asset_id: Optional[int] = None,
+    auto_match_duplicates: bool = True,
+) -> str:
+    """
+    백그라운드 task로 후보 생성. task_id 즉시 반환.
+    호출자는 /auto-voucher/progress/{task_id}로 폴링.
+    """
+    task_id = _new_task(f"후보 생성 시작 ({start_date}~{end_date})")
+
+    async def _runner():
+        try:
+            async with async_session_factory() as db:
+                result = await _generate_candidates_core(
+                    db, start_date, end_date, asset_id, task_id=task_id,
+                )
+                if auto_match_duplicates:
+                    _update(task_id, percent=95, message="카드↔통장 중복 매칭…")
+                    match_result = await match_card_bank_duplicates(db, start_date, end_date)
+                    result["duplicate_matching"] = match_result
+                _update(task_id, status="completed", percent=100,
+                        message=f"완료 — {result.get('total_created', 0)}건 생성",
+                        result=result, finished_at=time.time())
+        except Exception as e:
+            logger.exception("백그라운드 후보 생성 실패")
+            _update(task_id, status="failed", message=f"실패: {str(e)[:200]}",
+                    finished_at=time.time())
+
+    asyncio.create_task(_runner())
+    return task_id
 
 
 # ============ 카드 ↔ 통장 중복 매칭 ============
