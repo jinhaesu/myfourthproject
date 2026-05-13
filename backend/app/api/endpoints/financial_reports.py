@@ -176,31 +176,33 @@ async def _detect_ledger_mode(db: AsyncSession, extra_filters: list = None) -> s
 
 
 async def _get_account_balances(
-    db: AsyncSession, mode: str, extra_filters: list = None
+    db: AsyncSession,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
 ) -> list:
-    """계정별 잔액 집계 (기간 필터 적용)"""
-    filters = []
-    if extra_filters:
-        filters.extend(extra_filters)
+    """
+    계정별 잔액 집계 — ai_raw_transaction_data + Voucher(CONFIRMED) 통합.
+    year/month 지정 시 그 기간만, 둘 다 None이면 전체.
+    """
+    from calendar import monthrange
+    from datetime import date as _date
+    from app.services.unified_ledger import unified_aggregation_subquery
 
-    if mode == "multi":
-        filters.extend([
-            AIRawTransactionData.source_account_code.isnot(None),
-            AIRawTransactionData.source_account_code != "",
-        ])
-        group_col = AIRawTransactionData.source_account_code
-    else:
-        group_col = AIRawTransactionData.account_code
+    period_start = period_end = None
+    if year and month:
+        period_start = _date(year, month, 1)
+        period_end = _date(year, month, monthrange(year, month)[1])
+    elif year:
+        period_start = _date(year, 1, 1)
+        period_end = _date(year, 12, 31)
 
+    sub = unified_aggregation_subquery(period_start, period_end)
     q = select(
-        group_col.label("code"),
-        func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
-        func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
-        func.count(AIRawTransactionData.id).label("tx_count"),
-    )
-    if filters:
-        q = q.where(*filters)
-    q = q.group_by(group_col).order_by(group_col)
+        sub.c.source_account_code.label("code"),
+        func.coalesce(func.sum(sub.c.debit_amount), 0).label("debit_total"),
+        func.coalesce(func.sum(sub.c.credit_amount), 0).label("credit_total"),
+        func.count().label("tx_count"),
+    ).group_by(sub.c.source_account_code).order_by(sub.c.source_account_code)
 
     result = await db.execute(q)
     return result.all()
@@ -325,9 +327,8 @@ async def get_trial_balance(
     current_user: User = Depends(get_current_user),
 ):
     """시산표 - 계정별 차변/대변 합계 (기간 기반, 더존 코드 분류)"""
-    filters = _date_filters(year, month) if (year or month) else []
-    mode = await _detect_ledger_mode(db, filters)
-    rows = await _get_account_balances(db, mode, filters)
+    mode = "multi"
+    rows = await _get_account_balances(db, year=year, month=month)
 
     codes = [r.code for r in rows]
     names = await _resolve_names(db, codes, mode)
@@ -376,9 +377,8 @@ async def get_income_statement(
         if years:
             year = years[0]
 
-    extra_filters = _date_filters(year, month)
-    mode = await _detect_ledger_mode(db, extra_filters)
-    rows = await _get_account_balances(db, mode, extra_filters)
+    mode = "multi"
+    rows = await _get_account_balances(db, year=year, month=month)
 
     codes = [r.code for r in rows]
     names = await _resolve_names(db, codes, mode)
@@ -487,9 +487,8 @@ async def get_balance_sheet(
     current_user: User = Depends(get_current_user),
 ):
     """재무상태표 - 더존 계정코드 기준 (기간 기반)"""
-    filters = _date_filters(year, None) if year else []
-    mode = await _detect_ledger_mode(db, filters)
-    rows = await _get_account_balances(db, mode, filters)
+    mode = "multi"
+    rows = await _get_account_balances(db, year=year, month=None)
 
     codes = [r.code for r in rows]
     names = await _resolve_names(db, codes, mode)
@@ -1174,10 +1173,9 @@ async def get_ai_analysis(
         if years:
             year = years[0]
 
-    extra_filters = _date_filters(year, month) if year else []
     period_label = f"{year}년 {month}월" if month else f"{year}년"
-    mode = await _detect_ledger_mode(db, extra_filters)
-    rows = await _get_account_balances(db, mode, extra_filters)
+    mode = "multi"
+    rows = await _get_account_balances(db, year=year, month=month)
     codes = [r.code for r in rows]
     names = await _resolve_names(db, codes, mode)
 
