@@ -666,78 +666,42 @@ async def delete_wehago_import_vouchers(
         return {"deleted_vouchers": 0, "deleted_lines": 0, "message": "삭제할 데이터 없음"}
     _report(10, f"voucher_lines {total_l}개, vouchers {total_v}개 삭제 시작…")
 
-    # 1) FK 정리 — duplicate_voucher_id를 먼저 NULL로 (한 번에)
+    # 1) FK 정리 — duplicate_voucher_id를 먼저 NULL로
     async with engine.begin() as conn:
         await conn.execute(text("""
             UPDATE auto_voucher_candidates SET duplicate_voucher_id = NULL
             WHERE duplicate_voucher_id IN (SELECT id FROM vouchers WHERE source = :s)
         """), {"s": source_label})
 
-        # voucher_lines FK를 ON DELETE CASCADE로 변경 — voucher 삭제 시 자동 정리
-        # (best-effort: 기존 constraint 이름 모를 수 있어 실패해도 무시)
-        try:
-            await conn.execute(text("""
-                ALTER TABLE voucher_lines
-                DROP CONSTRAINT IF EXISTS voucher_lines_voucher_id_fkey
-            """))
-            await conn.execute(text("""
-                ALTER TABLE voucher_lines
-                ADD CONSTRAINT voucher_lines_voucher_id_fkey
-                FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE CASCADE
-            """))
-        except Exception as e:
-            logger.warning(f"voucher_lines FK CASCADE 전환 실패 (무시 가능): {e}")
-
-    # 2) voucher_lines 청크 삭제 (500/회 × 별도 트랜잭션)
-    LINES_CHUNK = 500
-    for it in range(5000):  # 최대 2.5M lines
+    # 2) voucher_lines + vouchers를 한 statement(CTE)로 청크 삭제
+    #    - 한 트랜잭션에서 lock 일치 보장 (race condition 없음)
+    #    - FK constraint 이름과 무관 (ALTER 불필요)
+    CHUNK = 200
+    for it in range(10000):
         async with engine.begin() as conn:
             r = await conn.execute(text("""
-                DELETE FROM voucher_lines
-                WHERE id = ANY((
-                    SELECT array_agg(vl.id)
-                    FROM voucher_lines vl
-                    JOIN vouchers v ON vl.voucher_id = v.id
-                    WHERE v.source = :s
-                    LIMIT :lim
-                )::int[])
-            """), {"s": source_label, "lim": LINES_CHUNK})
-            n = r.rowcount or 0
-            deleted_lines += n
-            if n == 0:
-                break
-        if it % 5 == 0:
-            pct = 10 + int(45 * deleted_lines / max(total_l, 1))
-            _report(pct, f"voucher_lines 삭제 {deleted_lines}/{total_l}",
-                    {"deleted_lines": deleted_lines, "deleted_vouchers": 0})
-        await asyncio.sleep(0)
-
-    _report(55, f"voucher_lines 완료 ({deleted_lines}건). vouchers 삭제 시작…",
-            {"deleted_lines": deleted_lines, "deleted_vouchers": 0})
-
-    # 3) vouchers 청크 삭제 (200/회)
-    VOUCHERS_CHUNK = 200
-    for it in range(5000):
-        async with engine.begin() as conn:
-            r = await conn.execute(text("""
+                WITH target AS (
+                    SELECT id FROM vouchers WHERE source = :s LIMIT :lim
+                ),
+                del_lines AS (
+                    DELETE FROM voucher_lines
+                    WHERE voucher_id IN (SELECT id FROM target)
+                    RETURNING id
+                )
                 DELETE FROM vouchers
-                WHERE id = ANY((
-                    SELECT array_agg(id) FROM (
-                        SELECT id FROM vouchers WHERE source = :s LIMIT :lim
-                    ) sub
-                )::int[])
-            """), {"s": source_label, "lim": VOUCHERS_CHUNK})
+                WHERE id IN (SELECT id FROM target)
+            """), {"s": source_label, "lim": CHUNK})
             n = r.rowcount or 0
             deleted_vouchers += n
             if n == 0:
                 break
         if it % 5 == 0:
-            pct = 55 + int(40 * deleted_vouchers / max(total_v, 1))
-            _report(pct, f"vouchers 삭제 {deleted_vouchers}/{total_v}",
-                    {"deleted_lines": deleted_lines, "deleted_vouchers": deleted_vouchers})
+            pct = 10 + int(85 * deleted_vouchers / max(total_v, 1))
+            _report(pct, f"삭제 진행 {deleted_vouchers}/{total_v}",
+                    {"deleted_vouchers": deleted_vouchers, "deleted_lines": 0})
         await asyncio.sleep(0)
 
-    _report(98, f"완료 직전 — vouchers {deleted_vouchers}건, lines {deleted_lines}건")
+    _report(98, f"완료 직전 — vouchers {deleted_vouchers}건")
 
     return {
         "deleted_vouchers": deleted_vouchers,
