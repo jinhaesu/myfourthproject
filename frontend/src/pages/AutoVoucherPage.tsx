@@ -432,10 +432,48 @@ export default function AutoVoucherPage() {
   })
 
   const confirmBatchMut = useMutation({
-    mutationFn: (ids: number[]) => autoVoucherApi.confirmBatch(ids),
+    mutationFn: async (ids: number[]) => {
+      // 큰 N은 청크 분할 — 한 번에 너무 많으면 backend timeout
+      const CHUNK = 50
+      let success_count = 0
+      let failure_count = 0
+      const failures: any[] = []
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const chunk = ids.slice(i, i + CHUNK)
+        try {
+          const r = await autoVoucherApi.confirmBatch(chunk)
+          success_count += r.data?.success_count || 0
+          failure_count += r.data?.failure_count || 0
+          failures.push(...(r.data?.failures || []))
+        } catch (e: any) {
+          failure_count += chunk.length
+          failures.push({ reason: e?.message?.slice(0, 100) || 'chunk failed' })
+        }
+      }
+      return { data: { success_count, failure_count, failures } }
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
       setSelectedIds(new Set())
+    },
+  })
+
+  // 전체 페이지의 모든 pending 후보 ID를 가져옴
+  const selectAllPagesMut = useMutation({
+    mutationFn: () => autoVoucherApi.list({
+      status: 'pending',
+      source_type: sourceType || undefined,
+      start_date: from || undefined,
+      end_date: to || undefined,
+      confidence_lt: confidenceLt,
+      confidence_gte: confidenceGte,
+      counterparty: counterparty || undefined,
+      page: 1,
+      size: 10000,
+    }),
+    onSuccess: (res) => {
+      const ids = (res.data?.items || []).map((i: any) => i.id)
+      setSelectedIds(new Set(ids))
     },
   })
 
@@ -680,7 +718,15 @@ export default function AutoVoucherPage() {
             </button>
             <button onClick={selectAllVisible}
               className="text-2xs font-semibold text-ink-600 hover:underline">
-              현재 페이지 전체 선택
+              현재 페이지 전체
+            </button>
+            <button
+              onClick={() => selectAllPagesMut.mutate()}
+              disabled={selectAllPagesMut.isPending}
+              className="text-2xs font-semibold text-blue-700 hover:underline disabled:opacity-50"
+              title="모든 페이지의 pending 후보 전체 선택 (필터 적용)"
+            >
+              {selectAllPagesMut.isPending ? '불러오는 중…' : `전체 페이지 선택 (총 ${pendingCount}건)`}
             </button>
             {selectedIds.size > 0 && (
               <>

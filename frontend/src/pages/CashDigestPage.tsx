@@ -279,22 +279,30 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
           <div className="rounded-lg border border-ink-200 bg-white p-4">
             <div className="text-xs font-semibold text-ink-700 mb-2">{data.top_movements.title}</div>
             <div className="space-y-1">
-              {(data.top_movements.outflows || []).map((m: any, i: number) => (
-                <div key={`o${i}`} className="flex items-start gap-1.5 text-2xs">
-                  <ArrowUpRightIcon className="h-3 w-3 text-rose-500 mt-0.5 flex-shrink-0" />
-                  <span className="text-ink-700">
-                    어제 주요 출금 내역으로는 <strong>{m.counterparty}</strong>{m.description ? ` (${m.description})` : ''}로 <strong>{formatCurrency(m.amount, false)}</strong> 등이 있어요.
-                  </span>
-                </div>
-              ))}
-              {(data.top_movements.inflows || []).map((m: any, i: number) => (
-                <div key={`i${i}`} className="flex items-start gap-1.5 text-2xs">
-                  <ArrowDownLeftIcon className="h-3 w-3 text-emerald-500 mt-0.5 flex-shrink-0" />
-                  <span className="text-ink-700">
-                    어제 주요 입금 내역으로는 <strong>{m.counterparty}</strong>{m.description ? ` (${m.description})` : ''}로 <strong>{formatCurrency(m.amount, false)}</strong> 등이 있어요.
-                  </span>
-                </div>
-              ))}
+              {(data.top_movements.outflows || []).map((m: any, i: number) => {
+                const cp = m.counterparty && m.counterparty !== '(미지정)' ? m.counterparty : ''
+                const label = cp ? (m.description ? `${cp} (${m.description})` : cp) : (m.description || '거래')
+                return (
+                  <div key={`o${i}`} className="flex items-start gap-1.5 text-2xs">
+                    <ArrowUpRightIcon className="h-3 w-3 text-rose-500 mt-0.5 flex-shrink-0" />
+                    <span className="text-ink-700">
+                      어제 주요 출금 내역으로는 <strong>{label}</strong>로 <strong>{formatCurrency(m.amount, false)}</strong> 등이 있어요.
+                    </span>
+                  </div>
+                )
+              })}
+              {(data.top_movements.inflows || []).map((m: any, i: number) => {
+                const cp = m.counterparty && m.counterparty !== '(미지정)' ? m.counterparty : ''
+                const label = cp ? (m.description ? `${cp} (${m.description})` : cp) : (m.description || '거래')
+                return (
+                  <div key={`i${i}`} className="flex items-start gap-1.5 text-2xs">
+                    <ArrowDownLeftIcon className="h-3 w-3 text-emerald-500 mt-0.5 flex-shrink-0" />
+                    <span className="text-ink-700">
+                      어제 주요 입금 내역으로는 <strong>{label}</strong>로 <strong>{formatCurrency(m.amount, false)}</strong> 등이 있어요.
+                    </span>
+                  </div>
+                )
+              })}
             </div>
             <button className="mt-2 text-2xs px-2 py-1 rounded bg-emerald-500 text-white font-semibold">
               거래내역 자세히 보기 →
