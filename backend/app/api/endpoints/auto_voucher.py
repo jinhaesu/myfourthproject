@@ -354,6 +354,27 @@ async def list_candidates(
     }
 
 
+@router.get("/journal-uploads")
+async def get_journal_uploads(db: AsyncSession = Depends(get_db)):
+    """
+    위하고/더존 분개장 업로드 목록 — 일괄 변환 모달 선택용.
+    /{candidate_id} 라우트보다 앞서야 정상 매칭됨.
+    """
+    return {"uploads": await list_journal_uploads(db)}
+
+
+@router.get("/journal-diagnostic")
+async def journal_diagnostic(
+    upload_id: Optional[int] = Query(None, description="특정 업로드 ID만 진단 (없으면 전체)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ai_raw 진단 — 분개장 데이터가 어떻게 저장됐는지 컬럼별 통계.
+    분개장 식별이 왜 실패하는지 디버깅용. /{candidate_id}보다 앞서야 함.
+    """
+    return await diagnose_journal_data(db, upload_id=upload_id)
+
+
 @router.get("/{candidate_id}")
 async def get_candidate(
     candidate_id: int,
@@ -725,25 +746,6 @@ class MigrateJournalRequest(BaseModel):
     start_date: Optional[date] = Field(None, description="ai_raw.transaction_date 기간 필터 시작")
     end_date: Optional[date] = Field(None, description="ai_raw.transaction_date 기간 필터 종료")
     source_label: str = Field("wehago_import", description="Voucher.source 라벨")
-
-
-@router.get("/journal-uploads")
-async def get_journal_uploads(db: AsyncSession = Depends(get_db)):
-    """위하고/더존 분개장 업로드 목록 — 일괄 변환 모달 선택용."""
-    return {"uploads": await list_journal_uploads(db)}
-
-
-@router.get("/journal-diagnostic")
-async def journal_diagnostic(
-    upload_id: Optional[int] = Query(None, description="특정 업로드 ID만 진단 (없으면 전체)"),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    ai_raw 진단 — 분개장 데이터가 어떻게 저장됐는지 컬럼별 통계.
-    분개장 식별이 왜 실패하는지 디버깅용.
-    upload_id 지정 시 첫 5행 샘플도 함께 반환.
-    """
-    return await diagnose_journal_data(db, upload_id=upload_id)
 
 
 @router.post("/migrate-from-journal")
