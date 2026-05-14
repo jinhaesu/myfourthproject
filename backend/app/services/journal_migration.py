@@ -310,7 +310,8 @@ async def migrate_journal_uploads_to_vouchers(
     department_id: Optional[int] = None,
     source_label: str = "wehago_import",
     task_id: Optional[str] = None,
-    commit_every: int = 50,
+    commit_every: int = 10,
+    yield_every: int = 5,
 ) -> Dict[str, Any]:
     """
     위하고/더존 분개장 업로드 → Voucher(CONFIRMED) 일괄 변환.
@@ -576,7 +577,11 @@ async def migrate_journal_uploads_to_vouchers(
             errors.append({"group": list(key), "reason": str(e)[:200]})
 
         processed += 1
-        # 청크 단위 commit — 8,000+ 그룹도 안정적으로 처리
+        # 매 yield_every 그룹마다 이벤트 루프 양보 → 다른 API 처리 가능
+        if processed % yield_every == 0:
+            await asyncio.sleep(0)
+
+        # 청크 단위 commit — lock 짧게 유지해 다른 API 방해 안 함
         if processed % commit_every == 0:
             commit_failed = False
             try:
