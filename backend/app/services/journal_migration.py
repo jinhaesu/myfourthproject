@@ -630,67 +630,70 @@ async def migrate_journal_uploads_to_vouchers(
 
 async def delete_wehago_import_vouchers(source_label: str = "wehago_import") -> Dict[str, Any]:
     """
-    위하고 import로 생성된 voucher 전체 삭제.
+    위하고 import voucher 전체 삭제.
 
-    청크 단위(1000행)로 raw SQL DELETE — vouchers / voucher_lines 모두 정리.
-    별도 connection에서 statement timeout 늘려 안전하게 실행.
-
-    cascade='all, delete-orphan' 설정 + voucher_lines.voucher_id FK이므로
-    voucher_lines 먼저 삭제, vouchers 나중 삭제.
+    작은 청크(500/200) × 별도 connection 반복 — Supabase 8s statement_timeout 안에
+    완료되는 SQL만 실행.
     """
     from app.core.database import engine
 
     deleted_lines = 0
     deleted_vouchers = 0
 
-    async with engine.begin() as conn:
-        try:
-            await conn.execute(text("SET LOCAL statement_timeout = '120000'"))
-        except Exception:
-            pass
-
-        # 전체 개수 확인
+    # 전체 개수 확인 (별도 connection)
+    async with engine.connect() as conn:
         total_v = (await conn.execute(text(
             "SELECT COUNT(*) FROM vouchers WHERE source = :s"
         ), {"s": source_label})).scalar() or 0
 
-        if total_v == 0:
-            return {"deleted_vouchers": 0, "deleted_lines": 0, "message": "삭제할 데이터 없음"}
+    if total_v == 0:
+        return {"deleted_vouchers": 0, "deleted_lines": 0, "message": "삭제할 데이터 없음"}
 
-        # voucher_lines 청크 삭제 (배치당 5000)
-        while True:
-            r = await conn.execute(text("""
-                DELETE FROM voucher_lines
-                WHERE id IN (
-                    SELECT vl.id FROM voucher_lines vl
-                    JOIN vouchers v ON vl.voucher_id = v.id
-                    WHERE v.source = :s
-                    LIMIT 5000
-                )
-            """), {"s": source_label})
-            n = r.rowcount or 0
-            deleted_lines += n
-            if n < 5000:
-                break
-
-        # vouchers 청크 삭제 (배치당 2000)
-        while True:
-            r = await conn.execute(text("""
-                DELETE FROM vouchers
-                WHERE id IN (
-                    SELECT id FROM vouchers WHERE source = :s LIMIT 2000
-                )
-            """), {"s": source_label})
-            n = r.rowcount or 0
-            deleted_vouchers += n
-            if n < 2000:
-                break
-
-        # AutoVoucherCandidate.duplicate_voucher_id 정리 (FK 매칭 해제)
+    # 1) FK 정리 — duplicate_voucher_id를 먼저 NULL로 (한 번에)
+    async with engine.begin() as conn:
         await conn.execute(text("""
             UPDATE auto_voucher_candidates SET duplicate_voucher_id = NULL
-            WHERE duplicate_voucher_id NOT IN (SELECT id FROM vouchers)
-        """))
+            WHERE duplicate_voucher_id IN (SELECT id FROM vouchers WHERE source = :s)
+        """), {"s": source_label})
+
+    # 2) voucher_lines 청크 삭제 (500/회 × 별도 트랜잭션)
+    LINES_CHUNK = 500
+    for _ in range(2000):  # 최대 1M lines까지
+        async with engine.begin() as conn:
+            r = await conn.execute(text("""
+                DELETE FROM voucher_lines
+                WHERE id = ANY((
+                    SELECT array_agg(vl.id)
+                    FROM voucher_lines vl
+                    JOIN vouchers v ON vl.voucher_id = v.id
+                    WHERE v.source = :s
+                    LIMIT :lim
+                )::int[])
+            """), {"s": source_label, "lim": LINES_CHUNK})
+            n = r.rowcount or 0
+            deleted_lines += n
+            if n == 0:
+                break
+        # 이벤트 루프 양보
+        await asyncio.sleep(0)
+
+    # 3) vouchers 청크 삭제 (200/회)
+    VOUCHERS_CHUNK = 200
+    for _ in range(2000):
+        async with engine.begin() as conn:
+            r = await conn.execute(text("""
+                DELETE FROM vouchers
+                WHERE id = ANY((
+                    SELECT array_agg(id) FROM (
+                        SELECT id FROM vouchers WHERE source = :s LIMIT :lim
+                    ) sub
+                )::int[])
+            """), {"s": source_label, "lim": VOUCHERS_CHUNK})
+            n = r.rowcount or 0
+            deleted_vouchers += n
+            if n == 0:
+                break
+        await asyncio.sleep(0)
 
     return {
         "deleted_vouchers": deleted_vouchers,
