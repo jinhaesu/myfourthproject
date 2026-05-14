@@ -373,19 +373,51 @@ async def migrate_journal_uploads_to_vouchers(
             "message": "기간 내 분개장 데이터 없음",
         }
 
-    # 3) 그룹핑
-    groups: Dict[Tuple, List[AIRawTransactionData]] = defaultdict(list)
+    # 3) 그룹핑 — row_number 순서로 누적해 차변=대변 도달 시 한 분개로 마감
+    #    위하고 _parse_journal()의 _flush()가 한 분개를 연속 행으로 출력하므로
+    #    이 패턴이 가장 정확. description fallback 차이 문제 회피.
+    groups: Dict[Tuple, List[AIRawTransactionData]] = {}
+    # upload_id 별로 정렬
+    rows_by_upload: Dict[int, List[AIRawTransactionData]] = defaultdict(list)
     for r in rows:
-        d = _parse_iso_date(r.transaction_date)
-        if not d:
-            continue
-        key = (
-            r.upload_id,
-            d.isoformat(),
-            (r.original_description or "")[:200],
-            (r.merchant_name or "")[:200],
-        )
-        groups[key].append(r)
+        if _parse_iso_date(r.transaction_date):
+            rows_by_upload[r.upload_id].append(r)
+    for uid in rows_by_upload:
+        rows_by_upload[uid].sort(key=lambda x: x.row_number or 0)
+
+    group_seq = 0
+    for upload_id_grp, urs in rows_by_upload.items():
+        current: List[AIRawTransactionData] = []
+        cur_d = Decimal("0")
+        cur_c = Decimal("0")
+        cur_date = None
+        for r in urs:
+            d = _parse_iso_date(r.transaction_date)
+            # 날짜 바뀌면 이전 그룹 강제 마감 (불완전해도 errors로 처리)
+            if cur_date is not None and d != cur_date and current:
+                group_seq += 1
+                key = (upload_id_grp, cur_date.isoformat() if cur_date else "0000-00-00", group_seq)
+                groups[key] = current
+                current = []
+                cur_d = Decimal("0")
+                cur_c = Decimal("0")
+            cur_date = d
+            current.append(r)
+            cur_d += Decimal(str(r.debit_amount or 0))
+            cur_c += Decimal(str(r.credit_amount or 0))
+            # 차변=대변 도달 + 둘 다 > 0 → 한 분개 완성
+            if cur_d > 0 and cur_d == cur_c:
+                group_seq += 1
+                key = (upload_id_grp, d.isoformat(), group_seq)
+                groups[key] = current
+                current = []
+                cur_d = Decimal("0")
+                cur_c = Decimal("0")
+        # 잔여 (불완전 분개)
+        if current:
+            group_seq += 1
+            key = (upload_id_grp, (cur_date.isoformat() if cur_date else "0000-00-00"), group_seq)
+            groups[key] = current
 
     # 4) 이미 마이그레이션된 그룹 확인 (external_ref 기준)
     existing_refs_q = select(Voucher.external_ref).where(
@@ -413,10 +445,16 @@ async def migrate_journal_uploads_to_vouchers(
     processed = 0
     total_groups = len(groups)
     for key, grp in groups.items():
-        upload_id, date_iso, desc, merchant = key
-        ext_ref = f"journal:upload:{upload_id}:{date_iso}:{abs(hash((desc, merchant))) % 10**8}"
+        upload_id, date_iso, group_seq = key
+        # 그룹 내 첫 행에서 description/merchant 추출 (전체 그룹이 공유한다는 가정)
+        first = grp[0]
+        desc = (first.original_description or "")[:200] if first else ""
+        merchant = (first.merchant_name or "")[:200] if first else ""
+        # 그룹 내 모든 행을 식별 가능한 안정적인 ext_ref
+        ext_ref = f"journal:upload:{upload_id}:{date_iso}:seq{group_seq}"
         if ext_ref in existing_refs:
             skipped_count += 1
+            processed += 1
             continue
 
         # 그룹별로 savepoint를 열어 부분 실패해도 다음 그룹 진행 가능하게
