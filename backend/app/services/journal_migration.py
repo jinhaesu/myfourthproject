@@ -21,7 +21,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, Dict, Any, List, Tuple
 
-from sqlalchemy import select, and_, func, case, Integer
+from sqlalchemy import select, and_, func, case, Integer, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.accounting import (
@@ -227,38 +227,61 @@ async def diagnose_journal_data(
     }
 
 
-async def _ensure_default_department(db: AsyncSession) -> int:
-    """departments에 사용 가능한 부서가 있는지 확인, 없으면 'DEFAULT' 부서 생성."""
-    dept = (await db.execute(
-        select(Department).where(Department.is_active == True).order_by(Department.id).limit(1)
-    )).scalar_one_or_none()
-    if dept:
-        return dept.id
-    new_dept = Department(
-        code="DEFAULT", name="기본 부서", level=1, sort_order=0, is_active=True,
-    )
-    db.add(new_dept)
-    await db.flush()
-    return new_dept.id
+async def _ensure_base_data() -> tuple[int, int]:
+    """
+    부서·사용자 시드를 별도 connection/트랜잭션에서 보장 (raw SQL + ON CONFLICT).
 
+    이유: 호출 측 트랜잭션 안에서 INSERT departments 하면 Supabase의 8s statement_timeout +
+    이전 트랜잭션의 lock 잔여물 때문에 QueryCanceledError 발생.
+    별도 connection은 fresh lock context → 안전하게 시드 가능.
 
-async def _ensure_default_user(db: AsyncSession) -> int:
-    """users에 사용 가능한 사용자가 있는지 확인, 없으면 시스템 사용자 생성."""
-    user = (await db.execute(
-        select(User).order_by(User.id).limit(1)
-    )).scalar_one_or_none()
-    if user:
-        return user.id
-    # User 모델은 이메일/패스워드 필수 — 가능한 한 보수적으로 시스템 계정 생성
-    new_user = User(
-        email="system@smartfinance.local",
-        hashed_password="!disabled!",
-        full_name="System (분개장 import)",
-        is_active=True,
-    )
-    db.add(new_user)
-    await db.flush()
-    return new_user.id
+    반환: (department_id, user_id)
+    """
+    from app.core.database import engine
+
+    async with engine.begin() as conn:
+        # 이 connection의 statement timeout을 1분으로 늘림 (Supabase 기본값 무시)
+        try:
+            await conn.execute(text("SET LOCAL statement_timeout = '60000'"))
+        except Exception:
+            pass  # Supabase가 SET LOCAL 막을 수도 있으므로 best-effort
+
+        # 부서 보장
+        await conn.execute(text("""
+            INSERT INTO departments (code, name, level, sort_order, is_active, created_at, updated_at)
+            VALUES ('DEFAULT', '기본 부서', 1, 0, true, NOW(), NOW())
+            ON CONFLICT (code) DO NOTHING
+        """))
+        dept_id = (await conn.execute(
+            text("SELECT id FROM departments WHERE is_active = true ORDER BY id LIMIT 1")
+        )).scalar()
+        if not dept_id:
+            # 최후 폴백 — is_active 무시
+            dept_id = (await conn.execute(
+                text("SELECT id FROM departments ORDER BY id LIMIT 1")
+            )).scalar()
+
+        # 사용자 보장 — 가장 먼저 만들어진 1명 사용. 없으면 시스템 계정 생성.
+        user_id = (await conn.execute(
+            text("SELECT id FROM users ORDER BY id LIMIT 1")
+        )).scalar()
+        if not user_id:
+            await conn.execute(text("""
+                INSERT INTO users
+                  (employee_id, email, username, hashed_password, full_name, is_active, is_superuser,
+                   failed_login_attempts, two_factor_enabled, created_at, updated_at)
+                VALUES
+                  ('SYSTEM', 'system@smartfinance.local', 'system', '!disabled!',
+                   'System (자동생성)', true, false, 0, false, NOW(), NOW())
+                ON CONFLICT (email) DO NOTHING
+            """))
+            user_id = (await conn.execute(
+                text("SELECT id FROM users WHERE email = 'system@smartfinance.local'")
+            )).scalar()
+
+    if not dept_id or not user_id:
+        raise RuntimeError(f"기초 데이터 시드 실패 (dept_id={dept_id}, user_id={user_id})")
+    return dept_id, user_id
 
 
 async def migrate_journal_uploads_to_vouchers(
@@ -283,27 +306,28 @@ async def migrate_journal_uploads_to_vouchers(
     "분개장" 판정: upload_type이 아니라 ai_raw 데이터에 분개 정보가 있는지로 자동 감지.
     upload-historical 경로로 들어온 위하고 분개장도 잡힌다.
     """
-    # 0) FK 보장: department / user 존재 확인 (시드 데이터 없을 때 자동 생성)
+    # 0) FK 보장: 부서·사용자 시드를 별도 connection에서 처리 후 검증
+    seeded_dept_id, seeded_user_id = await _ensure_base_data()
+
     effective_department_id = department_id
     if effective_department_id is None:
-        effective_department_id = await _ensure_default_department(db)
+        effective_department_id = seeded_dept_id
     else:
-        # 명시된 id가 실제 존재하는지 검증
         exists = await db.scalar(
             select(Department.id).where(Department.id == effective_department_id)
         )
         if not exists:
-            effective_department_id = await _ensure_default_department(db)
+            effective_department_id = seeded_dept_id
 
     effective_user_id = user_id
     if effective_user_id is None:
-        effective_user_id = await _ensure_default_user(db)
+        effective_user_id = seeded_user_id
     else:
         exists = await db.scalar(
             select(User.id).where(User.id == effective_user_id)
         )
         if not exists:
-            effective_user_id = await _ensure_default_user(db)
+            effective_user_id = seeded_user_id
 
     # 1) 대상 업로드 선정 — 분개 정보 보유 업로드 자동 감지
     target_upload_ids = await _find_journal_upload_ids(db, only_ids=upload_ids)
