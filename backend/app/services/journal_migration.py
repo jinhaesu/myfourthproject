@@ -100,6 +100,36 @@ async def _next_voucher_number(db: AsyncSession, vdate: date, counter: Dict[str,
     return f"{prefix}-{counter[prefix]:04d}"
 
 
+async def _find_journal_upload_ids(
+    db: AsyncSession, only_ids: Optional[List[int]] = None,
+    min_journal_rows: int = 5,
+) -> List[int]:
+    """
+    "분개장 데이터를 보유한 업로드" 식별 — upload_type 무관.
+
+    기준: ai_raw 행 중 (debit_amount > 0 OR credit_amount > 0) AND source_account_code 채워짐.
+    이 조건을 만족하는 행이 ≥ min_journal_rows건인 업로드만 분개장으로 본다.
+
+    이렇게 하면 upload-historical로 잘못 들어온 위하고 분개장도 자동 감지된다.
+    """
+    q = (
+        select(
+            AIRawTransactionData.upload_id,
+            func.count(AIRawTransactionData.id).label("cnt"),
+        )
+        .where(
+            AIRawTransactionData.source_account_code.isnot(None),
+            AIRawTransactionData.source_account_code != "",
+            (AIRawTransactionData.debit_amount > 0) | (AIRawTransactionData.credit_amount > 0),
+        )
+        .group_by(AIRawTransactionData.upload_id)
+    )
+    if only_ids:
+        q = q.where(AIRawTransactionData.upload_id.in_(only_ids))
+    rows = (await db.execute(q)).all()
+    return [r.upload_id for r in rows if (r.cnt or 0) >= min_journal_rows]
+
+
 async def migrate_journal_uploads_to_vouchers(
     db: AsyncSession,
     upload_ids: Optional[List[int]] = None,
@@ -113,21 +143,17 @@ async def migrate_journal_uploads_to_vouchers(
     위하고/더존 분개장 업로드 → Voucher(CONFIRMED) 일괄 변환.
 
     필터:
-      - upload_ids: 특정 업로드만 대상
+      - upload_ids: 특정 업로드만 대상 (없으면 모든 분개장 업로드)
       - start_date/end_date: ai_raw.transaction_date 기간 필터
-      - 둘 다 비우면 upload_type='journal_entry'인 모든 업로드 대상
 
     동일 (upload_id, transaction_date, description, merchant_name) 그룹의 모든 ai_raw 행 → 1 Voucher.
-    이미 마이그레이션된 (Voucher.external_ref='journal:upload:{upload_id}:{group_key}' 존재) 그룹은 skip.
+    이미 마이그레이션된 그룹(Voucher.external_ref 매칭)은 skip — idempotent.
+
+    "분개장" 판정: upload_type이 아니라 ai_raw 데이터에 분개 정보가 있는지로 자동 감지.
+    upload-historical 경로로 들어온 위하고 분개장도 잡힌다.
     """
-    # 1) 대상 업로드 선정
-    uq = select(AIDataUploadHistory.id, AIDataUploadHistory.filename).where(
-        AIDataUploadHistory.upload_type == "journal_entry",
-    )
-    if upload_ids:
-        uq = uq.where(AIDataUploadHistory.id.in_(upload_ids))
-    target_uploads = (await db.execute(uq)).all()
-    target_upload_ids = [u.id for u in target_uploads]
+    # 1) 대상 업로드 선정 — 분개 정보 보유 업로드 자동 감지
+    target_upload_ids = await _find_journal_upload_ids(db, only_ids=upload_ids)
 
     if not target_upload_ids:
         return {
@@ -314,23 +340,75 @@ async def migrate_journal_uploads_to_vouchers(
 
 
 async def list_journal_uploads(db: AsyncSession) -> List[Dict[str, Any]]:
-    """위하고 분개장 업로드 목록 — 모달 선택용."""
-    q = select(
-        AIDataUploadHistory.id,
-        AIDataUploadHistory.filename,
-        AIDataUploadHistory.row_count,
-        AIDataUploadHistory.created_at,
-        AIDataUploadHistory.upload_type,
-        AIDataUploadHistory.file_type,
-    ).where(
-        AIDataUploadHistory.upload_type.in_(["journal_entry", "historical"]),
-    ).order_by(AIDataUploadHistory.created_at.desc())
+    """
+    분개장 데이터를 보유한 업로드 목록 — 모달 선택용.
+
+    upload_type 무관. ai_raw 행 중 분개 정보(debit/credit + source_account_code)가
+    있는 업로드만 노출 → upload-historical 경로로 들어온 위하고 분개장도 보임.
+    """
+    journal_ids = await _find_journal_upload_ids(db)
+    if not journal_ids:
+        return []
+
+    # 각 분개장 업로드별 메타 + 분개 행 수
+    q = (
+        select(
+            AIDataUploadHistory.id,
+            AIDataUploadHistory.filename,
+            AIDataUploadHistory.row_count,
+            AIDataUploadHistory.created_at,
+            AIDataUploadHistory.upload_type,
+            AIDataUploadHistory.file_type,
+        )
+        .where(AIDataUploadHistory.id.in_(journal_ids))
+        .order_by(AIDataUploadHistory.created_at.desc())
+    )
     rows = (await db.execute(q)).all()
+
+    # 분개 행 수 카운트 (별도 쿼리)
+    journal_row_q = (
+        select(
+            AIRawTransactionData.upload_id,
+            func.count(AIRawTransactionData.id).label("journal_rows"),
+            func.min(AIRawTransactionData.transaction_date).label("min_date"),
+            func.max(AIRawTransactionData.transaction_date).label("max_date"),
+        )
+        .where(
+            AIRawTransactionData.upload_id.in_(journal_ids),
+            AIRawTransactionData.source_account_code.isnot(None),
+            AIRawTransactionData.source_account_code != "",
+            (AIRawTransactionData.debit_amount > 0) | (AIRawTransactionData.credit_amount > 0),
+        )
+        .group_by(AIRawTransactionData.upload_id)
+    )
+    stat_rows = (await db.execute(journal_row_q)).all()
+    stat_map = {r.upload_id: r for r in stat_rows}
+
+    # 이미 변환된 그룹 수 — Voucher.external_ref 기반
+    refs_q = select(Voucher.external_ref).where(
+        Voucher.source.in_(["wehago_import", "douzone_journal"]),
+        Voucher.external_ref.like("journal:upload:%"),
+    )
+    refs = [r[0] for r in (await db.execute(refs_q)).all() if r[0]]
+    migrated_per_upload: Dict[int, int] = defaultdict(int)
+    for ref in refs:
+        # journal:upload:{upload_id}:...
+        parts = ref.split(":")
+        if len(parts) >= 3 and parts[1] == "upload":
+            try:
+                migrated_per_upload[int(parts[2])] += 1
+            except ValueError:
+                pass
+
     return [
         {
             "id": r.id,
             "filename": r.filename,
             "row_count": r.row_count,
+            "journal_rows": (stat_map.get(r.id).journal_rows if stat_map.get(r.id) else 0),
+            "min_date": (stat_map.get(r.id).min_date if stat_map.get(r.id) else None),
+            "max_date": (stat_map.get(r.id).max_date if stat_map.get(r.id) else None),
+            "migrated_vouchers": migrated_per_upload.get(r.id, 0),
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "upload_type": r.upload_type,
             "file_type": r.file_type,

@@ -87,8 +87,8 @@ function JournalMigrationModal({
 
   if (!open) return null
 
-  const uploads: JournalUploadInfo[] = uploadsQuery.data || []
-  const journalUploads = uploads.filter((u) => u.upload_type === 'journal_entry')
+  // 서버에서 이미 분개장 데이터 보유 업로드만 반환 (upload_type 무관)
+  const journalUploads: JournalUploadInfo[] = uploadsQuery.data || []
   const result = migrateMut.data?.data
 
   return (
@@ -145,24 +145,42 @@ function JournalMigrationModal({
               <div className="text-2xs text-ink-400 py-4 text-center">불러오는 중…</div>
             ) : journalUploads.length === 0 ? (
               <div className="text-2xs text-ink-400 py-4 text-center border border-dashed border-ink-200 rounded">
-                업로드된 분개장이 없습니다. AI 분류 메뉴에서 위하고 분개장을 먼저 업로드하세요.
+                분개 정보(차변/대변 + 상대계정)를 보유한 업로드가 없습니다.
+                <div className="mt-1 text-2xs text-ink-400">
+                  AI 분류 메뉴 → "과거 데이터 업로드"에서 위하고 분개장 엑셀을 업로드하면 자동 감지됩니다.
+                </div>
               </div>
             ) : (
-              <div className="space-y-1 max-h-60 overflow-y-auto border border-ink-100 rounded">
-                {journalUploads.map((u) => (
-                  <label key={u.id}
-                    className={`flex items-center gap-2 px-2 py-1.5 hover:bg-ink-50 cursor-pointer ${selectedUploads.has(u.id) ? 'bg-blue-50' : ''}`}>
-                    <input type="checkbox" checked={selectedUploads.has(u.id)}
-                      onChange={() => toggleUpload(u.id)}
-                      className="rounded border-ink-300" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs text-ink-800 truncate">{u.filename}</div>
-                      <div className="text-2xs text-ink-500">
-                        {u.row_count}행 · {u.created_at?.slice(0, 10)}
+              <div className="space-y-1 max-h-72 overflow-y-auto border border-ink-100 rounded">
+                {journalUploads.map((u) => {
+                  const fullyMigrated = u.migrated_vouchers > 0
+                  return (
+                    <label key={u.id}
+                      className={`flex items-center gap-2 px-2 py-1.5 hover:bg-ink-50 cursor-pointer ${selectedUploads.has(u.id) ? 'bg-blue-50' : ''}`}>
+                      <input type="checkbox" checked={selectedUploads.has(u.id)}
+                        onChange={() => toggleUpload(u.id)}
+                        className="rounded border-ink-300" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-ink-800 truncate">{u.filename}</span>
+                          {fullyMigrated && (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-2xs font-semibold">
+                              ✓ {u.migrated_vouchers}건 변환됨
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-2xs text-ink-500 flex items-center gap-2 flex-wrap">
+                          <span>분개행 <strong className="text-ink-700">{u.journal_rows.toLocaleString()}</strong> / 전체 {u.row_count.toLocaleString()}행</span>
+                          {u.min_date && u.max_date && (
+                            <span>· 기간 {u.min_date}~{u.max_date}</span>
+                          )}
+                          <span>· 업로드 {u.created_at?.slice(0, 10)}</span>
+                          <span className="text-ink-400">· {u.upload_type}</span>
+                        </div>
                       </div>
-                    </div>
-                  </label>
-                ))}
+                    </label>
+                  )
+                })}
               </div>
             )}
           </div>

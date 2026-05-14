@@ -1089,6 +1089,10 @@ export interface JournalUploadInfo {
   id: number
   filename: string
   row_count: number
+  journal_rows: number
+  min_date: string | null
+  max_date: string | null
+  migrated_vouchers: number
   created_at: string | null
   upload_type: string
   file_type: string
