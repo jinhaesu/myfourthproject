@@ -43,6 +43,7 @@ REQUIRED_SECTIONS = {"cash_status"}
 class DailyCashReportConfig(Base):
     """사용자별 자금일보 설정"""
     __tablename__ = "daily_cash_report_configs"
+    __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(
@@ -76,6 +77,7 @@ class DailyCashReportSnapshot(Base):
     __tablename__ = "daily_cash_report_snapshots"
     __table_args__ = (
         Index("ix_dcr_snapshots_user_date", "user_id", "report_date", unique=True),
+        {"extend_existing": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
