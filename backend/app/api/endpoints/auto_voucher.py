@@ -751,8 +751,8 @@ class MigrateJournalRequest(BaseModel):
 @router.post("/migrate-from-journal")
 async def migrate_from_journal(
     req: MigrateJournalRequest,
-    user_id: int = Query(1),
-    department_id: int = Query(1),
+    user_id: Optional[int] = Query(None, description="없으면 첫 번째 사용자 자동 사용"),
+    department_id: Optional[int] = Query(None, description="없으면 첫 번째 부서 자동 사용"),
     db: AsyncSession = Depends(get_db),
 ):
     """

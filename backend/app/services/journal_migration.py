@@ -28,6 +28,7 @@ from app.models.accounting import (
     Voucher, VoucherLine, VoucherStatus, TransactionType, Account, AccountCategory,
 )
 from app.models.ai import AIRawTransactionData, AIDataUploadHistory
+from app.models.user import User, Department
 
 logger = logging.getLogger(__name__)
 
@@ -226,13 +227,47 @@ async def diagnose_journal_data(
     }
 
 
+async def _ensure_default_department(db: AsyncSession) -> int:
+    """departments에 사용 가능한 부서가 있는지 확인, 없으면 'DEFAULT' 부서 생성."""
+    dept = (await db.execute(
+        select(Department).where(Department.is_active == True).order_by(Department.id).limit(1)
+    )).scalar_one_or_none()
+    if dept:
+        return dept.id
+    new_dept = Department(
+        code="DEFAULT", name="기본 부서", level=1, sort_order=0, is_active=True,
+    )
+    db.add(new_dept)
+    await db.flush()
+    return new_dept.id
+
+
+async def _ensure_default_user(db: AsyncSession) -> int:
+    """users에 사용 가능한 사용자가 있는지 확인, 없으면 시스템 사용자 생성."""
+    user = (await db.execute(
+        select(User).order_by(User.id).limit(1)
+    )).scalar_one_or_none()
+    if user:
+        return user.id
+    # User 모델은 이메일/패스워드 필수 — 가능한 한 보수적으로 시스템 계정 생성
+    new_user = User(
+        email="system@smartfinance.local",
+        hashed_password="!disabled!",
+        full_name="System (분개장 import)",
+        is_active=True,
+    )
+    db.add(new_user)
+    await db.flush()
+    return new_user.id
+
+
 async def migrate_journal_uploads_to_vouchers(
     db: AsyncSession,
     upload_ids: Optional[List[int]] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    user_id: int = 1,
-    department_id: int = 1,
+    user_id: Optional[int] = None,
+    department_id: Optional[int] = None,
     source_label: str = "wehago_import",
 ) -> Dict[str, Any]:
     """
@@ -248,6 +283,28 @@ async def migrate_journal_uploads_to_vouchers(
     "분개장" 판정: upload_type이 아니라 ai_raw 데이터에 분개 정보가 있는지로 자동 감지.
     upload-historical 경로로 들어온 위하고 분개장도 잡힌다.
     """
+    # 0) FK 보장: department / user 존재 확인 (시드 데이터 없을 때 자동 생성)
+    effective_department_id = department_id
+    if effective_department_id is None:
+        effective_department_id = await _ensure_default_department(db)
+    else:
+        # 명시된 id가 실제 존재하는지 검증
+        exists = await db.scalar(
+            select(Department.id).where(Department.id == effective_department_id)
+        )
+        if not exists:
+            effective_department_id = await _ensure_default_department(db)
+
+    effective_user_id = user_id
+    if effective_user_id is None:
+        effective_user_id = await _ensure_default_user(db)
+    else:
+        exists = await db.scalar(
+            select(User.id).where(User.id == effective_user_id)
+        )
+        if not exists:
+            effective_user_id = await _ensure_default_user(db)
+
     # 1) 대상 업로드 선정 — 분개 정보 보유 업로드 자동 감지
     target_upload_ids = await _find_journal_upload_ids(db, only_ids=upload_ids)
 
@@ -323,6 +380,8 @@ async def migrate_journal_uploads_to_vouchers(
             skipped_count += 1
             continue
 
+        # 그룹별로 savepoint를 열어 부분 실패해도 다음 그룹 진행 가능하게
+        savepoint = await db.begin_nested()
         try:
             vdate = date.fromisoformat(date_iso)
             total_debit = Decimal("0")
@@ -355,11 +414,13 @@ async def migrate_journal_uploads_to_vouchers(
                     })
 
             if not line_specs:
+                await savepoint.rollback()
                 error_count += 1
                 errors.append({"group": list(key), "reason": "유효한 라인 없음"})
                 continue
 
             if total_debit != total_credit:
+                await savepoint.rollback()
                 error_count += 1
                 errors.append({
                     "group": list(key),
@@ -375,14 +436,14 @@ async def migrate_journal_uploads_to_vouchers(
                 transaction_type=TransactionType.GENERAL,
                 external_ref=ext_ref,
                 source=source_label,
-                department_id=department_id,
-                created_by=user_id,
+                department_id=effective_department_id,
+                created_by=effective_user_id,
                 total_debit=total_debit,
                 total_credit=total_credit,
                 status=VoucherStatus.CONFIRMED,
                 merchant_name=merchant or None,
                 confirmed_at=datetime.utcnow(),
-                confirmed_by=user_id,
+                confirmed_by=effective_user_id,
             )
             db.add(voucher)
             await db.flush()  # voucher.id 확보
@@ -410,17 +471,18 @@ async def migrate_journal_uploads_to_vouchers(
                 ))
                 line_no += 1
 
+            await savepoint.commit()
             voucher_ids.append(voucher.id)
             migrated_count += 1
 
         except Exception as e:
+            try:
+                await savepoint.rollback()
+            except Exception:
+                pass
             logger.exception(f"분개장 → Voucher 변환 실패 (group={key})")
             error_count += 1
             errors.append({"group": list(key), "reason": str(e)[:200]})
-            # 부분 실패 한 그룹은 rollback 어려우니, 일단 다음 그룹 진행
-            # 마지막에 commit하므로 실패한 line은 voucher.flush()는 됐어도
-            # 후속 commit 시 같이 들어갈 수 있음 → 안전하게 partial rollback 필요
-            # 단순화: 그룹 실패 시 명시적 처리 안 함 (이 case는 드물고, line_specs 누적 전에 검증)
 
     await db.commit()
 
