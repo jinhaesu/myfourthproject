@@ -14,8 +14,10 @@ ai_raw(학습용 원천)가 아니라 Voucher(확정 전표)로 격상해야 한
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import time
 from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
@@ -23,6 +25,9 @@ from typing import Optional, Dict, Any, List, Tuple
 
 from sqlalchemy import select, and_, func, case, Integer, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import async_session_factory
+from app.services.auto_voucher_service import _new_task, _update
 
 from app.models.accounting import (
     Voucher, VoucherLine, VoucherStatus, TransactionType, Account, AccountCategory,
@@ -292,6 +297,8 @@ async def migrate_journal_uploads_to_vouchers(
     user_id: Optional[int] = None,
     department_id: Optional[int] = None,
     source_label: str = "wehago_import",
+    task_id: Optional[str] = None,
+    commit_every: int = 50,
 ) -> Dict[str, Any]:
     """
     위하고/더존 분개장 업로드 → Voucher(CONFIRMED) 일괄 변환.
@@ -396,7 +403,15 @@ async def migrate_journal_uploads_to_vouchers(
     account_cache: Dict[str, int] = {}
     voucher_no_counter: Dict[str, int] = {}
 
-    # 5) 그룹별 Voucher 생성
+    def _report(pct: int, msg: str):
+        if task_id:
+            _update(task_id, percent=pct, message=msg)
+
+    _report(10, f"{len(groups)}개 분개 그룹 처리 시작…")
+
+    # 5) 그룹별 Voucher 생성 — 청크 단위로 commit
+    processed = 0
+    total_groups = len(groups)
     for key, grp in groups.items():
         upload_id, date_iso, desc, merchant = key
         ext_ref = f"journal:upload:{upload_id}:{date_iso}:{abs(hash((desc, merchant))) % 10**8}"
@@ -508,17 +523,73 @@ async def migrate_journal_uploads_to_vouchers(
             error_count += 1
             errors.append({"group": list(key), "reason": str(e)[:200]})
 
+        processed += 1
+        # 청크 단위 commit — 8,000+ 그룹도 안정적으로 처리
+        if processed % commit_every == 0:
+            try:
+                await db.commit()
+            except Exception:
+                logger.exception("청크 commit 실패")
+            pct = 10 + int(80 * processed / max(total_groups, 1))
+            _report(pct, f"진행 {processed}/{total_groups} — 변환 {migrated_count}건")
+
+    # 마지막 commit
     await db.commit()
+    _report(95, f"완료 직전 — 변환 {migrated_count}건")
 
     return {
         "migrated_count": migrated_count,
         "skipped_count": skipped_count,
         "error_count": error_count,
-        "voucher_ids": voucher_ids,
-        "errors": errors[:20],  # 응답 크기 제한
+        "voucher_ids": voucher_ids[:200],  # 응답 크기 제한
+        "errors": errors[:20],
         "total_groups": len(groups),
         "target_uploads": len(target_upload_ids),
     }
+
+
+async def migrate_journal_uploads_background(
+    upload_ids: Optional[List[int]] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    user_id: Optional[int] = None,
+    department_id: Optional[int] = None,
+    source_label: str = "wehago_import",
+) -> str:
+    """
+    백그라운드 task로 분개장 변환. task_id 즉시 반환.
+    호출자는 /auto-voucher/progress/{task_id}로 폴링.
+    """
+    task_id = _new_task("위하고 분개장 → 전표 변환 시작…")
+
+    async def _runner():
+        try:
+            async with async_session_factory() as db:
+                result = await migrate_journal_uploads_to_vouchers(
+                    db,
+                    upload_ids=upload_ids,
+                    start_date=start_date,
+                    end_date=end_date,
+                    user_id=user_id,
+                    department_id=department_id,
+                    source_label=source_label,
+                    task_id=task_id,
+                )
+                _update(
+                    task_id, status="completed", percent=100,
+                    message=f"완료 — {result.get('migrated_count', 0)}건 변환",
+                    result=result, finished_at=time.time(),
+                )
+        except Exception as e:
+            logger.exception("백그라운드 분개장 변환 실패")
+            _update(
+                task_id, status="failed",
+                message=f"실패: {str(e)[:300]}",
+                finished_at=time.time(),
+            )
+
+    asyncio.create_task(_runner())
+    return task_id
 
 
 async def list_journal_uploads(db: AsyncSession) -> List[Dict[str, Any]]:

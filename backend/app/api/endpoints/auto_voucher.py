@@ -35,6 +35,7 @@ from app.services.auto_voucher_service import (
 )
 from app.services.journal_migration import (
     migrate_journal_uploads_to_vouchers,
+    migrate_journal_uploads_background,
     list_journal_uploads,
     diagnose_journal_data,
 )
@@ -753,15 +754,35 @@ async def migrate_from_journal(
     req: MigrateJournalRequest,
     user_id: Optional[int] = Query(None, description="없으면 첫 번째 사용자 자동 사용"),
     department_id: Optional[int] = Query(None, description="없으면 첫 번째 부서 자동 사용"),
+    background: bool = Query(True, description="true: task_id 즉시 반환 + 백그라운드 처리"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     위하고/더존 분개장 업로드(ai_raw)를 Voucher(CONFIRMED, source=wehago_import)로 일괄 변환.
     이미 변환된 그룹(external_ref 매칭)은 skip — idempotent.
+
+    background=true (default): task_id 즉시 반환, /progress/{task_id} 폴링으로 진행률 추적.
+    수천 개 그룹 처리 시 동기 요청은 timeout 됨.
     """
     if req.start_date and req.end_date and req.end_date < req.start_date:
         raise HTTPException(status_code=400, detail="end_date < start_date")
-    result = await migrate_journal_uploads_to_vouchers(
+
+    if background:
+        task_id = await migrate_journal_uploads_background(
+            upload_ids=req.upload_ids,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            user_id=user_id,
+            department_id=department_id,
+            source_label=req.source_label,
+        )
+        return {
+            "task_id": task_id,
+            "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}",
+        }
+
+    return await migrate_journal_uploads_to_vouchers(
         db,
         upload_ids=req.upload_ids,
         start_date=req.start_date,
@@ -770,7 +791,6 @@ async def migrate_from_journal(
         department_id=department_id,
         source_label=req.source_label,
     )
-    return result
 
 
 @router.post("/match-voucher-duplicates")

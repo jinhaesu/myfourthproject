@@ -59,6 +59,8 @@ function JournalMigrationModal({
   const [selectedUploads, setSelectedUploads] = useState<Set<number>>(new Set())
   const [start, setStart] = useState('')
   const [end, setEnd] = useState('')
+  const [taskId, setTaskId] = useState<string | null>(null)
+  const [progress, setProgress] = useState<any>(null)
 
   const uploadsQuery = useQuery({
     queryKey: ['journal-uploads'],
@@ -73,11 +75,43 @@ function JournalMigrationModal({
         start_date: start || undefined,
         end_date: end || undefined,
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
-      qc.invalidateQueries({ queryKey: ['journal-uploads'] })
+    onSuccess: (res) => {
+      const tid = res.data?.task_id
+      if (tid) {
+        setTaskId(tid)
+        setProgress({ status: 'queued', percent: 0, message: '큐 진입 중…' })
+      } else {
+        // 동기 응답 (background=false)
+        qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
+        qc.invalidateQueries({ queryKey: ['journal-uploads'] })
+      }
     },
   })
+
+  // 진행률 폴링 (1.5초 간격)
+  useEffect(() => {
+    if (!taskId) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const r = await autoVoucherApi.getProgress(taskId)
+        if (cancelled) return
+        setProgress(r.data)
+        if (r.data?.status === 'completed' || r.data?.status === 'failed') {
+          qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
+          qc.invalidateQueries({ queryKey: ['journal-uploads'] })
+          return
+        }
+        setTimeout(tick, 1500)
+      } catch {
+        if (!cancelled) {
+          setProgress({ status: 'failed', message: '진행률 조회 실패' })
+        }
+      }
+    }
+    tick()
+    return () => { cancelled = true }
+  }, [taskId, qc])
 
   function toggleUpload(id: number) {
     const next = new Set(selectedUploads)
@@ -89,7 +123,9 @@ function JournalMigrationModal({
 
   // 서버에서 이미 분개장 데이터 보유 업로드만 반환 (upload_type 무관)
   const journalUploads: JournalUploadInfo[] = uploadsQuery.data || []
-  const result = migrateMut.data?.data
+  // 백그라운드 task 결과는 progress.result에, 동기 모드는 migrateMut.data.data에
+  const result = progress?.result || (taskId ? null : migrateMut.data?.data)
+  const isRunning = !!taskId && progress?.status !== 'completed' && progress?.status !== 'failed'
 
   return (
     <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
@@ -185,6 +221,38 @@ function JournalMigrationModal({
             )}
           </div>
 
+          {/* 진행률 바 (백그라운드 task) */}
+          {taskId && progress && (
+            <div className={`rounded-md border p-3 ${
+              progress.status === 'completed' ? 'border-emerald-200 bg-emerald-50' :
+              progress.status === 'failed' ? 'border-rose-200 bg-rose-50' :
+              'border-blue-200 bg-blue-50'
+            }`}>
+              <div className="flex items-center justify-between text-xs mb-1.5">
+                <span className={`font-semibold ${
+                  progress.status === 'completed' ? 'text-emerald-800' :
+                  progress.status === 'failed' ? 'text-rose-800' :
+                  'text-blue-800'
+                }`}>
+                  {progress.status === 'completed' ? '✓ 완료' :
+                   progress.status === 'failed' ? '✗ 실패' :
+                   '⏳ 진행 중'} · {progress.message}
+                </span>
+                <span className="text-2xs font-mono text-ink-600">{progress.percent || 0}%</span>
+              </div>
+              <div className="h-2 bg-white rounded-full overflow-hidden border border-ink-100">
+                <div
+                  className={`h-full transition-all ${
+                    progress.status === 'failed' ? 'bg-rose-500' :
+                    progress.status === 'completed' ? 'bg-emerald-500' :
+                    'bg-blue-500'
+                  }`}
+                  style={{ width: `${progress.percent || 0}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* 결과 */}
           {result && (
             <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-900">
@@ -193,11 +261,12 @@ function JournalMigrationModal({
                 <strong>{result.migrated_count}건</strong> 전표 생성
                 {result.skipped_count > 0 && <> · {result.skipped_count}건 skip (이미 변환됨)</>}
                 {result.error_count > 0 && <span className="text-rose-700"> · {result.error_count}건 오류</span>}
+                {result.total_groups && <span className="text-ink-500"> · 전체 {result.total_groups}그룹</span>}
               </div>
               {(result.errors || []).length > 0 && (
                 <details className="mt-1">
-                  <summary className="cursor-pointer text-2xs text-rose-700">오류 상세 보기</summary>
-                  <div className="mt-1 space-y-0.5 text-2xs">
+                  <summary className="cursor-pointer text-2xs text-rose-700">오류 상세 보기 ({result.errors.length}건)</summary>
+                  <div className="mt-1 space-y-0.5 text-2xs max-h-32 overflow-y-auto">
                     {(result.errors || []).map((e: any, i: number) => (
                       <div key={i} className="text-rose-700">· {e.reason}</div>
                     ))}
@@ -206,7 +275,7 @@ function JournalMigrationModal({
               )}
             </div>
           )}
-          {migrateMut.isError && (
+          {migrateMut.isError && !taskId && (
             <div className="rounded-md bg-rose-50 border border-rose-200 p-3 text-2xs text-rose-700">
               실패: {(migrateMut.error as any)?.response?.data?.detail || (migrateMut.error as any)?.message}
             </div>
@@ -214,16 +283,17 @@ function JournalMigrationModal({
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-ink-200 bg-canvas-50">
-          <button onClick={onClose} className="px-3 py-1.5 text-xs text-ink-600 hover:text-ink-800">
+          <button onClick={onClose} disabled={isRunning}
+            className="px-3 py-1.5 text-xs text-ink-600 hover:text-ink-800 disabled:opacity-40">
             닫기
           </button>
           <button
             onClick={() => migrateMut.mutate()}
-            disabled={migrateMut.isPending || journalUploads.length === 0}
+            disabled={migrateMut.isPending || isRunning || journalUploads.length === 0}
             className="btn-primary text-xs"
           >
             <ArrowUpOnSquareIcon className="h-3.5 w-3.5 mr-1" />
-            {migrateMut.isPending ? '변환 중…' : '전표로 변환'}
+            {isRunning ? '변환 진행 중…' : migrateMut.isPending ? '큐 진입 중…' : '전표로 변환'}
           </button>
           {result && result.migrated_count > 0 && (
             <button onClick={() => { onDone(); onClose() }}
