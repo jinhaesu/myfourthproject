@@ -435,9 +435,12 @@ async def migrate_journal_uploads_to_vouchers(
     account_cache: Dict[str, int] = {}
     voucher_no_counter: Dict[str, int] = {}
 
-    def _report(pct: int, msg: str):
+    def _report(pct: int, msg: str, extra: Optional[Dict[str, Any]] = None):
         if task_id:
-            _update(task_id, percent=pct, message=msg)
+            payload = {"percent": pct, "message": msg}
+            if extra:
+                payload.update(extra)
+            _update(task_id, **payload)
 
     _report(10, f"{len(groups)}개 분개 그룹 처리 시작…")
 
@@ -564,12 +567,31 @@ async def migrate_journal_uploads_to_vouchers(
         processed += 1
         # 청크 단위 commit — 8,000+ 그룹도 안정적으로 처리
         if processed % commit_every == 0:
+            commit_failed = False
             try:
                 await db.commit()
-            except Exception:
+            except Exception as commit_err:
+                commit_failed = True
                 logger.exception("청크 commit 실패")
+                errors.append({"group": ["__commit__"], "reason": f"commit 실패: {str(commit_err)[:200]}"})
+                # 세션이 invalid 상태일 수 있으므로 rollback 시도
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
             pct = 10 + int(80 * processed / max(total_groups, 1))
-            _report(pct, f"진행 {processed}/{total_groups} — 변환 {migrated_count}건")
+            recent_errors = [e["reason"] for e in errors[-5:]]
+            _report(
+                pct,
+                f"진행 {processed}/{total_groups} — 변환 {migrated_count}건"
+                + (" (commit 실패)" if commit_failed else ""),
+                {
+                    "migrated_count": migrated_count,
+                    "error_count": error_count,
+                    "skipped_count": skipped_count,
+                    "recent_errors": recent_errors,
+                },
+            )
 
     # 마지막 commit
     await db.commit()

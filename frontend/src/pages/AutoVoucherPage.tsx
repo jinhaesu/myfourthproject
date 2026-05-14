@@ -250,6 +250,28 @@ function JournalMigrationModal({
                   style={{ width: `${progress.percent || 0}%` }}
                 />
               </div>
+              {/* 중간 통계 + 최근 에러 */}
+              {progress.migrated_count !== undefined && (
+                <div className="mt-2 text-2xs text-ink-700">
+                  변환 <strong>{progress.migrated_count}건</strong>
+                  {progress.skipped_count > 0 && <> · skip {progress.skipped_count}</>}
+                  {progress.error_count > 0 && (
+                    <span className="text-rose-700"> · 오류 <strong>{progress.error_count}건</strong></span>
+                  )}
+                </div>
+              )}
+              {(progress.recent_errors || []).length > 0 && (
+                <details className="mt-1.5" open>
+                  <summary className="cursor-pointer text-2xs text-rose-700 font-semibold">
+                    최근 에러 ({progress.recent_errors.length}개)
+                  </summary>
+                  <div className="mt-1 space-y-0.5 text-2xs bg-white rounded p-1.5 border border-rose-100 max-h-32 overflow-y-auto font-mono">
+                    {progress.recent_errors.map((reason: string, i: number) => (
+                      <div key={i} className="text-rose-800 break-all">· {reason}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
 
