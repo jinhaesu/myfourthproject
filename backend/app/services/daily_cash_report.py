@@ -236,54 +236,63 @@ async def _section_ai_cashflow(db: AsyncSession, target_date: date) -> Dict[str,
 
 
 async def _section_card_spending(db: AsyncSession, target_date: date) -> Dict[str, Any]:
-    """카드 지출 추이 + 어제 결제 + 이번달 vs 전월 동기."""
+    """
+    카드 지출 추이 + 어제 결제 + 이번달 vs 전월 동기.
+
+    '카드 지출' 판정: voucher_line 차변 중 비용 계정(8xx 판관비/제조경비) 또는
+    transaction_type=CARD 둘 중 하나로 잡음. 위하고 import는 모두 GENERAL이라
+    transaction_type만으로는 부족.
+    """
     month_start = target_date.replace(day=1)
     prev_month_end = month_start - timedelta(days=1)
     prev_month_start = prev_month_end.replace(day=1)
-    # 전월 동기 = 전월 1일 ~ 전월 target_date.day (또는 마지막)
     prev_month_same_day = min(target_date.day, prev_month_end.day)
     prev_month_same = prev_month_end.replace(day=prev_month_same_day)
 
-    # 어제 카드 결제 총액
-    today_q = select(func.coalesce(func.sum(Voucher.total_debit), 0)).where(
-        Voucher.status == VoucherStatus.CONFIRMED,
-        Voucher.transaction_date == target_date,
-        Voucher.transaction_type == TransactionType.CARD,
-    )
-    today_total = Decimal(str((await db.execute(today_q)).scalar() or 0))
+    def _expense_query(start: date, end: date):
+        """비용 계정 차변 합계 (8xx prefix)."""
+        return (
+            select(func.coalesce(func.sum(VoucherLine.debit_amount), 0))
+            .select_from(VoucherLine)
+            .join(Voucher, VoucherLine.voucher_id == Voucher.id)
+            .join(Account, VoucherLine.account_id == Account.id)
+            .where(
+                Voucher.status == VoucherStatus.CONFIRMED,
+                Voucher.transaction_date >= start,
+                Voucher.transaction_date <= end,
+                Account.code.like(CARD_EXPENSE_PREFIX + '%'),
+                VoucherLine.debit_amount > 0,
+            )
+        )
 
-    # 이번달 누적
-    month_q = select(func.coalesce(func.sum(Voucher.total_debit), 0)).where(
-        Voucher.status == VoucherStatus.CONFIRMED,
-        Voucher.transaction_date >= month_start,
-        Voucher.transaction_date <= target_date,
-        Voucher.transaction_type == TransactionType.CARD,
-    )
-    month_total = Decimal(str((await db.execute(month_q)).scalar() or 0))
-
-    # 전월 동기 (전월 1일 ~ 전월 동일 일자)
-    prev_q = select(func.coalesce(func.sum(Voucher.total_debit), 0)).where(
-        Voucher.status == VoucherStatus.CONFIRMED,
-        Voucher.transaction_date >= prev_month_start,
-        Voucher.transaction_date <= prev_month_same,
-        Voucher.transaction_type == TransactionType.CARD,
-    )
-    prev_total = Decimal(str((await db.execute(prev_q)).scalar() or 0))
+    today_total = Decimal(str((await db.execute(_expense_query(target_date, target_date))).scalar() or 0))
+    month_total = Decimal(str((await db.execute(_expense_query(month_start, target_date))).scalar() or 0))
+    prev_total = Decimal(str((await db.execute(_expense_query(prev_month_start, prev_month_same))).scalar() or 0))
 
     diff = month_total - prev_total
 
-    # 어제 주요 결제 top 5
+    # 어제 주요 비용 결제 top 5 — voucher_line 단위 (카드 + 일반 모두)
     detail_q = (
-        select(Voucher)
+        select(
+            VoucherLine.counterparty_name,
+            VoucherLine.description,
+            Account.name.label("account_name"),
+            VoucherLine.debit_amount.label("amount"),
+            Voucher.merchant_name,
+        )
+        .select_from(VoucherLine)
+        .join(Voucher, VoucherLine.voucher_id == Voucher.id)
+        .join(Account, VoucherLine.account_id == Account.id)
         .where(
             Voucher.status == VoucherStatus.CONFIRMED,
             Voucher.transaction_date == target_date,
-            Voucher.transaction_type == TransactionType.CARD,
+            Account.code.like(CARD_EXPENSE_PREFIX + '%'),
+            VoucherLine.debit_amount > 0,
         )
-        .order_by(Voucher.total_debit.desc())
+        .order_by(VoucherLine.debit_amount.desc())
         .limit(5)
     )
-    details = (await db.execute(detail_q)).scalars().all()
+    detail_rows = (await db.execute(detail_q)).all()
 
     return {
         "title": "카드 지출 분석",
@@ -302,29 +311,38 @@ async def _section_card_spending(db: AsyncSession, target_date: date) -> Dict[st
         },
         "top_payments": [
             {
-                "counterparty": v.merchant_name or "(미지정)",
-                "description": v.description or "",
-                "amount": float(v.total_debit or 0),
+                "counterparty": r.counterparty_name or r.merchant_name or "(미지정)",
+                "description": (r.description or r.account_name or "")[:80],
+                "amount": float(r.amount or 0),
             }
-            for v in details
+            for r in detail_rows
         ],
     }
 
 
 async def _section_card_usage(db: AsyncSession, target_date: date) -> Dict[str, Any]:
-    """카드 사용 현황 — card_spending과 유사하나 상세 list 위주."""
-    # 어제 카드 voucher 전체
+    """카드 사용 현황 — 비용 계정(8xx) 차변 상세 list."""
     q = (
-        select(Voucher)
+        select(
+            VoucherLine.counterparty_name,
+            VoucherLine.description,
+            Account.name.label("account_name"),
+            VoucherLine.debit_amount.label("amount"),
+            Voucher.merchant_name,
+        )
+        .select_from(VoucherLine)
+        .join(Voucher, VoucherLine.voucher_id == Voucher.id)
+        .join(Account, VoucherLine.account_id == Account.id)
         .where(
             Voucher.status == VoucherStatus.CONFIRMED,
             Voucher.transaction_date == target_date,
-            Voucher.transaction_type == TransactionType.CARD,
+            Account.code.like(CARD_EXPENSE_PREFIX + '%'),
+            VoucherLine.debit_amount > 0,
         )
-        .order_by(Voucher.total_debit.desc())
+        .order_by(VoucherLine.debit_amount.desc())
     )
-    rows = (await db.execute(q)).scalars().all()
-    total = sum((Decimal(str(v.total_debit or 0)) for v in rows), Decimal("0"))
+    rows = (await db.execute(q)).all()
+    total = sum((Decimal(str(r.amount or 0)) for r in rows), Decimal("0"))
 
     return {
         "title": "카드 사용 현황",
@@ -333,13 +351,13 @@ async def _section_card_usage(db: AsyncSession, target_date: date) -> Dict[str, 
         "count": len(rows),
         "items": [
             {
-                "counterparty": v.merchant_name or "(미지정)",
-                "description": v.description or "",
-                "amount": float(v.total_debit or 0),
+                "counterparty": r.counterparty_name or r.merchant_name or "(미지정)",
+                "description": (r.description or r.account_name or "")[:80],
+                "amount": float(r.amount or 0),
             }
-            for v in rows[:10]
+            for r in rows[:10]
         ],
-        "summary": f"어제 카드 결제 {len(rows)}건, 총 {_format_won(total)}이에요.",
+        "summary": f"어제 결제 {len(rows)}건, 총 {_format_won(total)}이에요.",
     }
 
 
@@ -351,15 +369,41 @@ SECTION_GENERATORS = {
 }
 
 
+async def _latest_data_date(db: AsyncSession) -> Optional[date]:
+    """가장 최근 확정 voucher의 transaction_date — 데이터 있는 날짜 자동 추적."""
+    q = (
+        select(func.max(Voucher.transaction_date))
+        .where(Voucher.status == VoucherStatus.CONFIRMED)
+    )
+    return (await db.execute(q)).scalar()
+
+
 async def generate_report_content(
     db: AsyncSession,
     user_id: int,
     target_date: date,
     config: Optional[DailyCashReportConfig] = None,
+    auto_latest: bool = True,
 ) -> Dict[str, Any]:
-    """사용자 설정에 따라 자금일보 콘텐츠 생성."""
+    """사용자 설정에 따라 자금일보 콘텐츠 생성.
+
+    auto_latest=True: target_date 기준 데이터가 없으면 가장 최근 데이터 있는 날짜로 자동 전환.
+    """
     if config is None:
         config = await get_or_create_config(db, user_id)
+
+    # target_date 자동 조정 — 그 날 voucher가 없으면 가장 최근 날짜 사용
+    if auto_latest:
+        has_data = (await db.execute(
+            select(func.count(Voucher.id)).where(
+                Voucher.status == VoucherStatus.CONFIRMED,
+                Voucher.transaction_date == target_date,
+            )
+        )).scalar() or 0
+        if not has_data:
+            latest = await _latest_data_date(db)
+            if latest:
+                target_date = latest
 
     try:
         sections = json.loads(config.sections)
