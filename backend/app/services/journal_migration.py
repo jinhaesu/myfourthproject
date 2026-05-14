@@ -673,6 +673,21 @@ async def delete_wehago_import_vouchers(
             WHERE duplicate_voucher_id IN (SELECT id FROM vouchers WHERE source = :s)
         """), {"s": source_label})
 
+        # voucher_lines FK를 ON DELETE CASCADE로 변경 — voucher 삭제 시 자동 정리
+        # (best-effort: 기존 constraint 이름 모를 수 있어 실패해도 무시)
+        try:
+            await conn.execute(text("""
+                ALTER TABLE voucher_lines
+                DROP CONSTRAINT IF EXISTS voucher_lines_voucher_id_fkey
+            """))
+            await conn.execute(text("""
+                ALTER TABLE voucher_lines
+                ADD CONSTRAINT voucher_lines_voucher_id_fkey
+                FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE CASCADE
+            """))
+        except Exception as e:
+            logger.warning(f"voucher_lines FK CASCADE 전환 실패 (무시 가능): {e}")
+
     # 2) voucher_lines 청크 삭제 (500/회 × 별도 트랜잭션)
     LINES_CHUNK = 500
     for it in range(5000):  # 최대 2.5M lines
