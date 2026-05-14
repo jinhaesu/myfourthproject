@@ -22,7 +22,7 @@ from app.models.daily_cash_report import (
     DailyCashReportConfig, DailyCashReportSnapshot,
     DEFAULT_SECTIONS, REQUIRED_SECTIONS,
 )
-from app.services.granter_client import get_granter_client
+# granter_client는 함수 내부에서 lazy import (모듈 로드 시 환경변수 의존 회피)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ def _format_won(amount: Decimal | float | int) -> str:
 
 async def _granter_daily_report(target_date: date) -> Dict[str, Any]:
     """target_date 단일 일자 daily-financial-report 호출."""
+    from app.services.granter_client import get_granter_client
     client = get_granter_client()
     try:
         return await client.get_daily_financial_report({
@@ -87,6 +88,7 @@ async def _granter_daily_report(target_date: date) -> Dict[str, Any]:
 
 async def _granter_expense_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """카드(EXPENSE_TICKET) 거래 — 31일 제한 안에서만 호출."""
+    from app.services.granter_client import get_granter_client
     client = get_granter_client()
     if (end_date - start_date).days > 30:
         start_date = end_date - timedelta(days=30)
@@ -102,6 +104,7 @@ async def _granter_expense_tickets(start_date: date, end_date: date) -> List[Dic
 
 async def _granter_bank_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """통장 거래(BANK_TRANSACTION_TICKET) — 입출금 상세."""
+    from app.services.granter_client import get_granter_client
     client = get_granter_client()
     if (end_date - start_date).days > 30:
         start_date = end_date - timedelta(days=30)
