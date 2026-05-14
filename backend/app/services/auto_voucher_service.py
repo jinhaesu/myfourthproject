@@ -23,7 +23,7 @@ import time
 import uuid
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
