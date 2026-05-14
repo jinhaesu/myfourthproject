@@ -628,7 +628,10 @@ async def migrate_journal_uploads_to_vouchers(
     }
 
 
-async def delete_wehago_import_vouchers(source_label: str = "wehago_import") -> Dict[str, Any]:
+async def delete_wehago_import_vouchers(
+    source_label: str = "wehago_import",
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     위하고 import voucher 전체 삭제.
 
@@ -640,14 +643,28 @@ async def delete_wehago_import_vouchers(source_label: str = "wehago_import") -> 
     deleted_lines = 0
     deleted_vouchers = 0
 
+    def _report(pct: int, msg: str, extra: Optional[Dict[str, Any]] = None):
+        if task_id:
+            payload = {"percent": pct, "message": msg}
+            if extra:
+                payload.update(extra)
+            _update(task_id, **payload)
+
+    _report(5, "삭제 대상 카운트 중…")
     # 전체 개수 확인 (별도 connection)
     async with engine.connect() as conn:
         total_v = (await conn.execute(text(
             "SELECT COUNT(*) FROM vouchers WHERE source = :s"
         ), {"s": source_label})).scalar() or 0
+        total_l = (await conn.execute(text(
+            """SELECT COUNT(*) FROM voucher_lines vl
+               JOIN vouchers v ON vl.voucher_id = v.id
+               WHERE v.source = :s"""
+        ), {"s": source_label})).scalar() or 0
 
     if total_v == 0:
         return {"deleted_vouchers": 0, "deleted_lines": 0, "message": "삭제할 데이터 없음"}
+    _report(10, f"voucher_lines {total_l}개, vouchers {total_v}개 삭제 시작…")
 
     # 1) FK 정리 — duplicate_voucher_id를 먼저 NULL로 (한 번에)
     async with engine.begin() as conn:
@@ -658,7 +675,7 @@ async def delete_wehago_import_vouchers(source_label: str = "wehago_import") -> 
 
     # 2) voucher_lines 청크 삭제 (500/회 × 별도 트랜잭션)
     LINES_CHUNK = 500
-    for _ in range(2000):  # 최대 1M lines까지
+    for it in range(5000):  # 최대 2.5M lines
         async with engine.begin() as conn:
             r = await conn.execute(text("""
                 DELETE FROM voucher_lines
@@ -674,12 +691,18 @@ async def delete_wehago_import_vouchers(source_label: str = "wehago_import") -> 
             deleted_lines += n
             if n == 0:
                 break
-        # 이벤트 루프 양보
+        if it % 5 == 0:
+            pct = 10 + int(45 * deleted_lines / max(total_l, 1))
+            _report(pct, f"voucher_lines 삭제 {deleted_lines}/{total_l}",
+                    {"deleted_lines": deleted_lines, "deleted_vouchers": 0})
         await asyncio.sleep(0)
+
+    _report(55, f"voucher_lines 완료 ({deleted_lines}건). vouchers 삭제 시작…",
+            {"deleted_lines": deleted_lines, "deleted_vouchers": 0})
 
     # 3) vouchers 청크 삭제 (200/회)
     VOUCHERS_CHUNK = 200
-    for _ in range(2000):
+    for it in range(5000):
         async with engine.begin() as conn:
             r = await conn.execute(text("""
                 DELETE FROM vouchers
@@ -693,13 +716,47 @@ async def delete_wehago_import_vouchers(source_label: str = "wehago_import") -> 
             deleted_vouchers += n
             if n == 0:
                 break
+        if it % 5 == 0:
+            pct = 55 + int(40 * deleted_vouchers / max(total_v, 1))
+            _report(pct, f"vouchers 삭제 {deleted_vouchers}/{total_v}",
+                    {"deleted_lines": deleted_lines, "deleted_vouchers": deleted_vouchers})
         await asyncio.sleep(0)
+
+    _report(98, f"완료 직전 — vouchers {deleted_vouchers}건, lines {deleted_lines}건")
 
     return {
         "deleted_vouchers": deleted_vouchers,
         "deleted_lines": deleted_lines,
         "total_before": total_v,
     }
+
+
+async def delete_wehago_imports_background(
+    source_label: str = "wehago_import",
+) -> str:
+    """위하고 import voucher 삭제 - 백그라운드 task."""
+    task_id = _new_task("위하고 import 삭제 시작…")
+
+    async def _runner():
+        try:
+            result = await delete_wehago_import_vouchers(
+                source_label=source_label, task_id=task_id,
+            )
+            _update(
+                task_id, status="completed", percent=100,
+                message=f"완료 — voucher {result.get('deleted_vouchers',0)}건, lines {result.get('deleted_lines',0)}건 삭제",
+                result=result, finished_at=time.time(),
+            )
+        except Exception as e:
+            logger.exception("백그라운드 삭제 실패")
+            _update(
+                task_id, status="failed",
+                message=f"실패: {str(e)[:300]}",
+                finished_at=time.time(),
+            )
+
+    asyncio.create_task(_runner())
+    return task_id
 
 
 async def migrate_journal_uploads_background(
