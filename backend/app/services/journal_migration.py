@@ -676,9 +676,14 @@ async def delete_wehago_import_vouchers(
     # 2) voucher_lines + vouchers를 한 statement(CTE)로 청크 삭제
     #    - 한 트랜잭션에서 lock 일치 보장 (race condition 없음)
     #    - FK constraint 이름과 무관 (ALTER 불필요)
-    CHUNK = 200
-    for it in range(10000):
+    #    - 청크 2000으로 크게 (Supabase statement_timeout=60s 안 - SET LOCAL로 보장)
+    CHUNK = 2000
+    for it in range(1000):
         async with engine.begin() as conn:
+            try:
+                await conn.execute(text("SET LOCAL statement_timeout = '60000'"))
+            except Exception:
+                pass
             r = await conn.execute(text("""
                 WITH target AS (
                     SELECT id FROM vouchers WHERE source = :s LIMIT :lim
@@ -695,10 +700,9 @@ async def delete_wehago_import_vouchers(
             deleted_vouchers += n
             if n == 0:
                 break
-        if it % 5 == 0:
-            pct = 10 + int(85 * deleted_vouchers / max(total_v, 1))
-            _report(pct, f"삭제 진행 {deleted_vouchers}/{total_v}",
-                    {"deleted_vouchers": deleted_vouchers, "deleted_lines": 0})
+        pct = 10 + int(85 * deleted_vouchers / max(total_v, 1))
+        _report(pct, f"삭제 진행 {deleted_vouchers}/{total_v}",
+                {"deleted_vouchers": deleted_vouchers, "deleted_lines": 0})
         await asyncio.sleep(0)
 
     _report(98, f"완료 직전 — vouchers {deleted_vouchers}건")
