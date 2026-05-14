@@ -32,6 +32,7 @@ from app.services.auto_voucher_service import (
     match_card_bank_duplicates,
     match_voucher_duplicates_core,
     match_voucher_duplicates_grouped,
+    reject_candidates_in_confirmed_period,
     get_progress,
 )
 from app.services.journal_migration import (
@@ -824,6 +825,19 @@ async def migrate_from_journal(
         department_id=department_id,
         source_label=req.source_label,
     )
+
+
+@router.post("/reject-confirmed-period")
+async def reject_confirmed_period(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    확정 분개장(위하고/더존 import) 기간의 PENDING 후보를 모두 REJECTED 처리.
+    이미 회계 완료된 거래라 별도 voucher 생성 불필요.
+    """
+    return await reject_candidates_in_confirmed_period(db, start_date, end_date)
 
 
 @router.post("/match-voucher-duplicates")

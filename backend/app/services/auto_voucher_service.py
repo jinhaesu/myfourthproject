@@ -484,12 +484,15 @@ async def generate_candidates_background(
                     db, start_date, end_date, asset_id, task_id=task_id,
                 )
                 if auto_match_duplicates:
-                    _update(task_id, percent=93, message="카드↔통장 중복 매칭…")
+                    _update(task_id, percent=92, message="카드↔통장 중복 매칭…")
                     match_result = await match_card_bank_duplicates(db, start_date, end_date)
                     result["duplicate_matching"] = match_result
-                    _update(task_id, percent=97, message="위하고 분개 묶음 중복 검사…")
+                    _update(task_id, percent=95, message="위하고 분개 묶음 중복 검사…")
                     voucher_dup = await match_voucher_duplicates_grouped(db, start_date, end_date)
                     result["voucher_duplicate_matching"] = voucher_dup
+                    _update(task_id, percent=98, message="확정 분개 기간 후보 자동 정리…")
+                    rejected = await reject_candidates_in_confirmed_period(db, start_date, end_date)
+                    result["confirmed_period_rejected"] = rejected
                 _update(task_id, status="completed", percent=100,
                         message=f"완료 — {result.get('total_created', 0)}건 생성",
                         result=result, finished_at=time.time())
@@ -646,6 +649,56 @@ def _normalize_counterparty(name: Optional[str]) -> str:
     s = re.sub(r'\([^)]*\)', '', name)   # 괄호 제거
     s = re.sub(r'[_\-/].*$', '', s)       # 첫 구분자 이후 절단
     return s.strip().lower()[:10]
+
+
+async def reject_candidates_in_confirmed_period(
+    db: AsyncSession,
+    start_date: date,
+    end_date: date,
+    confirmed_sources: Optional[List[str]] = None,
+) -> Dict[str, int]:
+    """
+    확정 분개장(위하고/더존 import)이 있는 날짜의 PENDING 후보를 모두 REJECTED 처리.
+
+    근거: 그 기간 거래는 이미 회계 처리 완료 → 별도 voucher 생성 불필요.
+    DUPLICATE보다 REJECTED가 적합 (분개와 명확한 1:1 매칭이 아니어도 무관).
+    """
+    if confirmed_sources is None:
+        confirmed_sources = ["wehago_import", "douzone_journal"]
+
+    # 확정 voucher가 있는 distinct 날짜
+    v_dates_q = (
+        select(Voucher.transaction_date)
+        .where(
+            Voucher.source.in_(confirmed_sources),
+            Voucher.transaction_date >= start_date,
+            Voucher.transaction_date <= end_date,
+        )
+        .distinct()
+    )
+    v_dates = [r[0] for r in (await db.execute(v_dates_q)).all() if r[0]]
+    if not v_dates:
+        return {"rejected": 0, "confirmed_dates": 0}
+
+    # 그 날짜들의 pending candidates 모두 REJECTED
+    cands_q = select(AutoVoucherCandidate).where(
+        AutoVoucherCandidate.status == AutoVoucherStatus.PENDING,
+        AutoVoucherCandidate.transaction_date.in_(v_dates),
+    )
+    cands = (await db.execute(cands_q)).scalars().all()
+    rejected = 0
+    for c in cands:
+        c.status = AutoVoucherStatus.REJECTED
+        c.rejected_reason = "확정 분개장(위하고/더존)이 있는 기간 — 자동 거절"
+        rejected += 1
+
+    await db.commit()
+    return {
+        "rejected": rejected,
+        "confirmed_dates": len(v_dates),
+        "min_date": min(v_dates).isoformat() if v_dates else None,
+        "max_date": max(v_dates).isoformat() if v_dates else None,
+    }
 
 
 async def match_voucher_duplicates_grouped(
