@@ -89,7 +89,6 @@ async def _granter_expense_tickets(start_date: date, end_date: date) -> List[Dic
     """카드(EXPENSE_TICKET) 거래 — 31일 제한 안에서만 호출."""
     client = get_granter_client()
     if (end_date - start_date).days > 30:
-        # 30일 안의 최근 기간만
         start_date = end_date - timedelta(days=30)
     try:
         tickets = await client.list_tickets_all_types(
@@ -99,6 +98,56 @@ async def _granter_expense_tickets(start_date: date, end_date: date) -> List[Dic
     except Exception:
         logger.exception(f"그랜터 expense_tickets 호출 실패 ({start_date}~{end_date})")
         return []
+
+
+async def _granter_bank_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
+    """통장 거래(BANK_TRANSACTION_TICKET) — 입출금 상세."""
+    client = get_granter_client()
+    if (end_date - start_date).days > 30:
+        start_date = end_date - timedelta(days=30)
+    try:
+        tickets = await client.list_tickets_all_types(
+            start_date.isoformat(), end_date.isoformat(),
+        )
+        return tickets.get("BANK_TRANSACTION_TICKET", []) or []
+    except Exception:
+        logger.exception(f"그랜터 bank_tickets 호출 실패 ({start_date}~{end_date})")
+        return []
+
+
+def _split_inflow_outflow(bank_tickets: List[Dict[str, Any]]) -> tuple:
+    """BANK_TRANSACTION_TICKET 리스트를 입금/출금으로 분리."""
+    inflows = []
+    outflows = []
+    for t in bank_tickets:
+        try:
+            amt = float(t.get("amount") or 0)
+        except (ValueError, TypeError):
+            amt = 0.0
+        if amt <= 0:
+            continue
+        bt = t.get("bankTransaction") or {}
+        direction = (t.get("transactionType") or "").upper()
+        # 그랜터 응답 다양성 — IN/INBOUND/DEPOSIT, 한글 '입금', 또는 inOutType 등
+        in_out = (t.get("inOutType") or bt.get("inOutType") or "").upper()
+        is_inbound = (
+            direction in ("IN", "INBOUND", "DEPOSIT")
+            or in_out in ("IN", "INBOUND", "DEPOSIT")
+            or "입금" in str(direction)
+            or "입금" in str(in_out)
+        )
+        entry = {
+            "counterparty": (bt.get("opponent") or bt.get("counterparty")
+                             or bt.get("opponentName") or "(미지정)"),
+            "description": bt.get("content") or bt.get("memo") or "",
+            "amount": amt,
+            "date": t.get("transactAt") or t.get("createdAt") or "",
+        }
+        if is_inbound:
+            inflows.append(entry)
+        else:
+            outflows.append(entry)
+    return inflows, outflows
 
 
 # ============ 섹션 빌더 ============
@@ -129,7 +178,11 @@ async def _section_cash_status(target_date: date, report: Optional[Dict[str, Any
 
 
 async def _section_ai_cashflow(target_date: date, report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """AI 현금흐름 — 잔액 추이 + 주요 입출금. 그랜터 데이터 기반."""
+    """AI 현금흐름 — 잔액 추이 + 주요 입출금 (개별 거래 단위).
+
+    주요 입출금은 BANK_TRANSACTION_TICKET 기반으로 입금/출금 각 top 5 보장.
+    어제 데이터가 부족하면 최근 7일까지 확장해서 채움.
+    """
     if report is None:
         report = await _granter_daily_report(target_date)
     total = (report or {}).get("total", {}) if isinstance(report, dict) else {}
@@ -137,7 +190,7 @@ async def _section_ai_cashflow(target_date: date, report: Optional[Dict[str, Any
     bal_prev_day = float(total.get("previousBalance") or 0)
     delta_day = bal_today - bal_prev_day
 
-    # 전월 동기 비교 — 추가 호출
+    # 전월 동기
     prev_month_target = target_date.replace(day=1) - timedelta(days=1)
     prev_month_same_day = min(target_date.day, prev_month_target.day)
     prev_month_date = prev_month_target.replace(day=prev_month_same_day)
@@ -146,19 +199,36 @@ async def _section_ai_cashflow(target_date: date, report: Optional[Dict[str, Any
     bal_prev_month = float(prev_total.get("currentBalance") or 0)
     delta_month = bal_today - bal_prev_month
 
-    # 자산별 입출금 — 상위 거래 (assets 배열에서 큰 변동 추출)
-    assets = (report or {}).get("assets", []) if isinstance(report, dict) else []
-    # 출금 큰 자산 top 3
-    outflows = sorted(
-        [a for a in assets if (a.get("outAmount") or 0) > 0],
-        key=lambda a: a.get("outAmount") or 0,
-        reverse=True,
-    )[:3]
-    inflows = sorted(
-        [a for a in assets if (a.get("inAmount") or 0) > 0],
-        key=lambda a: a.get("inAmount") or 0,
-        reverse=True,
-    )[:3]
+    # 어제 통장 거래
+    day_tickets = await _granter_bank_tickets(target_date, target_date)
+    inflows, outflows = _split_inflow_outflow(day_tickets)
+    inflows.sort(key=lambda x: x["amount"], reverse=True)
+    outflows.sort(key=lambda x: x["amount"], reverse=True)
+
+    # 어제만으로 3건 미만이면 최근 7일까지 확장
+    if len(inflows) < 3 or len(outflows) < 3:
+        wider_start = target_date - timedelta(days=7)
+        wider_tickets = await _granter_bank_tickets(wider_start, target_date)
+        wider_in, wider_out = _split_inflow_outflow(wider_tickets)
+        # 어제 항목 보존, 추가만 채움
+        existing_in = {(e["counterparty"], e["amount"], e["date"]) for e in inflows}
+        existing_out = {(e["counterparty"], e["amount"], e["date"]) for e in outflows}
+        for e in sorted(wider_in, key=lambda x: x["amount"], reverse=True):
+            if (e["counterparty"], e["amount"], e["date"]) not in existing_in:
+                inflows.append(e)
+                existing_in.add((e["counterparty"], e["amount"], e["date"]))
+                if len(inflows) >= 5:
+                    break
+        for e in sorted(wider_out, key=lambda x: x["amount"], reverse=True):
+            if (e["counterparty"], e["amount"], e["date"]) not in existing_out:
+                outflows.append(e)
+                existing_out.add((e["counterparty"], e["amount"], e["date"]))
+                if len(outflows) >= 5:
+                    break
+
+    # top 5씩 자름
+    inflows = inflows[:5]
+    outflows = outflows[:5]
 
     return {
         "title": "AI 현금흐름 분석",
@@ -177,22 +247,8 @@ async def _section_ai_cashflow(target_date: date, report: Optional[Dict[str, Any
         },
         "top_movements": {
             "title": "주요 입출금 내역",
-            "outflows": [
-                {
-                    "counterparty": a.get("assetName") or "(미지정)",
-                    "description": a.get("organizationName") or "",
-                    "amount": float(a.get("outAmount") or 0),
-                }
-                for a in outflows
-            ],
-            "inflows": [
-                {
-                    "counterparty": a.get("assetName") or "(미지정)",
-                    "description": a.get("organizationName") or "",
-                    "amount": float(a.get("inAmount") or 0),
-                }
-                for a in inflows
-            ],
+            "outflows": outflows,
+            "inflows": inflows,
         },
     }
 
