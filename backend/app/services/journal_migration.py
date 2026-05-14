@@ -95,13 +95,26 @@ async def _resolve_account_id_cached(
 
 
 async def _next_voucher_number(db: AsyncSession, vdate: date, counter: Dict[str, int]) -> str:
-    """일자별 시퀀스. 일괄 처리 시 in-memory counter로 가속."""
+    """
+    일자별 시퀀스. 일괄 처리 시 in-memory counter로 가속.
+
+    count(*)+1 방식은 띄엄띄엄 번호(이전 실패 task가 일부만 commit한 경우 등)에
+    충돌하므로 MAX(suffix)+1을 사용.
+    """
     prefix = vdate.strftime('%Y%m%d')
     if prefix not in counter:
-        cnt = await db.scalar(
-            select(func.count(Voucher.id)).where(Voucher.voucher_number.like(f"{prefix}-%"))
-        ) or 0
-        counter[prefix] = cnt
+        rows = (await db.execute(
+            select(Voucher.voucher_number).where(Voucher.voucher_number.like(f"{prefix}-%"))
+        )).all()
+        max_seq = 0
+        for (vn,) in rows:
+            try:
+                seq = int(vn.split('-', 1)[1])
+                if seq > max_seq:
+                    max_seq = seq
+            except (ValueError, IndexError):
+                continue
+        counter[prefix] = max_seq
     counter[prefix] += 1
     return f"{prefix}-{counter[prefix]:04d}"
 
