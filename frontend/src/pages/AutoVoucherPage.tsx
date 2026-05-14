@@ -4,11 +4,13 @@ import {
   CheckCircleIcon, XCircleIcon, ArrowPathIcon, BoltIcon,
   CalendarDaysIcon, MagnifyingGlassIcon, ExclamationTriangleIcon,
   ChevronDownIcon, ChevronRightIcon, DocumentTextIcon,
+  ArrowUpOnSquareIcon, InformationCircleIcon, XMarkIcon,
 } from '@heroicons/react/24/outline'
-import { autoVoucherApi, AutoVoucherCandidate } from '@/services/api'
+import { autoVoucherApi, AutoVoucherCandidate, JournalUploadInfo } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
 
 type ConfBand = 'all' | 'auto' | 'review' | 'suspect'
+type DupFilter = 'hide' | 'include' | 'only'
 
 const SOURCE_LABEL: Record<string, string> = {
   sales_tax_invoice: '매출 세금계산서',
@@ -30,6 +32,14 @@ const SOURCE_TONE: Record<string, string> = {
   cash_receipt: 'bg-amber-50 text-amber-700 border-amber-200',
 }
 
+const VOUCHER_SOURCE_LABEL: Record<string, string> = {
+  wehago_import: '위하고 분개장',
+  douzone_journal: '더존 분개장',
+  granter_auto: '그랜터 자동',
+  manual: '수기 입력',
+  api: 'API',
+}
+
 function todayISO() { return isoLocal(new Date()) }
 function monthAgoISO() {
   const d = new Date(); d.setDate(d.getDate() - 30); return isoLocal(d)
@@ -41,6 +51,175 @@ function confidenceTone(c: number): { bg: string; label: string; band: ConfBand 
   return { bg: 'bg-rose-100 text-rose-800', label: '의심', band: 'suspect' }
 }
 
+// ====================== 위하고 분개장 일괄 등록 모달 ======================
+function JournalMigrationModal({
+  open, onClose, onDone,
+}: { open: boolean; onClose: () => void; onDone: () => void }) {
+  const qc = useQueryClient()
+  const [selectedUploads, setSelectedUploads] = useState<Set<number>>(new Set())
+  const [start, setStart] = useState('')
+  const [end, setEnd] = useState('')
+
+  const uploadsQuery = useQuery({
+    queryKey: ['journal-uploads'],
+    queryFn: () => autoVoucherApi.listJournalUploads().then((r) => r.data.uploads),
+    enabled: open,
+  })
+
+  const migrateMut = useMutation({
+    mutationFn: () =>
+      autoVoucherApi.migrateFromJournal({
+        upload_ids: selectedUploads.size > 0 ? Array.from(selectedUploads) : undefined,
+        start_date: start || undefined,
+        end_date: end || undefined,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
+      qc.invalidateQueries({ queryKey: ['journal-uploads'] })
+    },
+  })
+
+  function toggleUpload(id: number) {
+    const next = new Set(selectedUploads)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    setSelectedUploads(next)
+  }
+
+  if (!open) return null
+
+  const uploads: JournalUploadInfo[] = uploadsQuery.data || []
+  const journalUploads = uploads.filter((u) => u.upload_type === 'journal_entry')
+  const result = migrateMut.data?.data
+
+  return (
+    <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-ink-200">
+          <h2 className="flex items-center gap-2 text-base font-semibold text-ink-800">
+            <ArrowUpOnSquareIcon className="h-5 w-5 text-purple-600" />
+            위하고 분개장 → 전표 일괄 등록
+          </h2>
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+            <XMarkIcon className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3 overflow-y-auto">
+          <div className="rounded-md bg-blue-50 border border-blue-200 p-3 text-2xs text-blue-900">
+            <div className="flex items-start gap-2">
+              <InformationCircleIcon className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
+              <div>
+                <div className="font-semibold mb-0.5">이미 분개된 위하고 데이터를 정식 전표로 격상합니다.</div>
+                <ul className="list-disc list-inside space-y-0.5 text-blue-800">
+                  <li>변환 후엔 그랜터 자동 후보가 같은 거래일 때 자동으로 <strong>중복</strong>으로 표시됩니다.</li>
+                  <li>이미 변환된 그룹은 다시 변환되지 않습니다 (idempotent).</li>
+                  <li>출처 라벨: <code className="px-1 bg-white rounded">wehago_import</code></li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          {/* 기간 필터 */}
+          <div>
+            <div className="text-2xs font-semibold text-ink-600 mb-1">기간 필터 (선택)</div>
+            <div className="flex items-center gap-2">
+              <input type="date" value={start} onChange={(e) => setStart(e.target.value)}
+                className="px-2 py-1 text-xs rounded border border-ink-200 focus:border-ink-400 focus:outline-none" />
+              <span className="text-ink-400 text-xs">~</span>
+              <input type="date" value={end} onChange={(e) => setEnd(e.target.value)}
+                className="px-2 py-1 text-xs rounded border border-ink-200 focus:border-ink-400 focus:outline-none" />
+              <span className="text-2xs text-ink-500">비우면 선택된 업로드 전체</span>
+            </div>
+          </div>
+
+          {/* 업로드 선택 */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-2xs font-semibold text-ink-600">분개장 업로드 선택 (선택 안 하면 전체)</div>
+              {journalUploads.length > 0 && (
+                <button onClick={() => setSelectedUploads(new Set(journalUploads.map((u) => u.id)))}
+                  className="text-2xs text-blue-600 hover:underline">전체 선택</button>
+              )}
+            </div>
+            {uploadsQuery.isLoading ? (
+              <div className="text-2xs text-ink-400 py-4 text-center">불러오는 중…</div>
+            ) : journalUploads.length === 0 ? (
+              <div className="text-2xs text-ink-400 py-4 text-center border border-dashed border-ink-200 rounded">
+                업로드된 분개장이 없습니다. AI 분류 메뉴에서 위하고 분개장을 먼저 업로드하세요.
+              </div>
+            ) : (
+              <div className="space-y-1 max-h-60 overflow-y-auto border border-ink-100 rounded">
+                {journalUploads.map((u) => (
+                  <label key={u.id}
+                    className={`flex items-center gap-2 px-2 py-1.5 hover:bg-ink-50 cursor-pointer ${selectedUploads.has(u.id) ? 'bg-blue-50' : ''}`}>
+                    <input type="checkbox" checked={selectedUploads.has(u.id)}
+                      onChange={() => toggleUpload(u.id)}
+                      className="rounded border-ink-300" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs text-ink-800 truncate">{u.filename}</div>
+                      <div className="text-2xs text-ink-500">
+                        {u.row_count}행 · {u.created_at?.slice(0, 10)}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 결과 */}
+          {result && (
+            <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-900">
+              <div className="font-semibold mb-1">변환 완료</div>
+              <div>
+                <strong>{result.migrated_count}건</strong> 전표 생성
+                {result.skipped_count > 0 && <> · {result.skipped_count}건 skip (이미 변환됨)</>}
+                {result.error_count > 0 && <span className="text-rose-700"> · {result.error_count}건 오류</span>}
+              </div>
+              {(result.errors || []).length > 0 && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-2xs text-rose-700">오류 상세 보기</summary>
+                  <div className="mt-1 space-y-0.5 text-2xs">
+                    {(result.errors || []).map((e: any, i: number) => (
+                      <div key={i} className="text-rose-700">· {e.reason}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
+          {migrateMut.isError && (
+            <div className="rounded-md bg-rose-50 border border-rose-200 p-3 text-2xs text-rose-700">
+              실패: {(migrateMut.error as any)?.response?.data?.detail || (migrateMut.error as any)?.message}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-ink-200 bg-canvas-50">
+          <button onClick={onClose} className="px-3 py-1.5 text-xs text-ink-600 hover:text-ink-800">
+            닫기
+          </button>
+          <button
+            onClick={() => migrateMut.mutate()}
+            disabled={migrateMut.isPending || journalUploads.length === 0}
+            className="btn-primary text-xs"
+          >
+            <ArrowUpOnSquareIcon className="h-3.5 w-3.5 mr-1" />
+            {migrateMut.isPending ? '변환 중…' : '전표로 변환'}
+          </button>
+          {result && result.migrated_count > 0 && (
+            <button onClick={() => { onDone(); onClose() }}
+              className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700">
+              닫고 새로고침
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================== 메인 페이지 ==============================
 export default function AutoVoucherPage() {
   const qc = useQueryClient()
   const [from, setFrom] = useState(monthAgoISO())
@@ -48,20 +227,25 @@ export default function AutoVoucherPage() {
   const [status, setStatus] = useState<string>('pending')
   const [sourceType, setSourceType] = useState<string>('')
   const [confBand, setConfBand] = useState<ConfBand>('all')
+  const [dupFilter, setDupFilter] = useState<DupFilter>('hide')
   const [counterparty, setCounterparty] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set())
   const [page, setPage] = useState(1)
+  const [showMigrateModal, setShowMigrateModal] = useState(false)
   const SIZE = 100
 
   const confidenceLt = confBand === 'review' ? 0.85 : confBand === 'suspect' ? 0.6 : undefined
   const confidenceGte = confBand === 'auto' ? 0.85 : confBand === 'review' ? 0.6 : undefined
 
+  // dupFilter == 'only' 면 status를 duplicate로 override
+  const effectiveStatus = dupFilter === 'only' ? 'duplicate' : (status || undefined)
+
   const listQuery = useQuery({
-    queryKey: ['auto-voucher-list', status, sourceType, from, to, confBand, counterparty, page],
+    queryKey: ['auto-voucher-list', effectiveStatus, sourceType, from, to, confBand, counterparty, page, dupFilter],
     queryFn: () =>
       autoVoucherApi.list({
-        status: status || undefined,
+        status: effectiveStatus,
         source_type: sourceType || undefined,
         start_date: from || undefined,
         end_date: to || undefined,
@@ -75,7 +259,11 @@ export default function AutoVoucherPage() {
     enabled: !!from && !!to,
   })
 
-  const items: AutoVoucherCandidate[] = listQuery.data?.items || []
+  const allItems: AutoVoucherCandidate[] = listQuery.data?.items || []
+  // dupFilter='hide'이면 클라이언트단에서 DUPLICATE 행 제외 (status='pending' 선택 시에도 보호)
+  const items: AutoVoucherCandidate[] = dupFilter === 'hide'
+    ? allItems.filter((c) => c.status !== 'duplicate')
+    : allItems
   const total: number = listQuery.data?.total || 0
   const summary: Record<string, Record<string, number>> = listQuery.data?.summary || {}
 
@@ -86,7 +274,7 @@ export default function AutoVoucherPage() {
     mutationFn: () =>
       autoVoucherApi.generateCandidates({
         start_date: from, end_date: to, auto_match_duplicates: true,
-      }, true),  // background mode
+      }, true),
     onSuccess: (res) => {
       const tid = res.data?.task_id
       if (tid) {
@@ -96,7 +284,11 @@ export default function AutoVoucherPage() {
     },
   })
 
-  // 진행률 폴링 (1초 간격)
+  const matchVoucherDupMut = useMutation({
+    mutationFn: () => autoVoucherApi.matchVoucherDuplicates(from, to),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['auto-voucher-list'] }),
+  })
+
   useEffect(() => {
     if (!taskId) return
     let cancelled = false
@@ -107,7 +299,6 @@ export default function AutoVoucherPage() {
         setTaskProgress(r.data)
         if (r.data?.status === 'completed' || r.data?.status === 'failed') {
           qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
-          // 완료 후 5초 뒤 자동 닫기
           setTimeout(() => {
             if (!cancelled) { setTaskId(null); setTaskProgress(null) }
           }, 5000)
@@ -181,7 +372,7 @@ export default function AutoVoucherPage() {
             자동 전표 검수 큐
           </h1>
           <p className="text-xs text-ink-500 mt-1">
-            그랜터 수집 거래 → AI 분개 → 검수 → 확정. 의심 거래만 골라 빠르게 처리.
+            그랜터 수집 거래 → AI 분개 → 검수 → 확정. 위하고 분개장 import는 자동 중복 표시.
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -193,6 +384,14 @@ export default function AutoVoucherPage() {
             <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
               className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
           </div>
+          <button
+            onClick={() => setShowMigrateModal(true)}
+            className="px-2 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded hover:bg-purple-100"
+            title="위하고 분개장(이미 분개된 데이터)을 정식 전표로 일괄 등록"
+          >
+            <ArrowUpOnSquareIcon className="h-3.5 w-3.5 mr-1 inline" />
+            위하고 분개장 일괄 등록
+          </button>
           <button
             onClick={() => generateMut.mutate()}
             disabled={generateMut.isPending}
@@ -248,9 +447,14 @@ export default function AutoVoucherPage() {
               {' '}카드 {taskProgress.result.card || 0} /
               {' '}통장 {taskProgress.result.bank || 0} /
               {' '}현금 {taskProgress.result.cash_receipt || 0})
-              {taskProgress.result.skipped > 0 && <span className="ml-2">· {taskProgress.result.skipped}건 중복 skip</span>}
+              {taskProgress.result.skipped > 0 && <span className="ml-2">· {taskProgress.result.skipped}건 skip</span>}
               {taskProgress.result.duplicate_matching?.matched_pairs > 0 && (
                 <span className="ml-2">· 카드↔통장 매칭 {taskProgress.result.duplicate_matching.matched_pairs}쌍</span>
+              )}
+              {taskProgress.result.voucher_duplicate_matching?.matched > 0 && (
+                <span className="ml-2 text-amber-800 font-semibold">
+                  · 기존 전표 중복 <strong>{taskProgress.result.voucher_duplicate_matching.matched}건</strong>
+                </span>
               )}
             </div>
           )}
@@ -267,15 +471,46 @@ export default function AutoVoucherPage() {
               { v: 'pending', label: `대기 ${pendingCount || ''}`, tone: 'bg-amber-100 text-amber-800 border-amber-200' },
               { v: 'confirmed', label: '확정', tone: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
               { v: 'rejected', label: '거절', tone: 'bg-ink-100 text-ink-700 border-ink-200' },
-              { v: 'duplicate', label: `중복 ${duplicateCount || ''}`, tone: 'bg-purple-100 text-purple-800 border-purple-200' },
             ].map((s) => (
               <button key={s.v}
                 onClick={() => { setStatus(status === s.v ? '' : s.v); setPage(1) }}
-                className={`px-2 py-0.5 rounded text-2xs font-semibold border ${status === s.v ? s.tone : 'bg-white text-ink-500 border-ink-200 hover:border-ink-300'}`}
+                disabled={dupFilter === 'only'}
+                className={`px-2 py-0.5 rounded text-2xs font-semibold border ${status === s.v && dupFilter !== 'only' ? s.tone : 'bg-white text-ink-500 border-ink-200 hover:border-ink-300'} ${dupFilter === 'only' ? 'opacity-40 cursor-not-allowed' : ''}`}
               >
                 {s.label}
               </button>
             ))}
+          </div>
+
+          {/* 중복 표시 토글 */}
+          <div className="flex items-center gap-1">
+            <span className="text-2xs font-semibold text-ink-500 uppercase">중복</span>
+            {[
+              { v: 'hide' as DupFilter, label: '숨김', tone: 'bg-ink-900 text-white border-ink-900' },
+              { v: 'include' as DupFilter, label: '포함', tone: 'bg-amber-100 text-amber-800 border-amber-200' },
+              { v: 'only' as DupFilter, label: `중복만 ${duplicateCount || ''}`, tone: 'bg-amber-500 text-white border-amber-500' },
+            ].map((s) => (
+              <button key={s.v}
+                onClick={() => { setDupFilter(s.v); setPage(1) }}
+                className={`px-2 py-0.5 rounded text-2xs font-semibold border ${dupFilter === s.v ? s.tone : 'bg-white text-ink-500 border-ink-200 hover:border-ink-300'}`}
+              >
+                {s.label}
+              </button>
+            ))}
+            <button
+              onClick={() => matchVoucherDupMut.mutate()}
+              disabled={matchVoucherDupMut.isPending}
+              className="ml-1 px-2 py-0.5 rounded text-2xs font-semibold bg-white text-purple-700 border border-purple-300 hover:bg-purple-50 disabled:opacity-50"
+              title="기존 전표(위하고 import 등)와 비교해 중복 후보를 다시 매칭"
+            >
+              <ArrowPathIcon className="h-3 w-3 mr-0.5 inline" />
+              {matchVoucherDupMut.isPending ? '검사 중…' : '중복 재검사'}
+            </button>
+            {matchVoucherDupMut.data && (
+              <span className="text-2xs text-purple-700 ml-1">
+                {matchVoucherDupMut.data.data?.matched || 0}건 매칭됨
+              </span>
+            )}
           </div>
 
           {/* 유형 */}
@@ -324,7 +559,7 @@ export default function AutoVoucherPage() {
         </div>
 
         {/* Bulk actions */}
-        {status === 'pending' && (
+        {status === 'pending' && dupFilter !== 'only' && (
           <div className="flex items-center gap-2 pt-2 border-t border-ink-100">
             <span className="text-2xs text-ink-500">
               {selectedIds.size > 0 ? `${selectedIds.size}건 선택` : `${total}건 대기 중`}
@@ -384,13 +619,13 @@ export default function AutoVoucherPage() {
                   <th className="px-2 py-2 w-8"></th>
                   <th className="px-2 py-2 text-left font-semibold text-ink-500 uppercase tracking-wider w-20">날짜</th>
                   <th className="px-2 py-2 text-left font-semibold text-ink-500 uppercase tracking-wider">유형</th>
-                  <th className="px-2 py-2 text-left font-semibold text-ink-500 uppercase tracking-wider min-w-[160px]">거래처</th>
+                  <th className="px-2 py-2 text-left font-semibold text-ink-500 uppercase tracking-wider min-w-[180px]">거래처</th>
                   <th className="px-2 py-2 text-left font-semibold text-ink-500 uppercase tracking-wider min-w-[200px]">적요</th>
                   <th className="px-2 py-2 text-right font-semibold text-ink-500 uppercase tracking-wider">공급가</th>
                   <th className="px-2 py-2 text-right font-semibold text-ink-500 uppercase tracking-wider">부가세</th>
                   <th className="px-2 py-2 text-right font-semibold text-ink-500 uppercase tracking-wider">합계</th>
                   <th className="px-2 py-2 text-center font-semibold text-ink-500 uppercase tracking-wider">신뢰도</th>
-                  <th className="px-2 py-2 text-center font-semibold text-ink-500 uppercase tracking-wider min-w-[140px]">액션</th>
+                  <th className="px-2 py-2 text-center font-semibold text-ink-500 uppercase tracking-wider min-w-[160px]">상태/액션</th>
                 </tr>
               </thead>
               <tbody>
@@ -400,10 +635,15 @@ export default function AutoVoucherPage() {
                   const isSelected = selectedIds.has(c.id)
                   const isPending = c.status === 'pending'
                   const isDup = c.status === 'duplicate'
+                  const dupVoucher = c.duplicate_voucher
+                  const dupSourceLabel = dupVoucher?.source ? (VOUCHER_SOURCE_LABEL[dupVoucher.source] || dupVoucher.source) : null
                   return (
                     <>
                       <tr key={c.id}
-                        className={`border-b border-ink-100 hover:bg-ink-50/30 ${isSelected ? 'bg-blue-50/40' : ''} ${isDup ? 'opacity-50' : ''}`}
+                        className={`border-b border-ink-100 hover:bg-ink-50/30 ${
+                          isSelected ? 'bg-blue-50/40' :
+                          isDup ? 'bg-amber-50/50 border-l-4 border-l-amber-400' : ''
+                        }`}
                       >
                         <td className="px-2 py-1">
                           {isPending && (
@@ -411,28 +651,39 @@ export default function AutoVoucherPage() {
                               onChange={() => toggleSelect(c.id)}
                               className="rounded border-ink-300 w-3 h-3" />
                           )}
+                          {isDup && (
+                            <ExclamationTriangleIcon className="h-4 w-4 text-amber-500"
+                              aria-label="이미 분개됨"
+                            />
+                          )}
                         </td>
                         <td className="px-2 py-1 font-mono text-ink-700">{c.transaction_date}</td>
                         <td className="px-2 py-1">
-                          <span className={`inline-block px-1.5 py-0.5 rounded border text-2xs ${SOURCE_TONE[c.source_type] || 'bg-ink-50 text-ink-600 border-ink-200'}`}>
+                          <span className={`inline-block px-1.5 py-0.5 rounded border text-2xs ${SOURCE_TONE[c.source_type] || 'bg-ink-50 text-ink-600 border-ink-200'} ${isDup ? 'opacity-60' : ''}`}>
                             {SOURCE_LABEL[c.source_type] || c.source_type}
                           </span>
                         </td>
-                        <td className="px-2 py-1 truncate max-w-[200px] text-ink-800">{c.counterparty || '-'}</td>
-                        <td className="px-2 py-1 truncate max-w-[260px] text-ink-700">
+                        <td className={`px-2 py-1 truncate max-w-[220px] ${isDup ? 'text-ink-500' : 'text-ink-800'}`}>
+                          {c.counterparty || '-'}
+                        </td>
+                        <td className={`px-2 py-1 truncate max-w-[260px] ${isDup ? 'text-ink-500' : 'text-ink-700'}`}>
                           <button onClick={() => toggleExpand(c.id)}
                             className="inline-flex items-center gap-1 hover:text-ink-900">
                             {isExpanded ? <ChevronDownIcon className="h-3 w-3" /> : <ChevronRightIcon className="h-3 w-3" />}
                             {c.description || c.suggested_account_name || '-'}
                           </button>
                         </td>
-                        <td className="px-2 py-1 text-right font-mono">{formatCurrency(Number(c.supply_amount), false)}</td>
-                        <td className="px-2 py-1 text-right font-mono text-ink-500">
+                        <td className={`px-2 py-1 text-right font-mono ${isDup ? 'text-ink-500' : ''}`}>
+                          {formatCurrency(Number(c.supply_amount), false)}
+                        </td>
+                        <td className={`px-2 py-1 text-right font-mono ${isDup ? 'text-ink-400' : 'text-ink-500'}`}>
                           {Number(c.vat_amount) > 0 ? formatCurrency(Number(c.vat_amount), false) : '-'}
                         </td>
-                        <td className="px-2 py-1 text-right font-mono font-semibold">{formatCurrency(Number(c.total_amount), false)}</td>
+                        <td className={`px-2 py-1 text-right font-mono font-semibold ${isDup ? 'text-ink-500' : ''}`}>
+                          {formatCurrency(Number(c.total_amount), false)}
+                        </td>
                         <td className="px-2 py-1 text-center">
-                          <span className={`inline-block px-1.5 py-0.5 rounded text-2xs font-semibold ${conf.bg}`}>
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-2xs font-semibold ${isDup ? 'bg-ink-100 text-ink-500' : conf.bg}`}>
                             {Math.round(c.confidence * 100)}%
                           </span>
                         </td>
@@ -454,8 +705,24 @@ export default function AutoVoucherPage() {
                             </div>
                           ) : c.status === 'confirmed' ? (
                             <span className="text-2xs text-emerald-700 font-semibold">확정됨 #{c.confirmed_voucher_id}</span>
-                          ) : c.status === 'duplicate' ? (
-                            <span className="text-2xs text-purple-700">중복 (전표 #{c.duplicate_of_id})</span>
+                          ) : isDup ? (
+                            <div className="text-left">
+                              {dupVoucher ? (
+                                <div className="text-2xs">
+                                  <div className="font-semibold text-amber-800">이미 분개됨</div>
+                                  <div className="text-ink-600 mt-0.5">
+                                    전표 <span className="font-mono">#{dupVoucher.voucher_number}</span>
+                                  </div>
+                                  {dupSourceLabel && (
+                                    <div className="text-ink-500">출처: <span className="text-purple-700 font-semibold">{dupSourceLabel}</span></div>
+                                  )}
+                                </div>
+                              ) : c.duplicate_of_id ? (
+                                <span className="text-2xs text-purple-700">카드↔통장 중복 (#{c.duplicate_of_id})</span>
+                              ) : (
+                                <span className="text-2xs text-amber-700">중복</span>
+                              )}
+                            </div>
                           ) : (
                             <span className="text-2xs text-ink-500">거절됨</span>
                           )}
@@ -464,6 +731,26 @@ export default function AutoVoucherPage() {
                       {isExpanded && (
                         <tr className="bg-canvas-50 border-b border-ink-100">
                           <td colSpan={10} className="px-4 py-2">
+                            {isDup && dupVoucher && (
+                              <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-2xs">
+                                <div className="flex items-center gap-2 font-semibold text-amber-800">
+                                  <ExclamationTriangleIcon className="h-3.5 w-3.5" />
+                                  이미 등록된 전표와 동일 거래
+                                </div>
+                                <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 text-ink-700">
+                                  <div>전표 번호: <span className="font-mono font-semibold">#{dupVoucher.voucher_number}</span></div>
+                                  <div>전표 일자: <span className="font-mono">{dupVoucher.voucher_date}</span></div>
+                                  <div>출처: <span className="text-purple-700 font-semibold">{dupSourceLabel}</span></div>
+                                  <div>금액: <span className="font-mono">{formatCurrency(Number(dupVoucher.total_debit), false)}</span></div>
+                                  {dupVoucher.merchant_name && (
+                                    <div className="col-span-2">거래처: {dupVoucher.merchant_name}</div>
+                                  )}
+                                  {dupVoucher.description && (
+                                    <div className="col-span-2">적요: {dupVoucher.description}</div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                             <div className="text-2xs text-ink-500 mb-1.5">분개 라인</div>
                             <div className="grid grid-cols-2 gap-4">
                               <div>
@@ -513,6 +800,13 @@ export default function AutoVoucherPage() {
             className="px-2 py-1 rounded border border-ink-200 disabled:opacity-50">다음</button>
         </div>
       )}
+
+      {/* 위하고 분개장 일괄 등록 모달 */}
+      <JournalMigrationModal
+        open={showMigrateModal}
+        onClose={() => setShowMigrateModal(false)}
+        onDone={() => qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })}
+      />
     </div>
   )
 }

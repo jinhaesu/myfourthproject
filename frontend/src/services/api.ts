@@ -1051,6 +1051,17 @@ export interface AutoVoucherLine {
   memo?: string
 }
 
+export interface DuplicateVoucherInfo {
+  id: number
+  voucher_number: string
+  voucher_date: string
+  transaction_date: string
+  source: string | null
+  merchant_name: string | null
+  total_debit: number | string
+  description: string | null
+}
+
 export interface AutoVoucherCandidate {
   id: number
   source_type: string
@@ -1068,8 +1079,19 @@ export interface AutoVoucherCandidate {
   debit_lines: AutoVoucherLine[]
   credit_lines: AutoVoucherLine[]
   duplicate_of_id: number | null
+  duplicate_voucher_id: number | null
+  duplicate_voucher: DuplicateVoucherInfo | null
   confirmed_voucher_id: number | null
   created_at: string
+}
+
+export interface JournalUploadInfo {
+  id: number
+  filename: string
+  row_count: number
+  created_at: string | null
+  upload_type: string
+  file_type: string
 }
 
 export const autoVoucherApi = {
@@ -1120,6 +1142,15 @@ export const autoVoucherApi = {
   }) => api.post('/auto-voucher/direct-voucher', payload),
   checkDuplicate: (transaction_date: string, total_amount: number, counterparty?: string) =>
     api.post('/auto-voucher/check-duplicate', { transaction_date, total_amount, counterparty }),
+  listJournalUploads: () => api.get<{ uploads: JournalUploadInfo[] }>('/auto-voucher/journal-uploads'),
+  migrateFromJournal: (payload: {
+    upload_ids?: number[]
+    start_date?: string
+    end_date?: string
+    source_label?: string
+  }) => api.post('/auto-voucher/migrate-from-journal', payload, { timeout: 120_000 }),
+  matchVoucherDuplicates: (start_date: string, end_date: string) =>
+    api.post('/auto-voucher/match-voucher-duplicates', null, { params: { start_date, end_date } }),
 }
 
 export default api

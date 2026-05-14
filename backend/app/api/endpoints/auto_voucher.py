@@ -14,7 +14,7 @@ import json
 import logging
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from fastapi import APIRouter, Depends, Query, HTTPException, Body
 from pydantic import BaseModel, Field
@@ -30,7 +30,12 @@ from app.services.auto_voucher_service import (
     generate_candidates_for_period,
     generate_candidates_background,
     match_card_bank_duplicates,
+    match_voucher_duplicates_core,
     get_progress,
+)
+from app.services.journal_migration import (
+    migrate_journal_uploads_to_vouchers,
+    list_journal_uploads,
 )
 
 
@@ -96,6 +101,17 @@ class CandidateLine(BaseModel):
     memo: Optional[str] = ""
 
 
+class DuplicateVoucherInfo(BaseModel):
+    id: int
+    voucher_number: str
+    voucher_date: date
+    transaction_date: date
+    source: Optional[str]
+    merchant_name: Optional[str]
+    total_debit: Decimal
+    description: Optional[str]
+
+
 class CandidateOut(BaseModel):
     id: int
     source_type: str
@@ -113,6 +129,8 @@ class CandidateOut(BaseModel):
     debit_lines: List[CandidateLine]
     credit_lines: List[CandidateLine]
     duplicate_of_id: Optional[int]
+    duplicate_voucher_id: Optional[int] = None
+    duplicate_voucher: Optional[DuplicateVoucherInfo] = None
     confirmed_voucher_id: Optional[int]
     created_at: datetime
 
@@ -126,7 +144,10 @@ class CandidatePatch(BaseModel):
     suggested_account_name: Optional[str] = None
 
 
-def _candidate_to_out(c: AutoVoucherCandidate) -> CandidateOut:
+def _candidate_to_out(
+    c: AutoVoucherCandidate,
+    voucher_map: Optional[Dict[int, Voucher]] = None,
+) -> CandidateOut:
     def _parse_lines(s: Optional[str]) -> List[CandidateLine]:
         if not s:
             return []
@@ -135,6 +156,21 @@ def _candidate_to_out(c: AutoVoucherCandidate) -> CandidateOut:
             return [CandidateLine(**item) for item in arr]
         except Exception:
             return []
+
+    dup_info = None
+    if voucher_map and c.duplicate_voucher_id and c.duplicate_voucher_id in voucher_map:
+        v = voucher_map[c.duplicate_voucher_id]
+        dup_info = DuplicateVoucherInfo(
+            id=v.id,
+            voucher_number=v.voucher_number,
+            voucher_date=v.voucher_date,
+            transaction_date=v.transaction_date,
+            source=v.source,
+            merchant_name=v.merchant_name,
+            total_debit=v.total_debit,
+            description=v.description,
+        )
+
     return CandidateOut(
         id=c.id,
         source_type=c.source_type.value if hasattr(c.source_type, 'value') else str(c.source_type),
@@ -152,6 +188,8 @@ def _candidate_to_out(c: AutoVoucherCandidate) -> CandidateOut:
         debit_lines=_parse_lines(c.debit_lines),
         credit_lines=_parse_lines(c.credit_lines),
         duplicate_of_id=c.duplicate_of_id,
+        duplicate_voucher_id=c.duplicate_voucher_id,
+        duplicate_voucher=dup_info,
         confirmed_voucher_id=c.confirmed_voucher_id,
         created_at=c.created_at,
     )
@@ -195,6 +233,10 @@ async def generate_candidates(
             db, req.start_date, req.end_date,
         )
         result["duplicate_matching"] = match_result
+        voucher_dup = await match_voucher_duplicates_core(
+            db, req.start_date, req.end_date,
+        )
+        result["voucher_duplicate_matching"] = voucher_dup
     return result
 
 
@@ -278,6 +320,15 @@ async def list_candidates(
         .offset(offset).limit(size)
     )).scalars().all()
 
+    # 중복 매칭된 Voucher 일괄 조회 (N+1 회피)
+    voucher_ids = [r.duplicate_voucher_id for r in rows if r.duplicate_voucher_id]
+    voucher_map: Dict[int, Voucher] = {}
+    if voucher_ids:
+        v_rows = (await db.execute(
+            select(Voucher).where(Voucher.id.in_(voucher_ids))
+        )).scalars().all()
+        voucher_map = {v.id: v for v in v_rows}
+
     # 상태별·유형별 카운트 (필터 적용 후 — 큐 요약)
     summary_rows = (await db.execute(
         select(
@@ -297,7 +348,7 @@ async def list_candidates(
         "total": total,
         "page": page,
         "size": size,
-        "items": [_candidate_to_out(c) for c in rows],
+        "items": [_candidate_to_out(c, voucher_map) for c in rows],
         "summary": summary,
     }
 
@@ -310,7 +361,12 @@ async def get_candidate(
     c = await db.get(AutoVoucherCandidate, candidate_id)
     if not c:
         raise HTTPException(status_code=404, detail="후보를 찾을 수 없습니다.")
-    return _candidate_to_out(c)
+    voucher_map: Dict[int, Voucher] = {}
+    if c.duplicate_voucher_id:
+        v = await db.get(Voucher, c.duplicate_voucher_id)
+        if v:
+            voucher_map[v.id] = v
+    return _candidate_to_out(c, voucher_map)
 
 
 @router.patch("/{candidate_id}")
@@ -661,6 +717,58 @@ async def create_direct_voucher(
         "total_debit": str(total_debit),
         "total_credit": str(total_credit),
     }
+
+
+class MigrateJournalRequest(BaseModel):
+    upload_ids: Optional[List[int]] = Field(None, description="특정 업로드만 (없으면 모든 분개장 업로드)")
+    start_date: Optional[date] = Field(None, description="ai_raw.transaction_date 기간 필터 시작")
+    end_date: Optional[date] = Field(None, description="ai_raw.transaction_date 기간 필터 종료")
+    source_label: str = Field("wehago_import", description="Voucher.source 라벨")
+
+
+@router.get("/journal-uploads")
+async def get_journal_uploads(db: AsyncSession = Depends(get_db)):
+    """위하고/더존 분개장 업로드 목록 — 일괄 변환 모달 선택용."""
+    return {"uploads": await list_journal_uploads(db)}
+
+
+@router.post("/migrate-from-journal")
+async def migrate_from_journal(
+    req: MigrateJournalRequest,
+    user_id: int = Query(1),
+    department_id: int = Query(1),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    위하고/더존 분개장 업로드(ai_raw)를 Voucher(CONFIRMED, source=wehago_import)로 일괄 변환.
+    이미 변환된 그룹(external_ref 매칭)은 skip — idempotent.
+    """
+    if req.start_date and req.end_date and req.end_date < req.start_date:
+        raise HTTPException(status_code=400, detail="end_date < start_date")
+    result = await migrate_journal_uploads_to_vouchers(
+        db,
+        upload_ids=req.upload_ids,
+        start_date=req.start_date,
+        end_date=req.end_date,
+        user_id=user_id,
+        department_id=department_id,
+        source_label=req.source_label,
+    )
+    return result
+
+
+@router.post("/match-voucher-duplicates")
+async def match_voucher_duplicates(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    PENDING 후보 중 기존 Voucher (위하고 import 등)와 중복인 것 매칭.
+    매칭 조건: date±3, total_amount±1, counterparty 부분일치.
+    매칭되면 status=DUPLICATE + duplicate_voucher_id 저장.
+    """
+    return await match_voucher_duplicates_core(db, start_date, end_date)
 
 
 @router.post("/confirm-batch")

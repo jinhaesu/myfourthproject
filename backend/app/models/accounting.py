@@ -358,6 +358,12 @@ class AutoVoucherCandidate(Base):
         comment="이 후보가 다른 후보의 중복일 때 그 후보 id (카드 사용→통장 결제 매칭)"
     )
 
+    # 기존 Voucher와 중복 매칭 (위하고 분개장 import 등)
+    duplicate_voucher_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("vouchers.id"), nullable=True,
+        comment="이 후보가 이미 등록된 Voucher와 중복일 때 그 Voucher id (위하고 분개장 import 매칭 등)"
+    )
+
     # 확정 시 생성된 Voucher 연결
     confirmed_voucher_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("vouchers.id"), nullable=True

@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import async_session_factory
 from app.models.accounting import (
     AutoVoucherCandidate, AutoVoucherSourceType, AutoVoucherStatus,
+    Voucher, VoucherStatus,
 )
 from app.services.granter_client import get_granter_client
 
@@ -483,9 +484,12 @@ async def generate_candidates_background(
                     db, start_date, end_date, asset_id, task_id=task_id,
                 )
                 if auto_match_duplicates:
-                    _update(task_id, percent=95, message="카드↔통장 중복 매칭…")
+                    _update(task_id, percent=93, message="카드↔통장 중복 매칭…")
                     match_result = await match_card_bank_duplicates(db, start_date, end_date)
                     result["duplicate_matching"] = match_result
+                    _update(task_id, percent=97, message="기존 전표(위하고 import 등) 중복 검사…")
+                    voucher_dup = await match_voucher_duplicates_core(db, start_date, end_date)
+                    result["voucher_duplicate_matching"] = voucher_dup
                 _update(task_id, status="completed", percent=100,
                         message=f"완료 — {result.get('total_created', 0)}건 생성",
                         result=result, finished_at=time.time())
@@ -568,3 +572,67 @@ async def match_card_bank_duplicates(
 
     await db.commit()
     return {"matched_pairs": matched, "checked_cards": len(card_rows), "checked_banks": len(card_payment_bank)}
+
+
+# ============ Voucher (위하고 import 등) 중복 매칭 ============
+
+async def match_voucher_duplicates_core(
+    db: AsyncSession,
+    start_date: date,
+    end_date: date,
+    day_window: int = 3,
+    amount_tolerance: Decimal = Decimal("1"),
+) -> Dict[str, int]:
+    """
+    PENDING 후보 ↔ 기존 Voucher (위하고 import, manual 등) 중복 매칭.
+
+    매칭 조건:
+      - 날짜 차이 ≤ day_window
+      - 금액 차이 ≤ amount_tolerance
+      - 거래처 부분일치 (한쪽 비면 통과)
+
+    매칭되면 candidate.status=DUPLICATE + duplicate_voucher_id 저장.
+    """
+    pendings = (await db.execute(
+        select(AutoVoucherCandidate).where(
+            AutoVoucherCandidate.status == AutoVoucherStatus.PENDING,
+            AutoVoucherCandidate.transaction_date >= start_date,
+            AutoVoucherCandidate.transaction_date <= end_date,
+        )
+    )).scalars().all()
+
+    vouchers = (await db.execute(
+        select(Voucher).where(
+            Voucher.transaction_date >= start_date - timedelta(days=day_window),
+            Voucher.transaction_date <= end_date + timedelta(days=day_window),
+            Voucher.status == VoucherStatus.CONFIRMED,
+        )
+    )).scalars().all()
+
+    matched = 0
+    for c in pendings:
+        cp = (c.counterparty or "").strip()
+        c_amt = Decimal(str(c.total_amount or 0))
+        for v in vouchers:
+            if abs((v.transaction_date - c.transaction_date).days) > day_window:
+                continue
+            v_amt = Decimal(str(v.total_debit or 0))
+            if abs(v_amt - c_amt) > amount_tolerance:
+                continue
+            vp = (v.merchant_name or "").strip()
+            if cp and vp:
+                cp10 = cp[:10]
+                vp10 = vp[:10]
+                if cp10 not in vp and vp10 not in cp:
+                    continue
+            c.status = AutoVoucherStatus.DUPLICATE
+            c.duplicate_voucher_id = v.id
+            matched += 1
+            break
+
+    await db.commit()
+    return {
+        "matched": matched,
+        "checked_candidates": len(pendings),
+        "checked_vouchers": len(vouchers),
+    }

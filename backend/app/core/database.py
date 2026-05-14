@@ -179,6 +179,10 @@ async def init_db():
         "ALTER TABLE ai_data_upload_history ALTER COLUMN file_type TYPE VARCHAR(50)",
         # upload_type VARCHAR(20) → VARCHAR(50): 여유 확보
         "ALTER TABLE ai_data_upload_history ALTER COLUMN upload_type TYPE VARCHAR(50)",
+        # Voucher.source — 데이터 출처 (granter_auto/manual/wehago_import 등)
+        "ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS source VARCHAR(50)",
+        # AutoVoucherCandidate.duplicate_voucher_id — 위하고 import 등 기존 Voucher와의 중복 매칭
+        "ALTER TABLE auto_voucher_candidates ADD COLUMN IF NOT EXISTS duplicate_voucher_id INTEGER REFERENCES vouchers(id)",
     ]
     for sql in migrations:
         try:
