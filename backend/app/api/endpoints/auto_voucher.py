@@ -451,12 +451,29 @@ async def reject_candidate(
 # ============ 확정 → Voucher 생성 ============
 
 async def _confirm_candidate_inner(
-    db: AsyncSession, c: AutoVoucherCandidate, user_id: int, department_id: int = 1
+    db: AsyncSession, c: AutoVoucherCandidate, user_id: int, department_id: int = 1,
+    _seed_cache: Optional[Dict[str, int]] = None,
 ) -> Voucher:
-    """후보 → Voucher + VoucherLine 변환."""
+    """후보 → Voucher + VoucherLine 변환.
+
+    _seed_cache: {dept_id, user_id} 보장된 값 캐시 — batch 호출 시 매번 시드 안 함.
+    """
     if c.status != AutoVoucherStatus.PENDING:
         raise HTTPException(status_code=400,
                             detail=f"PENDING 상태가 아닙니다 (id={c.id}, status={c.status.value})")
+
+    # FK 보장 — departments/users 시드 데이터 부재 시 자동 생성 (별도 connection)
+    if _seed_cache is None or "dept_id" not in _seed_cache:
+        from app.services.journal_migration import _ensure_base_data
+        seeded_dept_id, seeded_user_id = await _ensure_base_data()
+        if _seed_cache is not None:
+            _seed_cache["dept_id"] = seeded_dept_id
+            _seed_cache["user_id"] = seeded_user_id
+        department_id = seeded_dept_id
+        user_id = seeded_user_id
+    else:
+        department_id = _seed_cache["dept_id"]
+        user_id = _seed_cache["user_id"]
 
     debit_lines = json.loads(c.debit_lines or "[]")
     credit_lines = json.loads(c.credit_lines or "[]")
@@ -871,14 +888,18 @@ async def confirm_batch(
         select(AutoVoucherCandidate).where(AutoVoucherCandidate.id.in_(candidate_ids))
     )).scalars().all()
 
+    seed_cache: Dict[str, int] = {}  # batch 동안 시드 1회만
     success = []
     failures = []
     for c in rows:
         try:
-            voucher = await _confirm_candidate_inner(db, c, user_id)
+            voucher = await _confirm_candidate_inner(db, c, user_id, _seed_cache=seed_cache)
             success.append({"candidate_id": c.id, "voucher_id": voucher.id})
         except HTTPException as e:
-            failures.append({"candidate_id": c.id, "reason": e.detail})
+            failures.append({"candidate_id": c.id, "reason": str(e.detail)[:200]})
+        except Exception as e:
+            logger.exception(f"confirm-batch 항목 실패 (id={c.id})")
+            failures.append({"candidate_id": c.id, "reason": str(e)[:200]})
 
     await db.commit()
     return {
