@@ -251,6 +251,18 @@ async def _ensure_base_data() -> tuple[int, int]:
         except Exception:
             pass  # Supabase가 SET LOCAL 막을 수도 있으므로 best-effort
 
+        # 계정 카테고리 시드 (자산/부채/자본/수익/비용)
+        # _resolve_account_id_cached의 자동 계정 생성이 category_id를 필요로 함
+        await conn.execute(text("""
+            INSERT INTO account_categories (code, name, description) VALUES
+                ('1', '자산', '유동자산·비유동자산'),
+                ('2', '부채', '유동부채·비유동부채'),
+                ('3', '자본', '자본금·이익잉여금 등'),
+                ('4', '수익', '매출·영업외수익'),
+                ('5', '비용', '판관비·영업외비용')
+            ON CONFLICT (code) DO NOTHING
+        """))
+
         # 부서 보장
         await conn.execute(text("""
             INSERT INTO departments (code, name, level, sort_order, is_active, created_at, updated_at)
