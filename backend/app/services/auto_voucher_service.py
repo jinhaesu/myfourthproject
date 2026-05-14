@@ -487,8 +487,8 @@ async def generate_candidates_background(
                     _update(task_id, percent=93, message="카드↔통장 중복 매칭…")
                     match_result = await match_card_bank_duplicates(db, start_date, end_date)
                     result["duplicate_matching"] = match_result
-                    _update(task_id, percent=97, message="기존 전표(위하고 import 등) 중복 검사…")
-                    voucher_dup = await match_voucher_duplicates_core(db, start_date, end_date)
+                    _update(task_id, percent=97, message="위하고 분개 묶음 중복 검사…")
+                    voucher_dup = await match_voucher_duplicates_grouped(db, start_date, end_date)
                     result["voucher_duplicate_matching"] = voucher_dup
                 _update(task_id, status="completed", percent=100,
                         message=f"완료 — {result.get('total_created', 0)}건 생성",

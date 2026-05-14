@@ -31,6 +31,7 @@ from app.services.auto_voucher_service import (
     generate_candidates_background,
     match_card_bank_duplicates,
     match_voucher_duplicates_core,
+    match_voucher_duplicates_grouped,
     get_progress,
 )
 from app.services.journal_migration import (
@@ -237,7 +238,7 @@ async def generate_candidates(
             db, req.start_date, req.end_date,
         )
         result["duplicate_matching"] = match_result
-        voucher_dup = await match_voucher_duplicates_core(
+        voucher_dup = await match_voucher_duplicates_grouped(
             db, req.start_date, req.end_date,
         )
         result["voucher_duplicate_matching"] = voucher_dup
@@ -829,13 +830,19 @@ async def migrate_from_journal(
 async def match_voucher_duplicates(
     start_date: date = Query(...),
     end_date: date = Query(...),
+    mode: str = Query("grouped", description="grouped(분개 묶음 매칭, 추천) | strict(1:1 amount 비교)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     PENDING 후보 중 기존 Voucher (위하고 import 등)와 중복인 것 매칭.
-    매칭 조건: date±3, total_amount±1, counterparty 부분일치.
-    매칭되면 status=DUPLICATE + duplicate_voucher_id 저장.
+
+    mode=grouped (default): 분개 단위 묶음 매칭 — 위하고 voucher 1개가 그랜터 거래 N개를 묶음.
+      매칭 조건: 날짜±3, 정규화 거래처 일치만 (amount 비교 없음).
+      위하고 분개장이 회계 처리 완료된 거래만 모아 합산되어 있어 amount 1:1 매칭 안 됨.
+    mode=strict: 1:1 amount 매칭 (기존).
     """
+    if mode == "grouped":
+        return await match_voucher_duplicates_grouped(db, start_date, end_date)
     return await match_voucher_duplicates_core(db, start_date, end_date)
 
 
