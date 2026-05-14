@@ -18,6 +18,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
@@ -94,29 +95,15 @@ async def _resolve_account_id_cached(
     return new_acc.id
 
 
-async def _next_voucher_number(db: AsyncSession, vdate: date, counter: Dict[str, int]) -> str:
+def _journal_voucher_number(vdate: date) -> str:
     """
-    일자별 시퀀스. 일괄 처리 시 in-memory counter로 가속.
+    위하고 분개장 import 전용 voucher_number 생성기.
 
-    count(*)+1 방식은 띄엄띄엄 번호(이전 실패 task가 일부만 commit한 경우 등)에
-    충돌하므로 MAX(suffix)+1을 사용.
+    Format: YYYYMMDD-J{uuid_hex[:8]}
+    - 'J' prefix로 수기 시퀀스(YYYYMMDD-NNNN)와 구분
+    - UUID 8자리로 동시 task / 재시도에도 충돌 없음 (2^32 분의 1)
     """
-    prefix = vdate.strftime('%Y%m%d')
-    if prefix not in counter:
-        rows = (await db.execute(
-            select(Voucher.voucher_number).where(Voucher.voucher_number.like(f"{prefix}-%"))
-        )).all()
-        max_seq = 0
-        for (vn,) in rows:
-            try:
-                seq = int(vn.split('-', 1)[1])
-                if seq > max_seq:
-                    max_seq = seq
-            except (ValueError, IndexError):
-                continue
-        counter[prefix] = max_seq
-    counter[prefix] += 1
-    return f"{prefix}-{counter[prefix]:04d}"
+    return f"{vdate.strftime('%Y%m%d')}-J{uuid.uuid4().hex[:8]}"
 
 
 async def _find_journal_upload_ids(
@@ -458,7 +445,6 @@ async def migrate_journal_uploads_to_vouchers(
     errors: List[Dict[str, Any]] = []
 
     account_cache: Dict[str, int] = {}
-    voucher_no_counter: Dict[str, int] = {}
 
     def _report(pct: int, msg: str, extra: Optional[Dict[str, Any]] = None):
         if task_id:
@@ -534,7 +520,7 @@ async def migrate_journal_uploads_to_vouchers(
                 continue
 
             voucher = Voucher(
-                voucher_number=await _next_voucher_number(db, vdate, voucher_no_counter),
+                voucher_number=_journal_voucher_number(vdate),
                 voucher_date=vdate,
                 transaction_date=vdate,
                 description=(desc or merchant or "위하고 분개장 import")[:500],
