@@ -38,6 +38,7 @@ from app.services.journal_migration import (
     migrate_journal_uploads_background,
     list_journal_uploads,
     diagnose_journal_data,
+    delete_wehago_import_vouchers,
 )
 
 
@@ -747,6 +748,22 @@ class MigrateJournalRequest(BaseModel):
     start_date: Optional[date] = Field(None, description="ai_raw.transaction_date 기간 필터 시작")
     end_date: Optional[date] = Field(None, description="ai_raw.transaction_date 기간 필터 종료")
     source_label: str = Field("wehago_import", description="Voucher.source 라벨")
+
+
+@router.post("/delete-wehago-imports")
+async def delete_wehago_imports(
+    confirm_token: str = Query(..., description="확인 토큰: 'I_UNDERSTAND_DATA_LOSS' 필수"),
+    source_label: str = Query("wehago_import"),
+):
+    """
+    위하고 import로 생성된 모든 Voucher 일괄 삭제 (회복 불가).
+    중복 변환된 데이터를 정리한 후 재변환하기 위한 일회성 도구.
+
+    별도 connection + 청크 삭제로 다른 API 차단 최소화.
+    """
+    if confirm_token != "I_UNDERSTAND_DATA_LOSS":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+    return await delete_wehago_import_vouchers(source_label=source_label)
 
 
 @router.post("/migrate-from-journal")

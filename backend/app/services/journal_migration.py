@@ -15,6 +15,7 @@ ai_raw(학습용 원천)가 아니라 Voucher(확정 전표)로 격상해야 한
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -465,8 +466,11 @@ async def migrate_journal_uploads_to_vouchers(
         first = grp[0]
         desc = (first.original_description or "")[:200] if first else ""
         merchant = (first.merchant_name or "")[:200] if first else ""
-        # 그룹 내 모든 행을 식별 가능한 안정적인 ext_ref
-        ext_ref = f"journal:upload:{upload_id}:{date_iso}:seq{group_seq}"
+        # ext_ref를 그룹 내용(row_id sorted) 기반 SHA256으로 결정적 생성
+        # → 같은 분개는 항상 같은 ext_ref → 재실행 시 정확히 idempotent
+        row_ids_str = ",".join(str(r.id) for r in sorted(grp, key=lambda x: x.id))
+        content_hash = hashlib.sha256(row_ids_str.encode()).hexdigest()[:16]
+        ext_ref = f"journal:upload:{upload_id}:{date_iso}:{content_hash}"
         if ext_ref in existing_refs:
             skipped_count += 1
             processed += 1
@@ -621,6 +625,77 @@ async def migrate_journal_uploads_to_vouchers(
         "errors": errors[:20],
         "total_groups": len(groups),
         "target_uploads": len(target_upload_ids),
+    }
+
+
+async def delete_wehago_import_vouchers(source_label: str = "wehago_import") -> Dict[str, Any]:
+    """
+    위하고 import로 생성된 voucher 전체 삭제.
+
+    청크 단위(1000행)로 raw SQL DELETE — vouchers / voucher_lines 모두 정리.
+    별도 connection에서 statement timeout 늘려 안전하게 실행.
+
+    cascade='all, delete-orphan' 설정 + voucher_lines.voucher_id FK이므로
+    voucher_lines 먼저 삭제, vouchers 나중 삭제.
+    """
+    from app.core.database import engine
+
+    deleted_lines = 0
+    deleted_vouchers = 0
+
+    async with engine.begin() as conn:
+        try:
+            await conn.execute(text("SET LOCAL statement_timeout = '120000'"))
+        except Exception:
+            pass
+
+        # 전체 개수 확인
+        total_v = (await conn.execute(text(
+            "SELECT COUNT(*) FROM vouchers WHERE source = :s"
+        ), {"s": source_label})).scalar() or 0
+
+        if total_v == 0:
+            return {"deleted_vouchers": 0, "deleted_lines": 0, "message": "삭제할 데이터 없음"}
+
+        # voucher_lines 청크 삭제 (배치당 5000)
+        while True:
+            r = await conn.execute(text("""
+                DELETE FROM voucher_lines
+                WHERE id IN (
+                    SELECT vl.id FROM voucher_lines vl
+                    JOIN vouchers v ON vl.voucher_id = v.id
+                    WHERE v.source = :s
+                    LIMIT 5000
+                )
+            """), {"s": source_label})
+            n = r.rowcount or 0
+            deleted_lines += n
+            if n < 5000:
+                break
+
+        # vouchers 청크 삭제 (배치당 2000)
+        while True:
+            r = await conn.execute(text("""
+                DELETE FROM vouchers
+                WHERE id IN (
+                    SELECT id FROM vouchers WHERE source = :s LIMIT 2000
+                )
+            """), {"s": source_label})
+            n = r.rowcount or 0
+            deleted_vouchers += n
+            if n < 2000:
+                break
+
+        # AutoVoucherCandidate.duplicate_voucher_id 정리 (FK 매칭 해제)
+        await conn.execute(text("""
+            UPDATE auto_voucher_candidates SET duplicate_voucher_id = NULL
+            WHERE duplicate_voucher_id NOT IN (SELECT id FROM vouchers)
+        """))
+
+    return {
+        "deleted_vouchers": deleted_vouchers,
+        "deleted_lines": deleted_lines,
+        "total_before": total_v,
     }
 
 
