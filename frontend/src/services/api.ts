@@ -1147,6 +1147,9 @@ export const autoVoucherApi = {
   checkDuplicate: (transaction_date: string, total_amount: number, counterparty?: string) =>
     api.post('/auto-voucher/check-duplicate', { transaction_date, total_amount, counterparty }),
   listJournalUploads: () => api.get<{ uploads: JournalUploadInfo[] }>('/auto-voucher/journal-uploads'),
+  deleteWehagoImports: () => api.post('/auto-voucher/delete-wehago-imports', null, {
+    params: { confirm_token: 'I_UNDERSTAND_DATA_LOSS' }, timeout: 30_000,
+  }),
   migrateFromJournal: (payload: {
     upload_ids?: number[]
     start_date?: string
@@ -1155,6 +1158,36 @@ export const autoVoucherApi = {
   }) => api.post('/auto-voucher/migrate-from-journal', payload, { timeout: 120_000 }),
   matchVoucherDuplicates: (start_date: string, end_date: string) =>
     api.post('/auto-voucher/match-voucher-duplicates', null, { params: { start_date, end_date } }),
+}
+
+// ==================== AI 자금 다이제스트 (자금일보) ====================
+export interface CashDigestSection {
+  key: string
+  label: string
+  description: string
+  required: boolean
+}
+
+export interface CashDigestConfig {
+  enabled: boolean
+  sections: string[]
+  disabled_sections: string[]
+  delivery_time: string
+  delivery_channels: string[]
+}
+
+export const cashDigestApi = {
+  listSections: () => api.get<CashDigestSection[]>('/daily-cash-report/sections'),
+  getConfig: () => api.get<CashDigestConfig>('/daily-cash-report/config'),
+  updateConfig: (patch: Partial<CashDigestConfig>) =>
+    api.put<CashDigestConfig>('/daily-cash-report/config', patch),
+  preview: (date?: string) =>
+    api.get('/daily-cash-report/preview', { params: date ? { date } : {} }),
+  today: () => api.get('/daily-cash-report/today'),
+  sendNow: (targetDate?: string) =>
+    api.post('/daily-cash-report/send-now', null, {
+      params: targetDate ? { target_date: targetDate } : {},
+    }),
 }
 
 export default api

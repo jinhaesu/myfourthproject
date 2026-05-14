@@ -772,14 +772,23 @@ async def delete_wehago_imports(
     return await delete_wehago_import_vouchers(source_label=source_label)
 
 
+_MIGRATE_LOCK_ENABLED = True  # 데이터 정리 중 — 비활성화 (정리 끝나면 False로)
+
+
 @router.post("/migrate-from-journal")
 async def migrate_from_journal(
     req: MigrateJournalRequest,
     user_id: Optional[int] = Query(None, description="없으면 첫 번째 사용자 자동 사용"),
     department_id: Optional[int] = Query(None, description="없으면 첫 번째 부서 자동 사용"),
     background: bool = Query(True, description="true: task_id 즉시 반환 + 백그라운드 처리"),
+    bypass_lock: bool = Query(False, description="LOCK 우회 (디버그용)"),
     db: AsyncSession = Depends(get_db),
 ):
+    if _MIGRATE_LOCK_ENABLED and not bypass_lock:
+        raise HTTPException(
+            status_code=423,
+            detail="분개장 변환이 일시 잠금 상태입니다 (데이터 정리 중). 잠시 후 다시 시도하세요.",
+        )
     """
     위하고/더존 분개장 업로드(ai_raw)를 Voucher(CONFIRMED, source=wehago_import)로 일괄 변환.
     이미 변환된 그룹(external_ref 매칭)은 skip — idempotent.

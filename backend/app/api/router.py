@@ -30,6 +30,7 @@ from app.api.endpoints import (
     granter,
     exchange_rates,
     auto_voucher,
+    daily_cash_report,
 )
 
 api_router = APIRouter()
@@ -198,6 +199,13 @@ api_router.include_router(
 api_router.include_router(
     exchange_rates.router,
     tags=["exchange-rates"]
+)
+
+# AI 자금 다이제스트 (자금일보)
+api_router.include_router(
+    daily_cash_report.router,
+    prefix="/daily-cash-report",
+    tags=["자금일보"],
 )
 
 # 자동 전표 검수 큐 (그랜터 → AI 분개 → 검수 → 확정)
