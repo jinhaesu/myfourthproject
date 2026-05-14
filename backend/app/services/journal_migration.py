@@ -677,14 +677,15 @@ async def delete_wehago_import_vouchers(
     #    - 한 트랜잭션에서 lock 일치 보장 (race condition 없음)
     #    - FK constraint 이름과 무관 (ALTER 불필요)
     #    - 청크 2000으로 크게 (Supabase statement_timeout=60s 안 - SET LOCAL로 보장)
-    CHUNK = 1000  # 500은 안전하지만 느림, 2000은 timeout — 1000이 sweet spot
-    for it in range(2000):
+    CHUNK = 500  # 1000은 timeout 빈번
+    for it in range(5000):
         async with engine.begin() as conn:
             try:
                 await conn.execute(text("SET LOCAL statement_timeout = '60000'"))
             except Exception:
                 pass
-            r = await conn.execute(text("""
+            # CTE + DELETE — rowcount는 asyncpg에서 0/None일 수 있어 신뢰 불가
+            await conn.execute(text("""
                 WITH target AS (
                     SELECT id FROM vouchers WHERE source = :s LIMIT :lim
                 ),
@@ -696,12 +697,18 @@ async def delete_wehago_import_vouchers(
                 DELETE FROM vouchers
                 WHERE id IN (SELECT id FROM target)
             """), {"s": source_label, "lim": CHUNK})
-            n = r.rowcount or 0
-            deleted_vouchers += n
-            if n == 0:
-                break
+            # 정확한 진행 측정: COUNT(*)로 남은 수 확인
+            remaining = (await conn.execute(
+                text("SELECT count(*) FROM vouchers WHERE source = :s"),
+                {"s": source_label},
+            )).scalar() or 0
+        prev_remaining = total_v - deleted_vouchers
+        actually_deleted = max(0, prev_remaining - remaining)
+        deleted_vouchers += actually_deleted
+        if remaining == 0 or actually_deleted == 0:
+            break
         pct = 10 + int(85 * deleted_vouchers / max(total_v, 1))
-        _report(pct, f"삭제 진행 {deleted_vouchers}/{total_v}",
+        _report(pct, f"삭제 진행 {deleted_vouchers}/{total_v} (남은 {remaining})",
                 {"deleted_vouchers": deleted_vouchers, "deleted_lines": 0})
         await asyncio.sleep(0)
 

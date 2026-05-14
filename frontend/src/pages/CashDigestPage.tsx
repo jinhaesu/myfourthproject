@@ -74,6 +74,11 @@ export default function CashDigestPage() {
     },
   })
 
+  const sendNowMut = useMutation({
+    mutationFn: () => cashDigestApi.sendNow(),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['cash-digest-preview'] }),
+  })
+
   const sections: CashDigestSection[] = sectionsQuery.data || []
   const preview = previewQuery.data
 
@@ -238,6 +243,16 @@ export default function CashDigestPage() {
             <div className="mt-2 text-2xs text-emerald-700 text-center">
               ✓ 다음 아침부터 새 설정으로 발송됩니다
             </div>
+          )}
+          <button
+            disabled={sendNowMut.isPending}
+            onClick={() => sendNowMut.mutate()}
+            className="mt-2 w-full py-2 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-xs font-semibold disabled:opacity-50"
+          >
+            {sendNowMut.isPending ? '발송 중…' : '지금 한 번 발송'}
+          </button>
+          {sendNowMut.isSuccess && (
+            <div className="mt-1 text-2xs text-emerald-600 text-center">✓ 발송 완료</div>
           )}
         </div>
       </div>

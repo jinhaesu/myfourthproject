@@ -772,7 +772,7 @@ async def delete_wehago_imports(
     return await delete_wehago_import_vouchers(source_label=source_label)
 
 
-_MIGRATE_LOCK_ENABLED = True  # 데이터 정리 중 — 비활성화 (정리 끝나면 False로)
+_MIGRATE_LOCK_ENABLED = False  # 정리 완료 — 변환 다시 허용
 
 
 @router.post("/migrate-from-journal")
