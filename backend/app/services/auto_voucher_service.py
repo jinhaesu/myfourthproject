@@ -636,3 +636,73 @@ async def match_voucher_duplicates_core(
         "checked_candidates": len(pendings),
         "checked_vouchers": len(vouchers),
     }
+
+
+def _normalize_counterparty(name: Optional[str]) -> str:
+    """거래처명 정규화: '비씨카드(3917)_마케팅' → '비씨카드'."""
+    if not name:
+        return ""
+    import re
+    s = re.sub(r'\([^)]*\)', '', name)   # 괄호 제거
+    s = re.sub(r'[_\-/].*$', '', s)       # 첫 구분자 이후 절단
+    return s.strip().lower()[:10]
+
+
+async def match_voucher_duplicates_grouped(
+    db: AsyncSession,
+    start_date: date,
+    end_date: date,
+    day_window: int = 3,
+) -> Dict[str, int]:
+    """
+    분개 단위 묶음 매칭 — 위하고 voucher 1개가 그랜터 후보 N개와 매칭되는 경우.
+
+    위하고 분개장은 회계 처리 완료된 거래만 모음. 한 분개에 한 거래처의 여러 거래
+    가 묶일 수 있음 (예: 한 카드사 월 청구 = 카드 결제 N건).
+
+    매칭 기준: (날짜 ±day_window, 정규화된 거래처) 일치하면 DUPLICATE.
+    1:1 amount 검사 없음 — N건이 합쳐서 분개되었다는 전제.
+    """
+    # 위하고 voucher의 (날짜, 거래처) 매핑
+    v_q = select(Voucher.id, Voucher.transaction_date, Voucher.merchant_name).where(
+        Voucher.status == VoucherStatus.CONFIRMED,
+        Voucher.transaction_date >= start_date - timedelta(days=day_window),
+        Voucher.transaction_date <= end_date + timedelta(days=day_window),
+    )
+    voucher_index: Dict[tuple, int] = {}
+    for v in (await db.execute(v_q)).all():
+        key = (v.transaction_date, _normalize_counterparty(v.merchant_name))
+        if key[1]:  # 빈 거래처는 매칭 키 안 됨
+            voucher_index.setdefault(key, v.id)
+
+    # 매칭 후보
+    pendings = (await db.execute(
+        select(AutoVoucherCandidate).where(
+            AutoVoucherCandidate.status == AutoVoucherStatus.PENDING,
+            AutoVoucherCandidate.transaction_date >= start_date,
+            AutoVoucherCandidate.transaction_date <= end_date,
+        )
+    )).scalars().all()
+
+    matched = 0
+    for c in pendings:
+        norm = _normalize_counterparty(c.counterparty)
+        if not norm:
+            continue
+        v_id = None
+        for offset in (0, -1, 1, -2, 2, -3, 3):
+            test = c.transaction_date + timedelta(days=offset)
+            v_id = voucher_index.get((test, norm))
+            if v_id:
+                break
+        if v_id:
+            c.status = AutoVoucherStatus.DUPLICATE
+            c.duplicate_voucher_id = v_id
+            matched += 1
+
+    await db.commit()
+    return {
+        "matched": matched,
+        "checked_candidates": len(pendings),
+        "voucher_keys": len(voucher_index),
+    }
