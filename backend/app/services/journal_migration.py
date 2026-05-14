@@ -21,7 +21,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, Dict, Any, List, Tuple
 
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, case, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.accounting import (
@@ -107,10 +107,11 @@ async def _find_journal_upload_ids(
     """
     "분개장 데이터를 보유한 업로드" 식별 — upload_type 무관.
 
-    기준: ai_raw 행 중 (debit_amount > 0 OR credit_amount > 0) AND source_account_code 채워짐.
+    기준: ai_raw 행 중 (debit_amount > 0 OR credit_amount > 0) AND account_code 채워짐.
     이 조건을 만족하는 행이 ≥ min_journal_rows건인 업로드만 분개장으로 본다.
 
-    이렇게 하면 upload-historical로 잘못 들어온 위하고 분개장도 자동 감지된다.
+    source_account_code는 _account_name_to_code 매핑 실패 시 비어있을 수 있으므로
+    필수 조건에서 제외 (실제 분개 변환 시점에 account_code/source_account_code 둘 다 시도).
     """
     q = (
         select(
@@ -118,8 +119,8 @@ async def _find_journal_upload_ids(
             func.count(AIRawTransactionData.id).label("cnt"),
         )
         .where(
-            AIRawTransactionData.source_account_code.isnot(None),
-            AIRawTransactionData.source_account_code != "",
+            AIRawTransactionData.account_code.isnot(None),
+            AIRawTransactionData.account_code != "",
             (AIRawTransactionData.debit_amount > 0) | (AIRawTransactionData.credit_amount > 0),
         )
         .group_by(AIRawTransactionData.upload_id)
@@ -128,6 +129,101 @@ async def _find_journal_upload_ids(
         q = q.where(AIRawTransactionData.upload_id.in_(only_ids))
     rows = (await db.execute(q)).all()
     return [r.upload_id for r in rows if (r.cnt or 0) >= min_journal_rows]
+
+
+async def diagnose_journal_data(
+    db: AsyncSession, upload_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    ai_raw 진단 — 어떤 컬럼이 어떻게 채워졌는지 업로드별 통계.
+    분개장 식별이 왜 실패하는지 디버깅용.
+    """
+    debit_flag = case((AIRawTransactionData.debit_amount > 0, 1), else_=0)
+    credit_flag = case((AIRawTransactionData.credit_amount > 0, 1), else_=0)
+    src_filled_flag = case(
+        (
+            and_(
+                AIRawTransactionData.source_account_code.isnot(None),
+                AIRawTransactionData.source_account_code != "",
+            ),
+            1,
+        ),
+        else_=0,
+    )
+
+    stat_q = (
+        select(
+            AIRawTransactionData.upload_id,
+            func.count(AIRawTransactionData.id).label("total"),
+            func.count(AIRawTransactionData.account_code).label("acc_code_cnt"),
+            func.sum(src_filled_flag).label("src_code_cnt"),
+            func.count(AIRawTransactionData.transaction_date).label("date_cnt"),
+            func.sum(debit_flag).label("debit_cnt"),
+            func.sum(credit_flag).label("credit_cnt"),
+        )
+        .group_by(AIRawTransactionData.upload_id)
+        .order_by(AIRawTransactionData.upload_id.desc())
+    )
+    if upload_id is not None:
+        stat_q = stat_q.where(AIRawTransactionData.upload_id == upload_id)
+    stat_rows = (await db.execute(stat_q)).all()
+
+    # 업로드 메타 join
+    upload_q = select(
+        AIDataUploadHistory.id,
+        AIDataUploadHistory.filename,
+        AIDataUploadHistory.upload_type,
+        AIDataUploadHistory.row_count,
+    )
+    if upload_id is not None:
+        upload_q = upload_q.where(AIDataUploadHistory.id == upload_id)
+    uploads = {u.id: u for u in (await db.execute(upload_q)).all()}
+
+    # 샘플 행 (디버깅용 — 첫 3행)
+    sample_rows = []
+    if upload_id is not None:
+        sample_q = (
+            select(AIRawTransactionData)
+            .where(AIRawTransactionData.upload_id == upload_id)
+            .order_by(AIRawTransactionData.row_number)
+            .limit(5)
+        )
+        for r in (await db.execute(sample_q)).scalars().all():
+            sample_rows.append({
+                "row_number": r.row_number,
+                "transaction_date": r.transaction_date,
+                "original_description": r.original_description[:50] if r.original_description else None,
+                "merchant_name": r.merchant_name,
+                "account_code": r.account_code,
+                "account_name": r.account_name,
+                "source_account_code": r.source_account_code,
+                "source_account_name": r.source_account_name,
+                "debit_amount": str(r.debit_amount),
+                "credit_amount": str(r.credit_amount),
+            })
+
+    result = []
+    for s in stat_rows:
+        u = uploads.get(s.upload_id)
+        result.append({
+            "upload_id": s.upload_id,
+            "filename": u.filename if u else None,
+            "upload_type": u.upload_type if u else None,
+            "history_row_count": u.row_count if u else None,
+            "ai_raw_total": s.total or 0,
+            "account_code_filled": s.acc_code_cnt or 0,
+            "source_account_code_filled": s.src_code_cnt or 0,
+            "transaction_date_filled": s.date_cnt or 0,
+            "rows_with_debit": int(s.debit_cnt or 0),
+            "rows_with_credit": int(s.credit_cnt or 0),
+            "is_journal_by_account_code": (s.acc_code_cnt or 0) >= 5 and (int(s.debit_cnt or 0) + int(s.credit_cnt or 0)) >= 5,
+            "is_journal_by_source_code": (s.src_code_cnt or 0) >= 5 and (int(s.debit_cnt or 0) + int(s.credit_cnt or 0)) >= 5,
+        })
+
+    return {
+        "uploads": result,
+        "sample_rows": sample_rows if upload_id is not None else None,
+    }
 
 
 async def migrate_journal_uploads_to_vouchers(
@@ -365,7 +461,7 @@ async def list_journal_uploads(db: AsyncSession) -> List[Dict[str, Any]]:
     )
     rows = (await db.execute(q)).all()
 
-    # 분개 행 수 카운트 (별도 쿼리)
+    # 분개 행 수 카운트 (별도 쿼리) — _find_journal_upload_ids와 동일 기준
     journal_row_q = (
         select(
             AIRawTransactionData.upload_id,
@@ -375,8 +471,8 @@ async def list_journal_uploads(db: AsyncSession) -> List[Dict[str, Any]]:
         )
         .where(
             AIRawTransactionData.upload_id.in_(journal_ids),
-            AIRawTransactionData.source_account_code.isnot(None),
-            AIRawTransactionData.source_account_code != "",
+            AIRawTransactionData.account_code.isnot(None),
+            AIRawTransactionData.account_code != "",
             (AIRawTransactionData.debit_amount > 0) | (AIRawTransactionData.credit_amount > 0),
         )
         .group_by(AIRawTransactionData.upload_id)
