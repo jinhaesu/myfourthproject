@@ -279,7 +279,7 @@ async def list_candidates(
     counterparty: Optional[str] = Query(None),
     sort: str = Query("date_desc", description="date_asc|date_desc|conf_asc|conf_desc"),
     page: int = Query(1, ge=1),
-    size: int = Query(50, ge=1, le=500),
+    size: int = Query(50, ge=1, le=50000),
     db: AsyncSession = Depends(get_db),
 ):
     """검수 큐 목록 — 신뢰도/유형/상태/기간/거래처별 필터."""

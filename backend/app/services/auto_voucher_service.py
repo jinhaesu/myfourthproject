@@ -145,7 +145,7 @@ def _build_tax_invoice_candidate(
             "side": "credit", "account_code": "404", "account_name": "제품매출",
             "amount": str(supply), "memo": "",
         }]
-        if vat > 0:
+        if vat != 0:
             credit_lines.append({
                 "side": "credit", "account_code": "255", "account_name": "부가세예수금",
                 "amount": str(vat), "memo": "",
@@ -159,7 +159,7 @@ def _build_tax_invoice_candidate(
             "side": "debit", "account_code": sugg_code, "account_name": sugg_name,
             "amount": str(supply), "memo": "",
         }]
-        if vat > 0:
+        if vat != 0:
             debit_lines.append({
                 "side": "debit", "account_code": "135", "account_name": "부가세대급금",
                 "amount": str(vat), "memo": "",
