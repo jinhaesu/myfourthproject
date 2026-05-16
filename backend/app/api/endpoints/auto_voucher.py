@@ -565,6 +565,9 @@ async def _confirm_candidate_inner(
     db.add(voucher)
     await db.flush()  # voucher.id 확보
 
+    # 적요(description) 우선순위: 라인 메모 > candidate.description > counterparty
+    candidate_desc = (c.description or c.counterparty or "")[:500]
+
     line_no = 1
     for l in debit_lines + credit_lines:
         is_debit = l.get("side") == "debit"
@@ -576,8 +579,9 @@ async def _confirm_candidate_inner(
         if account_id is None:
             raise HTTPException(status_code=400,
                                 detail=f"계정 매핑 실패: code={l.get('account_code')}")
-        # 부가세대급금(135)·예수금(255) 라인은 vat_amount 보관 — 추후 부가세 신고용
         vat_acc = l.get("account_code") in ("135", "255")
+        line_memo = (l.get("memo") or "").strip()
+        line_desc = line_memo or candidate_desc or l.get("account_name") or ""
         db.add(VoucherLine(
             voucher_id=voucher.id,
             line_number=line_no,
@@ -586,7 +590,7 @@ async def _confirm_candidate_inner(
             credit_amount=amt if not is_debit else Decimal("0"),
             vat_amount=amt if vat_acc else Decimal("0"),
             supply_amount=amt if not vat_acc else Decimal("0"),
-            description=l.get("memo", ""),
+            description=line_desc[:500],
             counterparty_name=c.counterparty,
         ))
         line_no += 1
@@ -894,6 +898,30 @@ async def migrate_from_journal(
     )
 
 
+@router.post("/backfill-line-descriptions")
+async def backfill_line_descriptions(
+    confirm_token: str = Query(..., description="확인 토큰: 'I_UNDERSTAND' 필수"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    voucher_lines.description이 비어있는 행을 voucher.description으로 일괄 보정.
+    적요 누락된 기존 전표를 계정별 원장에서 식별 가능하게 만듦.
+    """
+    from sqlalchemy import text as _text
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치 (I_UNDERSTAND 필수)")
+    result = await db.execute(_text("""
+        UPDATE voucher_lines vl
+        SET description = COALESCE(NULLIF(v.description, ''), '거래')
+        FROM vouchers v
+        WHERE vl.voucher_id = v.id
+          AND (vl.description IS NULL OR vl.description = '')
+          AND v.description IS NOT NULL AND v.description != ''
+    """))
+    await db.commit()
+    return {"updated_lines": result.rowcount or 0}
+
+
 @router.post("/reject-confirmed-period")
 async def reject_confirmed_period(
     start_date: date = Query(...),
@@ -1141,7 +1169,11 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
                     # === VoucherLine bulk add ===
                     if voucher_objs:
                         line_objs: List[VoucherLine] = []
-                        for voucher, specs in zip(voucher_objs, line_specs_per_voucher):
+                        for voucher_idx, (voucher, specs) in enumerate(zip(voucher_objs, line_specs_per_voucher)):
+                            v_row = voucher_rows[voucher_idx]
+                            cand = v_row["candidate"]
+                            # 적요 fallback: line.memo > candidate.description > counterparty
+                            cand_desc = (cand.description or cand.counterparty or "")[:500]
                             line_no = 1
                             for spec in specs:
                                 acc_id = account_cache.get(spec["code"])
@@ -1150,6 +1182,8 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
                                 is_debit = spec["side"] == "debit"
                                 amt = spec["amount"]
                                 vat_acc = spec["code"] in ("135", "255")
+                                line_memo = (spec.get("memo") or "").strip()
+                                line_desc = (line_memo or cand_desc or "")[:500]
                                 line_objs.append(VoucherLine(
                                     voucher_id=voucher.id,
                                     line_number=line_no,
@@ -1158,7 +1192,8 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
                                     credit_amount=amt if not is_debit else Decimal("0"),
                                     vat_amount=amt if vat_acc else Decimal("0"),
                                     supply_amount=amt if not vat_acc else Decimal("0"),
-                                    description=spec.get("memo", "") or "",
+                                    description=line_desc,
+                                    counterparty_name=cand.counterparty,
                                 ))
                                 line_no += 1
                         if line_objs:
