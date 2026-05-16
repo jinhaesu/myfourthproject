@@ -677,38 +677,34 @@ async def delete_wehago_import_vouchers(
     #    - 한 트랜잭션에서 lock 일치 보장 (race condition 없음)
     #    - FK constraint 이름과 무관 (ALTER 불필요)
     #    - 청크 2000으로 크게 (Supabase statement_timeout=60s 안 - SET LOCAL로 보장)
-    CHUNK = 50  # 매우 보수적 — 다른 task와 동시 실행 시에도 timeout 회피
+    CHUNK = 50  # CTE 대신 단계별 SQL — 각 lock 짧게
     for it in range(5000):
         async with engine.begin() as conn:
             try:
                 await conn.execute(text("SET LOCAL statement_timeout = '60000'"))
             except Exception:
                 pass
-            # CTE + DELETE — rowcount는 asyncpg에서 0/None일 수 있어 신뢰 불가
-            await conn.execute(text("""
-                WITH target AS (
-                    SELECT id FROM vouchers WHERE source = :s LIMIT :lim
-                ),
-                del_lines AS (
-                    DELETE FROM voucher_lines
-                    WHERE voucher_id IN (SELECT id FROM target)
-                    RETURNING id
-                )
-                DELETE FROM vouchers
-                WHERE id IN (SELECT id FROM target)
-            """), {"s": source_label, "lim": CHUNK})
-            # 정확한 진행 측정: COUNT(*)로 남은 수 확인
-            remaining = (await conn.execute(
-                text("SELECT count(*) FROM vouchers WHERE source = :s"),
-                {"s": source_label},
-            )).scalar() or 0
-        prev_remaining = total_v - deleted_vouchers
-        actually_deleted = max(0, prev_remaining - remaining)
-        deleted_vouchers += actually_deleted
-        if remaining == 0 or actually_deleted == 0:
-            break
+            # 1단계: 삭제 대상 voucher id 목록
+            ids = [row[0] for row in (await conn.execute(
+                text("SELECT id FROM vouchers WHERE source = :s LIMIT :lim"),
+                {"s": source_label, "lim": CHUNK},
+            )).all()]
+            if not ids:
+                break
+            # 2단계: voucher_lines 먼저 삭제
+            await conn.execute(
+                text("DELETE FROM voucher_lines WHERE voucher_id = ANY(:ids)"),
+                {"ids": ids},
+            )
+            # 3단계: vouchers 삭제
+            await conn.execute(
+                text("DELETE FROM vouchers WHERE id = ANY(:ids)"),
+                {"ids": ids},
+            )
+            deleted_vouchers += len(ids)
+
         pct = 10 + int(85 * deleted_vouchers / max(total_v, 1))
-        _report(pct, f"삭제 진행 {deleted_vouchers}/{total_v} (남은 {remaining})",
+        _report(pct, f"삭제 진행 {deleted_vouchers}/{total_v}",
                 {"deleted_vouchers": deleted_vouchers, "deleted_lines": 0})
         await asyncio.sleep(0)
 
