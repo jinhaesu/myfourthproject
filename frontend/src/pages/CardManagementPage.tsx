@@ -299,26 +299,56 @@ export default function CardManagementPage() {
   )
 }
 
+function formatShortWon(n: number): string {
+  if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(1)}억`
+  if (n >= 10_000) return `${(n / 10_000).toFixed(0)}만`
+  if (n >= 1000) return `${(n / 1000).toFixed(0)}천`
+  return n.toLocaleString()
+}
+
 function DailyChart({ timeline }: { timeline: { date: string; amount: number }[] }) {
   const max = useMemo(() => Math.max(1, ...timeline.map((t) => t.amount)), [timeline])
   if (!timeline.length) return null
+  // Y축 ticks: max, max/2, 0
+  const ticks = [max, max * 0.75, max * 0.5, max * 0.25, 0]
   return (
     <div>
       <div className="text-2xs font-semibold text-ink-600 mb-1.5 flex items-center gap-1">
         <CalendarDaysIcon className="h-3 w-3" />일별 사용액
       </div>
-      <div className="flex items-end gap-px h-16 bg-canvas-50 rounded p-1">
-        {timeline.map((t) => {
-          const h = (t.amount / max) * 100
-          return (
-            <div key={t.date} className="flex-1 flex flex-col justify-end" title={`${t.date}: ${t.amount.toLocaleString()}원`}>
-              <div className="bg-blue-500 rounded-t" style={{ height: `${h}%`, minHeight: t.amount > 0 ? '1px' : '0' }} />
-            </div>
-          )
-        })}
+      <div className="flex gap-1">
+        {/* Y축 라벨 */}
+        <div className="flex flex-col justify-between h-28 text-2xs text-ink-400 text-right pr-1 font-mono">
+          {ticks.map((v, i) => (
+            <span key={i}>{formatShortWon(v)}</span>
+          ))}
+        </div>
+        {/* 차트 본체 */}
+        <div className="flex-1 relative h-28">
+          {/* 가로 grid line */}
+          {ticks.map((_, i) => (
+            <div key={i} className="absolute left-0 right-0 border-t border-ink-100"
+              style={{ top: `${(i / (ticks.length - 1)) * 100}%` }} />
+          ))}
+          <div className="absolute inset-0 flex items-end gap-0.5 p-0.5">
+            {timeline.map((t) => {
+              const h = max > 0 ? (t.amount / max) * 100 : 0
+              return (
+                <div key={t.date}
+                  className="flex-1 flex flex-col justify-end group relative"
+                  title={`${t.date}: ${t.amount.toLocaleString()}원`}
+                >
+                  <div className={`rounded-t transition ${t.amount > 0 ? 'bg-blue-500 group-hover:bg-blue-700' : ''}`}
+                    style={{ height: `${h}%`, minHeight: t.amount > 0 ? '2px' : '0' }} />
+                </div>
+              )
+            })}
+          </div>
+        </div>
       </div>
-      <div className="flex items-center justify-between text-2xs text-ink-400 mt-1">
+      <div className="flex items-center justify-between text-2xs text-ink-400 mt-1 pl-12">
         <span>{timeline[0]?.date}</span>
+        <span>{timeline[Math.floor(timeline.length / 2)]?.date}</span>
         <span>{timeline[timeline.length - 1]?.date}</span>
       </div>
     </div>
@@ -349,24 +379,46 @@ function CategoryBars({ categories, total }: { categories: { category: string; t
 function MonthlyChart({ months }: { months: { month: string; total: number; count: number }[] }) {
   const max = useMemo(() => Math.max(1, ...months.map((m) => m.total)), [months])
   if (!months.length) return <div className="text-2xs text-ink-400 py-4 text-center">데이터 없음</div>
+  const ticks = [max, max * 0.75, max * 0.5, max * 0.25, 0]
   return (
     <div>
-      <div className="flex items-end gap-2 h-32 bg-canvas-50 rounded p-2">
-        {months.map((m) => {
-          const h = (m.total / max) * 100
-          return (
-            <div key={m.month} className="flex-1 flex flex-col items-center justify-end gap-1">
-              <span className="text-2xs font-mono text-ink-700">{formatCurrency(m.total, false)}</span>
-              <div className="w-full bg-blue-500 rounded-t" style={{ height: `${h}%`, minHeight: m.total > 0 ? '2px' : '0' }} />
-            </div>
-          )
-        })}
+      <div className="flex gap-2">
+        {/* Y축 */}
+        <div className="flex flex-col justify-between h-40 text-2xs text-ink-400 text-right pr-1 font-mono">
+          {ticks.map((v, i) => (
+            <span key={i}>{formatShortWon(v)}</span>
+          ))}
+        </div>
+        {/* 차트 */}
+        <div className="flex-1 relative h-40">
+          {ticks.map((_, i) => (
+            <div key={i} className="absolute left-0 right-0 border-t border-ink-100"
+              style={{ top: `${(i / (ticks.length - 1)) * 100}%` }} />
+          ))}
+          <div className="absolute inset-0 flex items-end gap-3 p-1">
+            {months.map((m) => {
+              const h = max > 0 ? (m.total / max) * 100 : 0
+              return (
+                <div key={m.month} className="flex-1 flex flex-col items-center justify-end gap-1 group relative">
+                  {m.total > 0 && (
+                    <span className="text-2xs font-mono text-ink-700 opacity-0 group-hover:opacity-100 absolute -top-4 whitespace-nowrap">
+                      {formatCurrency(m.total, false)}
+                    </span>
+                  )}
+                  <div className="w-full bg-blue-500 rounded-t group-hover:bg-blue-700 transition"
+                    style={{ height: `${h}%`, minHeight: m.total > 0 ? '2px' : '0' }} />
+                </div>
+              )
+            })}
+          </div>
+        </div>
       </div>
-      <div className="flex items-end gap-2 mt-1">
+      <div className="flex items-end gap-3 mt-2 pl-12">
         {months.map((m) => (
-          <div key={m.month} className="flex-1 text-center text-2xs text-ink-500">
-            {m.month}<br />
-            <span className="text-ink-400">{m.count.toLocaleString()}건</span>
+          <div key={m.month} className="flex-1 text-center text-2xs">
+            <div className="font-semibold text-ink-700">{m.month}</div>
+            <div className="font-mono text-ink-900">{formatShortWon(m.total)}원</div>
+            <div className="text-ink-400">{m.count.toLocaleString()}건</div>
           </div>
         ))}
       </div>
