@@ -1232,7 +1232,13 @@ async def confirm_batch(
 ):
     """다중 확정 — 라인 합이 안 맞는 후보는 실패 처리하고 나머지는 진행.
 
-    background=true: 큰 N(200건 초과 권장) → task_id 반환, /progress/{tid} 폴링.
+    응답:
+      success_count — 새로 confirmed
+      already_confirmed_count — 이번 호출 이전에 이미 confirmed (idempotent 성공)
+      skipped_count — rejected/duplicate (실패 아님)
+      failure_count — 실제 처리 실패 (분개 오류 등)
+
+    background=true (또는 200건 초과): task_id 반환 + 폴링.
     """
     if background or len(candidate_ids) > 200:
         task_id = await _confirm_batch_background(candidate_ids, user_id)
@@ -1247,27 +1253,35 @@ async def confirm_batch(
         select(AutoVoucherCandidate).where(AutoVoucherCandidate.id.in_(candidate_ids))
     )).scalars().all()
 
-    seed_cache: Dict[str, int] = {}  # batch 동안 시드 1회만
+    seed_cache: Dict[str, int] = {}
     success = []
+    already_confirmed = []
+    skipped = []
     failures = []
     for c in rows:
-        # savepoint per candidate — 한 후보 실패가 다른 후보에 전파 안 되게
+        # 사전 분기 — 이미 confirmed면 idempotent 성공
+        if c.status == AutoVoucherStatus.CONFIRMED:
+            already_confirmed.append({
+                "candidate_id": c.id, "voucher_id": c.confirmed_voucher_id,
+            })
+            continue
+        # rejected/duplicate은 skip (실패 아님)
+        if c.status != AutoVoucherStatus.PENDING:
+            skipped.append({"candidate_id": c.id, "status": c.status.value})
+            continue
+
         savepoint = await db.begin_nested()
         try:
             voucher = await _confirm_candidate_inner(db, c, user_id, _seed_cache=seed_cache)
             await savepoint.commit()
             success.append({"candidate_id": c.id, "voucher_id": voucher.id})
         except HTTPException as e:
-            try:
-                await savepoint.rollback()
-            except Exception:
-                pass
+            try: await savepoint.rollback()
+            except Exception: pass
             failures.append({"candidate_id": c.id, "reason": str(e.detail)[:200]})
         except Exception as e:
-            try:
-                await savepoint.rollback()
-            except Exception:
-                pass
+            try: await savepoint.rollback()
+            except Exception: pass
             logger.exception(f"confirm-batch 항목 실패 (id={c.id})")
             failures.append({"candidate_id": c.id, "reason": str(e)[:200]})
 
@@ -1275,7 +1289,11 @@ async def confirm_batch(
     return {
         "total": len(rows),
         "success_count": len(success),
+        "already_confirmed_count": len(already_confirmed),
+        "skipped_count": len(skipped),
         "failure_count": len(failures),
         "success": success,
+        "already_confirmed": already_confirmed,
+        "skipped": skipped,
         "failures": failures,
     }

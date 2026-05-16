@@ -447,7 +447,6 @@ export default function AutoVoucherPage() {
 
   const confirmBatchMut = useMutation({
     mutationFn: async (ids: number[]) => {
-      // 200건 초과는 background mode 강제
       const useBackground = ids.length > 200
       const r = await autoVoucherApi.confirmBatch(ids, 1, useBackground)
       return r
@@ -844,6 +843,51 @@ export default function AutoVoucherPage() {
           </div>
         )}
         {confirmBatchMut.data && !batchTaskId && (
+          <div className="text-2xs pt-1 space-y-0.5">
+            {(() => {
+              const r = confirmBatchMut.data.data || {}
+              const newOk = r.success_count || 0
+              const already = r.already_confirmed_count || 0
+              const skipped = r.skipped_count || 0
+              const failed = r.failure_count || 0
+              const totalOk = newOk + already
+              return (
+                <>
+                  <div className="text-ink-700">
+                    {totalOk > 0 && (
+                      <span className="text-emerald-700 font-semibold">
+                        ✓ 확정 {totalOk}건
+                      </span>
+                    )}
+                    {newOk > 0 && already > 0 && (
+                      <span className="text-ink-500 ml-1">
+                        (신규 {newOk} + 이미 처리됨 {already})
+                      </span>
+                    )}
+                    {newOk > 0 && already === 0 && (
+                      <span className="text-ink-500 ml-1">(전부 신규)</span>
+                    )}
+                    {newOk === 0 && already > 0 && (
+                      <span className="text-ink-500 ml-1">(전부 이전 처리, idempotent)</span>
+                    )}
+                    {skipped > 0 && (
+                      <span className="text-ink-500 ml-2">· skip {skipped}건 (거절/중복)</span>
+                    )}
+                    {failed > 0 && (
+                      <span className="text-rose-600 ml-2">· 실패 <strong>{failed}건</strong></span>
+                    )}
+                  </div>
+                  {failed > 0 && (r.failures || []).length > 0 && (
+                    <div className="text-rose-600 pl-3">
+                      {(r.failures || []).slice(0, 2).map((f: any) => f.reason).join(' / ')}
+                    </div>
+                  )}
+                </>
+              )
+            })()}
+          </div>
+        )}
+        {false && confirmBatchMut.data && (
           <div className="text-2xs text-ink-700 pt-1">
             확정 {confirmBatchMut.data.data?.success_count}건 / 실패 {confirmBatchMut.data.data?.failure_count}건
             {confirmBatchMut.data.data?.failure_count > 0 && (
