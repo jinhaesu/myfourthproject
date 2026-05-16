@@ -480,9 +480,29 @@ async def _confirm_candidate_inner(
 
     total_debit = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
     total_credit = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
+
+    # 자동 균형 조정 — 음수 거래/부가세 라인 누락 등에서 차변≠대변 일 때 부가세 라인 자동 추가
+    if total_debit != total_credit:
+        diff = total_credit - total_debit  # 양수면 차변 부족, 음수면 대변 부족
+        total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+        # 차이가 총액의 20% 이하인 경우만 자동 보정 (그 이상은 분개 자체 오류로 추정)
+        if abs(diff) / total_abs <= Decimal("0.20"):
+            if diff > 0:
+                debit_lines.append({
+                    "side": "debit", "account_code": "135", "account_name": "부가세대급금",
+                    "amount": str(diff), "memo": "자동 보정",
+                })
+            else:
+                credit_lines.append({
+                    "side": "credit", "account_code": "255", "account_name": "부가세예수금",
+                    "amount": str(-diff), "memo": "자동 보정",
+                })
+            total_debit = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
+            total_credit = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
+
     if total_debit != total_credit:
         raise HTTPException(status_code=400,
-                            detail=f"차변 합({total_debit}) ≠ 대변 합({total_credit}). 라인 수정 필요.")
+                            detail=f"차변 합({total_debit}) ≠ 대변 합({total_credit}). 차이가 너무 큼 — 분개 검토 필요.")
 
     txn_type_map = {
         AutoVoucherSourceType.CARD: TransactionType.CARD,
@@ -892,12 +912,23 @@ async def confirm_batch(
     success = []
     failures = []
     for c in rows:
+        # savepoint per candidate — 한 후보 실패가 다른 후보에 전파 안 되게
+        savepoint = await db.begin_nested()
         try:
             voucher = await _confirm_candidate_inner(db, c, user_id, _seed_cache=seed_cache)
+            await savepoint.commit()
             success.append({"candidate_id": c.id, "voucher_id": voucher.id})
         except HTTPException as e:
+            try:
+                await savepoint.rollback()
+            except Exception:
+                pass
             failures.append({"candidate_id": c.id, "reason": str(e.detail)[:200]})
         except Exception as e:
+            try:
+                await savepoint.rollback()
+            except Exception:
+                pass
             logger.exception(f"confirm-batch 항목 실패 (id={c.id})")
             failures.append({"candidate_id": c.id, "reason": str(e)[:200]})
 
