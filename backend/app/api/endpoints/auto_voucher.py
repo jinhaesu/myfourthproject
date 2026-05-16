@@ -471,6 +471,11 @@ async def _confirm_candidate_inner(
     _seed_cache: {dept_id, user_id} 보장된 값 캐시 — batch 호출 시 매번 시드 안 함.
     _account_cache: account_code → accounts.id 캐시 — batch에서 SELECT 반복 절약.
     """
+    if c.status == AutoVoucherStatus.CONFIRMED and c.confirmed_voucher_id:
+        # 이미 처리됨 — idempotent하게 기존 voucher 반환 (성공으로 간주)
+        existing = await db.get(Voucher, c.confirmed_voucher_id)
+        if existing:
+            return existing
     if c.status != AutoVoucherStatus.PENDING:
         raise HTTPException(status_code=400,
                             detail=f"PENDING 상태가 아닙니다 (id={c.id}, status={c.status.value})")
@@ -995,9 +1000,12 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
                     new_account_codes: Dict[str, str] = {}  # code → name
 
                     for c in cands:
+                        # 이미 confirmed면 성공 카운트 (idempotent — 다른 task가 먼저 처리)
+                        if c.status == AutoVoucherStatus.CONFIRMED:
+                            success_count += 1
+                            continue
                         if c.status != AutoVoucherStatus.PENDING:
-                            failure_count += 1
-                            failures.append({"candidate_id": c.id, "reason": f"이미 처리됨 ({c.status.value})"})
+                            # rejected/duplicate 등은 skip (실패 아님)
                             continue
                         try:
                             debit_lines = json.loads(c.debit_lines or "[]")
