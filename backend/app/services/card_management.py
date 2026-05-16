@@ -58,6 +58,52 @@ def _build_card_key(t: Dict[str, Any]) -> Optional[str]:
     return label or last4
 
 
+# 메모리 캐시 (period_key → tickets) — 60초 TTL
+import time as _time
+_EXPENSE_CACHE: Dict[str, tuple] = {}
+_CACHE_TTL = 60.0
+
+
+async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
+    """
+    EXPENSE_TICKET 단일 타입만 가져옴 (list_tickets) — 모든 타입 가져오는
+    list_tickets_all_types보다 훨씬 빠름. 60초 cache로 중복 호출 절약.
+    """
+    if (end_date - start_date).days > 30:
+        start_date = end_date - timedelta(days=30)
+
+    key = f"{start_date.isoformat()}~{end_date.isoformat()}"
+    now = _time.time()
+    cached = _EXPENSE_CACHE.get(key)
+    if cached and (now - cached[1]) < _CACHE_TTL:
+        return cached[0]
+
+    from app.services.granter_client import get_granter_client
+    client = get_granter_client()
+    try:
+        resp = await client.list_tickets({
+            "ticketType": "EXPENSE_TICKET",
+            "startDate": start_date.isoformat(),
+            "endDate": end_date.isoformat(),
+        })
+        if isinstance(resp, list):
+            items = resp
+        elif isinstance(resp, dict):
+            items = resp.get("data") or resp.get("items") or []
+        else:
+            items = []
+    except Exception:
+        logger.exception(f"그랜터 EXPENSE_TICKET 조회 실패 ({start_date}~{end_date})")
+        items = []
+
+    _EXPENSE_CACHE[key] = (items, now)
+    # 5분 지난 캐시 정리
+    for k in list(_EXPENSE_CACHE.keys()):
+        if now - _EXPENSE_CACHE[k][1] > 300:
+            _EXPENSE_CACHE.pop(k, None)
+    return items
+
+
 async def list_cards(
     db: AsyncSession,
     start_date: Optional[date] = None,
@@ -75,16 +121,7 @@ async def list_cards(
     if (end_date - start_date).days > 30:
         start_date = end_date - timedelta(days=30)
 
-    from app.services.granter_client import get_granter_client
-    client = get_granter_client()
-    try:
-        tickets = await client.list_tickets_all_types(
-            start_date.isoformat(), end_date.isoformat(),
-        )
-        expense = tickets.get("EXPENSE_TICKET", []) or []
-    except Exception:
-        logger.exception("그랜터 EXPENSE_TICKET 조회 실패")
-        expense = []
+    expense = await _fetch_expense_tickets(start_date, end_date)
 
     # 카드별 집계 — _build_card_key로 식별자 추출
     by_card: Dict[str, Dict[str, Any]] = {}
@@ -186,16 +223,7 @@ async def get_card_analysis(
     if (end_date - start_date).days > 30:
         start_date = end_date - timedelta(days=30)
 
-    from app.services.granter_client import get_granter_client
-    client = get_granter_client()
-    try:
-        tickets = await client.list_tickets_all_types(
-            start_date.isoformat(), end_date.isoformat(),
-        )
-        expense = tickets.get("EXPENSE_TICKET", []) or []
-    except Exception:
-        logger.exception("그랜터 EXPENSE_TICKET 조회 실패")
-        expense = []
+    expense = await _fetch_expense_tickets(start_date, end_date)
 
     # card_key 매칭만
     cards = [t for t in expense if _build_card_key(t) == card_key]
@@ -273,9 +301,6 @@ async def get_monthly_summary(
     월별 카드 사용액 — card_key=None면 전체 카드.
     그랜터 31일 제한 때문에 월 단위로 N번 호출.
     """
-    from app.services.granter_client import get_granter_client
-    client = get_granter_client()
-
     today = date.today()
     result = []
 
@@ -290,14 +315,7 @@ async def get_monthly_summary(
             next_m = m_start.replace(month=m_start.month + 1)
         m_end = min(next_m - timedelta(days=1), today)
 
-        try:
-            tickets = await client.list_tickets_all_types(
-                m_start.isoformat(), m_end.isoformat(),
-            )
-            expense = tickets.get("EXPENSE_TICKET", []) or []
-        except Exception:
-            logger.exception(f"월별 조회 실패 {m_start}~{m_end}")
-            expense = []
+        expense = await _fetch_expense_tickets(m_start, m_end)
 
         month_total = 0.0
         count = 0
