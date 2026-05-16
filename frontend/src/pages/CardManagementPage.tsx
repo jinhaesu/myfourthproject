@@ -57,8 +57,10 @@ export default function CardManagementPage() {
 
   function startEdit(card: CardInfo) {
     setEditingKey(card.card_key)
+    // nickname이 card_key와 같으면 비워두기 — 새 별칭 입력 유도
+    const nick = card.nickname && card.nickname !== card.card_key ? card.nickname : ''
     setEditForm({
-      nickname: card.nickname || card.card_key,
+      nickname: nick,
       color: card.color || COLOR_PRESETS[0],
       memo: card.memo || '',
     })
@@ -138,12 +140,16 @@ export default function CardManagementPage() {
                       <div className="flex-1 min-w-0">
                         {isEditing ? (
                           <div className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                            <div className="text-2xs text-ink-500 mb-0.5">
+                              {card.card_key} <span className="text-ink-400">에 별명 지정</span>
+                            </div>
                             <input
                               type="text"
                               value={editForm.nickname}
                               onChange={(e) => setEditForm({ ...editForm, nickname: e.target.value })}
-                              placeholder="별명 (예: 마케팅 법인카드)"
+                              placeholder="별명 (예: 마케팅 법인카드, 대표이사 개인카드)"
                               className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                              autoFocus
                             />
                             <input
                               type="text"

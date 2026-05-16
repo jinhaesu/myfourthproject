@@ -254,7 +254,7 @@ export default function UnifiedViewPage() {
     staleTime: 60_000,
   })
 
-  // issuer + last4 매칭으로 별명 찾기
+  // issuer + last4 매칭으로 별명 찾기 — 의미 있는 별명만 (card_key와 동일하면 null)
   function findCardAlias(issuer: string, cardNum: string): string | null {
     const aliases = cardAliasesQuery.data || []
     if (!aliases.length) return null
@@ -263,8 +263,14 @@ export default function UnifiedViewPage() {
       if (!a.nickname) continue
       const keyHasIssuer = issuer && a.card_key.includes(issuer)
       const keyHasLast4 = last4 && a.card_key.includes(last4)
-      if (keyHasIssuer && keyHasLast4) return a.nickname
-      if (keyHasIssuer && !last4) return a.nickname
+      const matched = (keyHasIssuer && keyHasLast4) || (keyHasIssuer && !last4)
+      if (!matched) continue
+      // 별명이 card_key와 같거나 issuer + last4 조합 그대로면 의미 없음 → null
+      const nick = a.nickname.trim()
+      if (nick === a.card_key.trim()) return null
+      if (issuer && nick === issuer.trim()) return null
+      if (last4 && nick.includes(issuer) && nick.includes(last4)) return null
+      return nick
     }
     return null
   }
