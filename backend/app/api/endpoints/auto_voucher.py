@@ -481,28 +481,39 @@ async def _confirm_candidate_inner(
     total_debit = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
     total_credit = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
 
-    # 자동 균형 조정 — 음수 거래/부가세 라인 누락 등에서 차변≠대변 일 때 부가세 라인 자동 추가
+    # 자동 균형 조정 — 부가세 누락이 명확한 경우(차이/총액 8~11%)만 보정
+    # 회계 안전성을 위해 좁은 범위만 자동 처리, 그 외는 사용자 수동 검토 요구
     if total_debit != total_credit:
         diff = total_credit - total_debit  # 양수면 차변 부족, 음수면 대변 부족
         total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
-        # 차이가 총액의 20% 이하인 경우만 자동 보정 (그 이상은 분개 자체 오류로 추정)
-        if abs(diff) / total_abs <= Decimal("0.20"):
+        ratio = abs(diff) / total_abs
+        # 부가세 = 총액의 약 9.09% (1/11). 0.08~0.11 범위면 부가세 누락 확실
+        if Decimal("0.08") <= ratio <= Decimal("0.11"):
             if diff > 0:
                 debit_lines.append({
                     "side": "debit", "account_code": "135", "account_name": "부가세대급금",
-                    "amount": str(diff), "memo": "자동 보정",
+                    "amount": str(diff), "memo": "자동 보정 (부가세 추정)",
                 })
             else:
                 credit_lines.append({
                     "side": "credit", "account_code": "255", "account_name": "부가세예수금",
-                    "amount": str(-diff), "memo": "자동 보정",
+                    "amount": str(-diff), "memo": "자동 보정 (부가세 추정)",
                 })
             total_debit = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
             total_credit = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
 
     if total_debit != total_credit:
-        raise HTTPException(status_code=400,
-                            detail=f"차변 합({total_debit}) ≠ 대변 합({total_credit}). 차이가 너무 큼 — 분개 검토 필요.")
+        diff = total_credit - total_debit
+        total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+        ratio = float(abs(diff) / total_abs * 100)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"차변 합({total_debit:,}) ≠ 대변 합({total_credit:,}). "
+                f"차이 {diff:,} ({ratio:.1f}%) — 부가세 범위(8~11%) 밖이라 자동 보정 안 됨. "
+                f"수동으로 라인 추가/수정 필요."
+            ),
+        )
 
     txn_type_map = {
         AutoVoucherSourceType.CARD: TransactionType.CARD,
