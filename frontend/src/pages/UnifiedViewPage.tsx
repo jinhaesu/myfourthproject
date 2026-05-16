@@ -769,8 +769,18 @@ export default function UnifiedViewPage() {
                   }`}
                 >
                   <div className="text-left min-w-0 flex-1">
-                    <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'}`}>
-                      {alias || issuer}
+                    <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'} flex items-center gap-1.5`}>
+                      <span>{issuer}</span>
+                      {cardNum && (
+                        <span className={`text-2xs font-mono ${isActive ? 'text-ink-300' : 'text-ink-500'}`}>
+                          ({cardNum.replace(/\D/g, '').slice(-4)})
+                        </span>
+                      )}
+                      {userAlias && (
+                        <span className={`text-2xs px-1.5 py-0.5 rounded font-semibold ${isActive ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
+                          {userAlias}
+                        </span>
+                      )}
                     </div>
                     <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
                       {issuer} · {cardNum}
