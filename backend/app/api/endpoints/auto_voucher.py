@@ -973,9 +973,10 @@ async def backfill_line_descriptions(
             stmt = _text(f"""
                 WITH new_desc(voucher_id, rich) AS (VALUES {values_sql})
                 UPDATE voucher_lines vl
-                SET description = nd.rich || ' · ' || COALESCE(a.name, '')
+                SET description = nd.rich || ' · ' || COALESCE(
+                    (SELECT name FROM accounts WHERE id = vl.account_id), ''
+                )
                 FROM new_desc nd
-                JOIN accounts a ON a.id = vl.account_id
                 WHERE vl.voucher_id = nd.voucher_id
             """)
             r = await db.execute(stmt, params)
@@ -985,11 +986,11 @@ async def backfill_line_descriptions(
     # 3단계: 나머지 (raw_data 없는 voucher 등) — voucher.description + 계정명
     fallback_result = await db.execute(_text("""
         UPDATE voucher_lines vl
-        SET description = COALESCE(NULLIF(v.description, ''), '거래') || ' · ' || COALESCE(a.name, '')
+        SET description = COALESCE(NULLIF(v.description, ''), '거래') || ' · ' || COALESCE(
+            (SELECT name FROM accounts WHERE id = vl.account_id), ''
+        )
         FROM vouchers v
-        JOIN accounts a ON a.id = vl.account_id
         WHERE vl.voucher_id = v.id
-          AND v.id = vl.voucher_id
           AND (
             vl.description IS NULL OR vl.description = '' OR vl.description = v.description
             OR vl.description = COALESCE(v.merchant_name, '')
