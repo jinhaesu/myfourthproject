@@ -335,11 +335,11 @@ function DailyChart({ timeline }: { timeline: { date: string; amount: number }[]
               const h = max > 0 ? (t.amount / max) * 100 : 0
               return (
                 <div key={t.date}
-                  className="flex-1 flex flex-col justify-end group relative"
+                  className="flex-1 h-full flex flex-col justify-end group relative"
                   title={`${t.date}: ${t.amount.toLocaleString()}원`}
                 >
-                  <div className={`rounded-t transition ${t.amount > 0 ? 'bg-blue-500 group-hover:bg-blue-700' : ''}`}
-                    style={{ height: `${h}%`, minHeight: t.amount > 0 ? '2px' : '0' }} />
+                  <div className={`w-full rounded-t transition ${t.amount > 0 ? 'bg-blue-500 group-hover:bg-blue-700' : ''}`}
+                    style={{ height: `${h}%`, minHeight: t.amount > 0 ? '3px' : '0' }} />
                 </div>
               )
             })}
@@ -399,14 +399,14 @@ function MonthlyChart({ months }: { months: { month: string; total: number; coun
             {months.map((m) => {
               const h = max > 0 ? (m.total / max) * 100 : 0
               return (
-                <div key={m.month} className="flex-1 flex flex-col items-center justify-end gap-1 group relative">
+                <div key={m.month} className="flex-1 h-full flex flex-col items-center justify-end group relative">
                   {m.total > 0 && (
-                    <span className="text-2xs font-mono text-ink-700 opacity-0 group-hover:opacity-100 absolute -top-4 whitespace-nowrap">
+                    <span className="text-2xs font-mono text-ink-700 opacity-0 group-hover:opacity-100 absolute -top-4 whitespace-nowrap z-10">
                       {formatCurrency(m.total, false)}
                     </span>
                   )}
                   <div className="w-full bg-blue-500 rounded-t group-hover:bg-blue-700 transition"
-                    style={{ height: `${h}%`, minHeight: m.total > 0 ? '2px' : '0' }} />
+                    style={{ height: `${h}%`, minHeight: m.total > 0 ? '3px' : '0' }} />
                 </div>
               )
             })}
