@@ -887,16 +887,6 @@ export default function AutoVoucherPage() {
             })()}
           </div>
         )}
-        {false && confirmBatchMut.data && (
-          <div className="text-2xs text-ink-700 pt-1">
-            확정 {confirmBatchMut.data.data?.success_count}건 / 실패 {confirmBatchMut.data.data?.failure_count}건
-            {confirmBatchMut.data.data?.failure_count > 0 && (
-              <span className="text-rose-600 ml-2">
-                ({(confirmBatchMut.data.data?.failures || []).slice(0, 2).map((f: any) => f.reason).join(', ')})
-              </span>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Table */}
