@@ -1093,52 +1093,47 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
                             except Exception:
                                 logger.exception("account bulk insert 실패")
 
-                    # === Voucher bulk INSERT (RETURNING id) ===
+                    # === Voucher ORM bulk add (add_all + flush — enum 자동 변환) ===
                     now = datetime.utcnow()
-                    voucher_dicts = []
+                    voucher_objs: List[Voucher] = []
                     for v in voucher_rows:
                         c = v["candidate"]
-                        voucher_dicts.append({
-                            "voucher_number": f"{c.transaction_date.strftime('%Y%m%d')}-G{_uuid.uuid4().hex[:8]}",
-                            "voucher_date": c.transaction_date,
-                            "transaction_date": c.transaction_date,
-                            "description": (c.description or c.counterparty or "")[:500],
-                            "transaction_type": v["txn_type"],
-                            "external_ref": c.source_id,
-                            "source": "granter_auto",
-                            "department_id": dept_id,
-                            "created_by": uid,
-                            "total_debit": v["total_debit"],
-                            "total_credit": v["total_credit"],
-                            "status": VoucherStatus.CONFIRMED,
-                            "merchant_name": c.counterparty,
-                            "ai_confidence_score": c.confidence,
-                            "created_at": now,
-                            "updated_at": now,
-                            "confirmed_at": now,
-                            "confirmed_by": uid,
-                        })
+                        voucher_objs.append(Voucher(
+                            voucher_number=f"{c.transaction_date.strftime('%Y%m%d')}-G{_uuid.uuid4().hex[:8]}",
+                            voucher_date=c.transaction_date,
+                            transaction_date=c.transaction_date,
+                            description=(c.description or c.counterparty or "")[:500],
+                            transaction_type=v["txn_type"],
+                            external_ref=c.source_id,
+                            source="granter_auto",
+                            department_id=dept_id,
+                            created_by=uid,
+                            total_debit=v["total_debit"],
+                            total_credit=v["total_credit"],
+                            status=VoucherStatus.CONFIRMED,
+                            merchant_name=c.counterparty,
+                            ai_confidence_score=c.confidence,
+                            confirmed_at=now,
+                            confirmed_by=uid,
+                        ))
 
-                    inserted_voucher_ids: List[int] = []
-                    if voucher_dicts:
+                    if voucher_objs:
                         try:
-                            res = await db.execute(
-                                sa_insert(Voucher).returning(Voucher.id), voucher_dicts,
-                            )
-                            inserted_voucher_ids = [r[0] for r in res.all()]
+                            db.add_all(voucher_objs)
+                            await db.flush()  # 모든 voucher.id 채워짐
                         except Exception as e:
-                            logger.exception("Voucher bulk insert 실패")
+                            logger.exception("Voucher bulk add 실패")
                             for c_id in candidate_ids_ok:
                                 failure_count += 1
-                                failures.append({"candidate_id": c_id, "reason": f"voucher INSERT 실패: {str(e)[:150]}"})
+                                failures.append({"candidate_id": c_id, "reason": f"voucher 실패: {str(e)[:150]}"})
                             try: await db.rollback()
                             except Exception: pass
-                            inserted_voucher_ids = []
+                            voucher_objs = []
 
-                    # === VoucherLine bulk INSERT ===
-                    if inserted_voucher_ids:
-                        line_dicts = []
-                        for v_id, specs in zip(inserted_voucher_ids, line_specs_per_voucher):
+                    # === VoucherLine bulk add ===
+                    if voucher_objs:
+                        line_objs: List[VoucherLine] = []
+                        for voucher, specs in zip(voucher_objs, line_specs_per_voucher):
                             line_no = 1
                             for spec in specs:
                                 acc_id = account_cache.get(spec["code"])
@@ -1147,27 +1142,26 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
                                 is_debit = spec["side"] == "debit"
                                 amt = spec["amount"]
                                 vat_acc = spec["code"] in ("135", "255")
-                                line_dicts.append({
-                                    "voucher_id": v_id,
-                                    "line_number": line_no,
-                                    "account_id": acc_id,
-                                    "debit_amount": amt if is_debit else Decimal("0"),
-                                    "credit_amount": amt if not is_debit else Decimal("0"),
-                                    "vat_amount": amt if vat_acc else Decimal("0"),
-                                    "supply_amount": amt if not vat_acc else Decimal("0"),
-                                    "description": spec.get("memo", "") or "",
-                                    "counterparty_name": None,
-                                    "created_at": now,
-                                })
+                                line_objs.append(VoucherLine(
+                                    voucher_id=voucher.id,
+                                    line_number=line_no,
+                                    account_id=acc_id,
+                                    debit_amount=amt if is_debit else Decimal("0"),
+                                    credit_amount=amt if not is_debit else Decimal("0"),
+                                    vat_amount=amt if vat_acc else Decimal("0"),
+                                    supply_amount=amt if not vat_acc else Decimal("0"),
+                                    description=spec.get("memo", "") or "",
+                                ))
                                 line_no += 1
-                        if line_dicts:
-                            try:
-                                await db.execute(sa_insert(VoucherLine), line_dicts)
-                            except Exception:
-                                logger.exception("VoucherLine bulk insert 실패")
+                        if line_objs:
+                            db.add_all(line_objs)
 
-                        # === Candidate UPDATE bulk ===
-                        for c_id, v_id in zip(candidate_ids_ok, inserted_voucher_ids):
+                        # Candidate UPDATE — bulk
+                        candidate_to_voucher = {
+                            voucher_rows[i]["candidate"].id: voucher_objs[i].id
+                            for i in range(len(voucher_objs))
+                        }
+                        for c_id, v_id in candidate_to_voucher.items():
                             await db.execute(
                                 sa_update(AutoVoucherCandidate)
                                 .where(AutoVoucherCandidate.id == c_id)
@@ -1178,7 +1172,7 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
                                     confirmed_by=uid,
                                 )
                             )
-                        success_count += len(inserted_voucher_ids)
+                        success_count += len(voucher_objs)
 
                     try:
                         await db.commit()
