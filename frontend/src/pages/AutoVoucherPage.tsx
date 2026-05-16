@@ -842,10 +842,24 @@ export default function AutoVoucherPage() {
             )}
           </div>
         )}
-        {confirmBatchMut.data && !batchTaskId && (
-          <div className="text-2xs pt-1 space-y-0.5">
+        {/* 일괄 확정 결과/상태 — selectedIds와 무관하게 항상 표시 */}
+        {confirmBatchMut.isPending && !batchTaskId && (
+          <div className="text-2xs pt-2 text-blue-700 font-semibold flex items-center gap-1.5 border-t border-blue-100 mt-2 pt-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            확정 처리 중… (서버 응답 대기)
+          </div>
+        )}
+        {confirmBatchMut.isError && !batchTaskId && (
+          <div className="text-2xs pt-2 text-rose-700 border-t border-rose-100 mt-2 pt-2">
+            <strong>✗ 일괄 확정 실패:</strong> {(confirmBatchMut.error as any)?.response?.data?.detail
+              || (confirmBatchMut.error as any)?.message
+              || '알 수 없는 오류'}
+          </div>
+        )}
+        {confirmBatchMut.isSuccess && !batchTaskId && (
+          <div className="text-2xs pt-2 space-y-1 border-t border-emerald-100 mt-2 pt-2">
             {(() => {
-              const r = confirmBatchMut.data.data || {}
+              const r = confirmBatchMut.data?.data || {}
               const newOk = r.success_count || 0
               const already = r.already_confirmed_count || 0
               const skipped = r.skipped_count || 0
@@ -853,22 +867,25 @@ export default function AutoVoucherPage() {
               const totalOk = newOk + already
               return (
                 <>
-                  <div className="text-ink-700">
+                  <div className="text-ink-700 leading-relaxed">
                     {totalOk > 0 && (
-                      <span className="text-emerald-700 font-semibold">
+                      <span className="text-emerald-700 font-bold text-xs">
                         ✓ 확정 {totalOk}건
                       </span>
                     )}
+                    {totalOk === 0 && failed === 0 && skipped === 0 && (
+                      <span className="text-ink-500">처리된 항목 없음</span>
+                    )}
                     {newOk > 0 && already > 0 && (
-                      <span className="text-ink-500 ml-1">
+                      <span className="text-ink-500 ml-1.5">
                         (신규 {newOk} + 이미 처리됨 {already})
                       </span>
                     )}
                     {newOk > 0 && already === 0 && (
-                      <span className="text-ink-500 ml-1">(전부 신규)</span>
+                      <span className="text-ink-500 ml-1.5">(전부 신규)</span>
                     )}
                     {newOk === 0 && already > 0 && (
-                      <span className="text-ink-500 ml-1">(전부 이전 처리, idempotent)</span>
+                      <span className="text-amber-600 ml-1.5">(전부 다른 작업이 먼저 처리함 — 안전)</span>
                     )}
                     {skipped > 0 && (
                       <span className="text-ink-500 ml-2">· skip {skipped}건 (거절/중복)</span>
@@ -878,10 +895,17 @@ export default function AutoVoucherPage() {
                     )}
                   </div>
                   {failed > 0 && (r.failures || []).length > 0 && (
-                    <div className="text-rose-600 pl-3">
-                      {(r.failures || []).slice(0, 2).map((f: any) => f.reason).join(' / ')}
-                    </div>
+                    <details className="text-rose-700" open>
+                      <summary className="cursor-pointer font-semibold">실패 사유 ({(r.failures||[]).length}건)</summary>
+                      <div className="mt-1 pl-3 max-h-32 overflow-y-auto space-y-0.5">
+                        {(r.failures || []).slice(0, 10).map((f: any, i: number) => (
+                          <div key={i} className="break-all">· {f.reason}</div>
+                        ))}
+                      </div>
+                    </details>
                   )}
+                  <button onClick={() => confirmBatchMut.reset()}
+                    className="text-2xs text-ink-400 hover:text-ink-700 underline">결과 닫기</button>
                 </>
               )
             })()}
