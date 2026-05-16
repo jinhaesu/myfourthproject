@@ -20,19 +20,42 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_card_meta(card_key: str) -> Dict[str, Optional[str]]:
-    """'비씨카드(3917)' → issuer='비씨카드', last4='3917'."""
+    """'BC카드 — B-Point ····2945' → issuer/last4 추출."""
     if not card_key:
         return {"issuer": None, "last4": None}
-    m = re.match(r'^(.+?)(?:\(([\d-]+)\))?$', card_key.strip())
-    if not m:
-        return {"issuer": card_key, "last4": None}
-    issuer = (m.group(1) or "").strip()
-    last4 = m.group(2)
-    if last4:
-        # 3917 또는 1234-5678 등에서 마지막 4자리
-        digits = re.sub(r'\D', '', last4)
-        last4 = digits[-4:] if digits else last4
-    return {"issuer": issuer or None, "last4": last4 or None}
+    s = card_key.strip()
+    # 마지막 4자리 숫자
+    m = re.search(r'(\d{4})\D*$', s)
+    last4 = m.group(1) if m else None
+    # 첫 부분 issuer
+    issuer = re.split(r'[—\-—\|]', s, 1)[0].strip()
+    return {"issuer": issuer or None, "last4": last4}
+
+
+def _build_card_key(t: Dict[str, Any]) -> Optional[str]:
+    """
+    EXPENSE_TICKET → 카드 식별자 문자열.
+    그랜터 응답: t.cardUsage.card.{name, number, organizationName}
+    """
+    cu = t.get("cardUsage") or {}
+    card = cu.get("card") or {}
+    name = (card.get("name") or "").strip()
+    org = (card.get("organizationName") or "").strip()
+    number = (card.get("number") or "").strip()
+    nickname = (card.get("nickname") or "").strip()
+    # 우선순위: org + last4 가 가장 안정적
+    last4 = ""
+    if number:
+        digits = re.sub(r'\D', '', number)
+        last4 = digits[-4:] if len(digits) >= 4 else ""
+    label = nickname or name or org
+    if not label and not last4:
+        return None
+    if org and last4:
+        return f"{org} ({last4})"
+    if label and last4:
+        return f"{label} ({last4})"
+    return label or last4
 
 
 async def list_cards(
@@ -63,10 +86,10 @@ async def list_cards(
         logger.exception("그랜터 EXPENSE_TICKET 조회 실패")
         expense = []
 
-    # cardName별 집계
+    # 카드별 집계 — _build_card_key로 식별자 추출
     by_card: Dict[str, Dict[str, Any]] = {}
     for t in expense:
-        cn = (t.get("cardName") or "").strip()
+        cn = _build_card_key(t)
         if not cn:
             continue
         try:
@@ -175,7 +198,7 @@ async def get_card_analysis(
         expense = []
 
     # card_key 매칭만
-    cards = [t for t in expense if (t.get("cardName") or "").strip() == card_key]
+    cards = [t for t in expense if _build_card_key(t) == card_key]
 
     def _amt(t: Dict[str, Any]) -> float:
         try:
@@ -279,7 +302,7 @@ async def get_monthly_summary(
         month_total = 0.0
         count = 0
         for t in expense:
-            cn = (t.get("cardName") or "").strip()
+            cn = _build_card_key(t)
             if card_key and cn != card_key:
                 continue
             try:

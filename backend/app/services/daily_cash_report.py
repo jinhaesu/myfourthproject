@@ -291,9 +291,12 @@ async def _section_card_spending(target_date: date) -> Dict[str, Any]:
     top_payments = []
     for t in top:
         cu = t.get("cardUsage") or {}
+        card = cu.get("card") or {}
+        card_label = (card.get("nickname") or card.get("name")
+                      or card.get("organizationName") or "")
         top_payments.append({
             "counterparty": cu.get("storeName") or "(미지정)",
-            "description": t.get("cardName") or cu.get("category") or "",
+            "description": card_label or cu.get("category") or "",
             "amount": _amt(t),
         })
 
