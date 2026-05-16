@@ -965,7 +965,8 @@ async def backfill_line_descriptions(
         # voucher_id → rich_desc dict를 SQL VALUES로 전달
         from sqlalchemy import bindparam
         chunks = list(enriched_descs.items())
-        CHUNK = 500
+        CHUNK = 50  # deadlock 회피 — 작은 청크
+        import asyncio as _aio
         for i in range(0, len(chunks), CHUNK):
             batch = chunks[i:i + CHUNK]
             values_sql = ", ".join(f"({v_id}, :d_{idx})" for idx, (v_id, _) in enumerate(batch))
@@ -979,9 +980,15 @@ async def backfill_line_descriptions(
                 FROM new_desc nd
                 WHERE vl.voucher_id = nd.voucher_id
             """)
-            r = await db.execute(stmt, params)
-            updated += r.rowcount or 0
-        await db.commit()
+            try:
+                r = await db.execute(stmt, params)
+                updated += r.rowcount or 0
+                await db.commit()
+            except Exception:
+                logger.exception(f"backfill chunk {i} 실패 (deadlock 등) — skip")
+                try: await db.rollback()
+                except Exception: pass
+            await _aio.sleep(0)
 
     # 3단계: 나머지 (raw_data 없는 voucher 등) — voucher.description + 계정명
     fallback_result = await db.execute(_text("""
