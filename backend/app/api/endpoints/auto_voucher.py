@@ -45,23 +45,32 @@ from app.services.journal_migration import (
 )
 
 
+import uuid as _uuid
+
+
 async def _voucher_number(db: AsyncSession, vdate: date) -> str:
-    """YYYYMMDD-NNNN 형식 전표번호. 일자별 시퀀스."""
-    prefix = vdate.strftime('%Y%m%d')
-    cnt = await db.scalar(
-        select(func.count(Voucher.id)).where(Voucher.voucher_number.like(f"{prefix}-%"))
-    ) or 0
-    return f"{prefix}-{cnt + 1:04d}"
+    """
+    YYYYMMDD-G{uuid8} 형식 (Granter auto). UUID 기반이라 count 호출 없음.
+    수기 입력은 NNNN 시퀀스, 위하고 import는 J{hex}, 그랜터 자동은 G{hex}로 구분.
+    """
+    return f"{vdate.strftime('%Y%m%d')}-G{_uuid.uuid4().hex[:8]}"
 
 
-async def _resolve_account_id(db: AsyncSession, code: str, name: str = "") -> Optional[int]:
-    """account_code → accounts.id. 없으면 자동 생성."""
+async def _resolve_account_id(
+    db: AsyncSession, code: str, name: str = "",
+    cache: Optional[Dict[str, int]] = None,
+) -> Optional[int]:
+    """account_code → accounts.id. 없으면 자동 생성. cache 전달 시 SELECT 1회로 단축."""
     if not code:
         return None
+    if cache is not None and code in cache:
+        return cache[code]
     acc = (await db.execute(
         select(Account).where(Account.code == code, Account.is_active == True)
     )).scalar_one_or_none()
     if acc:
+        if cache is not None:
+            cache[code] = acc.id
         return acc.id
     # 자동 생성 — 회계담당자가 더존에서 쓰던 코드를 그대로 받아쓸 수 있게
     from app.models.accounting import AccountCategory
@@ -84,6 +93,8 @@ async def _resolve_account_id(db: AsyncSession, code: str, name: str = "") -> Op
     )
     db.add(new_acc)
     await db.flush()
+    if cache is not None:
+        cache[code] = new_acc.id
     return new_acc.id
 
 logger = logging.getLogger(__name__)
@@ -453,10 +464,12 @@ async def reject_candidate(
 async def _confirm_candidate_inner(
     db: AsyncSession, c: AutoVoucherCandidate, user_id: int, department_id: int = 1,
     _seed_cache: Optional[Dict[str, int]] = None,
+    _account_cache: Optional[Dict[str, int]] = None,
 ) -> Voucher:
     """후보 → Voucher + VoucherLine 변환.
 
     _seed_cache: {dept_id, user_id} 보장된 값 캐시 — batch 호출 시 매번 시드 안 함.
+    _account_cache: account_code → accounts.id 캐시 — batch에서 SELECT 반복 절약.
     """
     if c.status != AutoVoucherStatus.PENDING:
         raise HTTPException(status_code=400,
@@ -552,7 +565,8 @@ async def _confirm_candidate_inner(
         is_debit = l.get("side") == "debit"
         amt = Decimal(str(l.get("amount", 0)))
         account_id = await _resolve_account_id(
-            db, l.get("account_code", ""), l.get("account_name", "")
+            db, l.get("account_code", ""), l.get("account_name", ""),
+            cache=_account_cache,
         )
         if account_id is None:
             raise HTTPException(status_code=400,
@@ -920,11 +934,20 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
         try:
             async with async_session_factory() as db:
                 seed_cache: Dict[str, int] = {}
+                # 모든 active account를 미리 dict에 로드 — 매 line당 SELECT 절약
+                account_cache: Dict[str, int] = {}
+                preload = (await db.execute(
+                    select(Account.code, Account.id).where(Account.is_active == True)
+                )).all()
+                for code, aid in preload:
+                    if code:
+                        account_cache[code] = aid
+
                 success_count = 0
                 failure_count = 0
                 failures: List[Dict[str, Any]] = []
-                # 청크 단위로 commit (긴 트랜잭션 회피)
-                CHUNK = 100
+                # 청크 단위로 commit
+                CHUNK = 500
                 total = len(candidate_ids)
                 for start in range(0, total, CHUNK):
                     chunk_ids = candidate_ids[start:start + CHUNK]
@@ -936,6 +959,7 @@ async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> s
                         try:
                             voucher = await _confirm_candidate_inner(
                                 db, c, user_id, _seed_cache=seed_cache,
+                                _account_cache=account_cache,
                             )
                             await sp.commit()
                             success_count += 1

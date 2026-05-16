@@ -432,7 +432,17 @@ export default function AutoVoucherPage() {
   })
 
   // 일괄 확정 task — 200건 초과는 backend가 자동으로 background로 처리
-  const [batchTaskId, setBatchTaskId] = useState<string | null>(null)
+  // localStorage에 task_id 영속화 → 페이지 이동/새로고침해도 진행률 복원
+  const [batchTaskId, setBatchTaskIdRaw] = useState<string | null>(() => {
+    try { return localStorage.getItem('auto-voucher-batch-task-id') } catch { return null }
+  })
+  const setBatchTaskId = (v: string | null) => {
+    setBatchTaskIdRaw(v)
+    try {
+      if (v) localStorage.setItem('auto-voucher-batch-task-id', v)
+      else localStorage.removeItem('auto-voucher-batch-task-id')
+    } catch {}
+  }
   const [batchProgress, setBatchProgress] = useState<any>(null)
 
   const confirmBatchMut = useMutation({
@@ -455,10 +465,11 @@ export default function AutoVoucherPage() {
     },
   })
 
-  // 일괄 확정 진행률 폴링 (2초 간격)
+  // 일괄 확정 진행률 폴링 (2초 간격) — localStorage에 task_id 영속화돼서 페이지 이동/새로고침 무관
   useEffect(() => {
     if (!batchTaskId) return
     let cancelled = false
+    let vanish_count = 0
     const tick = async () => {
       try {
         const r = await autoVoucherApi.getProgress(batchTaskId)
@@ -467,13 +478,26 @@ export default function AutoVoucherPage() {
         if (r.data?.status === 'completed' || r.data?.status === 'failed') {
           qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
           setSelectedIds(new Set())
+          // 완료 후 5초 뒤 localStorage cleanup
+          setTimeout(() => {
+            if (!cancelled) setBatchTaskId(null)
+          }, 5000)
           return
         }
         setTimeout(tick, 2000)
-      } catch {
-        if (!cancelled) {
-          setBatchProgress({ status: 'failed', message: '진행률 조회 실패' })
+      } catch (e: any) {
+        // 404 (task 사라짐) — Railway 재배포로 in-memory 휘발 가능
+        if (e?.response?.status === 404) {
+          vanish_count += 1
+          if (vanish_count >= 3) {
+            if (!cancelled) {
+              setBatchProgress(null)
+              setBatchTaskId(null)
+            }
+            return
+          }
         }
+        if (!cancelled) setTimeout(tick, 5000)
       }
     }
     tick()
