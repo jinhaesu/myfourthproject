@@ -908,13 +908,107 @@ async def match_voucher_duplicates(
     return await match_voucher_duplicates_core(db, start_date, end_date)
 
 
+async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> str:
+    """대량 확정을 백그라운드로 처리 — task_id 반환, /progress/{tid} 폴링."""
+    import asyncio, time as _time
+    from app.services.auto_voucher_service import _new_task, _update
+    from app.core.database import async_session_factory
+
+    task_id = _new_task(f"{len(candidate_ids)}건 일괄 확정 시작…")
+
+    async def _runner():
+        try:
+            async with async_session_factory() as db:
+                seed_cache: Dict[str, int] = {}
+                success_count = 0
+                failure_count = 0
+                failures: List[Dict[str, Any]] = []
+                # 청크 단위로 commit (긴 트랜잭션 회피)
+                CHUNK = 100
+                total = len(candidate_ids)
+                for start in range(0, total, CHUNK):
+                    chunk_ids = candidate_ids[start:start + CHUNK]
+                    rows = (await db.execute(
+                        select(AutoVoucherCandidate).where(AutoVoucherCandidate.id.in_(chunk_ids))
+                    )).scalars().all()
+                    for c in rows:
+                        sp = await db.begin_nested()
+                        try:
+                            voucher = await _confirm_candidate_inner(
+                                db, c, user_id, _seed_cache=seed_cache,
+                            )
+                            await sp.commit()
+                            success_count += 1
+                        except HTTPException as e:
+                            try: await sp.rollback()
+                            except Exception: pass
+                            failure_count += 1
+                            failures.append({"candidate_id": c.id, "reason": str(e.detail)[:200]})
+                        except Exception as e:
+                            try: await sp.rollback()
+                            except Exception: pass
+                            failure_count += 1
+                            failures.append({"candidate_id": c.id, "reason": str(e)[:200]})
+                    try:
+                        await db.commit()
+                    except Exception:
+                        logger.exception("청크 commit 실패")
+                        try: await db.rollback()
+                        except Exception: pass
+                    processed = start + len(chunk_ids)
+                    pct = 10 + int(85 * processed / max(total, 1))
+                    _update(
+                        task_id, percent=pct,
+                        message=f"진행 {processed}/{total} — 확정 {success_count}건, 실패 {failure_count}건",
+                        success_count=success_count,
+                        failure_count=failure_count,
+                        recent_failures=[f["reason"] for f in failures[-5:]],
+                    )
+                    import asyncio as _aio
+                    await _aio.sleep(0)
+                _update(
+                    task_id, status="completed", percent=100,
+                    message=f"완료 — 확정 {success_count}건, 실패 {failure_count}건",
+                    result={
+                        "total": total,
+                        "success_count": success_count,
+                        "failure_count": failure_count,
+                        "failures": failures[:50],
+                    },
+                    finished_at=_time.time(),
+                )
+        except Exception as e:
+            logger.exception("confirm-batch 백그라운드 실패")
+            _update(
+                task_id, status="failed",
+                message=f"실패: {str(e)[:300]}",
+                finished_at=_time.time(),
+            )
+
+    asyncio.create_task(_runner())
+    return task_id
+
+
 @router.post("/confirm-batch")
 async def confirm_batch(
     candidate_ids: List[int] = Body(...),
     user_id: int = Body(1),
+    background: bool = Body(False, description="true: task_id 즉시 반환 + 백그라운드 처리"),
     db: AsyncSession = Depends(get_db),
 ):
-    """다중 확정 — 라인 합이 안 맞는 후보는 실패 처리하고 나머지는 진행."""
+    """다중 확정 — 라인 합이 안 맞는 후보는 실패 처리하고 나머지는 진행.
+
+    background=true: 큰 N(200건 초과 권장) → task_id 반환, /progress/{tid} 폴링.
+    """
+    if background or len(candidate_ids) > 200:
+        task_id = await _confirm_batch_background(candidate_ids, user_id)
+        return {
+            "task_id": task_id,
+            "status": "queued",
+            "total": len(candidate_ids),
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}",
+        }
+
     rows = (await db.execute(
         select(AutoVoucherCandidate).where(AutoVoucherCandidate.id.in_(candidate_ids))
     )).scalars().all()

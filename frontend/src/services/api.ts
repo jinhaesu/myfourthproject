@@ -1130,8 +1130,8 @@ export const autoVoucherApi = {
     api.post(`/auto-voucher/${id}/reject`, { reason }),
   confirm: (id: number, user_id: number = 1) =>
     api.post(`/auto-voucher/${id}/confirm`, null, { params: { user_id } }),
-  confirmBatch: (candidate_ids: number[], user_id: number = 1) =>
-    api.post('/auto-voucher/confirm-batch', { candidate_ids, user_id }, { timeout: 180_000 }),
+  confirmBatch: (candidate_ids: number[], user_id: number = 1, background: boolean = false) =>
+    api.post('/auto-voucher/confirm-batch', { candidate_ids, user_id, background }, { timeout: 60_000 }),
   directVoucher: (payload: {
     transaction_date: string
     source_type: string

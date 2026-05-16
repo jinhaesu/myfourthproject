@@ -431,32 +431,54 @@ export default function AutoVoucherPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['auto-voucher-list'] }),
   })
 
+  // 일괄 확정 task — 200건 초과는 backend가 자동으로 background로 처리
+  const [batchTaskId, setBatchTaskId] = useState<string | null>(null)
+  const [batchProgress, setBatchProgress] = useState<any>(null)
+
   const confirmBatchMut = useMutation({
     mutationFn: async (ids: number[]) => {
-      // 큰 N은 청크 분할 — 한 번에 너무 많으면 backend timeout
-      const CHUNK = 50
-      let success_count = 0
-      let failure_count = 0
-      const failures: any[] = []
-      for (let i = 0; i < ids.length; i += CHUNK) {
-        const chunk = ids.slice(i, i + CHUNK)
-        try {
-          const r = await autoVoucherApi.confirmBatch(chunk)
-          success_count += r.data?.success_count || 0
-          failure_count += r.data?.failure_count || 0
-          failures.push(...(r.data?.failures || []))
-        } catch (e: any) {
-          failure_count += chunk.length
-          failures.push({ reason: e?.message?.slice(0, 100) || 'chunk failed' })
-        }
-      }
-      return { data: { success_count, failure_count, failures } }
+      // 200건 초과는 background mode 강제
+      const useBackground = ids.length > 200
+      const r = await autoVoucherApi.confirmBatch(ids, 1, useBackground)
+      return r
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
-      setSelectedIds(new Set())
+    onSuccess: (res) => {
+      if (res.data?.task_id) {
+        // background task
+        setBatchTaskId(res.data.task_id)
+        setBatchProgress({ status: 'queued', percent: 0, message: '큐 진입 중…' })
+      } else {
+        // 즉시 결과
+        qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
+        setSelectedIds(new Set())
+      }
     },
   })
+
+  // 일괄 확정 진행률 폴링 (2초 간격)
+  useEffect(() => {
+    if (!batchTaskId) return
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const r = await autoVoucherApi.getProgress(batchTaskId)
+        if (cancelled) return
+        setBatchProgress(r.data)
+        if (r.data?.status === 'completed' || r.data?.status === 'failed') {
+          qc.invalidateQueries({ queryKey: ['auto-voucher-list'] })
+          setSelectedIds(new Set())
+          return
+        }
+        setTimeout(tick, 2000)
+      } catch {
+        if (!cancelled) {
+          setBatchProgress({ status: 'failed', message: '진행률 조회 실패' })
+        }
+      }
+    }
+    tick()
+    return () => { cancelled = true }
+  }, [batchTaskId, qc])
 
   // 전체 페이지의 모든 pending 후보 ID를 가져옴
   const selectAllPagesMut = useMutation({
@@ -469,7 +491,7 @@ export default function AutoVoucherPage() {
       confidence_gte: confidenceGte,
       counterparty: counterparty || undefined,
       page: 1,
-      size: 10000,
+      size: 50000,
     }),
     onSuccess: (res) => {
       const ids = (res.data?.items || []).map((i: any) => i.id)
@@ -745,7 +767,59 @@ export default function AutoVoucherPage() {
             )}
           </div>
         )}
-        {confirmBatchMut.data && (
+        {/* 백그라운드 task 진행률 */}
+        {batchTaskId && batchProgress && (
+          <div className={`rounded-md border px-3 py-2 mt-2 ${
+            batchProgress.status === 'completed' ? 'border-emerald-200 bg-emerald-50' :
+            batchProgress.status === 'failed' ? 'border-rose-200 bg-rose-50' :
+            'border-blue-200 bg-blue-50'
+          }`}>
+            <div className="flex items-center justify-between text-2xs mb-1">
+              <span className={`font-semibold ${
+                batchProgress.status === 'completed' ? 'text-emerald-800' :
+                batchProgress.status === 'failed' ? 'text-rose-800' : 'text-blue-800'
+              }`}>
+                {batchProgress.status === 'completed' ? '✓ 완료' :
+                 batchProgress.status === 'failed' ? '✗ 실패' : '⏳ 진행 중'} · {batchProgress.message}
+              </span>
+              <span className="text-2xs font-mono text-ink-600">{batchProgress.percent || 0}%</span>
+            </div>
+            <div className="h-1.5 bg-white rounded-full overflow-hidden border border-ink-100">
+              <div
+                className={`h-full transition-all ${
+                  batchProgress.status === 'failed' ? 'bg-rose-500' :
+                  batchProgress.status === 'completed' ? 'bg-emerald-500' : 'bg-blue-500'
+                }`}
+                style={{ width: `${batchProgress.percent || 0}%` }}
+              />
+            </div>
+            {batchProgress.success_count !== undefined && (
+              <div className="mt-1 text-2xs text-ink-700">
+                확정 <strong>{batchProgress.success_count}</strong>건
+                {batchProgress.failure_count > 0 && (
+                  <> · <span className="text-rose-700">실패 <strong>{batchProgress.failure_count}</strong>건</span></>
+                )}
+              </div>
+            )}
+            {(batchProgress.recent_failures || []).length > 0 && (
+              <details className="mt-1" open>
+                <summary className="cursor-pointer text-2xs text-rose-700 font-semibold">
+                  최근 실패 사유
+                </summary>
+                <div className="mt-1 space-y-0.5 text-2xs bg-white rounded p-1.5 border border-rose-100 max-h-24 overflow-y-auto">
+                  {batchProgress.recent_failures.map((r: string, i: number) => (
+                    <div key={i} className="text-rose-800 break-all">· {r}</div>
+                  ))}
+                </div>
+              </details>
+            )}
+            {batchProgress.status === 'completed' && (
+              <button onClick={() => { setBatchTaskId(null); setBatchProgress(null) }}
+                className="mt-1.5 text-2xs text-ink-500 hover:underline">닫기</button>
+            )}
+          </div>
+        )}
+        {confirmBatchMut.data && !batchTaskId && (
           <div className="text-2xs text-ink-700 pt-1">
             확정 {confirmBatchMut.data.data?.success_count}건 / 실패 {confirmBatchMut.data.data?.failure_count}건
             {confirmBatchMut.data.data?.failure_count > 0 && (
