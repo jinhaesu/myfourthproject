@@ -171,13 +171,14 @@ def _build_tax_invoice_candidate(
         source_type = (AutoVoucherSourceType.PURCHASE_TAX_INVOICE if is_taxable
                        else AutoVoucherSourceType.PURCHASE_INVOICE)
 
+    rich_desc = f"{'매출' if is_sales else '매입'} 세금계산서 · {counterparty}"
     return AutoVoucherCandidate(
         source_type=source_type,
         source_id=str(ticket.get("id", "")),
         status=AutoVoucherStatus.PENDING,
         transaction_date=_parse_date(ticket.get("transactAt")),
         counterparty=counterparty[:200] if counterparty else None,
-        description="",
+        description=rich_desc[:500],
         supply_amount=supply,
         vat_amount=vat,
         total_amount=supply + vat,
@@ -203,7 +204,16 @@ def _build_card_candidate(
 
     card_usage = ticket.get("cardUsage") or {}
     merchant = card_usage.get("storeName", "")
-    card_name = ticket.get("cardName") or ""
+    category = card_usage.get("category", "")
+    card = card_usage.get("card") or {}
+    card_name = (card.get("nickname") or card.get("name") or card.get("organizationName")
+                 or ticket.get("cardName") or "")
+    # 풍부한 적요: "BC카드 - 스타벅스 (음식점)"
+    desc_parts = []
+    if card_name: desc_parts.append(card_name.split('|')[0].strip())
+    if merchant: desc_parts.append(merchant)
+    if category: desc_parts.append(f"({category})")
+    rich_desc = " ".join(desc_parts) if desc_parts else (merchant or "카드 결제")
 
     acc_code = ai_account_code or "830"  # 소모품비(판) default
     acc_name = ai_account_name or "소모품비(판)"
@@ -228,7 +238,7 @@ def _build_card_candidate(
         status=AutoVoucherStatus.PENDING,
         transaction_date=_parse_date(ticket.get("transactAt")),
         counterparty=merchant[:200] if merchant else None,
-        description=card_name[:500] if card_name else None,
+        description=rich_desc[:500],
         supply_amount=supply,
         vat_amount=vat,
         total_amount=supply + vat,
@@ -253,6 +263,13 @@ def _build_bank_candidate(
     bt = ticket.get("bankTransaction") or {}
     counterparty = bt.get("counterparty") or bt.get("opponent") or ""
     content = bt.get("content") or ""
+    # 풍부한 적요: "[입금] 거래처 - 적요"
+    is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
+    rich_parts = []
+    rich_parts.append("입금" if is_in else "출금")
+    if counterparty: rich_parts.append(counterparty)
+    if content and content != counterparty: rich_parts.append(content)
+    rich_desc = " · ".join(rich_parts)
 
     is_inbound = direction in ("IN", "INBOUND", "DEPOSIT") or direction == "입금"
 
@@ -287,7 +304,7 @@ def _build_bank_candidate(
         status=AutoVoucherStatus.PENDING,
         transaction_date=_parse_date(ticket.get("transactAt")),
         counterparty=counterparty[:200] if counterparty else None,
-        description=content[:500] if content else None,
+        description=rich_desc[:500],
         supply_amount=Decimal(str(total)),
         vat_amount=Decimal("0"),
         total_amount=Decimal(str(total)),
@@ -331,13 +348,14 @@ def _build_cash_receipt_candidate(
         "amount": str(supply + vat), "memo": "",
     }]
 
+    rich_desc = f"현금영수증 · {issuer}" if issuer else "현금영수증"
     return AutoVoucherCandidate(
         source_type=AutoVoucherSourceType.CASH_RECEIPT,
         source_id=str(ticket.get("id", "")),
         status=AutoVoucherStatus.PENDING,
         transaction_date=_parse_date(ticket.get("transactAt")),
         counterparty=issuer[:200] if issuer else None,
-        description="",
+        description=rich_desc[:500],
         supply_amount=supply,
         vat_amount=vat,
         total_amount=supply + vat,

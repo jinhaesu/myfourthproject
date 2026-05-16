@@ -904,22 +904,105 @@ async def backfill_line_descriptions(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    voucher_lines.description이 비어있는 행을 voucher.description으로 일괄 보정.
-    적요 누락된 기존 전표를 계정별 원장에서 식별 가능하게 만듦.
+    voucher_lines.description이 비어있거나 거래처와 동일한 행을 더 풍부하게 보정.
+
+    v2 알고리즘:
+    - candidate.raw_data가 있으면 카드명/가맹점/카테고리 추출 → 적요 재구성
+    - 그 외엔 voucher.description + ' · ' + 계정명으로 차별화
     """
     from sqlalchemy import text as _text
     if confirm_token != "I_UNDERSTAND":
         raise HTTPException(status_code=400, detail="confirm_token 불일치 (I_UNDERSTAND 필수)")
-    result = await db.execute(_text("""
+
+    # 1단계: candidate.raw_data 활용해서 풍부한 description으로 재구성
+    candidates = (await db.execute(
+        select(AutoVoucherCandidate).where(
+            AutoVoucherCandidate.confirmed_voucher_id.isnot(None),
+            AutoVoucherCandidate.raw_data.isnot(None),
+        )
+    )).scalars().all()
+
+    enriched_descs: Dict[int, str] = {}  # voucher_id → rich_desc
+    for c in candidates:
+        try:
+            raw = json.loads(c.raw_data) if c.raw_data else {}
+        except Exception:
+            raw = {}
+        cu = raw.get("cardUsage") or {}
+        bt = raw.get("bankTransaction") or {}
+        ti = raw.get("taxInvoice") or {}
+        cr = raw.get("cashReceipt") or {}
+
+        parts = []
+        if cu:
+            card = cu.get("card") or {}
+            cn = (card.get("nickname") or card.get("name") or "").split('|')[0].strip()
+            store = cu.get("storeName") or ""
+            cat = cu.get("category") or ""
+            if cn: parts.append(cn)
+            if store: parts.append(store)
+            if cat: parts.append(f"({cat})")
+        elif bt:
+            opp = bt.get("opponent") or bt.get("counterparty") or ""
+            content = bt.get("content") or ""
+            if opp: parts.append(opp)
+            if content and content != opp: parts.append(content)
+        elif ti:
+            party = (ti.get("contractor") or ti.get("supplier") or {}).get("companyName", "")
+            if party: parts.append(f"세금계산서 · {party}")
+        elif cr:
+            issuer = (cr.get("issuer") or {}).get("companyName", "")
+            if issuer: parts.append(f"현금영수증 · {issuer}")
+
+        rich = " · ".join(parts) if parts else (c.description or c.counterparty or "")
+        if rich:
+            enriched_descs[c.confirmed_voucher_id] = rich[:500]
+
+    # 2단계: voucher_line별 적요 = (rich_desc 또는 voucher.description) + " · " + 계정명
+    # 한 번에 SQL로 처리 (CTE 활용)
+    updated = 0
+    if enriched_descs:
+        # voucher_id → rich_desc dict를 SQL VALUES로 전달
+        from sqlalchemy import bindparam
+        chunks = list(enriched_descs.items())
+        CHUNK = 500
+        for i in range(0, len(chunks), CHUNK):
+            batch = chunks[i:i + CHUNK]
+            values_sql = ", ".join(f"({v_id}, :d_{idx})" for idx, (v_id, _) in enumerate(batch))
+            params = {f"d_{idx}": d for idx, (_, d) in enumerate(batch)}
+            stmt = _text(f"""
+                WITH new_desc(voucher_id, rich) AS (VALUES {values_sql})
+                UPDATE voucher_lines vl
+                SET description = nd.rich || ' · ' || COALESCE(a.name, '')
+                FROM new_desc nd
+                JOIN accounts a ON a.id = vl.account_id
+                WHERE vl.voucher_id = nd.voucher_id
+            """)
+            r = await db.execute(stmt, params)
+            updated += r.rowcount or 0
+        await db.commit()
+
+    # 3단계: 나머지 (raw_data 없는 voucher 등) — voucher.description + 계정명
+    fallback_result = await db.execute(_text("""
         UPDATE voucher_lines vl
-        SET description = COALESCE(NULLIF(v.description, ''), '거래')
+        SET description = COALESCE(NULLIF(v.description, ''), '거래') || ' · ' || COALESCE(a.name, '')
         FROM vouchers v
+        JOIN accounts a ON a.id = vl.account_id
         WHERE vl.voucher_id = v.id
-          AND (vl.description IS NULL OR vl.description = '')
-          AND v.description IS NOT NULL AND v.description != ''
+          AND v.id = vl.voucher_id
+          AND (
+            vl.description IS NULL OR vl.description = '' OR vl.description = v.description
+            OR vl.description = COALESCE(v.merchant_name, '')
+          )
     """))
+    fallback_updated = fallback_result.rowcount or 0
     await db.commit()
-    return {"updated_lines": result.rowcount or 0}
+
+    return {
+        "enriched_from_raw": updated,
+        "fallback_updated": fallback_updated,
+        "total_candidates_processed": len(candidates),
+    }
 
 
 @router.post("/reject-confirmed-period")
