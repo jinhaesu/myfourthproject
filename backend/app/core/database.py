@@ -183,6 +183,20 @@ async def init_db():
         "ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS source VARCHAR(50)",
         # AutoVoucherCandidate.duplicate_voucher_id — 위하고 import 등 기존 Voucher와의 중복 매칭
         "ALTER TABLE auto_voucher_candidates ADD COLUMN IF NOT EXISTS duplicate_voucher_id INTEGER REFERENCES vouchers(id)",
+        # card_aliases — 카드 관리 메뉴 (이름/색상/메모)
+        """CREATE TABLE IF NOT EXISTS card_aliases (
+            id SERIAL PRIMARY KEY,
+            card_key VARCHAR(200) UNIQUE NOT NULL,
+            nickname VARCHAR(100) NOT NULL,
+            issuer VARCHAR(50),
+            last4 VARCHAR(20),
+            color VARCHAR(7),
+            memo VARCHAR(500),
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_card_aliases_card_key ON card_aliases(card_key)",
     ]
     for sql in migrations:
         try:

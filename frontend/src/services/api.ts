@@ -1190,4 +1190,31 @@ export const cashDigestApi = {
     }),
 }
 
+// ==================== 카드 관리 ====================
+export interface CardInfo {
+  card_key: string
+  nickname: string | null
+  issuer: string | null
+  last4: string | null
+  color: string | null
+  memo: string | null
+  is_active: boolean
+  total_amount: number
+  transaction_count: number
+  last_used: string | null
+}
+
+export const cardsApi = {
+  list: (start_date?: string, end_date?: string) =>
+    api.get<{ cards: CardInfo[] }>('/cards/list', {
+      params: { start_date, end_date }, timeout: 60_000,
+    }),
+  updateAlias: (card_key: string, patch: { nickname?: string; color?: string; memo?: string; is_active?: boolean }) =>
+    api.put('/cards/alias', patch, { params: { card_key } }),
+  analysis: (card_key: string, start_date?: string, end_date?: string) =>
+    api.get('/cards/analysis', { params: { card_key, start_date, end_date }, timeout: 60_000 }),
+  monthly: (card_key?: string, months: number = 6) =>
+    api.get('/cards/monthly', { params: { card_key, months }, timeout: 120_000 }),
+}
+
 export default api

@@ -16,7 +16,7 @@ import {
   ChartPieIcon,
   ClockIcon,
 } from '@heroicons/react/24/outline'
-import { granterApi } from '@/services/api'
+import { granterApi, cardsApi } from '@/services/api'
 import { formatCurrency, isoLocal, formatLastUpdated } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 import { usePeriodStore } from '@/store/periodStore'
@@ -244,6 +244,30 @@ export default function UnifiedViewPage() {
     enabled: !!isConfigured && ready,
     retry: false,
   })
+
+  // 카드 별명 (카드 관리 메뉴에서 지정한 nickname)
+  const cardAliasesQuery = useQuery({
+    queryKey: ['card-aliases-list'],
+    queryFn: () => cardsApi.list(from, to).then((r) => r.data.cards),
+    enabled: !!isConfigured && ready,
+    retry: false,
+    staleTime: 60_000,
+  })
+
+  // issuer + last4 매칭으로 별명 찾기
+  function findCardAlias(issuer: string, cardNum: string): string | null {
+    const aliases = cardAliasesQuery.data || []
+    if (!aliases.length) return null
+    const last4 = (cardNum || '').replace(/\D/g, '').slice(-4)
+    for (const a of aliases) {
+      if (!a.nickname) continue
+      const keyHasIssuer = issuer && a.card_key.includes(issuer)
+      const keyHasLast4 = last4 && a.card_key.includes(last4)
+      if (keyHasIssuer && keyHasLast4) return a.nickname
+      if (keyHasIssuer && !last4) return a.nickname
+    }
+    return null
+  }
 
   // 카드별 사용금액 합계 (assetId → 합계)
   const cardTotalsByAssetId = useMemo(() => {
@@ -715,8 +739,11 @@ export default function UnifiedViewPage() {
               const id = num(c, 'id')
               const cardInfo = c.card || {}
               const issuer = str(c, 'organizationName', 'name')
-              const alias = str(c, 'nickname')
+              const granterAlias = str(c, 'nickname')
               const cardNum = str(c, 'number')
+              // 우리 시스템 별명 우선, 없으면 그랜터 alias
+              const userAlias = findCardAlias(issuer, cardNum)
+              const alias = userAlias || granterAlias
               // 사용금액: 카드 전용 조회(cardTotalsByAssetId) 우선, fallback으로 usageByAsset, 자산 메타
               const cardQueryUsed = cardTotalsByAssetId.get(id) || 0
               const periodUsage = usageByAsset[id]?.outAmt || 0

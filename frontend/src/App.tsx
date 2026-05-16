@@ -19,6 +19,7 @@ import FinancialReportsPage from '@/pages/FinancialReportsPage'
 import UnifiedViewPage from '@/pages/UnifiedViewPage'
 import DailyReportPage from '@/pages/DailyReportPage'
 import CashDigestPage from '@/pages/CashDigestPage'
+import CardManagementPage from '@/pages/CardManagementPage'
 import CashPLPage from '@/pages/CashPLPage'
 import SettlementPage from '@/pages/SettlementPage'
 import TaxInvoicePage from '@/pages/TaxInvoicePage'
@@ -55,6 +56,7 @@ function App() {
         <Route path="unified" element={<UnifiedViewPage />} />
         <Route path="daily-report" element={<DailyReportPage />} />
         <Route path="cash-digest" element={<CashDigestPage />} />
+        <Route path="cards" element={<CardManagementPage />} />
         <Route path="cash-pl" element={<CashPLPage />} />
         <Route path="settlement" element={<SettlementPage />} />
         <Route path="tax-invoices" element={<TaxInvoicePage />} />
