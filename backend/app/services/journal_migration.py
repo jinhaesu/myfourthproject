@@ -677,7 +677,7 @@ async def delete_wehago_import_vouchers(
     #    - 한 트랜잭션에서 lock 일치 보장 (race condition 없음)
     #    - FK constraint 이름과 무관 (ALTER 불필요)
     #    - 청크 2000으로 크게 (Supabase statement_timeout=60s 안 - SET LOCAL로 보장)
-    CHUNK = 500  # 1000은 timeout 빈번
+    CHUNK = 200  # confirm-batch task와 동시 실행 시 lock contention 회피
     for it in range(5000):
         async with engine.begin() as conn:
             try:
