@@ -898,6 +898,93 @@ async def migrate_from_journal(
     )
 
 
+@router.post("/admin/reprocess-cash-receipts")
+async def reprocess_cash_receipts(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    기간 내 cash_receipt confirmed candidate들을 raw_data 기반으로 재분개.
+    매출 case 누락 해결 — issuer가 우리 회사면 매출 분개로 재처리.
+
+    동작:
+    1. 기존 voucher 삭제 (해당 candidate의 confirmed_voucher_id)
+    2. candidate.debit_lines/credit_lines을 재구성된 라인으로 update
+    3. candidate.status = PENDING (사용자가 일괄 확정 다시 누르도록)
+    """
+    from app.services.auto_voucher_service import _build_cash_receipt_candidate
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    cands = (await db.execute(
+        select(AutoVoucherCandidate).where(
+            AutoVoucherCandidate.source_type == AutoVoucherSourceType.CASH_RECEIPT,
+            AutoVoucherCandidate.transaction_date >= start_date,
+            AutoVoucherCandidate.transaction_date <= end_date,
+        )
+    )).scalars().all()
+
+    OUR_BIZ = "5038701038"
+    reprocessed = 0
+    voucher_ids_to_delete: List[int] = []
+    for c in cands:
+        try:
+            raw = json.loads(c.raw_data) if c.raw_data else {}
+        except Exception:
+            continue
+        # 새 candidate 객체로 분개 재계산 후 dict만 가져옴
+        new_cand = _build_cash_receipt_candidate(raw, our_business_number=OUR_BIZ)
+        c.debit_lines = new_cand.debit_lines
+        c.credit_lines = new_cand.credit_lines
+        c.description = new_cand.description
+        c.supply_amount = new_cand.supply_amount
+        c.vat_amount = new_cand.vat_amount
+        c.total_amount = new_cand.total_amount
+        # 기존 voucher가 있으면 삭제 대상 + candidate를 PENDING으로 reset
+        if c.confirmed_voucher_id:
+            voucher_ids_to_delete.append(c.confirmed_voucher_id)
+        c.status = AutoVoucherStatus.PENDING
+        c.confirmed_voucher_id = None
+        c.confirmed_at = None
+        c.confirmed_by = None
+        reprocessed += 1
+
+    # 기존 voucher 삭제 (line CASCADE)
+    deleted_v = 0
+    deleted_l = 0
+    if voucher_ids_to_delete:
+        from sqlalchemy import text as _text
+        CHUNK = 50
+        for i in range(0, len(voucher_ids_to_delete), CHUNK):
+            batch = voucher_ids_to_delete[i:i + CHUNK]
+            try:
+                r1 = await db.execute(
+                    _text("DELETE FROM voucher_lines WHERE voucher_id = ANY(:ids)"),
+                    {"ids": batch},
+                )
+                deleted_l += r1.rowcount or 0
+                r2 = await db.execute(
+                    _text("DELETE FROM vouchers WHERE id = ANY(:ids)"),
+                    {"ids": batch},
+                )
+                deleted_v += r2.rowcount or 0
+                await db.commit()
+            except Exception:
+                logger.exception(f"voucher 삭제 chunk {i} 실패")
+                try: await db.rollback()
+                except Exception: pass
+
+    await db.commit()
+    return {
+        "reprocessed_candidates": reprocessed,
+        "deleted_vouchers": deleted_v,
+        "deleted_lines": deleted_l,
+        "next_step": "이제 자동 전표 검수 큐에서 일괄 확정으로 새 분개 생성",
+    }
+
+
 @router.post("/admin/create-perf-indexes")
 async def create_perf_indexes():
     """

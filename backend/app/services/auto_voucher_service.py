@@ -322,33 +322,71 @@ def _build_cash_receipt_candidate(
     ai_account_code: Optional[str] = None,
     ai_account_name: Optional[str] = None,
     ai_confidence: float = 0.6,
+    our_business_number: Optional[str] = None,
 ) -> AutoVoucherCandidate:
-    """현금영수증 매입 분개 후보 (대변=현금)."""
+    """현금영수증 분개 후보 — issuer가 우리 회사면 매출, 아니면 매입.
+
+    매출: 차변 현금 / 대변 매출 + 부가세예수금
+    매입: 차변 비용 + 부가세대급금 / 대변 현금
+    """
     total = _safe_float(ticket.get("amount"))
     tax_amount = ticket.get("taxAmount")
-    supply, vat = _split_supply_vat(total, tax_amount)
 
     cr = ticket.get("cashReceipt") or {}
-    issuer = (cr.get("issuer") or {}).get("companyName", "")
+    issuer = cr.get("issuer") or {}
+    issuer_name = issuer.get("companyName") or ""
+    issuer_regnum = (issuer.get("registrationNumber") or "").replace("-", "")
 
-    acc_code = ai_account_code or "830"
-    acc_name = ai_account_name or "소모품비(판)"
+    # cashReceipt.supplyValue / vat 직접 사용 (있으면)
+    cr_supply = _safe_float(cr.get("supplyValue"))
+    cr_vat = _safe_float(cr.get("vat"))
+    if cr_supply > 0 or cr_vat > 0:
+        supply, vat = Decimal(str(cr_supply)), Decimal(str(cr_vat))
+    else:
+        supply, vat = _split_supply_vat(total, tax_amount)
 
-    debit_lines = [{
-        "side": "debit", "account_code": acc_code, "account_name": acc_name,
-        "amount": str(supply), "memo": "",
-    }]
-    if vat > 0:
-        debit_lines.append({
-            "side": "debit", "account_code": "135", "account_name": "부가세대급금",
-            "amount": str(vat), "memo": "",
-        })
-    credit_lines = [{
-        "side": "credit", "account_code": "101", "account_name": "현금",
-        "amount": str(supply + vat), "memo": "",
-    }]
+    # 매출/매입 판정: ticket.transactionType=='IN' 이거나 issuer가 우리 회사면 매출
+    txn_type = (ticket.get("transactionType") or "").upper()
+    is_sales = (
+        txn_type in ("IN", "INBOUND")
+        or (our_business_number and issuer_regnum == our_business_number)
+    )
 
-    rich_desc = f"현금영수증 · {issuer}" if issuer else "현금영수증"
+    if is_sales:
+        # 매출: 차변 현금 / 대변 매출 + 부가세예수금
+        debit_lines = [{
+            "side": "debit", "account_code": "101", "account_name": "현금",
+            "amount": str(supply + vat), "memo": "",
+        }]
+        credit_lines = [{
+            "side": "credit", "account_code": "404", "account_name": "제품매출",
+            "amount": str(supply), "memo": "",
+        }]
+        if vat != 0:
+            credit_lines.append({
+                "side": "credit", "account_code": "255", "account_name": "부가세예수금",
+                "amount": str(vat), "memo": "",
+            })
+        acc_code, acc_name = "404", "제품매출"
+        rich_desc = f"현금영수증 매출 · {issuer_name}" if issuer_name else "현금영수증 매출"
+    else:
+        # 매입: 차변 비용 + 부가세대급금 / 대변 현금
+        acc_code = ai_account_code or "830"
+        acc_name = ai_account_name or "소모품비(판)"
+        debit_lines = [{
+            "side": "debit", "account_code": acc_code, "account_name": acc_name,
+            "amount": str(supply), "memo": "",
+        }]
+        if vat != 0:
+            debit_lines.append({
+                "side": "debit", "account_code": "135", "account_name": "부가세대급금",
+                "amount": str(vat), "memo": "",
+            })
+        credit_lines = [{
+            "side": "credit", "account_code": "101", "account_name": "현금",
+            "amount": str(supply + vat), "memo": "",
+        }]
+        rich_desc = f"현금영수증 매입 · {issuer_name}" if issuer_name else "현금영수증 매입"
     return AutoVoucherCandidate(
         source_type=AutoVoucherSourceType.CASH_RECEIPT,
         source_id=str(ticket.get("id", "")),
@@ -455,7 +493,8 @@ async def _generate_candidates_core(
             counts["skipped"] += 1
             continue
         try:
-            cand = _build_cash_receipt_candidate(t)
+            # 우리 회사 사업자번호 — 조인앤조인 (memory 기준)
+            cand = _build_cash_receipt_candidate(t, our_business_number="5038701038")
             db.add(cand)
             counts["cash_receipt"] += 1
         except Exception as e:
