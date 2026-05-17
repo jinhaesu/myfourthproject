@@ -898,6 +898,31 @@ async def migrate_from_journal(
     )
 
 
+@router.post("/admin/create-perf-indexes")
+async def create_perf_indexes():
+    """
+    성능 인덱스 명시 생성 (CONCURRENTLY — 다른 query 차단 안 함).
+    voucher_lines.voucher_id / vouchers.source 인덱스.
+    """
+    from sqlalchemy import text as _text
+    from app.core.database import engine
+    results = []
+    queries = [
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_vouchers_source ON vouchers(source)",
+    ]
+    for q in queries:
+        # CONCURRENTLY는 transaction 안에서 불가 — connection autocommit
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(_text("COMMIT"))  # exit any implicit tx
+                await conn.execute(_text(q))
+                results.append({"sql": q[:80], "status": "ok"})
+        except Exception as e:
+            results.append({"sql": q[:80], "status": "err", "error": str(e)[:200]})
+    return {"results": results}
+
+
 @router.post("/backfill-line-descriptions")
 async def backfill_line_descriptions(
     confirm_token: str = Query(..., description="확인 토큰: 'I_UNDERSTAND' 필수"),
