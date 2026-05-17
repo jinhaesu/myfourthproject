@@ -197,6 +197,10 @@ async def init_db():
             updated_at TIMESTAMP DEFAULT NOW()
         )""",
         "CREATE INDEX IF NOT EXISTS ix_card_aliases_card_key ON card_aliases(card_key)",
+        # voucher_lines.voucher_id 인덱스 — DELETE/SELECT 성능 (없으면 full scan)
+        "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
+        # vouchers.source 인덱스 — wehago_import 등 source 기반 조회 성능
+        "CREATE INDEX IF NOT EXISTS ix_vouchers_source ON vouchers(source)",
     ]
     for sql in migrations:
         try:
