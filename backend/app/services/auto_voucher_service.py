@@ -392,7 +392,7 @@ def _build_cash_receipt_candidate(
         source_id=str(ticket.get("id", "")),
         status=AutoVoucherStatus.PENDING,
         transaction_date=_parse_date(ticket.get("transactAt")),
-        counterparty=issuer[:200] if issuer else None,
+        counterparty=issuer_name[:200] if issuer_name else None,
         description=rich_desc[:500],
         supply_amount=supply,
         vat_amount=vat,
