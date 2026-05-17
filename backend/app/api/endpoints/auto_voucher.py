@@ -903,21 +903,110 @@ async def reprocess_cash_receipts(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
     start_date: date = Query(...),
     end_date: date = Query(...),
+    background: bool = Query(True, description="background task 모드 (기본 true)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     기간 내 cash_receipt confirmed candidate들을 raw_data 기반으로 재분개.
-    매출 case 누락 해결 — issuer가 우리 회사면 매출 분개로 재처리.
-
-    동작:
-    1. 기존 voucher 삭제 (해당 candidate의 confirmed_voucher_id)
-    2. candidate.debit_lines/credit_lines을 재구성된 라인으로 update
-    3. candidate.status = PENDING (사용자가 일괄 확정 다시 누르도록)
+    background=true (default): task_id 즉시 반환 + /progress/{tid} 폴링.
     """
-    from app.services.auto_voucher_service import _build_cash_receipt_candidate
+    from app.services.auto_voucher_service import _build_cash_receipt_candidate, _new_task, _update
+    from app.core.database import async_session_factory
     if confirm_token != "I_UNDERSTAND":
         raise HTTPException(status_code=400, detail="confirm_token 불일치")
 
+    if background:
+        import asyncio, time as _time
+        task_id = _new_task("cash_receipt 재분개 시작…")
+
+        async def _runner():
+            try:
+                async with async_session_factory() as bg_db:
+                    cands = (await bg_db.execute(
+                        select(AutoVoucherCandidate).where(
+                            AutoVoucherCandidate.source_type == AutoVoucherSourceType.CASH_RECEIPT,
+                            AutoVoucherCandidate.transaction_date >= start_date,
+                            AutoVoucherCandidate.transaction_date <= end_date,
+                        )
+                    )).scalars().all()
+                    OUR_BIZ = "5038701038"
+                    reprocessed = 0
+                    voucher_ids_to_delete: List[int] = []
+                    total = len(cands)
+                    _update(task_id, percent=5, message=f"{total}건 재분개 시작…")
+
+                    # 1단계: candidate 라인 재계산
+                    for idx, c in enumerate(cands):
+                        try:
+                            raw = json.loads(c.raw_data) if c.raw_data else {}
+                            new_cand = _build_cash_receipt_candidate(raw, our_business_number=OUR_BIZ)
+                            c.debit_lines = new_cand.debit_lines
+                            c.credit_lines = new_cand.credit_lines
+                            c.description = new_cand.description
+                            c.supply_amount = new_cand.supply_amount
+                            c.vat_amount = new_cand.vat_amount
+                            c.total_amount = new_cand.total_amount
+                            if c.confirmed_voucher_id:
+                                voucher_ids_to_delete.append(c.confirmed_voucher_id)
+                            c.status = AutoVoucherStatus.PENDING
+                            c.confirmed_voucher_id = None
+                            c.confirmed_at = None
+                            c.confirmed_by = None
+                            reprocessed += 1
+                        except Exception:
+                            logger.exception(f"cand {c.id} reprocess 실패")
+                        if (idx + 1) % 200 == 0:
+                            try: await bg_db.commit()
+                            except Exception: pass
+                            pct = 5 + int(45 * (idx + 1) / max(total, 1))
+                            _update(task_id, percent=pct,
+                                    message=f"라인 재계산 {idx+1}/{total}",
+                                    reprocessed=reprocessed)
+                    try: await bg_db.commit()
+                    except Exception: pass
+
+                    # 2단계: voucher 삭제 (청크)
+                    from sqlalchemy import text as _text
+                    deleted_v = 0
+                    deleted_l = 0
+                    CHUNK = 50
+                    for i in range(0, len(voucher_ids_to_delete), CHUNK):
+                        batch = voucher_ids_to_delete[i:i + CHUNK]
+                        try:
+                            r1 = await bg_db.execute(
+                                _text("DELETE FROM voucher_lines WHERE voucher_id = ANY(:ids)"),
+                                {"ids": batch})
+                            deleted_l += r1.rowcount or 0
+                            r2 = await bg_db.execute(
+                                _text("DELETE FROM vouchers WHERE id = ANY(:ids)"),
+                                {"ids": batch})
+                            deleted_v += r2.rowcount or 0
+                            await bg_db.commit()
+                        except Exception:
+                            logger.exception(f"voucher 삭제 chunk {i} 실패")
+                            try: await bg_db.rollback()
+                            except Exception: pass
+                        if i % (CHUNK * 10) == 0:
+                            pct = 50 + int(45 * i / max(len(voucher_ids_to_delete), 1))
+                            _update(task_id, percent=pct,
+                                    message=f"voucher 삭제 {deleted_v}/{len(voucher_ids_to_delete)}",
+                                    deleted_vouchers=deleted_v)
+
+                    _update(task_id, status="completed", percent=100,
+                            message=f"완료 — 재분개 {reprocessed}건, voucher 삭제 {deleted_v}건",
+                            result={"reprocessed": reprocessed, "deleted_vouchers": deleted_v,
+                                    "deleted_lines": deleted_l},
+                            finished_at=_time.time())
+            except Exception as e:
+                logger.exception("reprocess 백그라운드 실패")
+                _update(task_id, status="failed", message=f"실패: {str(e)[:300]}",
+                        finished_at=_time.time())
+
+        asyncio.create_task(_runner())
+        return {"task_id": task_id, "status": "queued",
+                "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+    # 동기 모드 (작은 기간용)
     cands = (await db.execute(
         select(AutoVoucherCandidate).where(
             AutoVoucherCandidate.source_type == AutoVoucherSourceType.CASH_RECEIPT,
