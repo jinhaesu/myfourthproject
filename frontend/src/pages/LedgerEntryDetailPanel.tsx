@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
   XMarkIcon,
@@ -7,8 +7,9 @@ import {
   ArrowsRightLeftIcon,
   ArrowDownLeftIcon,
   ArrowUpRightIcon,
+  DocumentTextIcon,
 } from '@heroicons/react/24/outline'
-import { ledgerApi } from '@/services/api'
+import { ledgerApi, vouchersApi } from '@/services/api'
 import { useAuthStore } from '@/store/authStore'
 import { formatCurrency } from '@/utils/format'
 
@@ -16,6 +17,7 @@ type Direction = 'debit' | 'credit'
 
 interface Entry {
   id: number
+  voucher_id?: number | null
   transaction_date: string
   transaction_number?: string
   counterparty?: string
@@ -26,6 +28,7 @@ interface Entry {
   counterparty_account_code?: string
   counterparty_account_name?: string
   memo?: string
+  is_locked?: boolean
 }
 
 interface AccountSummary {
@@ -129,6 +132,14 @@ export default function LedgerEntryDetailPanel({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [isDirty, saveMut.isPending])
+
+  // voucher 전체 분개 라인 조회 (voucher_id 있을 때만)
+  const voucherDetailQuery = useQuery({
+    queryKey: ['voucher-detail', entry.voucher_id],
+    queryFn: () => vouchersApi.get(entry.voucher_id as number).then((r) => r.data),
+    enabled: !!entry.voucher_id,
+    staleTime: 60_000,
+  })
 
   return (
     <div className="border-t border-ink-200 bg-canvas-50 flex flex-col">
@@ -352,6 +363,77 @@ export default function LedgerEntryDetailPanel({
           </div>
         </div>
       </div>
+
+      {/* 전체 분개 라인 (voucher_id 있을 때) */}
+      {entry.voucher_id && (
+        <div className="border-t border-ink-200 px-4 py-3 bg-white">
+          <div className="flex items-center gap-1.5 mb-2">
+            <DocumentTextIcon className="h-3.5 w-3.5 text-ink-500" />
+            <span className="text-2xs font-semibold text-ink-700">이 전표의 전체 분개</span>
+            {voucherDetailQuery.data?.voucher_number && (
+              <span className="text-2xs font-mono text-ink-500">
+                · {voucherDetailQuery.data.voucher_number}
+              </span>
+            )}
+          </div>
+          {voucherDetailQuery.isLoading ? (
+            <div className="text-2xs text-ink-400">불러오는 중…</div>
+          ) : voucherDetailQuery.isError ? (
+            <div className="text-2xs text-rose-600">전표 정보 조회 실패</div>
+          ) : (
+            <div>
+              <div className="grid grid-cols-12 gap-2 text-2xs text-ink-500 font-semibold border-b border-ink-100 pb-1 mb-1">
+                <div className="col-span-1 text-center">구분</div>
+                <div className="col-span-2 font-mono">계정코드</div>
+                <div className="col-span-3">계정명</div>
+                <div className="col-span-3">적요</div>
+                <div className="col-span-1.5 text-right">차변</div>
+                <div className="col-span-1.5 text-right">대변</div>
+              </div>
+              {(voucherDetailQuery.data?.lines || []).map((l: any, i: number) => {
+                const isDebit = Number(l.debit_amount || 0) > 0
+                const isCurrentEntry =
+                  l.line_number === Number((entry.transaction_number || '').replace(/[V#]/g, '')) ||
+                  String(l.id) === String(entry.id) ||
+                  l.id === entry.id - 10_000_000
+                return (
+                  <div key={i}
+                    className={`grid grid-cols-12 gap-2 text-2xs py-1 border-b border-ink-50 ${
+                      isCurrentEntry ? 'bg-amber-50' : ''
+                    }`}
+                  >
+                    <div className="col-span-1 text-center">
+                      <span className={`px-1 py-0.5 rounded text-2xs font-semibold ${
+                        isDebit ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                      }`}>
+                        {isDebit ? '차' : '대'}
+                      </span>
+                    </div>
+                    <div className="col-span-2 font-mono text-ink-700">{l.account_code || '-'}</div>
+                    <div className="col-span-3 text-ink-800">{l.account_name || '-'}</div>
+                    <div className="col-span-3 text-ink-600 truncate">{l.description || ''}</div>
+                    <div className="col-span-1.5 text-right font-mono">
+                      {isDebit ? <span className="text-emerald-700 font-semibold">{formatCurrency(Number(l.debit_amount), false)}</span> : <span className="text-ink-300">-</span>}
+                    </div>
+                    <div className="col-span-1.5 text-right font-mono">
+                      {!isDebit ? <span className="text-rose-700 font-semibold">{formatCurrency(Number(l.credit_amount), false)}</span> : <span className="text-ink-300">-</span>}
+                    </div>
+                  </div>
+                )
+              })}
+              <div className="grid grid-cols-12 gap-2 text-2xs pt-1.5 mt-1 border-t-2 border-ink-200 font-semibold">
+                <div className="col-span-9 text-right text-ink-700">합계</div>
+                <div className="col-span-1.5 text-right font-mono text-emerald-700">
+                  {formatCurrency(Number(voucherDetailQuery.data?.total_debit || 0), false)}
+                </div>
+                <div className="col-span-1.5 text-right font-mono text-rose-700">
+                  {formatCurrency(Number(voucherDetailQuery.data?.total_credit || 0), false)}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
