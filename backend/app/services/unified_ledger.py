@@ -13,7 +13,7 @@
 현금주의 손익·재무보고서·계정별 원장 등 모든 분석 메뉴가 단일 진실을 본다.
 """
 from typing import Optional, Any
-from sqlalchemy import select, union_all, literal_column, func, cast, String, and_, null
+from sqlalchemy import select, union_all, literal_column, func, cast, String, Integer, and_, null
 
 from app.models.accounting import (
     Voucher, VoucherLine, Account, VoucherStatus,
@@ -114,6 +114,7 @@ def unified_rows_subquery(
         AIRawTransactionData.credit_amount.label('credit_amount'),
         AIRawTransactionData.merchant_name.label('merchant_name'),
         AIRawTransactionData.original_description.label('description'),
+        cast(null(), Integer).label('voucher_id'),
     ).where(
         AIRawTransactionData.source_account_code.isnot(None),
         AIRawTransactionData.source_account_code != '',
@@ -141,6 +142,7 @@ def unified_rows_subquery(
         VoucherLine.credit_amount.label('credit_amount'),
         VoucherLine.counterparty_name.label('merchant_name'),
         VoucherLine.description.label('description'),
+        VoucherLine.voucher_id.label('voucher_id'),
     ).select_from(VoucherLine).join(
         Voucher, VoucherLine.voucher_id == Voucher.id
     ).join(

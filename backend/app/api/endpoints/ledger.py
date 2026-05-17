@@ -655,7 +655,7 @@ async def get_account_entries(
 
         entries.append(LedgerEntry(
             id=entry_id,
-            voucher_id=r.id if is_voucher else None,
+            voucher_id=r.voucher_id if is_voucher else None,
             transaction_date=txn_date,
             transaction_number=txn_num,
             counterparty=r.merchant_name,
