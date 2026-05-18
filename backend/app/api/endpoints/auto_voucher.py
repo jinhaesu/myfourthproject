@@ -1074,6 +1074,120 @@ async def reprocess_cash_receipts(
     }
 
 
+@router.post("/admin/cleanup-cash-receipt-vouchers")
+async def cleanup_cash_receipt_vouchers(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+    background: bool = Query(True),
+):
+    """
+    reprocess 후 남은 cash_receipt 고아 voucher 정리.
+    candidate.source_id (granter ticket id) ↔ voucher.external_ref 매칭.
+    PENDING 상태로 reset된 cash_receipt 후보들의 source_id에 해당하는
+    granter_auto voucher를 청크 단위로 삭제.
+    """
+    from app.services.auto_voucher_service import _new_task, _update
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as _text
+    import asyncio, time as _time
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    async def _scan_and_delete(bg_db: AsyncSession, do_delete: bool,
+                                task_id: Optional[str] = None):
+        src_rows = (await bg_db.execute(
+            select(AutoVoucherCandidate.source_id).where(
+                AutoVoucherCandidate.source_type == AutoVoucherSourceType.CASH_RECEIPT,
+                AutoVoucherCandidate.transaction_date >= start_date,
+                AutoVoucherCandidate.transaction_date <= end_date,
+                AutoVoucherCandidate.source_id.isnot(None),
+            )
+        )).all()
+        src_ids = [r[0] for r in src_rows if r[0]]
+        total_src = len(src_ids)
+        if task_id:
+            _update(task_id, percent=5,
+                    message=f"{total_src}개 candidate source_id 수집됨")
+
+        deleted_v, deleted_l = 0, 0
+        scanned_v = 0
+        SCAN_CHUNK = 500
+        for i in range(0, total_src, SCAN_CHUNK):
+            batch_src = src_ids[i:i + SCAN_CHUNK]
+            try:
+                v_id_rows = (await bg_db.execute(
+                    select(Voucher.id).where(
+                        Voucher.source == 'granter_auto',
+                        Voucher.external_ref.in_(batch_src),
+                    )
+                )).all()
+                v_ids = [v[0] for v in v_id_rows]
+                scanned_v += len(v_ids)
+                if v_ids and do_delete:
+                    DEL_CHUNK = 100
+                    for j in range(0, len(v_ids), DEL_CHUNK):
+                        del_batch = v_ids[j:j + DEL_CHUNK]
+                        try:
+                            r1 = await bg_db.execute(
+                                _text("DELETE FROM voucher_lines WHERE voucher_id = ANY(:ids)"),
+                                {"ids": del_batch})
+                            deleted_l += r1.rowcount or 0
+                            r2 = await bg_db.execute(
+                                _text("DELETE FROM vouchers WHERE id = ANY(:ids)"),
+                                {"ids": del_batch})
+                            deleted_v += r2.rowcount or 0
+                            await bg_db.commit()
+                        except Exception:
+                            logger.exception(f"cleanup chunk {j} 삭제 실패")
+                            try: await bg_db.rollback()
+                            except Exception: pass
+            except Exception:
+                logger.exception(f"cleanup scan chunk {i} 실패")
+                try: await bg_db.rollback()
+                except Exception: pass
+            if task_id:
+                pct = 5 + int(90 * (i + SCAN_CHUNK) / max(total_src, 1))
+                pct = min(95, pct)
+                _update(task_id, percent=pct,
+                        message=f"scan {min(i+SCAN_CHUNK, total_src)}/{total_src} · "
+                                f"발견 {scanned_v} · 삭제 {deleted_v}",
+                        scanned_vouchers=scanned_v,
+                        deleted_vouchers=deleted_v)
+        return {
+            "candidates_scanned": total_src,
+            "vouchers_found": scanned_v,
+            "deleted_vouchers": deleted_v,
+            "deleted_lines": deleted_l,
+            "dry_run": not do_delete,
+        }
+
+    if background and not dry_run:
+        task_id = _new_task("cash_receipt voucher cleanup 시작…")
+        async def _runner():
+            try:
+                async with async_session_factory() as bg_db:
+                    result = await _scan_and_delete(bg_db, do_delete=True,
+                                                    task_id=task_id)
+                    _update(task_id, status="completed", percent=100,
+                            message=f"완료 — voucher 삭제 {result['deleted_vouchers']}건",
+                            result=result, finished_at=_time.time())
+            except Exception as e:
+                logger.exception("cleanup 백그라운드 실패")
+                _update(task_id, status="failed",
+                        message=f"실패: {str(e)[:300]}",
+                        finished_at=_time.time())
+        asyncio.create_task(_runner())
+        return {"task_id": task_id, "status": "queued",
+                "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+    # foreground (dry_run 또는 명시적 sync)
+    async with async_session_factory() as bg_db:
+        return await _scan_and_delete(bg_db, do_delete=not dry_run, task_id=None)
+
+
 @router.post("/admin/create-perf-indexes")
 async def create_perf_indexes():
     """
