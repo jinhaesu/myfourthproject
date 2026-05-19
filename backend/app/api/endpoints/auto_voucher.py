@@ -1108,25 +1108,25 @@ async def cleanup_direct(
                 url, statement_cache_size=0, command_timeout=600,
             )
             try:
-                _update(task_id, percent=10, message="statement_timeout=0 설정…")
-                await conn.execute("SET statement_timeout = 0")
-
-                _update(task_id, percent=15, message="target voucher 식별 중…")
-                v_ids_rows = await conn.fetch(
-                    """
-                    SELECT v.id FROM vouchers v
-                    WHERE v.source = 'granter_auto'
-                      AND v.external_ref IN (
-                        SELECT source_id FROM auto_voucher_candidates
-                        WHERE source_type = 'CASH_RECEIPT'
-                          AND transaction_date BETWEEN $1 AND $2
-                          AND source_id IS NOT NULL
-                      )
-                    """,
-                    start_date, end_date,
-                )
+                _update(task_id, percent=10, message="target voucher 식별 중…")
+                # 식별 SELECT는 가벼움 — transaction 밖에서 OK
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '300s'")
+                    v_ids_rows = await conn.fetch(
+                        """
+                        SELECT v.id FROM vouchers v
+                        WHERE v.source = 'granter_auto'
+                          AND v.external_ref IN (
+                            SELECT source_id FROM auto_voucher_candidates
+                            WHERE source_type = 'CASH_RECEIPT'
+                              AND transaction_date BETWEEN $1 AND $2
+                              AND source_id IS NOT NULL
+                          )
+                        """,
+                        start_date, end_date,
+                    )
                 v_ids = [r["id"] for r in v_ids_rows]
-                _update(task_id, percent=30,
+                _update(task_id, percent=20,
                         message=f"target voucher {len(v_ids)}개 식별",
                         vouchers_found=len(v_ids))
 
@@ -1138,40 +1138,53 @@ async def cleanup_direct(
                             finished_at=_time.time())
                     return
 
-                _update(task_id, percent=40, message="voucher_lines 단일 DELETE 시작…")
-                del_lines_count = await conn.fetchval(
-                    """
-                    WITH d AS (
-                      DELETE FROM voucher_lines
-                      WHERE voucher_id = ANY($1::int[])
-                      RETURNING 1
-                    )
-                    SELECT COUNT(*) FROM d
-                    """,
-                    v_ids,
-                )
-                _update(task_id, percent=70,
-                        message=f"lines 삭제 {del_lines_count}건. vouchers DELETE 시작…",
-                        deleted_lines=int(del_lines_count or 0))
+                # 청크별 transaction — SET LOCAL statement_timeout이
+                # 각 transaction에 적용. pooler가 transaction-mode여도 안전.
+                CHUNK = 1000
+                deleted_lines_total = 0
+                deleted_vouchers_total = 0
+                total_batches = (len(v_ids) + CHUNK - 1) // CHUNK
 
-                del_v_count = await conn.fetchval(
-                    """
-                    WITH d AS (
-                      DELETE FROM vouchers
-                      WHERE id = ANY($1::int[])
-                      RETURNING 1
-                    )
-                    SELECT COUNT(*) FROM d
-                    """,
-                    v_ids,
-                )
+                for idx in range(0, len(v_ids), CHUNK):
+                    batch = v_ids[idx:idx + CHUNK]
+                    try:
+                        async with conn.transaction():
+                            await conn.execute("SET LOCAL statement_timeout = '300s'")
+                            r1 = await conn.execute(
+                                "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])",
+                                batch,
+                            )
+                            r2 = await conn.execute(
+                                "DELETE FROM vouchers WHERE id = ANY($1::int[])",
+                                batch,
+                            )
+                        # asyncpg execute returns 'DELETE N' string
+                        try:
+                            n1 = int(r1.split()[-1])
+                        except Exception:
+                            n1 = 0
+                        try:
+                            n2 = int(r2.split()[-1])
+                        except Exception:
+                            n2 = 0
+                        deleted_lines_total += n1
+                        deleted_vouchers_total += n2
+                    except Exception as ex:
+                        logger.warning(f"cleanup-direct chunk {idx} 실패: {ex}")
+                    done_batches = (idx // CHUNK) + 1
+                    pct = 20 + int(75 * done_batches / max(total_batches, 1))
+                    _update(task_id, percent=min(95, pct),
+                            message=f"청크 {done_batches}/{total_batches} · "
+                                    f"삭제 voucher {deleted_vouchers_total}/lines {deleted_lines_total}",
+                            deleted_vouchers=deleted_vouchers_total,
+                            deleted_lines=deleted_lines_total)
 
                 _update(task_id, status="completed", percent=100,
-                        message=f"완료 — vouchers {del_v_count}건 / lines {del_lines_count}건 삭제",
+                        message=f"완료 — vouchers {deleted_vouchers_total}건 / lines {deleted_lines_total}건 삭제",
                         result={
                             "vouchers_found": len(v_ids),
-                            "deleted_vouchers": int(del_v_count or 0),
-                            "deleted_lines": int(del_lines_count or 0),
+                            "deleted_vouchers": deleted_vouchers_total,
+                            "deleted_lines": deleted_lines_total,
                         },
                         finished_at=_time.time())
             finally:
