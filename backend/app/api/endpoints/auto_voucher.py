@@ -1138,9 +1138,10 @@ async def cleanup_direct(
                             finished_at=_time.time())
                     return
 
-                # 청크별 transaction — SET LOCAL statement_timeout이
-                # 각 transaction에 적용. pooler가 transaction-mode여도 안전.
-                CHUNK = 1000
+                # 청크별 transaction. CHUNK 100 — PK 인덱스 lookup만으로 8초 안 처리.
+                # voucher_lines는 이전 cleanup에서 31,904건 삭제됨 — 보험 차원에서만 실행
+                # (인덱스 ix_voucher_lines_voucher_id 적용 가정. 잔여분 0~소수)
+                CHUNK = 100
                 deleted_lines_total = 0
                 deleted_vouchers_total = 0
                 total_batches = (len(v_ids) + CHUNK - 1) // CHUNK
@@ -1149,7 +1150,7 @@ async def cleanup_direct(
                     batch = v_ids[idx:idx + CHUNK]
                     try:
                         async with conn.transaction():
-                            await conn.execute("SET LOCAL statement_timeout = '300s'")
+                            await conn.execute("SET LOCAL statement_timeout = '60s'")
                             r1 = await conn.execute(
                                 "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])",
                                 batch,
