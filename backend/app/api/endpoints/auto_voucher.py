@@ -1074,6 +1074,119 @@ async def reprocess_cash_receipts(
     }
 
 
+@router.post("/admin/cleanup-direct")
+async def cleanup_direct(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """
+    asyncpg direct connection (풀러 우회) + statement_timeout=0
+    + 단일 transaction 한 방 DELETE.
+    background task로 실행 — task_id 폴링.
+    """
+    from app.services.auto_voucher_service import _new_task, _update
+    from app.core.config import settings as _settings
+    import asyncpg as _asyncpg
+    import asyncio as _asyncio
+    import time as _time
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    raw_url = _settings.DATABASE_URL
+    # asyncpg는 +asyncpg 드라이버 prefix 모름
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    # transaction pooler URL이면 prepared statement 안 됨 → statement_cache_size=0
+
+    task_id = _new_task("cleanup-direct 시작…")
+
+    async def _runner():
+        try:
+            _update(task_id, percent=5, message="direct connection 열기…")
+            conn = await _asyncpg.connect(
+                url, statement_cache_size=0, command_timeout=600,
+            )
+            try:
+                _update(task_id, percent=10, message="statement_timeout=0 설정…")
+                await conn.execute("SET statement_timeout = 0")
+
+                _update(task_id, percent=15, message="target voucher 식별 중…")
+                v_ids_rows = await conn.fetch(
+                    """
+                    SELECT v.id FROM vouchers v
+                    WHERE v.source = 'granter_auto'
+                      AND v.external_ref IN (
+                        SELECT source_id FROM auto_voucher_candidates
+                        WHERE source_type = 'CASH_RECEIPT'
+                          AND transaction_date BETWEEN $1 AND $2
+                          AND source_id IS NOT NULL
+                      )
+                    """,
+                    start_date, end_date,
+                )
+                v_ids = [r["id"] for r in v_ids_rows]
+                _update(task_id, percent=30,
+                        message=f"target voucher {len(v_ids)}개 식별",
+                        vouchers_found=len(v_ids))
+
+                if not v_ids:
+                    _update(task_id, status="completed", percent=100,
+                            message="삭제 대상 없음",
+                            result={"vouchers_found": 0, "deleted_vouchers": 0,
+                                    "deleted_lines": 0},
+                            finished_at=_time.time())
+                    return
+
+                _update(task_id, percent=40, message="voucher_lines 단일 DELETE 시작…")
+                del_lines_count = await conn.fetchval(
+                    """
+                    WITH d AS (
+                      DELETE FROM voucher_lines
+                      WHERE voucher_id = ANY($1::int[])
+                      RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM d
+                    """,
+                    v_ids,
+                )
+                _update(task_id, percent=70,
+                        message=f"lines 삭제 {del_lines_count}건. vouchers DELETE 시작…",
+                        deleted_lines=int(del_lines_count or 0))
+
+                del_v_count = await conn.fetchval(
+                    """
+                    WITH d AS (
+                      DELETE FROM vouchers
+                      WHERE id = ANY($1::int[])
+                      RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM d
+                    """,
+                    v_ids,
+                )
+
+                _update(task_id, status="completed", percent=100,
+                        message=f"완료 — vouchers {del_v_count}건 / lines {del_lines_count}건 삭제",
+                        result={
+                            "vouchers_found": len(v_ids),
+                            "deleted_vouchers": int(del_v_count or 0),
+                            "deleted_lines": int(del_lines_count or 0),
+                        },
+                        finished_at=_time.time())
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.exception("cleanup-direct 실패")
+            _update(task_id, status="failed",
+                    message=f"실패: {str(e)[:300]}",
+                    finished_at=_time.time())
+
+    _asyncio.create_task(_runner())
+    return {"task_id": task_id, "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+
 @router.post("/admin/cleanup-cash-receipt-vouchers")
 async def cleanup_cash_receipt_vouchers(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
