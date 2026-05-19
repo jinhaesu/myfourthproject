@@ -1127,7 +1127,7 @@ async def cleanup_cash_receipt_vouchers(
                 v_ids = [v[0] for v in v_id_rows]
                 scanned_v += len(v_ids)
                 if v_ids and do_delete:
-                    DEL_CHUNK = 100
+                    DEL_CHUNK = 20
                     for j in range(0, len(v_ids), DEL_CHUNK):
                         del_batch = v_ids[j:j + DEL_CHUNK]
                         try:
