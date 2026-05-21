@@ -1865,3 +1865,144 @@ async def confirm_batch(
         "skipped": skipped,
         "failures": failures,
     }
+
+
+@router.get("/admin/sales-breakdown")
+async def sales_breakdown(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """매출 갭 진단 — 기간 내 voucher_lines를 다음 축으로 합계:
+    1) 매출/비용 큰 카테고리별 (account code 첫 자리)
+    2) source별 (granter_auto/wehago_import/manual) × 매출/비용
+    3) bank confirmed candidate가 어떤 계정으로 분개됐는지 (108 미수금 vs 4xx 매출 vs 252 미지급금 등)
+    direct connection 사용 — 큰 집계 풀러 timeout 회피."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+
+    result = {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "by_account_category": {},
+        "by_source_and_category": [],
+        "sales_accounts_detail": [],
+        "bank_voucher_debit_credit_breakdown": [],
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '180s'"))
+        except Exception:
+            pass
+
+        # 1) 계정 첫자리(category) × 차/대변 합계 — confirmed/approved voucher만
+        rows = (await db.execute(_text("""
+            SELECT
+              LEFT(a.code, 1) AS cat,
+              SUM(vl.debit_amount) AS debit,
+              SUM(vl.credit_amount) AS credit,
+              COUNT(*) AS lines
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+            GROUP BY LEFT(a.code, 1)
+            ORDER BY LEFT(a.code, 1)
+        """), {"s": start_date, "e": end_date})).all()
+        cat_label = {"1":"자산","2":"부채","3":"자본","4":"매출","5":"매출원가","6":"제조원가",
+                     "7":"제조원가","8":"판관비","9":"영업외"}
+        for r in rows:
+            result["by_account_category"][r[0]] = {
+                "label": cat_label.get(r[0], "?"),
+                "debit": float(r[1] or 0),
+                "credit": float(r[2] or 0),
+                "lines": int(r[3] or 0),
+            }
+
+        # 2) source별 × 매출(4xx 대변) / 비용(8xx,5xx 차변)
+        rows2 = (await db.execute(_text("""
+            SELECT
+              COALESCE(v.source, '(null)') AS src,
+              SUM(CASE WHEN LEFT(a.code,1)='4' THEN vl.credit_amount ELSE 0 END) AS sales,
+              SUM(CASE WHEN LEFT(a.code,1)='5' THEN vl.debit_amount ELSE 0 END) AS cogs,
+              SUM(CASE WHEN LEFT(a.code,1) IN ('6','7','8') THEN vl.debit_amount ELSE 0 END) AS sga,
+              COUNT(DISTINCT v.id) AS vouchers
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+            GROUP BY COALESCE(v.source, '(null)')
+            ORDER BY sales DESC
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows2:
+            result["by_source_and_category"].append({
+                "source": r[0],
+                "sales_credit": float(r[1] or 0),
+                "cogs_debit": float(r[2] or 0),
+                "sga_debit": float(r[3] or 0),
+                "vouchers": int(r[4] or 0),
+            })
+
+        # 3) 매출 계정 세부 (4xx, 대변 기준)
+        rows3 = (await db.execute(_text("""
+            SELECT
+              a.code, a.name,
+              SUM(vl.credit_amount) AS sales,
+              COUNT(*) AS lines
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code, 1) = '4'
+            GROUP BY a.code, a.name
+            HAVING SUM(vl.credit_amount) > 0
+            ORDER BY sales DESC
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows3:
+            result["sales_accounts_detail"].append({
+                "code": r[0], "name": r[1],
+                "sales": float(r[2] or 0), "lines": int(r[3] or 0),
+            })
+
+        # 4) bank transaction에서 변환된 voucher의 분개 계정 분포
+        # (auto_voucher_candidates source_type='BANK' 으로 confirmed된 후보의 voucher_id 기반)
+        rows4 = (await db.execute(_text("""
+            WITH bank_v AS (
+              SELECT confirmed_voucher_id AS vid
+              FROM auto_voucher_candidates
+              WHERE source_type = 'BANK'
+                AND status = 'CONFIRMED'
+                AND transaction_date BETWEEN :s AND :e
+                AND confirmed_voucher_id IS NOT NULL
+            )
+            SELECT
+              a.code, a.name,
+              SUM(vl.debit_amount) AS debit,
+              SUM(vl.credit_amount) AS credit,
+              COUNT(*) AS lines
+            FROM bank_v
+            JOIN voucher_lines vl ON vl.voucher_id = bank_v.vid
+            JOIN accounts a ON a.id = vl.account_id
+            GROUP BY a.code, a.name
+            ORDER BY (SUM(vl.debit_amount) + SUM(vl.credit_amount)) DESC
+            LIMIT 30
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows4:
+            result["bank_voucher_debit_credit_breakdown"].append({
+                "code": r[0], "name": r[1],
+                "debit": float(r[2] or 0),
+                "credit": float(r[3] or 0),
+                "lines": int(r[4] or 0),
+            })
+
+    # 요약 (사용자가 보기 쉽도록)
+    cat = result["by_account_category"]
+    result["summary"] = {
+        "총_매출(4xx 대변)": cat.get("4", {}).get("credit", 0),
+        "매출원가(5xx 차변)": cat.get("5", {}).get("debit", 0),
+        "판관비(8xx 차변)": cat.get("8", {}).get("debit", 0),
+        "제조원가(6,7xx 차변)": cat.get("6", {}).get("debit", 0) + cat.get("7", {}).get("debit", 0),
+    }
+    return result

@@ -56,9 +56,19 @@ try:
 except Exception:
     logger.info(f"Database URL scheme: {DATABASE_URL.split('://')[0] if '://' in DATABASE_URL else 'unknown'}")
 
+# Direct (non-pooled) URL — 큰 쿼리/관리 작업용
+DATABASE_URL_DIRECT_RAW = os.environ.get("DATABASE_URL_DIRECT", "")
+if DATABASE_URL_DIRECT_RAW.startswith("postgres://"):
+    DATABASE_URL_DIRECT_RAW = DATABASE_URL_DIRECT_RAW.replace("postgres://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL_DIRECT_RAW.startswith("postgresql://") and "+asyncpg" not in DATABASE_URL_DIRECT_RAW:
+    DATABASE_URL_DIRECT_RAW = DATABASE_URL_DIRECT_RAW.replace("postgresql://", "postgresql+asyncpg://", 1)
+
 # Create async engine
 engine: Optional[any] = None
 async_session_factory: Optional[any] = None
+# Direct engine (non-pooled) — 큰 보고서/관리 작업 전용
+engine_direct: Optional[any] = None
+async_session_factory_direct: Optional[any] = None
 
 try:
     if DATABASE_URL.startswith("sqlite"):
@@ -104,6 +114,40 @@ try:
         autoflush=False
     )
     logger.info("Database engine created successfully")
+
+    # Direct (non-pooled) engine — 환경변수가 있을 때만
+    if DATABASE_URL_DIRECT_RAW and DATABASE_URL_DIRECT_RAW.startswith("postgresql"):
+        try:
+            direct_ssl_ctx = ssl.create_default_context()
+            direct_ssl_ctx.check_hostname = False
+            direct_ssl_ctx.verify_mode = ssl.CERT_NONE
+            engine_direct = create_async_engine(
+                DATABASE_URL_DIRECT_RAW,
+                pool_size=2,
+                max_overflow=4,
+                pool_pre_ping=True,
+                pool_recycle=600,
+                pool_timeout=30,
+                echo=False,
+                future=True,
+                connect_args={
+                    "ssl": direct_ssl_ctx,
+                    "statement_cache_size": 0,
+                    "command_timeout": 600,
+                },
+            )
+            async_session_factory_direct = async_sessionmaker(
+                engine_direct,
+                class_=AsyncSession,
+                expire_on_commit=False,
+                autoflush=False,
+            )
+            _direct_host = DATABASE_URL_DIRECT_RAW.split("@")[-1].split("?")[0]
+            logger.info(f"Direct database engine created (non-pooled): {_direct_host}")
+        except Exception as e:
+            logger.warning(f"Direct engine creation failed (fallback to pooled): {e}")
+            engine_direct = None
+            async_session_factory_direct = None
 except Exception as e:
     logger.error(f"Failed to create database engine: {e}")
     engine = None
@@ -131,6 +175,24 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
     if async_session_factory is None:
         raise RuntimeError("Database not configured. Set DATABASE_URL environment variable.")
     async with async_session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+@asynccontextmanager
+async def get_db_direct() -> AsyncGenerator[AsyncSession, None]:
+    """Direct (non-pooled) DB session — 풀러 8초 timeout 우회. 큰 보고서/관리 작업 전용.
+    DATABASE_URL_DIRECT 미설정 시 일반 풀러 세션으로 폴백."""
+    factory = async_session_factory_direct or async_session_factory
+    if factory is None:
+        raise RuntimeError("Database not configured.")
+    async with factory() as session:
         try:
             yield session
             await session.commit()
@@ -201,15 +263,47 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
         # vouchers.source 인덱스 — wehago_import 등 source 기반 조회 성능
         "CREATE INDEX IF NOT EXISTS ix_vouchers_source ON vouchers(source)",
+        # === 2026-05-21 성능 인덱스 (재무보고서/사이드바 카운트 가속) ===
+        # voucher_lines.account_id — 계정별 GROUP BY 집계 (재무보고서 핵심)
+        "CREATE INDEX IF NOT EXISTS ix_voucher_lines_account_id ON voucher_lines(account_id)",
+        # voucher_lines (voucher_id, account_id) — JOIN + 집계 동시 최적화
+        "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_account ON voucher_lines(voucher_id, account_id)",
+        # vouchers.transaction_type — 매출/매입 필터
+        "CREATE INDEX IF NOT EXISTS ix_vouchers_transaction_type ON vouchers(transaction_type)",
+        # vouchers.external_ref — 그랜터 ticket / wehago 중복 검사
+        "CREATE INDEX IF NOT EXISTS ix_vouchers_external_ref ON vouchers(external_ref) WHERE external_ref IS NOT NULL",
+        # vouchers (voucher_date DESC) — 최신 리스트 페이지네이션
+        "CREATE INDEX IF NOT EXISTS ix_vouchers_voucher_date_desc ON vouchers(voucher_date DESC)",
+        # auto_voucher_candidates.status — 사이드바 PENDING 카운트
+        "CREATE INDEX IF NOT EXISTS ix_avc_status ON auto_voucher_candidates(status)",
+        # auto_voucher_candidates.source_type — 타입별 카운트
+        "CREATE INDEX IF NOT EXISTS ix_avc_source_type ON auto_voucher_candidates(source_type)",
+        # auto_voucher_candidates.confirmed_voucher_id — Voucher → Candidate 역참조
+        "CREATE INDEX IF NOT EXISTS ix_avc_confirmed_voucher_id ON auto_voucher_candidates(confirmed_voucher_id) WHERE confirmed_voucher_id IS NOT NULL",
+        # auto_voucher_candidates.duplicate_voucher_id — wehago 중복 매칭 역참조
+        "CREATE INDEX IF NOT EXISTS ix_avc_duplicate_voucher_id ON auto_voucher_candidates(duplicate_voucher_id) WHERE duplicate_voucher_id IS NOT NULL",
+        # auto_voucher_candidates.transaction_date — 날짜 범위 필터 (검수 큐)
+        "CREATE INDEX IF NOT EXISTS ix_avc_transaction_date ON auto_voucher_candidates(transaction_date)",
+        # ai_raw_transaction_data — data import 검사용 (자주 조회)
+        "CREATE INDEX IF NOT EXISTS ix_ai_raw_source_account ON ai_raw_transaction_data(source_account_name) WHERE source_account_name IS NOT NULL",
     ]
+    # direct engine 있으면 인덱스/마이그레이션은 그쪽으로 (풀러 8초 timeout 우회).
+    # 큰 테이블 인덱스 빌드는 풀러로는 거의 실패함.
+    migration_engine = engine_direct or engine
+    if engine_direct is not None:
+        logger.info("Using direct engine for migrations (bypassing pooler timeout)")
+
     for sql in migrations:
         try:
-            async with engine.begin() as conn:
+            async with migration_engine.begin() as conn:
+                # 인덱스 빌드를 위한 넉넉한 timeout
+                if sql.strip().upper().startswith("CREATE INDEX"):
+                    await conn.execute(text("SET LOCAL statement_timeout = '600s'"))
                 await conn.execute(text(sql))
         except Exception as col_err:
             err_str = str(col_err).lower()
             if "duplicate" not in err_str and "already exists" not in err_str:
-                logger.warning(f"Migration skipped: {str(col_err)[:100]}")
+                logger.warning(f"Migration skipped: {str(col_err)[:120]}")
 
     # Step 3: 연결 테스트
     try:

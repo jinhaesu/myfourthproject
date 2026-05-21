@@ -28,6 +28,12 @@ class Settings(BaseSettings):
         default="sqlite+aiosqlite:///./smartfinance.db",
         description="Database connection string (Supabase PostgreSQL recommended)"
     )
+    # Direct (non-pooled) Supabase connection — 큰 보고서/관리 작업용. IPv4 add-on 또는 IPv6 필요.
+    # 예: postgresql://postgres:PASS@db.<ref>.supabase.co:5432/postgres?sslmode=require
+    DATABASE_URL_DIRECT: Optional[str] = Field(
+        default=None,
+        description="Supabase direct connection (5432, non-pooled). Used for heavy queries that exceed pooler 8s timeout."
+    )
     DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
 
