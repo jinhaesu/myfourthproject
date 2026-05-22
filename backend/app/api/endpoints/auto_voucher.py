@@ -2130,6 +2130,221 @@ async def duplicate_period_check(
     return result
 
 
+@router.post("/admin/reclassify-bank-vouchers")
+async def reclassify_bank_vouchers(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+):
+    """기존 confirmed BANK candidate들의 분개를 새 정책(거래처 매칭)으로 재생성.
+    - 매출처 입금 → 매출 인식
+    - 매입처 출금 → 비용 인식
+    - 우리계좌 ↔ 우리계좌 → DUPLICATE (자기이체)
+    - 그 외 → 기존 default (외상매출금/미지급금)
+    """
+    from app.services.auto_voucher_service import (
+        _new_task, _update, _build_counterparty_cache, _build_bank_candidate,
+    )
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as _text
+    import asyncio as _asyncio
+    import asyncpg as _asyncpg
+    import time as _time
+    import json as _json
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    from app.core.config import settings as _settings
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    task_id = _new_task("reclassify-bank-vouchers 시작…")
+
+    async def _runner():
+        try:
+            _update(task_id, percent=2, message="거래처 마스터 캐시 빌드…")
+            await _build_counterparty_cache(force=True)
+
+            _update(task_id, percent=10, message="confirmed BANK 후보 식별…")
+            async with async_session_factory() as db:
+                rows = (await db.execute(_text("""
+                    SELECT c.id, c.confirmed_voucher_id, c.raw_data
+                    FROM auto_voucher_candidates c
+                    WHERE c.source_type = 'BANK'
+                      AND c.status = 'CONFIRMED'
+                      AND c.transaction_date BETWEEN :s AND :e
+                """), {"s": start_date, "e": end_date})).all()
+
+            total = len(rows)
+            _update(task_id, percent=15, message=f"{total}건 식별")
+
+            # 1) 각 candidate의 raw_data로 새 분개 시뮬레이션 + 분류 카운트
+            from app.services.auto_voucher_service import _classify_counterparty
+            counts = {"OUR_ACCOUNT": 0, "SALES_CUSTOMER": 0, "PURCHASE_VENDOR": 0, "UNKNOWN": 0}
+            todo = []  # (cid, vid, new_cand_dict)
+            for r in rows:
+                try:
+                    raw = _json.loads(r[2]) if r[2] else {}
+                except Exception:
+                    raw = {}
+                bt = raw.get("bankTransaction") or {}
+                cp = bt.get("counterparty") or bt.get("opponent") or ""
+                cls = _classify_counterparty(cp)
+                counts[cls if cls in counts else "UNKNOWN"] += 1
+                try:
+                    new_cand = _build_bank_candidate(raw)
+                except Exception:
+                    continue
+                todo.append((int(r[0]), int(r[1]) if r[1] else None, new_cand))
+
+            _update(task_id, percent=25,
+                    message=f"분류 — OUR={counts['OUR_ACCOUNT']} / SALES={counts['SALES_CUSTOMER']} / "
+                            f"PURCHASE={counts['PURCHASE_VENDOR']} / UNKNOWN={counts['UNKNOWN']}",
+                    classification=counts)
+
+            if dry_run:
+                _update(task_id, status="completed", percent=100,
+                        message="DRY RUN — 분류 결과만 (변경 X)",
+                        result={"total": total, "classification": counts,
+                                "note": "OUR_ACCOUNT/SALES/PURCHASE는 새 분개 / UNKNOWN은 기존 그대로"},
+                        finished_at=_time.time())
+                return
+
+            # 2) voucher_id가 있는 것들 → voucher 삭제 (asyncpg direct, 청크)
+            voucher_ids = [vid for (_cid, vid, _nc) in todo if vid]
+            _update(task_id, percent=30,
+                    message=f"voucher {len(voucher_ids)}건 삭제 시작…")
+
+            conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+            try:
+                CHUNK = 200
+                deleted_v, deleted_l = 0, 0
+                for i in range(0, len(voucher_ids), CHUNK):
+                    batch = voucher_ids[i:i+CHUNK]
+                    try:
+                        async with conn.transaction():
+                            await conn.execute("SET LOCAL statement_timeout = '60s'")
+                            await conn.execute(
+                                "UPDATE auto_voucher_candidates SET confirmed_voucher_id = NULL "
+                                "WHERE confirmed_voucher_id = ANY($1::int[])", batch)
+                            r1 = await conn.execute(
+                                "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])", batch)
+                            r2 = await conn.execute(
+                                "DELETE FROM vouchers WHERE id = ANY($1::int[])", batch)
+                        try: deleted_l += int(r1.split()[-1])
+                        except Exception: pass
+                        try: deleted_v += int(r2.split()[-1])
+                        except Exception: pass
+                    except Exception as ex:
+                        logger.warning(f"bank reclassify del chunk {i} 실패: {ex}")
+                _update(task_id, percent=55,
+                        message=f"voucher {deleted_v}건 / lines {deleted_l}건 삭제",
+                        deleted_vouchers=deleted_v, deleted_lines=deleted_l)
+            finally:
+                await conn.close()
+
+            # 3) candidate 필드 업데이트 (새 분개 + status PENDING/DUPLICATE)
+            updated = 0
+            UPD_CHUNK = 500
+            from app.models.accounting import AutoVoucherStatus as _AVS
+            for i in range(0, len(todo), UPD_CHUNK):
+                batch = todo[i:i+UPD_CHUNK]
+                try:
+                    async with async_session_factory() as db:
+                        for cid, _vid, new_cand in batch:
+                            # status: OUR_ACCOUNT 인 경우 DUPLICATE, 그 외 PENDING
+                            new_status = (new_cand.status or _AVS.PENDING).value.upper()
+                            await db.execute(_text("""
+                                UPDATE auto_voucher_candidates
+                                SET status = :st,
+                                    confirmed_voucher_id = NULL,
+                                    confirmed_at = NULL,
+                                    confirmed_by = NULL,
+                                    counterparty = :cp,
+                                    description = :desc,
+                                    supply_amount = :sup,
+                                    vat_amount = :vat,
+                                    total_amount = :tot,
+                                    confidence = :conf,
+                                    suggested_account_code = :sac,
+                                    suggested_account_name = :san,
+                                    debit_lines = :dl,
+                                    credit_lines = :cl,
+                                    rejected_reason = :rr
+                                WHERE id = :id
+                            """), {
+                                "st": new_status,
+                                "cp": new_cand.counterparty,
+                                "desc": new_cand.description,
+                                "sup": new_cand.supply_amount,
+                                "vat": new_cand.vat_amount,
+                                "tot": new_cand.total_amount,
+                                "conf": new_cand.confidence,
+                                "sac": new_cand.suggested_account_code,
+                                "san": new_cand.suggested_account_name,
+                                "dl": new_cand.debit_lines,
+                                "cl": new_cand.credit_lines,
+                                "rr": new_cand.rejected_reason,
+                                "id": cid,
+                            })
+                            updated += 1
+                        await db.commit()
+                except Exception as ex:
+                    logger.warning(f"bank reclassify update chunk {i} 실패: {ex}")
+                pct = 55 + int(40 * (i + UPD_CHUNK) / max(len(todo), 1))
+                _update(task_id, percent=min(95, pct),
+                        message=f"재분개 진행 {updated}/{len(todo)}",
+                        reclassified=updated)
+
+            _update(task_id, status="completed", percent=100,
+                    message=f"완료 — voucher {deleted_v} 삭제 / candidate {updated} 재분개",
+                    result={
+                        "total": total,
+                        "classification": counts,
+                        "deleted_vouchers": deleted_v,
+                        "deleted_lines": deleted_l,
+                        "reclassified": updated,
+                        "next_step": "검수 큐 BANK PENDING 일괄 확정 → 매출/비용 자동 인식",
+                    },
+                    finished_at=_time.time())
+        except Exception as e:
+            logger.exception("reclassify-bank-vouchers 실패")
+            _update(task_id, status="failed",
+                    message=f"실패: {str(e)[:300]}",
+                    finished_at=_time.time())
+
+    _asyncio.create_task(_runner())
+    return {"task_id": task_id, "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+
+@router.get("/admin/counterparty-cache-stats")
+async def counterparty_cache_stats(rebuild: bool = Query(False)):
+    """현재 거래처 마스터 캐시 상태 — 매출처/매입처/우리계좌 수, 샘플."""
+    from app.services.auto_voucher_service import _build_counterparty_cache, _CP_CACHE
+    if rebuild:
+        await _build_counterparty_cache(force=True)
+    sales = list(_CP_CACHE["sales_customers"])[:50]
+    purch = list(_CP_CACHE["purchase_vendors"])[:50]
+    ours = list(_CP_CACHE["our_bank_accounts"])
+    hints = list(_CP_CACHE["vendor_account_hints"].items())[:30]
+    return {
+        "built_at": _CP_CACHE["ts"],
+        "counts": {
+            "sales_customers": len(_CP_CACHE["sales_customers"]),
+            "purchase_vendors": len(_CP_CACHE["purchase_vendors"]),
+            "our_bank_accounts": len(_CP_CACHE["our_bank_accounts"]),
+            "vendor_account_hints": len(_CP_CACHE["vendor_account_hints"]),
+        },
+        "sample_sales_customers": sales,
+        "sample_purchase_vendors": purch,
+        "our_bank_accounts": ours,
+        "sample_account_hints": [{"vendor": k, "code": v} for k, v in hints],
+    }
+
+
 @router.post("/admin/reclassify-misfiled-sales-tax")
 async def reclassify_misfiled_sales_tax(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),

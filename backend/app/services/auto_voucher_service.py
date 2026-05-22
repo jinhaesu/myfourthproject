@@ -46,6 +46,158 @@ def _normalize_biznum(s: Optional[str]) -> str:
     return (s or "").replace("-", "").replace(" ", "").strip()
 
 
+# 거래처 마스터 캐시 (wehago voucher_lines + 그랜터 BANK_ACCOUNT 자산 기반)
+# - sales_customers: 매출처 사업자번호 + 정규화 이름 set
+# - purchase_vendors: 매입처 사업자번호 + 정규화 이름 set
+# - vendor_account_hints: 거래처 → 추천 비용 계정 코드 (가장 자주 쓰인 것)
+# - our_bank_accounts: 우리 회사 계좌 (자기 이체 판정용) — nickname/예금주명 정규화 set
+_CP_CACHE: Dict[str, Any] = {
+    "ts": 0,
+    "sales_customers": set(),
+    "purchase_vendors": set(),
+    "vendor_account_hints": {},
+    "our_bank_accounts": set(),
+}
+_CP_CACHE_TTL = 30 * 60  # 30분
+
+
+def _normalize_name(s: Optional[str]) -> str:
+    """거래처 이름 정규화 — 공백/(주)/주식회사 변형 흡수."""
+    if not s:
+        return ""
+    t = str(s).strip()
+    for token in ("주식회사", "(주)", "㈜", "(유)", "유한회사", " ", "　"):
+        t = t.replace(token, "")
+    return t.lower()
+
+
+async def _build_counterparty_cache(force: bool = False) -> Dict[str, Any]:
+    """1.1~2.10 wehago voucher_lines + 그랜터 BANK_ACCOUNT 자산에서 마스터 추출.
+    30분 캐시 — generate-candidates 또는 bank 재분개 시 호출."""
+    import time as _t
+    now = _t.time()
+    if not force and (now - _CP_CACHE["ts"] < _CP_CACHE_TTL) and _CP_CACHE["sales_customers"]:
+        return _CP_CACHE
+
+    from sqlalchemy import text as _text
+    sales_set: set = set()
+    purchase_set: set = set()
+    hints: Dict[str, str] = {}
+
+    async with async_session_factory() as db:
+        # 매출처: 404 제품매출 (그리고 광범위 4xx) 대변 거래처
+        rows = (await db.execute(_text("""
+            SELECT vl.counterparty_name, vl.counterparty_business_number
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.source = 'wehago_import'
+              AND LEFT(a.code, 1) = '4'
+              AND vl.credit_amount > 0
+              AND vl.counterparty_name IS NOT NULL
+        """))).all()
+        for nm, bn in rows:
+            if nm:
+                sales_set.add(_normalize_name(nm))
+            if bn:
+                sales_set.add(_normalize_biznum(bn))
+
+        # 매입처: 153 원재료/5xx/8xx/6xx/7xx 차변 거래처 + 가장 자주 쓰인 계정 코드 hint
+        rows2 = (await db.execute(_text("""
+            SELECT vl.counterparty_name, vl.counterparty_business_number,
+                   a.code, COUNT(*) AS cnt
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.source = 'wehago_import'
+              AND (LEFT(a.code,1) IN ('5','8','6','7')
+                   OR a.code IN ('153','146','148'))
+              AND vl.debit_amount > 0
+              AND vl.counterparty_name IS NOT NULL
+            GROUP BY vl.counterparty_name, vl.counterparty_business_number, a.code
+        """))).all()
+        # 거래처별 최빈 계정 코드 선택
+        cp_acc_counter: Dict[str, Dict[str, int]] = {}
+        for nm, bn, code, cnt in rows2:
+            key = _normalize_name(nm) or _normalize_biznum(bn) or ""
+            if not key:
+                continue
+            purchase_set.add(key)
+            if bn:
+                purchase_set.add(_normalize_biznum(bn))
+            cp_acc_counter.setdefault(key, {})[code] = (cp_acc_counter[key].get(code, 0) + int(cnt or 0))
+        for key, codes in cp_acc_counter.items():
+            best = max(codes.items(), key=lambda x: x[1])[0]
+            hints[key] = best
+
+    # 우리 회사 계좌 (그랜터 BANK_ACCOUNT 자산)
+    our_accounts: set = set()
+    try:
+        client = get_granter_client()
+        assets = await client.list_all_assets(only_active=False)
+        for ba in (assets.get("BANK_ACCOUNT") or []):
+            for k in ("nickname", "name", "accountHolder", "holderName"):
+                v = ba.get(k) if isinstance(ba, dict) else None
+                if v:
+                    our_accounts.add(_normalize_name(v))
+            # bankAccount sub-object도 확인
+            sub = ba.get("bankAccount") if isinstance(ba, dict) else None
+            if isinstance(sub, dict):
+                for k in ("nickname", "accountHolderName", "holderName"):
+                    v = sub.get(k)
+                    if v:
+                        our_accounts.add(_normalize_name(v))
+        # 우리 회사 이름도 자기 이체 식별에 도움 (조인앤조인 변형)
+        our_accounts.update({_normalize_name(s) for s in
+                             ("조인앤조인", "(주)조인앤조인", "주식회사 조인앤조인", "㈜조인앤조인")})
+    except Exception as e:
+        logger.warning(f"our_bank_accounts 조회 실패: {e}")
+
+    _CP_CACHE.update({
+        "ts": now,
+        "sales_customers": sales_set,
+        "purchase_vendors": purchase_set,
+        "vendor_account_hints": hints,
+        "our_bank_accounts": our_accounts,
+    })
+    logger.info(
+        f"counterparty cache built: sales={len(sales_set)}, "
+        f"purchase={len(purchase_set)}, hints={len(hints)}, ours={len(our_accounts)}"
+    )
+    return _CP_CACHE
+
+
+def _classify_counterparty(name: Optional[str], biz_num: Optional[str] = None) -> str:
+    """거래처 분류 — _build_counterparty_cache 먼저 호출되어 있어야 함.
+    Returns: 'OUR_ACCOUNT' | 'SALES_CUSTOMER' | 'PURCHASE_VENDOR' | 'UNKNOWN'"""
+    key = _normalize_name(name)
+    bn = _normalize_biznum(biz_num) if biz_num else ""
+
+    if key and key in _CP_CACHE["our_bank_accounts"]:
+        return "OUR_ACCOUNT"
+    if bn and bn == OUR_BUSINESS_NUMBER:
+        return "OUR_ACCOUNT"
+    if key and key in _CP_CACHE["sales_customers"]:
+        return "SALES_CUSTOMER"
+    if bn and bn in _CP_CACHE["sales_customers"]:
+        return "SALES_CUSTOMER"
+    if key and key in _CP_CACHE["purchase_vendors"]:
+        return "PURCHASE_VENDOR"
+    if bn and bn in _CP_CACHE["purchase_vendors"]:
+        return "PURCHASE_VENDOR"
+    return "UNKNOWN"
+
+
+def _suggest_purchase_account(name: Optional[str]) -> Tuple[str, str]:
+    """매입처별 추천 계정 (wehago 학습 hint). 없으면 default 153 원재료."""
+    key = _normalize_name(name)
+    code = _CP_CACHE["vendor_account_hints"].get(key) if key else None
+    if not code:
+        return "153", "원재료"
+    # 계정명은 _resolve_account_id 시 코드로 lookup 됨 — 여기선 placeholder
+    return code, code
+
+
 def _is_sales_tax_invoice(ticket: Dict[str, Any]) -> bool:
     """매출/매입 세금계산서 판정.
     1순위: supplier(공급자)의 사업자번호가 우리 회사 → 매출
@@ -181,7 +333,10 @@ def _build_tax_invoice_candidate(
                        else AutoVoucherSourceType.SALES_INVOICE)
         sugg_code, sugg_name = "404", "제품매출"
     else:
-        sugg_code, sugg_name = "153", "원재료"  # AI가 추후 더 정밀 분류
+        # 매입 — 거래처(supplier)별 학습된 계정 사용. 없으면 153 원재료 default.
+        sugg_code, sugg_name = _suggest_purchase_account(counterparty)
+        if sugg_code == "153":
+            sugg_name = "원재료"
         debit_lines = [{
             "side": "debit", "account_code": sugg_code, "account_name": sugg_name,
             "amount": str(supply), "memo": "",
@@ -242,8 +397,15 @@ def _build_card_candidate(
     if category: desc_parts.append(f"({category})")
     rich_desc = " ".join(desc_parts) if desc_parts else (merchant or "카드 결제")
 
-    acc_code = ai_account_code or "830"  # 소모품비(판) default
-    acc_name = ai_account_name or "소모품비(판)"
+    # AI 추천 없으면 가맹점(=매입처)별 학습된 hint 사용, 그것도 없으면 830 소모품비
+    if ai_account_code:
+        acc_code, acc_name = ai_account_code, ai_account_name or ai_account_code
+    else:
+        hint_code, _ = _suggest_purchase_account(merchant)
+        if hint_code != "153":
+            acc_code, acc_name = hint_code, hint_code
+        else:
+            acc_code, acc_name = "830", "소모품비(판)"
 
     debit_lines = [{
         "side": "debit", "account_code": acc_code, "account_name": acc_name,
@@ -284,63 +446,133 @@ def _build_bank_candidate(
     ai_account_name: Optional[str] = None,
     ai_confidence: float = 0.5,
 ) -> AutoVoucherCandidate:
-    """통장 입출금 분개 후보. AI 추천 없으면 입금→외상매출금 회수, 출금→미지급금 결제로 가정."""
+    """통장 입출금 분개 후보. 거래처 마스터(wehago 학습) 기반 분류:
+    - 입금 + 거래처=매출처 → 차변 보통예금 / 대변 매출 + 부가세예수금 (매출 인식)
+    - 출금 + 거래처=매입처 → 차변 추천 비용 / 대변 보통예금 (비용 인식)
+    - 양쪽이 우리 회사 → 자기 계좌이체 (DUPLICATE 표시, P/L 영향 X)
+    - 그 외 → 기존 default (외상매출금 회수 / 미지급금 결제)"""
     total = _safe_float(ticket.get("amount"))
     direction = (ticket.get("transactionType") or "").upper()
     bt = ticket.get("bankTransaction") or {}
     counterparty = bt.get("counterparty") or bt.get("opponent") or ""
     content = bt.get("content") or ""
-    # 풍부한 적요: "[입금] 거래처 - 적요"
     is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
-    rich_parts = []
-    rich_parts.append("입금" if is_in else "출금")
+    rich_parts = ["입금" if is_in else "출금"]
     if counterparty: rich_parts.append(counterparty)
     if content and content != counterparty: rich_parts.append(content)
     rich_desc = " · ".join(rich_parts)
 
-    is_inbound = direction in ("IN", "INBOUND", "DEPOSIT") or direction == "입금"
+    is_inbound = is_in
+    cp_class = _classify_counterparty(counterparty)
+    # default values
+    confidence = Decimal(str(ai_confidence))
+    sugg_code, sugg_name = ("103", "보통예금")
+    status_override = None
+    rejected_reason = None
 
-    if ai_account_code:
-        acc_code, acc_name = ai_account_code, ai_account_name or ai_account_code
-    else:
-        acc_code = "108" if is_inbound else "253"
-        acc_name = "외상매출금" if is_inbound else "미지급금"
-
-    if is_inbound:
+    # --- 분개 결정 ---
+    if cp_class == "OUR_ACCOUNT":
+        # 자기 계좌이체 — P/L 영향 X. status DUPLICATE.
+        debit_lines = [{
+            "side": "debit", "account_code": "103", "account_name": "보통예금",
+            "amount": str(total), "memo": "자기계좌 이체(추정)",
+        }]
+        credit_lines = [{
+            "side": "credit", "account_code": "103", "account_name": "보통예금",
+            "amount": str(total), "memo": "자기계좌 이체(추정)",
+        }]
+        status_override = AutoVoucherStatus.DUPLICATE
+        rejected_reason = "자기 계좌이체 — P/L 미반영"
+        sugg_code, sugg_name = "103", "보통예금"
+        confidence = Decimal("0.9")
+    elif is_inbound and cp_class == "SALES_CUSTOMER":
+        # 매출 거래처 입금 → 매출 인식 (부가세 10% 자동 분리)
+        # supply + vat = total, vat = total / 11
+        try:
+            from decimal import Decimal as _D, ROUND_HALF_UP
+            t = _D(str(total))
+            vat = (t / _D("11")).quantize(_D("1"), rounding=ROUND_HALF_UP)
+            supply = t - vat
+        except Exception:
+            supply, vat = Decimal(str(total)), Decimal("0")
         debit_lines = [{
             "side": "debit", "account_code": "103", "account_name": "보통예금",
             "amount": str(total), "memo": "",
         }]
-        credit_lines = [{
-            "side": "credit", "account_code": acc_code, "account_name": acc_name,
-            "amount": str(total), "memo": "",
-        }]
-    else:
-        debit_lines = [{
-            "side": "debit", "account_code": acc_code, "account_name": acc_name,
-            "amount": str(total), "memo": "",
-        }]
+        credit_lines = [
+            {"side": "credit", "account_code": "404", "account_name": "제품매출",
+             "amount": str(supply), "memo": counterparty},
+            {"side": "credit", "account_code": "255", "account_name": "부가세예수금",
+             "amount": str(vat), "memo": ""},
+        ]
+        sugg_code, sugg_name = "404", "제품매출"
+        confidence = Decimal("0.85")
+    elif (not is_inbound) and cp_class == "PURCHASE_VENDOR":
+        # 매입처 출금 → 비용 인식 (거래처 hint 계정 + 부가세 10%)
+        hint_code, _ = _suggest_purchase_account(counterparty)
+        try:
+            from decimal import Decimal as _D, ROUND_HALF_UP
+            t = _D(str(total))
+            vat = (t / _D("11")).quantize(_D("1"), rounding=ROUND_HALF_UP)
+            supply = t - vat
+        except Exception:
+            supply, vat = Decimal(str(total)), Decimal("0")
+        debit_lines = [
+            {"side": "debit", "account_code": hint_code, "account_name": hint_code,
+             "amount": str(supply), "memo": counterparty},
+            {"side": "debit", "account_code": "135", "account_name": "부가세대급금",
+             "amount": str(vat), "memo": ""},
+        ]
         credit_lines = [{
             "side": "credit", "account_code": "103", "account_name": "보통예금",
             "amount": str(total), "memo": "",
         }]
+        sugg_code, sugg_name = hint_code, hint_code
+        confidence = Decimal("0.80")
+    else:
+        # 기존 default: 입금→외상매출금 회수 / 출금→미지급금 결제
+        if ai_account_code:
+            acc_code, acc_name = ai_account_code, ai_account_name or ai_account_code
+        else:
+            acc_code = "108" if is_inbound else "253"
+            acc_name = "외상매출금" if is_inbound else "미지급금"
+        if is_inbound:
+            debit_lines = [{
+                "side": "debit", "account_code": "103", "account_name": "보통예금",
+                "amount": str(total), "memo": "",
+            }]
+            credit_lines = [{
+                "side": "credit", "account_code": acc_code, "account_name": acc_name,
+                "amount": str(total), "memo": "",
+            }]
+        else:
+            debit_lines = [{
+                "side": "debit", "account_code": acc_code, "account_name": acc_name,
+                "amount": str(total), "memo": "",
+            }]
+            credit_lines = [{
+                "side": "credit", "account_code": "103", "account_name": "보통예금",
+                "amount": str(total), "memo": "",
+            }]
+        sugg_code, sugg_name = acc_code, acc_name
 
     return AutoVoucherCandidate(
         source_type=AutoVoucherSourceType.BANK,
         source_id=str(ticket.get("id", "")),
-        status=AutoVoucherStatus.PENDING,
+        status=status_override or AutoVoucherStatus.PENDING,
         transaction_date=_parse_date(ticket.get("transactAt")),
         counterparty=counterparty[:200] if counterparty else None,
         description=rich_desc[:500],
         supply_amount=Decimal(str(total)),
         vat_amount=Decimal("0"),
         total_amount=Decimal(str(total)),
-        confidence=Decimal(str(ai_confidence)),
-        suggested_account_code=acc_code,
-        suggested_account_name=acc_name,
+        confidence=confidence,
+        suggested_account_code=sugg_code,
+        suggested_account_name=sugg_name,
         debit_lines=json.dumps(debit_lines, ensure_ascii=False),
         credit_lines=json.dumps(credit_lines, ensure_ascii=False),
         raw_data=json.dumps(ticket, default=str, ensure_ascii=False)[:5000],
+        rejected_reason=rejected_reason,
     )
 
 
@@ -448,6 +680,9 @@ async def _generate_candidates_core(
     def _report(pct: int, msg: str):
         if task_id:
             _update(task_id, percent=pct, message=msg)
+
+    _report(3, "거래처 마스터 캐시 빌드 중 (wehago 학습 + 그랜터 계좌)…")
+    await _build_counterparty_cache(force=False)
 
     _report(5, f"그랜터에서 거래 수집 중… ({start_date}~{end_date})")
     tickets = await client.list_tickets_all_types(
