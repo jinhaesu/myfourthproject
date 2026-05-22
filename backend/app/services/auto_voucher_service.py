@@ -186,8 +186,13 @@ async def _build_counterparty_cache(force: bool = False) -> Dict[str, Any]:
     return _CP_CACHE
 
 
-def _classify_counterparty(name: Optional[str], biz_num: Optional[str] = None) -> str:
+def _classify_counterparty(
+    name: Optional[str],
+    biz_num: Optional[str] = None,
+    direction: Optional[str] = None,
+) -> str:
     """거래처 분류 — _build_counterparty_cache 먼저 호출되어 있어야 함.
+    direction: 'inbound'(입금) | 'outbound'(출금) | None — 동시 매칭 시 우선순위 결정.
     Returns: 'OUR_ACCOUNT' | 'SALES_CUSTOMER' | 'PURCHASE_VENDOR' | 'UNKNOWN'"""
     key = _normalize_name(name)
     bn = _normalize_biznum(biz_num) if biz_num else ""
@@ -196,13 +201,44 @@ def _classify_counterparty(name: Optional[str], biz_num: Optional[str] = None) -
         return "OUR_ACCOUNT"
     if bn and bn == OUR_BUSINESS_NUMBER:
         return "OUR_ACCOUNT"
-    if key and key in _CP_CACHE["sales_customers"]:
+
+    sales_set = _CP_CACHE["sales_customers"]
+    purchase_set = _CP_CACHE["purchase_vendors"]
+
+    # 1. 정확 매칭
+    sales_hit = (key and key in sales_set) or (bn and bn in sales_set)
+    purchase_hit = (key and key in purchase_set) or (bn and bn in purchase_set)
+
+    # 2. 부분 매칭 — 거래처 이름이 substring으로 포함 (양방향)
+    #    bank counterparty가 "쿠팡 4월정산" 이면 "쿠팡" wehago 거래처 매칭
+    #    또는 wehago "주식회사 컬리" 의 정규화 키 "컬리"가 bank "컬리" 안에 있음
+    if not sales_hit and not purchase_hit and key and len(key) >= 3:
+        # 우리 계좌 substring도 체크 — "이마트b2b 정산" 같은 케이스
+        for our_key in _CP_CACHE["our_bank_accounts"]:
+            if isinstance(our_key, str) and len(our_key) >= 4:
+                if our_key in key or (len(key) >= 4 and key in our_key):
+                    return "OUR_ACCOUNT"
+        # 매출처 substring
+        for cp in sales_set:
+            if isinstance(cp, str) and len(cp) >= 3:
+                if cp in key or key in cp:
+                    sales_hit = True
+                    break
+        # 매입처 substring
+        for cp in purchase_set:
+            if isinstance(cp, str) and len(cp) >= 3:
+                if cp in key or key in cp:
+                    purchase_hit = True
+                    break
+
+    # 우선순위 — 양쪽 다 매칭되면 거래 방향에 따라
+    if sales_hit and purchase_hit:
+        if direction == "outbound":
+            return "PURCHASE_VENDOR"
+        return "SALES_CUSTOMER"  # 입금/미상은 매출 우선
+    if sales_hit:
         return "SALES_CUSTOMER"
-    if bn and bn in _CP_CACHE["sales_customers"]:
-        return "SALES_CUSTOMER"
-    if key and key in _CP_CACHE["purchase_vendors"]:
-        return "PURCHASE_VENDOR"
-    if bn and bn in _CP_CACHE["purchase_vendors"]:
+    if purchase_hit:
         return "PURCHASE_VENDOR"
     return "UNKNOWN"
 
@@ -482,7 +518,10 @@ def _build_bank_candidate(
     rich_desc = " · ".join(rich_parts)
 
     is_inbound = is_in
-    cp_class = _classify_counterparty(counterparty)
+    cp_class = _classify_counterparty(
+        counterparty,
+        direction=("inbound" if is_inbound else "outbound"),
+    )
     # default values
     confidence = Decimal(str(ai_confidence))
     sugg_code, sugg_name = ("103", "보통예금")

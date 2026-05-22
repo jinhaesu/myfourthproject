@@ -2191,7 +2191,9 @@ async def reclassify_bank_vouchers(
                     raw = {}
                 bt = raw.get("bankTransaction") or {}
                 cp = bt.get("counterparty") or bt.get("opponent") or ""
-                cls = _classify_counterparty(cp)
+                direction = (raw.get("transactionType") or "").upper()
+                is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
+                cls = _classify_counterparty(cp, direction=("inbound" if is_in else "outbound"))
                 counts[cls if cls in counts else "UNKNOWN"] += 1
                 try:
                     new_cand = _build_bank_candidate(raw)
@@ -2318,6 +2320,68 @@ async def reclassify_bank_vouchers(
     _asyncio.create_task(_runner())
     return {"task_id": task_id, "status": "queued",
             "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+
+@router.get("/admin/bank-counterparty-samples")
+async def bank_counterparty_samples(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    limit: int = Query(100),
+):
+    """그랜터 bank 거래의 counterparty 어떻게 들어오는지 샘플 + 분류 결과."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+    from app.services.auto_voucher_service import (
+        _classify_counterparty, _build_counterparty_cache,
+    )
+    import json as _json
+
+    await _build_counterparty_cache(force=False)
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '60s'"))
+        except Exception:
+            pass
+        rows = (await db.execute(_text("""
+            SELECT c.counterparty, c.total_amount, c.raw_data
+            FROM auto_voucher_candidates c
+            WHERE c.source_type = 'BANK'
+              AND c.status = 'CONFIRMED'
+              AND c.transaction_date BETWEEN :s AND :e
+            ORDER BY c.total_amount DESC
+            LIMIT :lim
+        """), {"s": start_date, "e": end_date, "lim": limit})).all()
+
+    samples = []
+    cls_counts = {"OUR_ACCOUNT": 0, "SALES_CUSTOMER": 0, "PURCHASE_VENDOR": 0, "UNKNOWN": 0}
+    for r in rows:
+        try:
+            raw = _json.loads(r[2]) if r[2] else {}
+        except Exception:
+            raw = {}
+        bt = raw.get("bankTransaction") or {}
+        cp_stored = r[0]
+        cp_from_raw = bt.get("counterparty") or bt.get("opponent") or ""
+        content = bt.get("content") or ""
+        direction = (raw.get("transactionType") or "").upper()
+        is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
+        cls = _classify_counterparty(cp_from_raw, direction=("inbound" if is_in else "outbound"))
+        cls_counts[cls] = cls_counts.get(cls, 0) + 1
+        samples.append({
+            "amount": float(r[1] or 0),
+            "direction": "입금" if is_in else "출금",
+            "counterparty_stored": cp_stored,
+            "counterparty_raw": cp_from_raw,
+            "content": content[:80],
+            "classification": cls,
+        })
+
+    return {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "classification_counts": cls_counts,
+        "samples": samples,
+    }
 
 
 @router.get("/admin/counterparty-cache-stats")
