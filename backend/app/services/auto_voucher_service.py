@@ -186,6 +186,14 @@ async def _build_counterparty_cache(force: bool = False) -> Dict[str, Any]:
     return _CP_CACHE
 
 
+# 카드사 이름 패턴 — bank content에 등장 시 카드사 결제 청구로 분류 (P/L 영향 X, 미지급금 차감)
+_CARD_ISSUER_PATTERNS = (
+    "비씨카드", "bc카드", "bc바로카드", "하나카드", "신한카드", "현대카드",
+    "롯데카드", "우리카드", "kb국민카드", "kb카드", "삼성카드", "농협카드",
+    "씨티카드", "카드출금", "카드결제",
+)
+
+
 def _classify_counterparty(
     name: Optional[str],
     biz_num: Optional[str] = None,
@@ -193,7 +201,7 @@ def _classify_counterparty(
 ) -> str:
     """거래처 분류 — _build_counterparty_cache 먼저 호출되어 있어야 함.
     direction: 'inbound'(입금) | 'outbound'(출금) | None — 동시 매칭 시 우선순위 결정.
-    Returns: 'OUR_ACCOUNT' | 'SALES_CUSTOMER' | 'PURCHASE_VENDOR' | 'UNKNOWN'"""
+    Returns: 'OUR_ACCOUNT' | 'CARD_ISSUER' | 'SALES_CUSTOMER' | 'PURCHASE_VENDOR' | 'UNKNOWN'"""
     key = _normalize_name(name)
     bn = _normalize_biznum(biz_num) if biz_num else ""
 
@@ -201,6 +209,12 @@ def _classify_counterparty(
         return "OUR_ACCOUNT"
     if bn and bn == OUR_BUSINESS_NUMBER:
         return "OUR_ACCOUNT"
+
+    # 카드사 결제 청구 — content에 카드사 키워드. 매월 자동 출금이라 P/L 영향 X (이미 카드 EXPENSE_TICKET으로 분개됨)
+    if key:
+        for pat in _CARD_ISSUER_PATTERNS:
+            if pat in key:
+                return "CARD_ISSUER"
 
     sales_set = _CP_CACHE["sales_customers"]
     purchase_set = _CP_CACHE["purchase_vendors"]
@@ -511,6 +525,9 @@ def _build_bank_candidate(
     bt = ticket.get("bankTransaction") or {}
     counterparty = bt.get("counterparty") or bt.get("opponent") or ""
     content = bt.get("content") or ""
+    # 그랜터 bank ticket은 counterparty가 비어있는 경우가 많음 — content(적요)에 거래처 정보
+    if not counterparty and content:
+        counterparty = content
     is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
     rich_parts = ["입금" if is_in else "출금"]
     if counterparty: rich_parts.append(counterparty)
@@ -543,6 +560,19 @@ def _build_bank_candidate(
         rejected_reason = "자기 계좌이체 — P/L 미반영"
         sugg_code, sugg_name = "103", "보통예금"
         confidence = Decimal("0.9")
+    elif cp_class == "CARD_ISSUER":
+        # 카드사 결제 청구 (매월 출금). 비용은 이미 EXPENSE_TICKET candidate에서 분개됨.
+        # 출금: 차변 253 미지급금 / 대변 103 보통예금
+        debit_lines = [{
+            "side": "debit", "account_code": "253", "account_name": "미지급금",
+            "amount": str(total), "memo": "카드사 결제 청구",
+        }]
+        credit_lines = [{
+            "side": "credit", "account_code": "103", "account_name": "보통예금",
+            "amount": str(total), "memo": counterparty,
+        }]
+        sugg_code, sugg_name = "253", "미지급금"
+        confidence = Decimal("0.85")
     elif is_inbound and cp_class == "SALES_CUSTOMER":
         # 매출 거래처 입금 → 매출 인식 (부가세 10% 자동 분리)
         # supply + vat = total, vat = total / 11

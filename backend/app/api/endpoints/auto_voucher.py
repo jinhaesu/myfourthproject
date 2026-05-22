@@ -2182,7 +2182,8 @@ async def reclassify_bank_vouchers(
 
             # 1) 각 candidate의 raw_data로 새 분개 시뮬레이션 + 분류 카운트
             from app.services.auto_voucher_service import _classify_counterparty
-            counts = {"OUR_ACCOUNT": 0, "SALES_CUSTOMER": 0, "PURCHASE_VENDOR": 0, "UNKNOWN": 0}
+            counts = {"OUR_ACCOUNT": 0, "CARD_ISSUER": 0,
+                      "SALES_CUSTOMER": 0, "PURCHASE_VENDOR": 0, "UNKNOWN": 0}
             todo = []  # (cid, vid, new_cand_dict)
             for r in rows:
                 try:
@@ -2190,7 +2191,7 @@ async def reclassify_bank_vouchers(
                 except Exception:
                     raw = {}
                 bt = raw.get("bankTransaction") or {}
-                cp = bt.get("counterparty") or bt.get("opponent") or ""
+                cp = bt.get("counterparty") or bt.get("opponent") or bt.get("content") or ""
                 direction = (raw.get("transactionType") or "").upper()
                 is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
                 cls = _classify_counterparty(cp, direction=("inbound" if is_in else "outbound"))
@@ -2362,18 +2363,21 @@ async def bank_counterparty_samples(
             raw = {}
         bt = raw.get("bankTransaction") or {}
         cp_stored = r[0]
-        cp_from_raw = bt.get("counterparty") or bt.get("opponent") or ""
+        cp_raw_field = bt.get("counterparty") or bt.get("opponent") or ""
         content = bt.get("content") or ""
+        # 새 정책: cp가 비면 content를 거래처로 사용
+        cp_effective = cp_raw_field or content
         direction = (raw.get("transactionType") or "").upper()
         is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
-        cls = _classify_counterparty(cp_from_raw, direction=("inbound" if is_in else "outbound"))
+        cls = _classify_counterparty(cp_effective, direction=("inbound" if is_in else "outbound"))
         cls_counts[cls] = cls_counts.get(cls, 0) + 1
         samples.append({
             "amount": float(r[1] or 0),
             "direction": "입금" if is_in else "출금",
             "counterparty_stored": cp_stored,
-            "counterparty_raw": cp_from_raw,
+            "counterparty_raw_field": cp_raw_field,
             "content": content[:80],
+            "effective_cp": cp_effective[:80],
             "classification": cls,
         })
 
