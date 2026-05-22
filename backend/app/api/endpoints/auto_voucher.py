@@ -2130,6 +2130,225 @@ async def duplicate_period_check(
     return result
 
 
+@router.post("/admin/reclassify-misfiled-sales-tax")
+async def reclassify_misfiled_sales_tax(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+):
+    """매출세금계산서로 잘못 분류된 매입세금계산서 정리 (한 번에).
+    1) confirmed SALES_TAX_INVOICE 후보 중 contractor=우리회사인 것 식별
+    2) 연결된 voucher (voucher_lines + voucher) 삭제
+    3) candidate.source_type → PURCHASE_TAX_INVOICE 변경
+    4) debit_lines/credit_lines 매입 분개로 재생성 (차변 153 원재료 + 135 부가세대급금 / 대변 251 외상매입금)
+    5) status PENDING reset, confirmed_voucher_id null
+    이후 사용자가 검수 큐에서 일괄 확정 → 매입 voucher 재생성."""
+    from app.services.auto_voucher_service import (
+        _new_task, _update, OUR_BUSINESS_NUMBER, _normalize_biznum,
+        _build_tax_invoice_candidate,
+    )
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as _text
+    import asyncio as _asyncio
+    import asyncpg as _asyncpg
+    import time as _time
+    import json as _json
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    from app.core.config import settings as _settings
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    task_id = _new_task("reclassify-misfiled-sales-tax 시작…")
+
+    async def _runner():
+        try:
+            _update(task_id, percent=2, message="확정된 매출세금계산서 후보 식별…")
+
+            # 1) candidate 식별 — confirmed SALES_TAX_INVOICE 기간 내
+            async with async_session_factory() as db:
+                rows = (await db.execute(_text("""
+                    SELECT c.id, c.confirmed_voucher_id, c.raw_data, c.source_id,
+                           c.total_amount, c.supply_amount, c.vat_amount
+                    FROM auto_voucher_candidates c
+                    WHERE c.source_type = 'SALES_TAX_INVOICE'
+                      AND c.status = 'CONFIRMED'
+                      AND c.transaction_date BETWEEN :s AND :e
+                """), {"s": start_date, "e": end_date})).all()
+
+            total_candidates = len(rows)
+            _update(task_id, percent=5,
+                    message=f"확정 매출세금계산서 {total_candidates}건 식별")
+
+            misfiled = []  # (candidate_id, voucher_id, ticket_dict)
+            correct_sales = 0
+            unknown = 0
+            for r in rows:
+                try:
+                    raw = _json.loads(r[2]) if r[2] else {}
+                except Exception:
+                    raw = {}
+                ti = raw.get("taxInvoice") or {}
+                sup = _normalize_biznum((ti.get("supplier") or {}).get("registrationNumber"))
+                con = _normalize_biznum((ti.get("contractor") or {}).get("registrationNumber"))
+                if con == OUR_BUSINESS_NUMBER and sup != OUR_BUSINESS_NUMBER:
+                    misfiled.append((int(r[0]), int(r[1]) if r[1] else None, raw))
+                elif sup == OUR_BUSINESS_NUMBER and con != OUR_BUSINESS_NUMBER:
+                    correct_sales += 1
+                else:
+                    unknown += 1
+
+            _update(task_id, percent=15,
+                    message=f"매입오분류 {len(misfiled)}건 식별 (정상 매출 {correct_sales}, 미상 {unknown})",
+                    misfiled=len(misfiled), correct_sales=correct_sales, unknown=unknown)
+
+            if dry_run:
+                _update(task_id, status="completed", percent=100,
+                        message=f"DRY RUN — 오분류 {len(misfiled)}건 식별만 (실제 변경 X)",
+                        result={
+                            "total_confirmed_sales_tax": total_candidates,
+                            "misfiled_purchases": len(misfiled),
+                            "correct_sales": correct_sales,
+                            "unknown": unknown,
+                        },
+                        finished_at=_time.time())
+                return
+
+            if not misfiled:
+                _update(task_id, status="completed", percent=100,
+                        message="오분류된 항목 없음",
+                        result={"misfiled_purchases": 0},
+                        finished_at=_time.time())
+                return
+
+            # 2) voucher_ids 청크 단위 삭제 (direct connection, SET LOCAL timeout)
+            voucher_ids = [vid for (_cid, vid, _t) in misfiled if vid]
+            _update(task_id, percent=20,
+                    message=f"voucher {len(voucher_ids)}건 삭제 시작…")
+
+            conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+            try:
+                CHUNK = 200
+                deleted_v, deleted_l = 0, 0
+                total_batches = max(1, (len(voucher_ids) + CHUNK - 1) // CHUNK)
+                for i in range(0, len(voucher_ids), CHUNK):
+                    batch = voucher_ids[i:i+CHUNK]
+                    try:
+                        async with conn.transaction():
+                            await conn.execute("SET LOCAL statement_timeout = '60s'")
+                            # candidate.confirmed_voucher_id 끊기 (FK 위반 회피)
+                            await conn.execute(
+                                "UPDATE auto_voucher_candidates SET confirmed_voucher_id = NULL "
+                                "WHERE confirmed_voucher_id = ANY($1::int[])",
+                                batch,
+                            )
+                            r1 = await conn.execute(
+                                "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])",
+                                batch,
+                            )
+                            r2 = await conn.execute(
+                                "DELETE FROM vouchers WHERE id = ANY($1::int[])",
+                                batch,
+                            )
+                        try: deleted_l += int(r1.split()[-1])
+                        except Exception: pass
+                        try: deleted_v += int(r2.split()[-1])
+                        except Exception: pass
+                    except Exception as ex:
+                        logger.warning(f"reclassify chunk {i} 실패: {ex}")
+                    done = (i // CHUNK) + 1
+                    pct = 20 + int(40 * done / total_batches)
+                    _update(task_id, percent=min(60, pct),
+                            message=f"voucher 삭제 진행 {done}/{total_batches} · "
+                                    f"voucher {deleted_v} / lines {deleted_l}",
+                            deleted_vouchers=deleted_v, deleted_lines=deleted_l)
+            finally:
+                await conn.close()
+
+            # 3) candidate 재분개 (PURCHASE_TAX_INVOICE) — 청크 단위 commit
+            _update(task_id, percent=65, message="candidate 매입 재분개 시작…")
+            updated = 0
+            UPD_CHUNK = 500
+            for i in range(0, len(misfiled), UPD_CHUNK):
+                batch = misfiled[i:i+UPD_CHUNK]
+                try:
+                    async with async_session_factory() as db:
+                        for cid, _vid, ticket in batch:
+                            # _build_tax_invoice_candidate를 매입(is_sales=False)으로 호출하여
+                            # 필드 dict 추출 → 기존 candidate 업데이트
+                            try:
+                                new_cand = _build_tax_invoice_candidate(ticket, is_sales=False)
+                            except Exception:
+                                continue
+                            await db.execute(_text("""
+                                UPDATE auto_voucher_candidates
+                                SET source_type = 'PURCHASE_TAX_INVOICE',
+                                    status = 'PENDING',
+                                    confirmed_voucher_id = NULL,
+                                    confirmed_at = NULL,
+                                    confirmed_by = NULL,
+                                    counterparty = :cp,
+                                    description = :desc,
+                                    supply_amount = :sup,
+                                    vat_amount = :vat,
+                                    total_amount = :tot,
+                                    suggested_account_code = :sac,
+                                    suggested_account_name = :san,
+                                    debit_lines = :dl,
+                                    credit_lines = :cl
+                                WHERE id = :id
+                            """), {
+                                "cp": new_cand.counterparty,
+                                "desc": new_cand.description,
+                                "sup": new_cand.supply_amount,
+                                "vat": new_cand.vat_amount,
+                                "tot": new_cand.total_amount,
+                                "sac": new_cand.suggested_account_code,
+                                "san": new_cand.suggested_account_name,
+                                "dl": new_cand.debit_lines,
+                                "cl": new_cand.credit_lines,
+                                "id": cid,
+                            })
+                            updated += 1
+                        await db.commit()
+                except Exception as ex:
+                    logger.warning(f"reclassify update chunk {i} 실패: {ex}")
+                done = (i // UPD_CHUNK) + 1
+                tb = max(1, (len(misfiled) + UPD_CHUNK - 1) // UPD_CHUNK)
+                pct = 65 + int(30 * done / tb)
+                _update(task_id, percent=min(95, pct),
+                        message=f"재분개 {updated}/{len(misfiled)}",
+                        reclassified=updated)
+
+            _update(task_id, status="completed", percent=100,
+                    message=f"완료 — voucher {deleted_v}건 삭제 / "
+                            f"candidate {updated}건 매입 재분개 (PENDING)",
+                    result={
+                        "total_confirmed_sales_tax": total_candidates,
+                        "misfiled_purchases": len(misfiled),
+                        "correct_sales": correct_sales,
+                        "unknown": unknown,
+                        "deleted_vouchers": deleted_v,
+                        "deleted_lines": deleted_l,
+                        "reclassified_to_purchase": updated,
+                        "next_step": "검수 큐에서 PURCHASE_TAX_INVOICE PENDING 일괄 확정",
+                    },
+                    finished_at=_time.time())
+
+        except Exception as e:
+            logger.exception("reclassify-misfiled-sales-tax 실패")
+            _update(task_id, status="failed",
+                    message=f"실패: {str(e)[:300]}",
+                    finished_at=_time.time())
+
+    _asyncio.create_task(_runner())
+    return {"task_id": task_id, "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+
 @router.get("/admin/inspect-tax-invoice")
 async def inspect_tax_invoice(
     target_date: date = Query(...),

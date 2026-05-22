@@ -37,6 +37,33 @@ from app.services.granter_client import get_granter_client
 
 logger = logging.getLogger(__name__)
 
+# 우리 회사 사업자번호 (조인앤조인 503-87-01038)
+# 매출세금계산서와 매입세금계산서를 정확히 판정하는 기준
+OUR_BUSINESS_NUMBER = "5038701038"
+
+
+def _normalize_biznum(s: Optional[str]) -> str:
+    return (s or "").replace("-", "").replace(" ", "").strip()
+
+
+def _is_sales_tax_invoice(ticket: Dict[str, Any]) -> bool:
+    """매출/매입 세금계산서 판정.
+    1순위: supplier(공급자)의 사업자번호가 우리 회사 → 매출
+            contractor(매입자)의 사업자번호가 우리 회사 → 매입
+    2순위(사번 미상): transactionType "SALES" 키워드만 매출로 인정
+            (그랜터의 "OUT"은 "외부에서 받음"=매입이므로 매출 키워드에서 제외)"""
+    ti = ticket.get("taxInvoice") or {}
+    sup_reg = _normalize_biznum((ti.get("supplier") or {}).get("registrationNumber"))
+    con_reg = _normalize_biznum((ti.get("contractor") or {}).get("registrationNumber"))
+
+    if sup_reg == OUR_BUSINESS_NUMBER and con_reg != OUR_BUSINESS_NUMBER:
+        return True
+    if con_reg == OUR_BUSINESS_NUMBER and sup_reg != OUR_BUSINESS_NUMBER:
+        return False
+    # 양쪽 다 우리 회사이거나 매칭 안 됨 → 보수적으로 매입 (대부분의 식품회사 케이스)
+    txn_type = (ticket.get("transactionType") or "").upper()
+    return "SALES" in txn_type
+
 
 # ============ 진행률 추적 (in-memory) ============
 
@@ -449,8 +476,8 @@ async def _generate_candidates_core(
             counts["skipped"] += 1
             continue
         try:
-            txn_type = (t.get("transactionType") or "").upper()
-            is_sales = any(k in txn_type for k in ("SALES", "OUT", "SUPPLY"))
+            # 사업자번호 기반 판정 — 그랜터의 transactionType="OUT"이 매입이라 키워드 매칭은 위험
+            is_sales = _is_sales_tax_invoice(t)
             cand = _build_tax_invoice_candidate(t, is_sales=is_sales)
             db.add(cand)
             if is_sales:
@@ -493,8 +520,7 @@ async def _generate_candidates_core(
             counts["skipped"] += 1
             continue
         try:
-            # 우리 회사 사업자번호 — 조인앤조인 (memory 기준)
-            cand = _build_cash_receipt_candidate(t, our_business_number="5038701038")
+            cand = _build_cash_receipt_candidate(t, our_business_number=OUR_BUSINESS_NUMBER)
             db.add(cand)
             counts["cash_receipt"] += 1
         except Exception as e:

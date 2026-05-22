@@ -702,7 +702,7 @@ export const granterApi = {
   listTicketsAllTypes: (startDate: string, endDate: string, assetId?: number, slim: boolean = false) =>
     api.post('/granter/tickets/all', null, {
       params: { start_date: startDate, end_date: endDate, asset_id: assetId, slim },
-      timeout: 60_000,  // 1개월 단위 호출은 ~10초, 여유있게 60초
+      timeout: 180_000,  // 4 ticket type × 그랜터 응답시간 + 간헐 retry 여유 (60s→180s)
     }),
   listTicketsExtended: (months: number = 6, slim: boolean = false) =>
     api.get('/granter/tickets/extended', {

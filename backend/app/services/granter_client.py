@@ -37,7 +37,8 @@ class GranterClient:
     """그랜터 공식 Public API 비동기 클라이언트"""
 
     DEFAULT_BASE_URL = "https://app.granter.biz/api/public-docs"
-    DEFAULT_TIMEOUT = 30.0
+    # 단일 HTTP 호출 timeout. 그랜터가 종종 30s 가까이 걸리는 경우 대비 여유.
+    DEFAULT_TIMEOUT = 60.0
     # 그랜터가 동시 호출 N개 이상이면 401로 차단 → semaphore로 직렬화
     _SEMAPHORE = None  # type: ignore
 
@@ -120,14 +121,15 @@ class GranterClient:
 
         # 일시적 실패(401/429/5xx) 자동 재시도 — 그랜터 동시 호출 시 간헐 401 회복
         RETRYABLE_STATUS = {401, 429, 502, 503, 504}
-        MAX_RETRIES = 5
+        MAX_RETRIES = 3  # 5→3, 누적 wait 짧게
         if resp.status_code in RETRYABLE_STATUS and _retry_count < MAX_RETRIES:
-            # 401은 그랜터 차단 — 더 길게 대기. 429/5xx는 짧게.
+            # 401은 그랜터 차단 — 짧게 wait 후 재시도. 429/5xx도 동일.
+            # 총 누적 ~25s — frontend 180s timeout 내 끝나야 함.
             if resp.status_code == 401:
-                # 5s, 10s, 20s, 40s, 60s (총 ~135s) — 그랜터 IP 차단 회복용
-                wait = min(5.0 * (2 ** _retry_count), 60.0)
+                # 3s, 6s, 12s (누적 21s)
+                wait = min(3.0 * (2 ** _retry_count), 12.0)
             else:
-                wait = min(1.0 * (3 ** _retry_count), 30.0)
+                wait = min(1.0 * (2 ** _retry_count), 8.0)
             logger.info(
                 "Granter %s %s → %s, retry %d/%d after %.1fs",
                 method, path, resp.status_code, _retry_count + 1, MAX_RETRIES, wait,
@@ -333,7 +335,7 @@ class GranterClient:
         results = []
         for t in ticket_types:
             results.append(await _fetch(t))
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
         result_dict = dict(results)
 
         # 모든 sub-call이 빈 배열이면 캐시에 저장하지 않음 (실패한 응답이 고착되는 문제 방지)
@@ -388,7 +390,7 @@ class GranterClient:
         results = []
         for t in ticket_types:
             results.append(await _fetch(t))
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
         return dict(results)
 
     # ============ 잔액 / 일일 리포트 / 환율 ============
