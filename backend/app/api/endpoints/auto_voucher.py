@@ -2130,6 +2130,84 @@ async def duplicate_period_check(
     return result
 
 
+@router.get("/admin/inspect-tax-invoice")
+async def inspect_tax_invoice(
+    target_date: date = Query(...),
+    sample: int = Query(20),
+):
+    """확정된 SALES_TAX_INVOICE 후보의 raw_data 분석 — 발행자/수취자 사업자번호로 매출/매입 판정 검증.
+    조인앤조인 사업자번호: 503-87-01038 (정규화: 5038701038)."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+    import json as _json
+
+    OUR_BIZ = "5038701038"
+    result = {
+        "target_date": str(target_date),
+        "our_business_number": OUR_BIZ,
+        "samples": [],
+        "verdict": {"likely_correct_sales": 0, "likely_misclassified_purchase": 0,
+                    "internal_or_unknown": 0, "no_raw_data": 0},
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '60s'"))
+        except Exception:
+            pass
+
+        rows = (await db.execute(_text("""
+            SELECT c.id, c.source_id, c.counterparty, c.total_amount, c.raw_data,
+                   v.id AS vid, v.voucher_number
+            FROM auto_voucher_candidates c
+            LEFT JOIN vouchers v ON v.id = c.confirmed_voucher_id
+            WHERE c.source_type = 'SALES_TAX_INVOICE'
+              AND c.status = 'CONFIRMED'
+              AND c.transaction_date = :d
+            ORDER BY c.total_amount DESC
+            LIMIT :lim
+        """), {"d": target_date, "lim": sample})).all()
+
+        for r in rows:
+            try:
+                raw = _json.loads(r[4]) if r[4] else {}
+            except Exception:
+                raw = {}
+            ti = raw.get("taxInvoice") or {}
+            supplier = ti.get("supplier") or {}
+            contractor = ti.get("contractor") or {}
+            sup_reg = (supplier.get("registrationNumber") or "").replace("-", "")
+            con_reg = (contractor.get("registrationNumber") or "").replace("-", "")
+            txn_type = (raw.get("transactionType") or "")
+
+            if sup_reg == OUR_BIZ and con_reg != OUR_BIZ:
+                verdict = "likely_correct_sales"
+            elif con_reg == OUR_BIZ and sup_reg != OUR_BIZ:
+                verdict = "likely_misclassified_purchase"
+            elif sup_reg == OUR_BIZ and con_reg == OUR_BIZ:
+                verdict = "internal_or_unknown"
+            else:
+                verdict = "internal_or_unknown"
+            result["verdict"][verdict] += 1
+
+            result["samples"].append({
+                "candidate_id": int(r[0]),
+                "voucher_id": int(r[5]) if r[5] else None,
+                "voucher_number": r[6],
+                "ticket_id": r[1],
+                "counterparty(stored)": r[2],
+                "amount": float(r[3] or 0),
+                "transactionType(raw)": txn_type,
+                "supplier_name": supplier.get("companyName"),
+                "supplier_regnum": sup_reg,
+                "contractor_name": contractor.get("companyName"),
+                "contractor_regnum": con_reg,
+                "verdict": verdict,
+            })
+
+    return result
+
+
 @router.get("/admin/sales-month-end-detail")
 async def sales_month_end_detail(
     target_date: date = Query(..., description="확인할 날짜 (예: 2026-01-31, 2026-02-28)"),
