@@ -116,19 +116,38 @@ async def _build_counterparty_cache(force: bool = False) -> Dict[str, Any]:
               AND vl.counterparty_name IS NOT NULL
             GROUP BY vl.counterparty_name, vl.counterparty_business_number, a.code
         """))).all()
-        # 거래처별 최빈 계정 코드 선택
+        # 거래처별 최빈 계정 코드 선택 — 각 행 처리에 보호
         cp_acc_counter: Dict[str, Dict[str, int]] = {}
-        for nm, bn, code, cnt in rows2:
-            key = _normalize_name(nm) or _normalize_biznum(bn) or ""
-            if not key:
+        for row in rows2:
+            try:
+                nm = row[0] if len(row) > 0 else None
+                bn = row[1] if len(row) > 1 else None
+                code = row[2] if len(row) > 2 else None
+                cnt = row[3] if len(row) > 3 else 0
+                key = _normalize_name(nm) or _normalize_biznum(bn) or ""
+                if not key or not code:
+                    continue
+                purchase_set.add(key)
+                if bn:
+                    nb = _normalize_biznum(bn)
+                    if nb:
+                        purchase_set.add(nb)
+                # 계정코드 카운트 누적
+                if key not in cp_acc_counter:
+                    cp_acc_counter[key] = {}
+                code_str = str(code)
+                cp_acc_counter[key][code_str] = cp_acc_counter[key].get(code_str, 0) + int(cnt or 0)
+            except Exception as row_err:
+                logger.warning(f"cache row skip ({nm!r} / {bn!r}): {row_err}")
                 continue
-            purchase_set.add(key)
-            if bn:
-                purchase_set.add(_normalize_biznum(bn))
-            cp_acc_counter.setdefault(key, {})[code] = (cp_acc_counter[key].get(code, 0) + int(cnt or 0))
         for key, codes in cp_acc_counter.items():
-            best = max(codes.items(), key=lambda x: x[1])[0]
-            hints[key] = best
+            try:
+                if not codes:
+                    continue
+                best = max(codes.items(), key=lambda x: x[1])[0]
+                hints[key] = best
+            except Exception as h_err:
+                logger.warning(f"hint skip {key!r}: {h_err}")
 
     # 우리 회사 계좌 (그랜터 BANK_ACCOUNT 자산)
     our_accounts: set = set()
