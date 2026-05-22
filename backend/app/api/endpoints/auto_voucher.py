@@ -2128,3 +2128,136 @@ async def duplicate_period_check(
         ]
 
     return result
+
+
+@router.get("/admin/sales-month-end-detail")
+async def sales_month_end_detail(
+    target_date: date = Query(..., description="확인할 날짜 (예: 2026-01-31, 2026-02-28)"),
+):
+    """특정 날짜 매출 voucher 상세 — 1.31, 2.28 폭증 원인 파악.
+    voucher × source_type 분포 + 상위 voucher 30건의 분개 라인."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+
+    result = {
+        "target_date": str(target_date),
+        "voucher_summary": {},
+        "by_candidate_source_type": [],
+        "top_vouchers": [],
+        "wehago_top_lines": [],
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '120s'"))
+        except Exception:
+            pass
+
+        # 1) 해당일 매출 voucher 총합 (source별)
+        rows = (await db.execute(_text("""
+            SELECT
+              COALESCE(v.source, '(null)') AS src,
+              COUNT(DISTINCT v.id) AS vouchers,
+              SUM(vl.credit_amount) AS sales,
+              SUM(vl.debit_amount) AS reverse_debit
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date = :d
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code, 1) = '4'
+            GROUP BY COALESCE(v.source, '(null)')
+        """), {"d": target_date})).all()
+        result["voucher_summary"] = [
+            {"source": r[0], "vouchers": int(r[1] or 0),
+             "sales_credit": float(r[2] or 0), "sales_debit_reverse": float(r[3] or 0)}
+            for r in rows
+        ]
+
+        # 2) granter_auto 매출 voucher × candidate source_type 분해
+        rows2 = (await db.execute(_text("""
+            SELECT
+              c.source_type AS st,
+              COUNT(DISTINCT v.id) AS vouchers,
+              SUM(vl.credit_amount) AS sales
+            FROM vouchers v
+            JOIN auto_voucher_candidates c ON c.confirmed_voucher_id = v.id
+            JOIN voucher_lines vl ON vl.voucher_id = v.id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date = :d
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND v.source = 'granter_auto'
+              AND LEFT(a.code, 1) = '4'
+            GROUP BY c.source_type
+            ORDER BY SUM(vl.credit_amount) DESC
+        """), {"d": target_date})).all()
+        for r in rows2:
+            st = r[0]
+            result["by_candidate_source_type"].append({
+                "source_type": getattr(st, "value", str(st)) if st else "(none)",
+                "vouchers": int(r[1] or 0),
+                "sales": float(r[2] or 0),
+            })
+
+        # 3) 상위 매출 voucher 30건 (날짜·source 무관, 해당일 기준)
+        rows3 = (await db.execute(_text("""
+            SELECT
+              v.id, v.voucher_number, COALESCE(v.source,'') AS src,
+              v.transaction_type::text AS ttype,
+              v.description, v.merchant_name, v.external_ref,
+              SUM(CASE WHEN LEFT(a.code,1)='4' THEN vl.credit_amount ELSE 0 END) AS sales
+            FROM vouchers v
+            JOIN voucher_lines vl ON vl.voucher_id = v.id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date = :d
+              AND v.status IN ('CONFIRMED','APPROVED')
+            GROUP BY v.id, v.voucher_number, v.source, v.transaction_type,
+                     v.description, v.merchant_name, v.external_ref
+            HAVING SUM(CASE WHEN LEFT(a.code,1)='4' THEN vl.credit_amount ELSE 0 END) > 0
+            ORDER BY SUM(CASE WHEN LEFT(a.code,1)='4' THEN vl.credit_amount ELSE 0 END) DESC
+            LIMIT 30
+        """), {"d": target_date})).all()
+        for r in rows3:
+            result["top_vouchers"].append({
+                "voucher_id": int(r[0]),
+                "voucher_number": r[1],
+                "source": r[2],
+                "transaction_type": r[3],
+                "description": (r[4] or "")[:120],
+                "merchant_name": r[5],
+                "external_ref": r[6],
+                "sales": float(r[7] or 0),
+            })
+
+        # 4) wehago_import 상위 매출 voucher 의 첫 줄 분개 (계정/거래처)
+        rows4 = (await db.execute(_text("""
+            SELECT
+              v.id, v.voucher_number, v.description, v.external_ref,
+              a.code AS acc_code, a.name AS acc_name,
+              vl.debit_amount, vl.credit_amount,
+              vl.counterparty_name
+            FROM vouchers v
+            JOIN voucher_lines vl ON vl.voucher_id = v.id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date = :d
+              AND v.source = 'wehago_import'
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code,1) = '4'
+              AND vl.credit_amount > 0
+            ORDER BY vl.credit_amount DESC
+            LIMIT 20
+        """), {"d": target_date})).all()
+        for r in rows4:
+            result["wehago_top_lines"].append({
+                "voucher_id": int(r[0]),
+                "voucher_number": r[1],
+                "description": (r[2] or "")[:120],
+                "external_ref": r[3],
+                "account_code": r[4],
+                "account_name": r[5],
+                "debit": float(r[6] or 0),
+                "credit": float(r[7] or 0),
+                "counterparty": r[8],
+            })
+
+    return result
