@@ -2006,3 +2006,125 @@ async def sales_breakdown(
         "제조원가(6,7xx 차변)": cat.get("6", {}).get("debit", 0) + cat.get("7", {}).get("debit", 0),
     }
     return result
+
+
+@router.get("/admin/duplicate-period-check")
+async def duplicate_period_check(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """매출 중복 진단 — source × 일자별 매출 매트릭스 + cash_receipt confirmed 거래일 히스토그램.
+    wehago_import(1.1~2.10)와 granter_auto cash_receipt가 같은 날짜에 매출 이중계상되는지 확인."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+
+    result = {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "source_x_day_sales": [],
+        "cash_receipt_candidates_by_day": [],
+        "overlap_summary": {},
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '180s'"))
+        except Exception:
+            pass
+
+        # 1) source별 × 일자별 매출 (4xx 대변)
+        rows = (await db.execute(_text("""
+            SELECT
+              v.voucher_date AS d,
+              COALESCE(v.source, '(null)') AS src,
+              SUM(vl.credit_amount) AS sales,
+              COUNT(DISTINCT v.id) AS vouchers
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code, 1) = '4'
+            GROUP BY v.voucher_date, COALESCE(v.source, '(null)')
+            ORDER BY v.voucher_date, COALESCE(v.source, '(null)')
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows:
+            result["source_x_day_sales"].append({
+                "date": str(r[0]),
+                "source": r[1],
+                "sales": float(r[2] or 0),
+                "vouchers": int(r[3] or 0),
+            })
+
+        # 2) cash_receipt confirmed 후보의 transaction_date 히스토그램
+        rows2 = (await db.execute(_text("""
+            SELECT
+              transaction_date AS d,
+              COUNT(*) AS cnt,
+              SUM(total_amount) AS amount
+            FROM auto_voucher_candidates
+            WHERE source_type = 'CASH_RECEIPT'
+              AND status = 'CONFIRMED'
+              AND transaction_date BETWEEN :s AND :e
+            GROUP BY transaction_date
+            ORDER BY transaction_date
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows2:
+            result["cash_receipt_candidates_by_day"].append({
+                "date": str(r[0]),
+                "count": int(r[1] or 0),
+                "amount": float(r[2] or 0),
+            })
+
+        # 3) 같은 날짜에 wehago_import + granter_auto 둘 다 매출 있는 날 = 중복 의심
+        rows3 = (await db.execute(_text("""
+            WITH per_src AS (
+              SELECT
+                v.voucher_date AS d,
+                COALESCE(v.source, '(null)') AS src,
+                SUM(vl.credit_amount) AS sales
+              FROM voucher_lines vl
+              JOIN vouchers v ON v.id = vl.voucher_id
+              JOIN accounts a ON a.id = vl.account_id
+              WHERE v.voucher_date BETWEEN :s AND :e
+                AND v.status IN ('CONFIRMED','APPROVED')
+                AND LEFT(a.code, 1) = '4'
+              GROUP BY v.voucher_date, COALESCE(v.source, '(null)')
+            )
+            SELECT
+              COUNT(DISTINCT d) AS overlap_days,
+              SUM(CASE WHEN src = 'wehago_import' THEN sales ELSE 0 END) AS wehago_sales_overlap,
+              SUM(CASE WHEN src = 'granter_auto' THEN sales ELSE 0 END) AS granter_sales_overlap
+            FROM per_src
+            WHERE d IN (
+              SELECT d FROM per_src WHERE src = 'wehago_import'
+              INTERSECT
+              SELECT d FROM per_src WHERE src = 'granter_auto'
+            )
+        """), {"s": start_date, "e": end_date})).first()
+        if rows3:
+            result["overlap_summary"] = {
+                "overlap_days": int(rows3[0] or 0),
+                "wehago_sales_in_overlap_days": float(rows3[1] or 0),
+                "granter_sales_in_overlap_days": float(rows3[2] or 0),
+                "interpretation": "overlap_days 가 0이면 중복 아님. 0보다 크고 두 source 매출이 비슷한 규모면 이중계상 의심."
+            }
+
+        # 4) wehago_import 기간 끝 + granter_auto 시작일 확인
+        rows4 = (await db.execute(_text("""
+            SELECT
+              COALESCE(v.source, '(null)') AS src,
+              MIN(v.voucher_date) AS first_d,
+              MAX(v.voucher_date) AS last_d,
+              COUNT(DISTINCT v.id) AS vouchers
+            FROM vouchers v
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+            GROUP BY COALESCE(v.source, '(null)')
+            ORDER BY MIN(v.voucher_date)
+        """), {"s": start_date, "e": end_date})).all()
+        result["source_date_range"] = [
+            {"source": r[0], "first": str(r[1]), "last": str(r[2]), "vouchers": int(r[3] or 0)}
+            for r in rows4
+        ]
+
+    return result
