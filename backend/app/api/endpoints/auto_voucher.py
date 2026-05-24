@@ -2323,6 +2323,109 @@ async def reclassify_bank_vouchers(
             "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
 
 
+@router.post("/admin/seed-missing-accounts")
+async def seed_missing_accounts(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    upload_id: int = Query(...),
+):
+    """마이그레이션 시 매핑 실패한 계정을 accounts 테이블에 자동 추가.
+    ai_raw에서 source_account_code/name이 accounts에 없는 것 → 자동 등록.
+    계정 카테고리는 code 첫 자리로 자동 추론 (1자산/2부채/3자본/4매출/5매출원가/6,7제조/8판관비/9영업외)."""
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as _text
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    CAT_MAP = {
+        "1": ("1", "자산"), "2": ("2", "부채"), "3": ("3", "자본"),
+        "4": ("4", "수익"), "5": ("5", "비용"), "6": ("5", "비용"),
+        "7": ("5", "비용"), "8": ("5", "비용"), "9": ("5", "비용"),
+    }
+
+    added = []
+    skipped = []
+    async with async_session_factory() as db:
+        rows = (await db.execute(_text("""
+            SELECT DISTINCT r.source_account_code, r.source_account_name
+            FROM ai_raw_transaction_data r
+            WHERE r.upload_id = :uid
+              AND r.source_account_code IS NOT NULL
+              AND r.source_account_code != ''
+              AND NOT (r.source_account_code ~ '^[0-9]{5,}$')
+              AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.code = r.source_account_code)
+        """), {"uid": upload_id})).all()
+
+        if not rows:
+            return {"added": 0, "message": "누락 계정 없음"}
+
+        # 카테고리 ID 매핑 (account_categories.code → id)
+        cat_rows = (await db.execute(_text("SELECT code, id FROM account_categories"))).all()
+        cat_id_map = {str(r[0]): int(r[1]) for r in cat_rows}
+
+        for code, name in rows:
+            first = (code or "")[:1]
+            cat_info = CAT_MAP.get(first)
+            if not cat_info:
+                skipped.append({"code": code, "name": name, "reason": "카테고리 추론 실패"})
+                continue
+            cat_code = cat_info[0]
+            cat_id = cat_id_map.get(cat_code)
+            if not cat_id:
+                skipped.append({"code": code, "name": name, "reason": f"category {cat_code} 없음"})
+                continue
+            try:
+                await db.execute(_text("""
+                    INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                    VALUES (:code, :name, :cid, 1, true, true, 10.00, true, NOW(), NOW())
+                    ON CONFLICT (code) DO NOTHING
+                """), {"code": code, "name": (name or code)[:100], "cid": cat_id})
+                added.append({"code": code, "name": name, "category": cat_info[1]})
+            except Exception as e:
+                skipped.append({"code": code, "name": name, "reason": str(e)[:100]})
+        await db.commit()
+    return {"added": len(added), "added_list": added, "skipped": skipped}
+
+
+@router.post("/admin/migrate-journal-chunk")
+async def migrate_journal_chunk(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    upload_id: int = Query(...),
+    max_seconds: int = Query(60, description="이 시간 안에 끝나는 만큼만 처리"),
+):
+    """동기 청크 마이그레이션 — background task가 죽어도 누적 진행 보장.
+    한 호출에 max_seconds 동안 처리 후 응답. 클라이언트가 반복 호출해서 끝까지.
+    idempotent (SHA256 ext_ref) — 이미 변환된 그룹은 skip."""
+    from app.services.journal_migration import migrate_journal_uploads_to_vouchers
+    from app.core.database import async_session_factory
+    import asyncio as _asyncio
+    import time as _time
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    started = _time.time()
+    async with async_session_factory() as db:
+        try:
+            # max_seconds 안에 끝나는 만큼만 처리 (timeout으로 중단)
+            result = await _asyncio.wait_for(
+                migrate_journal_uploads_to_vouchers(
+                    db,
+                    upload_ids=[upload_id],
+                    commit_every=100,
+                    yield_every=20,
+                ),
+                timeout=max_seconds,
+            )
+            elapsed = _time.time() - started
+            return {"status": "completed", "elapsed_seconds": elapsed, **result}
+        except _asyncio.TimeoutError:
+            elapsed = _time.time() - started
+            return {"status": "timeout_partial",
+                    "elapsed_seconds": elapsed,
+                    "message": "max_seconds 도달 — 다시 호출하여 이어서 처리"}
+
+
 @router.get("/admin/migration-verification")
 async def migration_verification(
     upload_id: int = Query(...),
