@@ -311,8 +311,8 @@ async def migrate_journal_uploads_to_vouchers(
     department_id: Optional[int] = None,
     source_label: str = "wehago_import",
     task_id: Optional[str] = None,
-    commit_every: int = 10,
-    yield_every: int = 5,
+    commit_every: int = 100,
+    yield_every: int = 20,
 ) -> Dict[str, Any]:
     """
     위하고/더존 분개장 업로드 → Voucher(CONFIRMED) 일괄 변환.
@@ -761,7 +761,10 @@ async def migrate_journal_uploads_background(
 
     async def _runner():
         try:
-            async with async_session_factory() as db:
+            # direct engine 우선 사용 (풀러 8s timeout 회피, 더 빠름)
+            from app.core.database import async_session_factory_direct
+            factory = async_session_factory_direct or async_session_factory
+            async with factory() as db:
                 result = await migrate_journal_uploads_to_vouchers(
                     db,
                     upload_ids=upload_ids,
