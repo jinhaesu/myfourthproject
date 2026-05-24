@@ -2323,6 +2323,132 @@ async def reclassify_bank_vouchers(
             "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
 
 
+@router.get("/admin/migration-verification")
+async def migration_verification(
+    upload_id: int = Query(...),
+    sample: int = Query(20),
+):
+    """분개장 마이그레이션 검증 — 변환된 voucher 샘플 + 계정 매핑 실패 + upload_id 간 중복 진단."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+
+    result = {
+        "upload_id": upload_id,
+        "summary": {},
+        "duplicate_with_existing": {},
+        "sample_vouchers": [],
+        "unmatched_accounts": [],
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '120s'"))
+        except Exception:
+            pass
+
+        # 1) 이번 upload_id 변환 요약 (vouchers, lines, 기간)
+        row = (await db.execute(_text("""
+            SELECT COUNT(DISTINCT v.id) AS vouchers,
+                   COUNT(vl.id) AS lines,
+                   MIN(v.voucher_date) AS min_d,
+                   MAX(v.voucher_date) AS max_d,
+                   SUM(vl.debit_amount) AS total_debit,
+                   SUM(vl.credit_amount) AS total_credit
+            FROM vouchers v
+            LEFT JOIN voucher_lines vl ON vl.voucher_id = v.id
+            WHERE v.external_ref LIKE :pat
+        """), {"pat": f"journal:upload:{upload_id}:%"})).first()
+        if row:
+            result["summary"] = {
+                "vouchers": int(row[0] or 0),
+                "lines": int(row[1] or 0),
+                "first_date": str(row[2]) if row[2] else None,
+                "last_date": str(row[3]) if row[3] else None,
+                "total_debit": float(row[4] or 0),
+                "total_credit": float(row[5] or 0),
+            }
+
+        # 2) 같은 날짜 다른 upload_id voucher와의 중복 여부
+        dup_rows = (await db.execute(_text("""
+            SELECT v.voucher_date,
+                   COUNT(*) FILTER (WHERE v.external_ref LIKE :pat_this) AS this_v,
+                   COUNT(*) FILTER (WHERE v.external_ref NOT LIKE :pat_this
+                                    AND v.external_ref LIKE 'journal:upload:%') AS other_v
+            FROM vouchers v
+            WHERE v.source LIKE 'wehago%'
+              AND v.voucher_date BETWEEN
+                  (SELECT MIN(v2.voucher_date) FROM vouchers v2 WHERE v2.external_ref LIKE :pat_this)
+                  AND
+                  (SELECT MAX(v2.voucher_date) FROM vouchers v2 WHERE v2.external_ref LIKE :pat_this)
+            GROUP BY v.voucher_date
+            HAVING COUNT(*) FILTER (WHERE v.external_ref LIKE :pat_this) > 0
+               AND COUNT(*) FILTER (WHERE v.external_ref NOT LIKE :pat_this
+                                    AND v.external_ref LIKE 'journal:upload:%') > 0
+            ORDER BY v.voucher_date
+            LIMIT 30
+        """), {"pat_this": f"journal:upload:{upload_id}:%"})).all()
+        result["duplicate_with_existing"] = {
+            "overlap_dates_sample": [
+                {"date": str(r[0]), "this_upload_vouchers": int(r[1]), "other_upload_vouchers": int(r[2])}
+                for r in dup_rows
+            ],
+            "note": "this_upload_vouchers와 other_upload_vouchers 둘 다 양수면 같은 날짜 중복 voucher 존재 = 매출/매입 부풀림 위험",
+        }
+
+        # 3) sample voucher (상위 매출 또는 매입)
+        sv_rows = (await db.execute(_text("""
+            SELECT v.id, v.voucher_number, v.voucher_date, v.description, v.merchant_name,
+                   v.total_debit, v.total_credit
+            FROM vouchers v
+            WHERE v.external_ref LIKE :pat
+            ORDER BY (v.total_debit + v.total_credit) DESC
+            LIMIT :lim
+        """), {"pat": f"journal:upload:{upload_id}:%", "lim": sample})).all()
+
+        for sv in sv_rows:
+            vid = int(sv[0])
+            lines = (await db.execute(_text("""
+                SELECT a.code, a.name, vl.debit_amount, vl.credit_amount, vl.counterparty_name
+                FROM voucher_lines vl JOIN accounts a ON a.id = vl.account_id
+                WHERE vl.voucher_id = :vid
+                ORDER BY vl.line_number
+            """), {"vid": vid})).all()
+            result["sample_vouchers"].append({
+                "voucher_id": vid,
+                "voucher_number": sv[1],
+                "date": str(sv[2]),
+                "description": (sv[3] or "")[:120],
+                "merchant": sv[4],
+                "total_debit": float(sv[5] or 0),
+                "total_credit": float(sv[6] or 0),
+                "lines": [
+                    {"acc_code": l[0], "acc_name": l[1],
+                     "debit": float(l[2] or 0), "credit": float(l[3] or 0),
+                     "counterparty": l[4]}
+                    for l in lines
+                ],
+            })
+
+        # 4) ai_raw에서 자주 등장한 계정 코드 중 accounts 테이블에 없는 것 (매핑 실패 가능성)
+        ua_rows = (await db.execute(_text("""
+            SELECT DISTINCT r.source_account_code, r.source_account_name, COUNT(*) AS cnt
+            FROM ai_raw_transaction_data r
+            WHERE r.upload_id = :uid
+              AND r.source_account_code IS NOT NULL
+              AND r.source_account_code != ''
+              AND NOT (r.source_account_code ~ '^[0-9]{5,}$')  -- 거래처 코드 제외
+              AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.code = r.source_account_code)
+            GROUP BY r.source_account_code, r.source_account_name
+            ORDER BY cnt DESC
+            LIMIT 30
+        """), {"uid": upload_id})).all()
+        result["unmatched_accounts"] = [
+            {"code": r[0], "name": r[1], "rows": int(r[2] or 0)} for r in ua_rows
+        ]
+
+    return result
+
+
 @router.get("/admin/bank-counterparty-samples")
 async def bank_counterparty_samples(
     start_date: date = Query(...),
