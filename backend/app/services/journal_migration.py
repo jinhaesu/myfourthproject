@@ -761,10 +761,8 @@ async def migrate_journal_uploads_background(
 
     async def _runner():
         try:
-            # direct engine 우선 사용 (풀러 8s timeout 회피, 더 빠름)
-            from app.core.database import async_session_factory_direct
-            factory = async_session_factory_direct or async_session_factory
-            async with factory() as db:
+            # 풀러 사용 (direct engine은 _ensure_base_data와 다른 connection이라 FK 충돌)
+            async with async_session_factory() as db:
                 result = await migrate_journal_uploads_to_vouchers(
                     db,
                     upload_ids=upload_ids,
