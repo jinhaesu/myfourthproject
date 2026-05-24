@@ -2387,6 +2387,27 @@ async def seed_missing_accounts(
     return {"added": len(added), "added_list": added, "skipped": skipped}
 
 
+@router.post("/admin/bulk-migrate-journal")
+async def bulk_migrate_journal(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    upload_id: int = Query(...),
+    batch_size: int = Query(500),
+):
+    """Raw SQL bulk insert로 분개장 마이그레이션 — direct connection + ORM 우회.
+    동기 실행 — 끝나면 결과 반환. timeout 안 나게 frontend는 300s+ 설정.
+    idempotent: 이미 변환된 그룹 skip."""
+    from app.services.journal_migration import bulk_migrate_journal_raw
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    result = await bulk_migrate_journal_raw(
+        upload_id=upload_id,
+        batch_size=batch_size,
+    )
+    return result
+
+
 @router.post("/admin/migrate-journal-chunk")
 async def migrate_journal_chunk(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),

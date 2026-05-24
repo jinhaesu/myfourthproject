@@ -745,6 +745,265 @@ async def delete_wehago_imports_background(
     return task_id
 
 
+async def bulk_migrate_journal_raw(
+    upload_id: int,
+    source_label: str = "wehago_import",
+    batch_size: int = 500,
+    progress_cb: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Raw SQL bulk insert로 마이그레이션 — direct asyncpg connection 사용.
+    ORM/savepoint/flush 우회로 10배+ 빠름.
+    이미 변환된 그룹(ext_ref 매칭)은 skip — idempotent.
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    # 0) 부서·사용자 시드 (기존 코드 재사용 — ORM)
+    eff_dept_id, eff_user_id = await _ensure_base_data()
+
+    # 1) direct connection
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+
+    try:
+        # 2) ai_raw 행 로드
+        rows = await conn.fetch("""
+            SELECT id, upload_id, row_number, transaction_date,
+                   original_description, merchant_name,
+                   debit_amount, credit_amount,
+                   COALESCE(source_account_code, account_code) AS acc_code,
+                   COALESCE(source_account_name, account_name) AS acc_name
+            FROM ai_raw_transaction_data
+            WHERE upload_id = $1
+            ORDER BY row_number
+        """, upload_id)
+
+        if not rows:
+            return {"migrated": 0, "skipped": 0, "errors": 0, "message": "ai_raw 없음"}
+
+        # 3) 계정 코드 → id map 한 번에 로드
+        acc_rows = await conn.fetch("SELECT id, code FROM accounts WHERE is_active = true")
+        acc_map = {r["code"]: r["id"] for r in acc_rows}
+
+        # 4) 그룹핑 — 차변=대변 도달 시 한 분개로 마감 (날짜 바뀌면 강제 마감)
+        groups: List[List[dict]] = []
+        current: List[dict] = []
+        cur_d = Decimal("0")
+        cur_c = Decimal("0")
+        cur_date: Optional[date] = None
+
+        for r in rows:
+            r_dict = dict(r)
+            d = _parse_iso_date(r_dict["transaction_date"])
+            if not d:
+                continue
+            # 날짜 바뀌면 이전 그룹 강제 마감
+            if cur_date is not None and d != cur_date and current:
+                groups.append(current)
+                current = []
+                cur_d = Decimal("0")
+                cur_c = Decimal("0")
+            cur_date = d
+            r_dict["_date"] = d
+            current.append(r_dict)
+            cur_d += Decimal(str(r_dict["debit_amount"] or 0))
+            cur_c += Decimal(str(r_dict["credit_amount"] or 0))
+            if cur_d > 0 and cur_d == cur_c:
+                groups.append(current)
+                current = []
+                cur_d = Decimal("0")
+                cur_c = Decimal("0")
+        if current:
+            groups.append(current)
+
+        total_groups = len(groups)
+        if progress_cb:
+            progress_cb(5, f"{total_groups}개 그룹 식별")
+
+        # 5) 이미 변환된 ext_ref 로드
+        existing = await conn.fetch(
+            "SELECT external_ref FROM vouchers WHERE source = $1 AND external_ref IS NOT NULL",
+            source_label,
+        )
+        existing_refs = {r["external_ref"] for r in existing}
+
+        migrated = 0
+        skipped = 0
+        errors = 0
+        error_details: List[str] = []
+
+        # 6) batch 처리
+        idx = 0
+        while idx < total_groups:
+            batch_groups = []
+            batch_ext_refs = []
+            batch_voucher_rows = []  # (vdate, ext_ref, desc, merchant, total_d, line_specs)
+
+            # 한 batch 분량 모으기 (skip 포함)
+            while idx < total_groups and len(batch_groups) < batch_size:
+                grp = groups[idx]
+                idx += 1
+                first = grp[0]
+                vdate = first["_date"]
+                date_iso = vdate.isoformat()
+                # ext_ref: SHA256 of sorted row ids
+                row_ids_str = ",".join(str(r["id"]) for r in sorted(grp, key=lambda x: x["id"]))
+                content_hash = hashlib.sha256(row_ids_str.encode()).hexdigest()[:16]
+                ext_ref = f"journal:upload:{upload_id}:{date_iso}:{content_hash}"
+                if ext_ref in existing_refs:
+                    skipped += 1
+                    continue
+
+                # 라인 처리
+                total_d = Decimal("0")
+                total_c = Decimal("0")
+                line_specs = []
+                for r in grp:
+                    acc_code = (r["acc_code"] or "").strip()
+                    acc_name = (r["acc_name"] or "").strip()
+                    if not acc_code:
+                        continue
+                    if acc_code.isdigit() and len(acc_code) >= 5:
+                        continue
+                    acc_id = acc_map.get(acc_code)
+                    if acc_id is None:
+                        # 계정 없음 — skip 라인 (에러로 안 만들고 그룹 통과)
+                        continue
+                    deb = Decimal(str(r["debit_amount"] or 0))
+                    cre = Decimal(str(r["credit_amount"] or 0))
+                    if deb > 0:
+                        total_d += deb
+                        line_specs.append((acc_id, acc_code, deb, Decimal("0"), r.get("merchant_name")))
+                    if cre > 0:
+                        total_c += cre
+                        line_specs.append((acc_id, acc_code, Decimal("0"), cre, r.get("merchant_name")))
+
+                if not line_specs or total_d != total_c:
+                    errors += 1
+                    if len(error_details) < 5:
+                        error_details.append(f"{date_iso}: D={total_d} C={total_c} lines={len(line_specs)}")
+                    continue
+
+                desc = (first.get("original_description") or "")[:500]
+                merchant = (first.get("merchant_name") or "")[:200]
+                batch_voucher_rows.append({
+                    "vdate": vdate,
+                    "ext_ref": ext_ref,
+                    "desc": desc or merchant or "위하고 분개장 import",
+                    "merchant": merchant or None,
+                    "total_d": total_d,
+                    "line_specs": line_specs,
+                })
+                batch_ext_refs.append(ext_ref)
+                batch_groups.append(grp)
+
+            if not batch_voucher_rows:
+                continue
+
+            # 7) batch INSERT in single transaction
+            try:
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '120s'")
+
+                    # voucher_id batch 미리 받기
+                    n = len(batch_voucher_rows)
+                    seq_rows = await conn.fetch(
+                        "SELECT nextval('vouchers_id_seq') AS id FROM generate_series(1, $1)", n
+                    )
+                    voucher_ids = [int(r["id"]) for r in seq_rows]
+
+                    # vouchers INSERT — executemany 대신 큰 VALUES
+                    v_values = []
+                    v_params: List[Any] = []
+                    p_idx = 1
+                    for i, vr in enumerate(batch_voucher_rows):
+                        vid = voucher_ids[i]
+                        vnum = _journal_voucher_number(vr["vdate"])
+                        # 14 columns
+                        v_values.append(
+                            f"(${p_idx}, ${p_idx+1}, ${p_idx+2}, ${p_idx+3}, ${p_idx+4}, ${p_idx+5}, "
+                            f"${p_idx+6}, ${p_idx+7}, ${p_idx+8}, ${p_idx+9}, ${p_idx+10}, ${p_idx+11}, "
+                            f"${p_idx+12}, ${p_idx+13}, ${p_idx+14}, ${p_idx+15})"
+                        )
+                        v_params.extend([
+                            vid, vnum, vr["vdate"], vr["vdate"], vr["desc"][:500],
+                            "GENERAL", vr["ext_ref"], source_label,
+                            eff_dept_id, eff_user_id,
+                            vr["total_d"], vr["total_d"],
+                            "CONFIRMED", vr["merchant"],
+                            datetime.utcnow(), eff_user_id,
+                        ])
+                        p_idx += 16
+                    v_sql = f"""
+                        INSERT INTO vouchers
+                          (id, voucher_number, voucher_date, transaction_date, description,
+                           transaction_type, external_ref, source,
+                           department_id, created_by,
+                           total_debit, total_credit,
+                           status, merchant_name,
+                           confirmed_at, confirmed_by)
+                        VALUES {','.join(v_values)}
+                    """
+                    await conn.execute(v_sql, *v_params)
+
+                    # voucher_lines INSERT — 한 번에
+                    l_values = []
+                    l_params: List[Any] = []
+                    p_idx = 1
+                    for i, vr in enumerate(batch_voucher_rows):
+                        vid = voucher_ids[i]
+                        for ln, (acc_id, acc_code, deb, cre, cp_name) in enumerate(vr["line_specs"], start=1):
+                            vat_acc = acc_code in ("135", "255")
+                            amt = deb if deb > 0 else cre
+                            # 11 columns
+                            l_values.append(
+                                f"(${p_idx}, ${p_idx+1}, ${p_idx+2}, ${p_idx+3}, ${p_idx+4}, "
+                                f"${p_idx+5}, ${p_idx+6}, ${p_idx+7}, ${p_idx+8}, ${p_idx+9})"
+                            )
+                            l_params.extend([
+                                vid, ln, acc_id, deb, cre,
+                                amt if vat_acc else Decimal("0"),
+                                amt if not vat_acc else Decimal("0"),
+                                vr["desc"][:500] if vr.get("desc") else None,
+                                cp_name,
+                                datetime.utcnow(),
+                            ])
+                            p_idx += 10
+                    if l_values:
+                        l_sql = f"""
+                            INSERT INTO voucher_lines
+                              (voucher_id, line_number, account_id,
+                               debit_amount, credit_amount,
+                               vat_amount, supply_amount,
+                               description, counterparty_name, created_at)
+                            VALUES {','.join(l_values)}
+                        """
+                        await conn.execute(l_sql, *l_params)
+
+                    migrated += len(batch_voucher_rows)
+                    existing_refs.update(batch_ext_refs)
+            except Exception as ex:
+                logger.exception(f"bulk batch 실패 (idx={idx})")
+                errors += len(batch_voucher_rows)
+                if len(error_details) < 10:
+                    error_details.append(f"batch fail: {str(ex)[:200]}")
+
+            if progress_cb and idx % (batch_size * 2) == 0:
+                pct = 5 + int(90 * idx / max(total_groups, 1))
+                progress_cb(min(95, pct), f"진행 {idx}/{total_groups} · 변환 {migrated}")
+
+        return {
+            "total_groups": total_groups,
+            "migrated": migrated,
+            "skipped": skipped,
+            "errors": errors,
+            "error_samples": error_details,
+        }
+    finally:
+        await conn.close()
+
+
 async def migrate_journal_uploads_background(
     upload_ids: Optional[List[int]] = None,
     start_date: Optional[date] = None,
