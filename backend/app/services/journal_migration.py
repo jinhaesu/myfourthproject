@@ -945,15 +945,23 @@ async def bulk_migrate_journal_raw(
                            confirmed_at, confirmed_by,
                            created_at, updated_at)
                         VALUES {','.join(v_values)}
+                        ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL
+                        DO NOTHING
+                        RETURNING id, external_ref
                     """
-                    await conn.execute(v_sql, *v_params)
+                    inserted_rows = await conn.fetch(v_sql, *v_params)
+                    inserted_ext_to_id = {r["external_ref"]: int(r["id"]) for r in inserted_rows}
+                    actually_inserted = len(inserted_rows)
+                    conflict_skipped = len(batch_voucher_rows) - actually_inserted
 
-                    # voucher_lines INSERT — 한 번에
+                    # voucher_lines INSERT — 한 번에 (실제 INSERT된 voucher만)
                     l_values = []
                     l_params: List[Any] = []
                     p_idx = 1
                     for i, vr in enumerate(batch_voucher_rows):
-                        vid = voucher_ids[i]
+                        vid = inserted_ext_to_id.get(vr["ext_ref"])
+                        if vid is None:
+                            continue  # conflict skip
                         for ln, (acc_id, acc_code, deb, cre, cp_name) in enumerate(vr["line_specs"], start=1):
                             vat_acc = acc_code in ("135", "255")
                             amt = deb if deb > 0 else cre
@@ -982,7 +990,8 @@ async def bulk_migrate_journal_raw(
                         """
                         await conn.execute(l_sql, *l_params)
 
-                    migrated += len(batch_voucher_rows)
+                    migrated += actually_inserted
+                    skipped += conflict_skipped
                     existing_refs.update(batch_ext_refs)
             except Exception as ex:
                 logger.exception(f"bulk batch 실패 (idx={idx})")

@@ -2323,6 +2323,80 @@ async def reclassify_bank_vouchers(
             "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
 
 
+@router.post("/admin/purge-journal-vouchers")
+async def purge_journal_vouchers(
+    confirm_token: str = Query(..., description="'DELETE_ALL' 필수"),
+    upload_id: int = Query(..., description="ai_raw_uploads.id"),
+    source_label: str = Query("wehago_import"),
+):
+    """upload_id에서 만들어진 모든 voucher/voucher_lines 삭제 (raw SQL, direct connection).
+    중복 마이그레이션 오염 정리용. 멱등 — 두 번 호출해도 안전."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "DELETE_ALL":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치 ('DELETE_ALL' 필요)")
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+    try:
+        prefix = f"journal:upload:{upload_id}:%"
+        # 1) 대상 voucher_id 수집
+        vouchers_before = await conn.fetchval(
+            "SELECT COUNT(*) FROM vouchers WHERE source = $1 AND external_ref LIKE $2",
+            source_label, prefix,
+        )
+        # 2) voucher_lines 먼저 삭제
+        async with conn.transaction():
+            await conn.execute("SET LOCAL statement_timeout = '600s'")
+            lines_deleted = await conn.fetchval("""
+                WITH del AS (
+                    DELETE FROM voucher_lines
+                    WHERE voucher_id IN (
+                        SELECT id FROM vouchers
+                        WHERE source = $1 AND external_ref LIKE $2
+                    )
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM del
+            """, source_label, prefix)
+            v_deleted = await conn.fetchval("""
+                WITH del AS (
+                    DELETE FROM vouchers
+                    WHERE source = $1 AND external_ref LIKE $2
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM del
+            """, source_label, prefix)
+        vouchers_after = await conn.fetchval(
+            "SELECT COUNT(*) FROM vouchers WHERE source = $1 AND external_ref LIKE $2",
+            source_label, prefix,
+        )
+        # purge 후 UNIQUE INDEX 보장 (이전 startup 시 중복으로 실패했을 수 있음)
+        unique_index_status = "skipped"
+        try:
+            await conn.execute("SET statement_timeout = '600s'")
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_vouchers_external_ref "
+                "ON vouchers(external_ref) WHERE external_ref IS NOT NULL"
+            )
+            unique_index_status = "ensured"
+        except Exception as e:
+            unique_index_status = f"failed: {str(e)[:200]}"
+        return {
+            "upload_id": upload_id,
+            "source_label": source_label,
+            "vouchers_before": int(vouchers_before or 0),
+            "vouchers_deleted": int(v_deleted or 0),
+            "lines_deleted": int(lines_deleted or 0),
+            "vouchers_after": int(vouchers_after or 0),
+            "unique_index_status": unique_index_status,
+        }
+    finally:
+        await conn.close()
+
+
 @router.post("/admin/seed-missing-accounts")
 async def seed_missing_accounts(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),

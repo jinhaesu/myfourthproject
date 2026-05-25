@@ -270,8 +270,8 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_account ON voucher_lines(voucher_id, account_id)",
         # vouchers.transaction_type — 매출/매입 필터
         "CREATE INDEX IF NOT EXISTS ix_vouchers_transaction_type ON vouchers(transaction_type)",
-        # vouchers.external_ref — 그랜터 ticket / wehago 중복 검사
-        "CREATE INDEX IF NOT EXISTS ix_vouchers_external_ref ON vouchers(external_ref) WHERE external_ref IS NOT NULL",
+        # vouchers.external_ref — 멱등성 보장 위해 UNIQUE (중복 INSERT 차단)
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_vouchers_external_ref ON vouchers(external_ref) WHERE external_ref IS NOT NULL",
         # vouchers (voucher_date DESC) — 최신 리스트 페이지네이션
         "CREATE INDEX IF NOT EXISTS ix_vouchers_voucher_date_desc ON vouchers(voucher_date DESC)",
         # auto_voucher_candidates.status — 사이드바 PENDING 카운트
@@ -297,7 +297,8 @@ async def init_db():
         try:
             async with migration_engine.begin() as conn:
                 # 인덱스 빌드를 위한 넉넉한 timeout
-                if sql.strip().upper().startswith("CREATE INDEX"):
+                _su = sql.strip().upper()
+                if _su.startswith("CREATE INDEX") or _su.startswith("CREATE UNIQUE INDEX"):
                     await conn.execute(text("SET LOCAL statement_timeout = '600s'"))
                 await conn.execute(text(sql))
         except Exception as col_err:
