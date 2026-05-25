@@ -2323,6 +2323,137 @@ async def reclassify_bank_vouchers(
             "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
 
 
+@router.get("/admin/account-breakdown")
+async def account_breakdown(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    first_digit: Optional[str] = Query(None, description="계정코드 첫 자리 필터 (예: '6','7','8','5')"),
+    limit: int = Query(200),
+):
+    """기간 내 계정코드별 차변/대변 합계 (재분류 진단용).
+    first_digit으로 필터링 — 예: '8'이면 판관비 계정만, '5'면 매출원가.
+    accounts.category와 실제 코드 매핑 차이 확인용."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        where_extra = ""
+        if first_digit:
+            where_extra = f"AND a.code LIKE '{first_digit[0]}%'"
+        sql = f"""
+            SELECT a.code, a.name,
+                   COALESCE(ac.code_prefix, LEFT(a.code,1)) AS cat_prefix,
+                   ac.name AS cat_name,
+                   COUNT(vl.id) AS lines,
+                   SUM(vl.debit_amount)::float8 AS debit,
+                   SUM(vl.credit_amount)::float8 AS credit,
+                   (SUM(vl.debit_amount) - SUM(vl.credit_amount))::float8 AS net
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            LEFT JOIN account_categories ac ON ac.id = a.category_id
+            WHERE v.voucher_date BETWEEN $1 AND $2
+              AND v.source = 'wehago_import'
+              {where_extra}
+            GROUP BY a.code, a.name, ac.code_prefix, ac.name
+            ORDER BY (SUM(vl.debit_amount) + SUM(vl.credit_amount)) DESC
+            LIMIT {limit}
+        """
+        rows = await conn.fetch(sql, start_date, end_date)
+        # 카테고리 prefix 별 집계
+        agg = {}
+        for r in rows:
+            k = (r["cat_prefix"], r["cat_name"])
+            agg.setdefault(k, {"debit": 0.0, "credit": 0.0, "accounts": 0})
+            agg[k]["debit"] += float(r["debit"] or 0)
+            agg[k]["credit"] += float(r["credit"] or 0)
+            agg[k]["accounts"] += 1
+        return {
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "first_digit_filter": first_digit,
+            "by_category_prefix": [
+                {"prefix": k[0], "name": k[1], **v} for k, v in sorted(agg.items())
+            ],
+            "accounts": [dict(r) for r in rows],
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/recategorize-accounts")
+async def recategorize_accounts(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    dry_run: bool = Query(True),
+):
+    """accounts.code 첫 자리로 category 재매핑.
+    1=자산, 2=부채, 3=자본, 4=매출, 5=매출원가, 6=제조원가(원재료비등), 7=제조원가(노무비등), 8=판관비, 9=영업외.
+    code 첫 자리와 현재 category.code_prefix 불일치 계정 → 올바른 category로 update."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        cat_rows = await conn.fetch("SELECT id, code_prefix, name FROM account_categories")
+        prefix_to_cat_id = {}
+        for r in cat_rows:
+            p = r["code_prefix"]
+            if p and p not in prefix_to_cat_id:
+                prefix_to_cat_id[p] = int(r["id"])
+
+        mismatched = await conn.fetch("""
+            SELECT a.id, a.code, a.name,
+                   a.category_id AS old_cat_id,
+                   ac.code_prefix AS old_prefix,
+                   LEFT(a.code,1) AS expected_prefix
+            FROM accounts a
+            LEFT JOIN account_categories ac ON ac.id = a.category_id
+            WHERE LEFT(a.code,1) ~ '^[1-9]$'
+              AND (ac.code_prefix IS NULL OR ac.code_prefix != LEFT(a.code,1))
+        """)
+
+        changes = []
+        for r in mismatched:
+            expected = r["expected_prefix"]
+            new_cat = prefix_to_cat_id.get(expected)
+            if new_cat is None:
+                continue
+            changes.append({
+                "account_id": int(r["id"]),
+                "code": r["code"],
+                "name": r["name"],
+                "old_prefix": r["old_prefix"],
+                "new_prefix": expected,
+                "new_category_id": new_cat,
+            })
+
+        applied = 0
+        if not dry_run and changes:
+            async with conn.transaction():
+                for c in changes:
+                    await conn.execute(
+                        "UPDATE accounts SET category_id = $1 WHERE id = $2",
+                        c["new_category_id"], c["account_id"],
+                    )
+                    applied += 1
+        return {
+            "dry_run": dry_run,
+            "available_category_prefixes": prefix_to_cat_id,
+            "mismatched_count": len(changes),
+            "applied": applied,
+            "samples": changes[:30],
+        }
+    finally:
+        await conn.close()
+
+
 @router.post("/admin/purge-journal-vouchers")
 async def purge_journal_vouchers(
     confirm_token: str = Query(..., description="'DELETE_ALL' 필수"),
