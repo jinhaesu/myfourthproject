@@ -924,7 +924,7 @@ async def bulk_migrate_journal_raw(
                         v_values.append(
                             f"(${p_idx}, ${p_idx+1}, ${p_idx+2}, ${p_idx+3}, ${p_idx+4}, ${p_idx+5}, "
                             f"${p_idx+6}, ${p_idx+7}, ${p_idx+8}, ${p_idx+9}, ${p_idx+10}, ${p_idx+11}, "
-                            f"${p_idx+12}, ${p_idx+13}, ${p_idx+14}, ${p_idx+15})"
+                            f"${p_idx+12}, ${p_idx+13}, ${p_idx+14}, ${p_idx+15}, NOW(), NOW())"
                         )
                         v_params.extend([
                             vid, vnum, vr["vdate"], vr["vdate"], vr["desc"][:500],
@@ -942,7 +942,8 @@ async def bulk_migrate_journal_raw(
                            department_id, created_by,
                            total_debit, total_credit,
                            status, merchant_name,
-                           confirmed_at, confirmed_by)
+                           confirmed_at, confirmed_by,
+                           created_at, updated_at)
                         VALUES {','.join(v_values)}
                     """
                     await conn.execute(v_sql, *v_params)
