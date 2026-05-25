@@ -2345,7 +2345,7 @@ async def account_breakdown(
             where_extra = f"AND a.code LIKE '{first_digit[0]}%'"
         sql = f"""
             SELECT a.code, a.name,
-                   COALESCE(ac.code_prefix, LEFT(a.code,1)) AS cat_prefix,
+                   COALESCE(ac.code, LEFT(a.code,1)) AS cat_prefix,
                    ac.name AS cat_name,
                    COUNT(vl.id) AS lines,
                    SUM(vl.debit_amount)::float8 AS debit,
@@ -2358,7 +2358,7 @@ async def account_breakdown(
             WHERE v.voucher_date BETWEEN $1 AND $2
               AND v.source = 'wehago_import'
               {where_extra}
-            GROUP BY a.code, a.name, ac.code_prefix, ac.name
+            GROUP BY a.code, a.name, ac.code, ac.name
             ORDER BY (SUM(vl.debit_amount) + SUM(vl.credit_amount)) DESC
             LIMIT {limit}
         """
@@ -2390,7 +2390,7 @@ async def recategorize_accounts(
 ):
     """accounts.code 첫 자리로 category 재매핑.
     1=자산, 2=부채, 3=자본, 4=매출, 5=매출원가, 6=제조원가(원재료비등), 7=제조원가(노무비등), 8=판관비, 9=영업외.
-    code 첫 자리와 현재 category.code_prefix 불일치 계정 → 올바른 category로 update."""
+    code 첫 자리와 현재 category.code 불일치 계정 → 올바른 category로 update."""
     import asyncpg as _asyncpg
     from app.core.config import settings as _settings
 
@@ -2401,22 +2401,22 @@ async def recategorize_accounts(
     url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
     conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
     try:
-        cat_rows = await conn.fetch("SELECT id, code_prefix, name FROM account_categories")
+        cat_rows = await conn.fetch("SELECT id, code, name FROM account_categories")
         prefix_to_cat_id = {}
         for r in cat_rows:
-            p = r["code_prefix"]
+            p = r["code"]
             if p and p not in prefix_to_cat_id:
                 prefix_to_cat_id[p] = int(r["id"])
 
         mismatched = await conn.fetch("""
             SELECT a.id, a.code, a.name,
                    a.category_id AS old_cat_id,
-                   ac.code_prefix AS old_prefix,
+                   ac.code AS old_prefix,
                    LEFT(a.code,1) AS expected_prefix
             FROM accounts a
             LEFT JOIN account_categories ac ON ac.id = a.category_id
             WHERE LEFT(a.code,1) ~ '^[1-9]$'
-              AND (ac.code_prefix IS NULL OR ac.code_prefix != LEFT(a.code,1))
+              AND (ac.code IS NULL OR ac.code != LEFT(a.code,1))
         """)
 
         changes = []
