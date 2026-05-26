@@ -2599,7 +2599,25 @@ async def purge_granter_auto_vouchers(
               AND voucher_date BETWEEN $1 AND $2
         """, start_date, end_date)
         async with conn.transaction():
-            await conn.execute("SET LOCAL statement_timeout = '300s'")
+            await conn.execute("SET LOCAL statement_timeout = '600s'")
+            # 1) AutoVoucherCandidate 먼저 reset (FK 해제 — voucher 삭제 전에 필수)
+            cands_reset = await conn.fetchval("""
+                WITH upd AS (
+                    UPDATE auto_voucher_candidates
+                    SET status = 'pending',
+                        confirmed_voucher_id = NULL,
+                        confirmed_at = NULL,
+                        confirmed_by = NULL
+                    WHERE confirmed_voucher_id IN (
+                        SELECT id FROM vouchers
+                        WHERE source = 'granter_auto'
+                          AND voucher_date BETWEEN $1 AND $2
+                    )
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM upd
+            """, start_date, end_date)
+            # 2) voucher_lines 삭제
             lines_deleted = await conn.fetchval("""
                 WITH del AS (
                     DELETE FROM voucher_lines
@@ -2612,6 +2630,7 @@ async def purge_granter_auto_vouchers(
                 )
                 SELECT COUNT(*) FROM del
             """, start_date, end_date)
+            # 3) vouchers 삭제
             v_deleted = await conn.fetchval("""
                 WITH del AS (
                     DELETE FROM vouchers
@@ -2620,23 +2639,6 @@ async def purge_granter_auto_vouchers(
                     RETURNING 1
                 )
                 SELECT COUNT(*) FROM del
-            """, start_date, end_date)
-            # 연결된 AutoVoucherCandidate confirmed_voucher_id 해제 + 상태 PENDING 복원
-            cands_reset = await conn.fetchval("""
-                WITH upd AS (
-                    UPDATE auto_voucher_candidates
-                    SET status = 'PENDING',
-                        confirmed_voucher_id = NULL,
-                        confirmed_at = NULL,
-                        confirmed_by = NULL
-                    WHERE confirmed_voucher_id IS NOT NULL
-                      AND transaction_date BETWEEN $1 AND $2
-                      AND NOT EXISTS (
-                          SELECT 1 FROM vouchers v WHERE v.id = auto_voucher_candidates.confirmed_voucher_id
-                      )
-                    RETURNING 1
-                )
-                SELECT COUNT(*) FROM upd
             """, start_date, end_date)
         return {
             "period": {"start": str(start_date), "end": str(end_date)},
@@ -2669,11 +2671,11 @@ async def restore_rejected_candidates(
         restored = await conn.fetchval("""
             WITH upd AS (
                 UPDATE auto_voucher_candidates
-                SET status = 'PENDING',
+                SET status = 'pending',
                     rejected_reason = NULL
-                WHERE status = 'REJECTED'
+                WHERE status = 'rejected'
                   AND transaction_date BETWEEN $1 AND $2
-                  AND duplicate_voucher_id IS NULL  -- 진짜 중복 매칭된 것만 제외
+                  AND duplicate_voucher_id IS NULL
                   AND ($3 = '' OR rejected_reason ILIKE '%' || $3 || '%')
                 RETURNING 1
             )
