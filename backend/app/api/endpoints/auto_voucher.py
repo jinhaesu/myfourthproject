@@ -2604,7 +2604,7 @@ async def purge_granter_auto_vouchers(
             cands_reset = await conn.fetchval("""
                 WITH upd AS (
                     UPDATE auto_voucher_candidates
-                    SET status = 'pending',
+                    SET status = 'PENDING',
                         confirmed_voucher_id = NULL,
                         confirmed_at = NULL,
                         confirmed_by = NULL
@@ -2671,9 +2671,9 @@ async def restore_rejected_candidates(
         restored = await conn.fetchval("""
             WITH upd AS (
                 UPDATE auto_voucher_candidates
-                SET status = 'pending',
+                SET status = 'PENDING',
                     rejected_reason = NULL
-                WHERE status = 'rejected'
+                WHERE status = 'REJECTED'
                   AND transaction_date BETWEEN $1 AND $2
                   AND duplicate_voucher_id IS NULL
                   AND ($3 = '' OR rejected_reason ILIKE '%' || $3 || '%')

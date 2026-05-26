@@ -102,15 +102,14 @@ async def _build_counterparty_cache(force: bool = False) -> Dict[str, Any]:
             if bn:
                 sales_set.add(_normalize_biznum(bn))
 
-        # 매출처 보강 — AutoVoucherCandidate 중 매출 분개:
-        # AutoVoucherStatus enum 값: pending/confirmed/rejected/duplicate (소문자)
+        # 매출처 보강 — AutoVoucherCandidate 중 매출 분개
+        # PostgreSQL enum 등록값: 대문자 (SALES_TAX_INVOICE 등)
         rows_av_sales = (await db.execute(_text("""
             SELECT DISTINCT counterparty
             FROM auto_voucher_candidates
             WHERE counterparty IS NOT NULL
-              AND source_type IN ('sales_tax_invoice','sales_invoice','cash_receipt',
-                                  'SALES_TAX_INVOICE','SALES_INVOICE','CASH_RECEIPT')
-              AND status IN ('pending','confirmed','PENDING','CONFIRMED')
+              AND source_type IN ('SALES_TAX_INVOICE','SALES_INVOICE','CASH_RECEIPT')
+              AND status IN ('PENDING','CONFIRMED')
         """))).all()
         for (nm,) in rows_av_sales:
             if nm:
