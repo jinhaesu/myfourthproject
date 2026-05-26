@@ -389,6 +389,21 @@ async def get_income_statement(
     non_op_income_items = []
     non_op_expense_items = []
 
+    # 위하고 손익계산서 로직: 45x(제품매출원가/상품매출원가)에 결산 분개가 있으면
+    # 5xx/6xx/7xx/8xx(제)는 이미 45x로 흡수된 원가요소 → 매출원가에서 제외 (이중계산 방지).
+    # 45x가 비어있으면(결산 전, 진행중인 월) 5xx/6xx/7xx/8xx(제) raw 합 사용.
+    has_45x_cogs = False
+    for r in rows:
+        code = r.code
+        if code and len(code) >= 3 and code[0] == '4':
+            try:
+                ci = int(code[:3])
+                if 450 <= ci < 500 and float(r.debit_total) > 0:
+                    has_45x_cogs = True
+                    break
+            except ValueError:
+                pass
+
     for r in rows:
         code = r.code
         d = float(r.debit_total)
@@ -398,22 +413,36 @@ async def get_income_statement(
 
         item = {"code": code, "name": acct_name, "debit": d, "credit": c, "tx_count": r.tx_count}
 
-        # 위하고: 8xx 중 이름에 "(제)" 포함된 계정(801 급여(제) 등)은 매출원가로 재분류
+        # 4xx 안에서 매출 vs 매출원가 구분 (위하고: 45x = 제품/상품매출원가)
+        is_4xx_cogs = False
+        if first == '4' and code and len(code) >= 3:
+            try:
+                ci = int(code[:3])
+                if 450 <= ci < 500:
+                    is_4xx_cogs = True
+            except ValueError:
+                pass
+        # 8xx 중 이름에 "(제)" 포함 = 제조원가 요소 (801 급여(제) 등)
         is_manuf_8xx = first == '8' and "(제)" in (acct_name or "")
+        # 5/6/7xx + 8xx(제) 는 원가요소 → 45x 결산 완료 시 제외
+        is_cost_element = first in ('5', '6', '7') or is_manuf_8xx
 
         if mode == "multi":
             if first == '4':
-                item["amount"] = c - d
-                revenue_items.append(item)
-            elif first in ('5', '6', '7'):
-                item["amount"] = d - c
-                cogs_items.append(item)
-            elif first == '8':
-                item["amount"] = d - c
-                if is_manuf_8xx:
+                if is_4xx_cogs:
+                    item["amount"] = d - c
                     cogs_items.append(item)
                 else:
-                    sga_items.append(item)
+                    item["amount"] = c - d
+                    revenue_items.append(item)
+            elif is_cost_element:
+                if not has_45x_cogs:  # 결산 전 = raw 합 사용
+                    item["amount"] = d - c
+                    cogs_items.append(item)
+                # else: 45x 결산 완료 — 이중계산 방지로 skip
+            elif first == '8':  # (판) 등 일반 판관비
+                item["amount"] = d - c
+                sga_items.append(item)
             elif first == '9':
                 net = c - d
                 if net >= 0:
@@ -424,17 +453,19 @@ async def get_income_statement(
                     non_op_expense_items.append(item)
         else:
             if first == '4':
-                item["amount"] = d
-                revenue_items.append(item)
-            elif first in ('5', '6', '7'):
-                item["amount"] = c
-                cogs_items.append(item)
-            elif first == '8':
-                item["amount"] = c
-                if is_manuf_8xx:
+                if is_4xx_cogs:
+                    item["amount"] = c
                     cogs_items.append(item)
                 else:
-                    sga_items.append(item)
+                    item["amount"] = d
+                    revenue_items.append(item)
+            elif is_cost_element:
+                if not has_45x_cogs:
+                    item["amount"] = c
+                    cogs_items.append(item)
+            elif first == '8':
+                item["amount"] = c
+                sga_items.append(item)
             elif first == '9':
                 if d > c:
                     item["amount"] = d - c
@@ -1199,6 +1230,19 @@ async def get_ai_analysis(
     sga_items_text = []
     non_op_items_text = []
 
+    # 위하고: 45x 결산 완료 여부 자동 판단
+    has_45x_cogs = False
+    for r in rows:
+        code = r.code
+        if code and len(code) >= 3 and code[0] == '4':
+            try:
+                ci = int(code[:3])
+                if 450 <= ci < 500 and float(r.debit_total) > 0:
+                    has_45x_cogs = True
+                    break
+            except ValueError:
+                pass
+
     for r in rows:
         code = r.code
         d = float(r.debit_total)
@@ -1206,23 +1250,36 @@ async def get_ai_analysis(
         first, _, stripped, _ = _classify_code(code)
         acct_name = names.get(code, f"계정 {stripped}")
 
+        is_4xx_cogs = False
+        if first == '4' and code and len(code) >= 3:
+            try:
+                ci = int(code[:3])
+                if 450 <= ci < 500:
+                    is_4xx_cogs = True
+            except ValueError:
+                pass
+        is_manuf_8xx = first == '8' and "(제)" in (acct_name or "")
+        is_cost_element = first in ('5', '6', '7') or is_manuf_8xx
+
         if mode == "multi":
             if first == '4':
-                amt = c - d
-                revenue_total += amt
-                revenue_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
-            elif first in ('5', '6', '7'):
-                amt = d - c
-                cogs_total += amt
-                cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
-            elif first == '8':
-                amt = d - c
-                if "(제)" in (acct_name or ""):
+                if is_4xx_cogs:
+                    amt = d - c
                     cogs_total += amt
                     cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
                 else:
-                    sga_total += amt
-                    sga_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+                    amt = c - d
+                    revenue_total += amt
+                    revenue_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+            elif is_cost_element:
+                if not has_45x_cogs:
+                    amt = d - c
+                    cogs_total += amt
+                    cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+            elif first == '8':
+                amt = d - c
+                sga_total += amt
+                sga_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
             elif first == '9':
                 net = c - d
                 if net >= 0:

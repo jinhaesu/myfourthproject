@@ -1997,41 +1997,94 @@ async def sales_breakdown(
                 "lines": int(r[4] or 0),
             })
 
-    # 위하고: 8xx 중 이름에 "(제)" 포함된 계정 (801 급여(제) 등)은 매출원가로 재분류
-    manuf_8xx_debit = 0.0
-    manuf_8xx_credit = 0.0
+    # 위하고 손익계산서 로직:
+    # - 45x (제품/상품매출원가) 차변 = 결산 후 매출원가 (이것이 정답)
+    # - 5xx/6xx/7xx + 8xx(제) 차변 = 원가요소 (45x로 흡수됨, 이중계산 방지로 제외)
+    # - 4xx 중 45x 제외 차변/대변 = 매출(에누리/반품 차감)
+    # - 8xx 중 (제) 제외 차변 = 판관비
+    sub45x_d = 0.0
+    sub45x_c = 0.0
+    manuf_8xx_d = 0.0
+    sales_4xx_d = 0.0
+    sales_4xx_c = 0.0
     async with get_db_direct() as db2:
         try:
             await db2.execute(_text("SET LOCAL statement_timeout = '60s'"))
         except Exception:
             pass
-        m8 = (await db2.execute(_text("""
+        # 45x 차변/대변
+        r45 = (await db2.execute(_text("""
             SELECT SUM(vl.debit_amount) AS d, SUM(vl.credit_amount) AS c
             FROM voucher_lines vl
             JOIN vouchers v ON v.id = vl.voucher_id
             JOIN accounts a ON a.id = vl.account_id
             WHERE v.voucher_date BETWEEN :s AND :e
               AND v.status IN ('CONFIRMED','APPROVED')
-              AND LEFT(a.code, 1) = '8'
+              AND LEFT(a.code,1)='4'
+              AND a.code ~ '^4[5-9][0-9]'
+        """), {"s": start_date, "e": end_date})).first()
+        if r45:
+            sub45x_d = float(r45[0] or 0)
+            sub45x_c = float(r45[1] or 0)
+        # 4xx 중 45x 제외 (= 매출 계정)
+        r4 = (await db2.execute(_text("""
+            SELECT SUM(vl.debit_amount) AS d, SUM(vl.credit_amount) AS c
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code,1)='4'
+              AND NOT (a.code ~ '^4[5-9][0-9]')
+        """), {"s": start_date, "e": end_date})).first()
+        if r4:
+            sales_4xx_d = float(r4[0] or 0)
+            sales_4xx_c = float(r4[1] or 0)
+        # 8xx (제) 차변
+        m8 = (await db2.execute(_text("""
+            SELECT SUM(vl.debit_amount) AS d
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code,1)='8'
               AND a.name LIKE '%(제)%'
         """), {"s": start_date, "e": end_date})).first()
         if m8:
-            manuf_8xx_debit = float(m8[0] or 0)
-            manuf_8xx_credit = float(m8[1] or 0)
+            manuf_8xx_d = float(m8[0] or 0)
 
-    # 요약 (사용자가 보기 쉽도록) — 위하고 (제) 보정 후
     cat = result["by_account_category"]
-    raw_cogs = cat.get("5", {}).get("debit", 0) + cat.get("6", {}).get("debit", 0) + cat.get("7", {}).get("debit", 0)
-    raw_sga = cat.get("8", {}).get("debit", 0)
-    adj_cogs = raw_cogs + manuf_8xx_debit  # 8xx (제) 차변 → 매출원가
-    adj_sga = raw_sga - manuf_8xx_debit
+    raw_5xx_d = cat.get("5", {}).get("debit", 0)
+    raw_67xx_d = cat.get("6", {}).get("debit", 0) + cat.get("7", {}).get("debit", 0)
+    raw_8xx_d = cat.get("8", {}).get("debit", 0)
+
+    # 결산 완료 여부 자동 판단
+    has_45x = sub45x_d > 0
+    if has_45x:
+        cogs_final = sub45x_d  # 위하고 결산 후 매출원가
+        cogs_method = "45x_결산"
+    else:
+        cogs_final = raw_5xx_d + raw_67xx_d + manuf_8xx_d
+        cogs_method = "5/6/7xx + 8xx(제) raw (결산전)"
+
+    sales_final = sales_4xx_c - sales_4xx_d  # 매출 - 에누리/반품
+    sga_final = raw_8xx_d - manuf_8xx_d  # 8xx 중 (제) 제외
+
     result["summary"] = {
-        "총_매출(4xx 대변)": cat.get("4", {}).get("credit", 0),
-        "매출원가(5/6/7xx + 8xx(제)) 차변": adj_cogs,
-        "판관비(8xx 차변, (제) 제외)": adj_sga,
-        "원본_5xx_차변": cat.get("5", {}).get("debit", 0),
-        "원본_8xx_차변": raw_sga,
-        "8xx_제_표기_차변(매출원가로_이동)": manuf_8xx_debit,
+        "매출": sales_final,
+        "매출원가": cogs_final,
+        "판관비": sga_final,
+        "매출원가_산출방식": cogs_method,
+        "_세부": {
+            "4xx_매출계정_차변(에누리)": sales_4xx_d,
+            "4xx_매출계정_대변": sales_4xx_c,
+            "45x_매출원가_차변(결산후)": sub45x_d,
+            "5xx_차변": raw_5xx_d,
+            "6/7xx_차변": raw_67xx_d,
+            "8xx_전체_차변": raw_8xx_d,
+            "8xx_제_차변": manuf_8xx_d,
+        },
     }
     return result
 
