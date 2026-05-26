@@ -2577,6 +2577,167 @@ async def recategorize_accounts(
         await conn.close()
 
 
+@router.post("/admin/purge-granter-auto-vouchers")
+async def purge_granter_auto_vouchers(
+    confirm_token: str = Query(..., description="'DELETE_ALL' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """granter_auto source의 voucher를 기간 내 모두 삭제 (재분개용)."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "DELETE_ALL":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치 ('DELETE_ALL')")
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=300)
+    try:
+        before = await conn.fetchval("""
+            SELECT COUNT(*) FROM vouchers
+            WHERE source = 'granter_auto'
+              AND voucher_date BETWEEN $1 AND $2
+        """, start_date, end_date)
+        async with conn.transaction():
+            await conn.execute("SET LOCAL statement_timeout = '300s'")
+            lines_deleted = await conn.fetchval("""
+                WITH del AS (
+                    DELETE FROM voucher_lines
+                    WHERE voucher_id IN (
+                        SELECT id FROM vouchers
+                        WHERE source = 'granter_auto'
+                          AND voucher_date BETWEEN $1 AND $2
+                    )
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM del
+            """, start_date, end_date)
+            v_deleted = await conn.fetchval("""
+                WITH del AS (
+                    DELETE FROM vouchers
+                    WHERE source = 'granter_auto'
+                      AND voucher_date BETWEEN $1 AND $2
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM del
+            """, start_date, end_date)
+            # 연결된 AutoVoucherCandidate confirmed_voucher_id 해제 + 상태 PENDING 복원
+            cands_reset = await conn.fetchval("""
+                WITH upd AS (
+                    UPDATE auto_voucher_candidates
+                    SET status = 'PENDING',
+                        confirmed_voucher_id = NULL,
+                        confirmed_at = NULL,
+                        confirmed_by = NULL
+                    WHERE confirmed_voucher_id IS NOT NULL
+                      AND transaction_date BETWEEN $1 AND $2
+                      AND NOT EXISTS (
+                          SELECT 1 FROM vouchers v WHERE v.id = auto_voucher_candidates.confirmed_voucher_id
+                      )
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM upd
+            """, start_date, end_date)
+        return {
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "vouchers_before": int(before or 0),
+            "vouchers_deleted": int(v_deleted or 0),
+            "lines_deleted": int(lines_deleted or 0),
+            "candidates_reset_to_pending": int(cands_reset or 0),
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/restore-rejected-candidates")
+async def restore_rejected_candidates(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    reason_contains: str = Query("자동 거절", description="이 문구 포함된 rejected_reason만 복원"),
+):
+    """REJECTED 후보 → PENDING 복원 (자동 거절 완화 후 재검수용)."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        restored = await conn.fetchval("""
+            WITH upd AS (
+                UPDATE auto_voucher_candidates
+                SET status = 'PENDING',
+                    rejected_reason = NULL
+                WHERE status = 'REJECTED'
+                  AND transaction_date BETWEEN $1 AND $2
+                  AND duplicate_voucher_id IS NULL  -- 진짜 중복 매칭된 것만 제외
+                  AND ($3 = '' OR rejected_reason ILIKE '%' || $3 || '%')
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM upd
+        """, start_date, end_date, reason_contains)
+        return {
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "restored_to_pending": int(restored or 0),
+            "filter_reason_contains": reason_contains,
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/auto-confirm-high-confidence")
+async def auto_confirm_high_confidence(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    min_confidence: float = Query(0.85),
+):
+    """PENDING 후보 중 신뢰도 >= min_confidence인 것을 자동으로 CONFIRMED + voucher 생성.
+    위하고 완전 대체 흐름에서 검수 자동화 (낮은 신뢰도는 사용자 수동 검수)."""
+    from app.core.database import async_session_factory
+    from sqlalchemy import select as _sel
+    from app.models.accounting import AutoVoucherCandidate, AutoVoucherStatus
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    confirmed_count = 0
+    error_count = 0
+    error_samples = []
+    async with async_session_factory() as db:
+        cands_q = (_sel(AutoVoucherCandidate)
+                   .where(AutoVoucherCandidate.status == AutoVoucherStatus.PENDING)
+                   .where(AutoVoucherCandidate.transaction_date >= start_date)
+                   .where(AutoVoucherCandidate.transaction_date <= end_date)
+                   .where(AutoVoucherCandidate.confidence >= Decimal(str(min_confidence)))
+                   .order_by(AutoVoucherCandidate.id))
+        cands = (await db.execute(cands_q)).scalars().all()
+        total = len(cands)
+        for c in cands:
+            try:
+                await _confirm_candidate_inner(db, c, user_id=1)
+                confirmed_count += 1
+                if confirmed_count % 100 == 0:
+                    await db.commit()
+            except Exception as e:
+                error_count += 1
+                if len(error_samples) < 5:
+                    error_samples.append(f"id={c.id}: {str(e)[:150]}")
+                await db.rollback()
+        await db.commit()
+    return {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "min_confidence": min_confidence,
+        "total_candidates": total,
+        "confirmed": confirmed_count,
+        "errors": error_count,
+        "error_samples": error_samples,
+    }
+
+
 @router.post("/admin/run-month-end-closing")
 async def run_month_end_closing(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
