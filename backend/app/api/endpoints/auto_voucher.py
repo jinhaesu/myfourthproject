@@ -2598,55 +2598,57 @@ async def purge_granter_auto_vouchers(
             WHERE source = 'granter_auto'
               AND voucher_date BETWEEN $1 AND $2
         """, start_date, end_date)
-        async with conn.transaction():
-            await conn.execute("SET LOCAL statement_timeout = '600s'")
-            # 1) AutoVoucherCandidate FK 모두 해제 (confirmed_voucher_id + duplicate_voucher_id)
-            cands_reset = await conn.fetchval("""
-                WITH target_v AS (
-                    SELECT id FROM vouchers
-                    WHERE source = 'granter_auto'
-                      AND voucher_date BETWEEN $1 AND $2
-                ),
-                upd1 AS (
+        # 대상 voucher ID 미리 수집 (transaction 밖)
+        target_ids_rows = await conn.fetch("""
+            SELECT id FROM vouchers
+            WHERE source = 'granter_auto'
+              AND voucher_date BETWEEN $1 AND $2
+        """, start_date, end_date)
+        target_ids = [int(r["id"]) for r in target_ids_rows]
+
+        cands_reset = 0
+        if target_ids:
+            async with conn.transaction():
+                await conn.execute("SET LOCAL statement_timeout = '600s'")
+                # 1a) confirmed_voucher_id 해제 + status reset
+                r1 = await conn.execute("""
                     UPDATE auto_voucher_candidates
                     SET status = 'PENDING',
                         confirmed_voucher_id = NULL,
                         confirmed_at = NULL,
                         confirmed_by = NULL
-                    WHERE confirmed_voucher_id IN (SELECT id FROM target_v)
-                    RETURNING 1
-                ),
-                upd2 AS (
+                    WHERE confirmed_voucher_id = ANY($1::int[])
+                """, target_ids)
+                # 1b) duplicate_voucher_id 해제
+                r2 = await conn.execute("""
                     UPDATE auto_voucher_candidates
                     SET duplicate_voucher_id = NULL
-                    WHERE duplicate_voucher_id IN (SELECT id FROM target_v)
-                    RETURNING 1
+                    WHERE duplicate_voucher_id = ANY($1::int[])
+                """, target_ids)
+                # asyncpg execute 결과 형식: "UPDATE N"
+                try:
+                    cands_reset = int(r1.split()[-1]) + int(r2.split()[-1])
+                except Exception:
+                    cands_reset = 0
+        # 2) voucher_lines + vouchers 삭제 (FK 해제 commit 후)
+        lines_deleted = 0
+        v_deleted = 0
+        if target_ids:
+            async with conn.transaction():
+                await conn.execute("SET LOCAL statement_timeout = '600s'")
+                ld_str = await conn.execute(
+                    "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])",
+                    target_ids,
                 )
-                SELECT (SELECT COUNT(*) FROM upd1) + (SELECT COUNT(*) FROM upd2)
-            """, start_date, end_date)
-            # 2) voucher_lines 삭제
-            lines_deleted = await conn.fetchval("""
-                WITH del AS (
-                    DELETE FROM voucher_lines
-                    WHERE voucher_id IN (
-                        SELECT id FROM vouchers
-                        WHERE source = 'granter_auto'
-                          AND voucher_date BETWEEN $1 AND $2
-                    )
-                    RETURNING 1
+                vd_str = await conn.execute(
+                    "DELETE FROM vouchers WHERE id = ANY($1::int[])",
+                    target_ids,
                 )
-                SELECT COUNT(*) FROM del
-            """, start_date, end_date)
-            # 3) vouchers 삭제
-            v_deleted = await conn.fetchval("""
-                WITH del AS (
-                    DELETE FROM vouchers
-                    WHERE source = 'granter_auto'
-                      AND voucher_date BETWEEN $1 AND $2
-                    RETURNING 1
-                )
-                SELECT COUNT(*) FROM del
-            """, start_date, end_date)
+                try:
+                    lines_deleted = int(ld_str.split()[-1])
+                    v_deleted = int(vd_str.split()[-1])
+                except Exception:
+                    pass
         return {
             "period": {"start": str(start_date), "end": str(end_date)},
             "vouchers_before": int(before or 0),
