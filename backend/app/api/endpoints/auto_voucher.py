@@ -1997,13 +1997,41 @@ async def sales_breakdown(
                 "lines": int(r[4] or 0),
             })
 
-    # 요약 (사용자가 보기 쉽도록)
+    # 위하고: 8xx 중 이름에 "(제)" 포함된 계정 (801 급여(제) 등)은 매출원가로 재분류
+    manuf_8xx_debit = 0.0
+    manuf_8xx_credit = 0.0
+    async with get_db_direct() as db2:
+        try:
+            await db2.execute(_text("SET LOCAL statement_timeout = '60s'"))
+        except Exception:
+            pass
+        m8 = (await db2.execute(_text("""
+            SELECT SUM(vl.debit_amount) AS d, SUM(vl.credit_amount) AS c
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code, 1) = '8'
+              AND a.name LIKE '%(제)%'
+        """), {"s": start_date, "e": end_date})).first()
+        if m8:
+            manuf_8xx_debit = float(m8[0] or 0)
+            manuf_8xx_credit = float(m8[1] or 0)
+
+    # 요약 (사용자가 보기 쉽도록) — 위하고 (제) 보정 후
     cat = result["by_account_category"]
+    raw_cogs = cat.get("5", {}).get("debit", 0) + cat.get("6", {}).get("debit", 0) + cat.get("7", {}).get("debit", 0)
+    raw_sga = cat.get("8", {}).get("debit", 0)
+    adj_cogs = raw_cogs + manuf_8xx_debit  # 8xx (제) 차변 → 매출원가
+    adj_sga = raw_sga - manuf_8xx_debit
     result["summary"] = {
         "총_매출(4xx 대변)": cat.get("4", {}).get("credit", 0),
-        "매출원가(5xx 차변)": cat.get("5", {}).get("debit", 0),
-        "판관비(8xx 차변)": cat.get("8", {}).get("debit", 0),
-        "제조원가(6,7xx 차변)": cat.get("6", {}).get("debit", 0) + cat.get("7", {}).get("debit", 0),
+        "매출원가(5/6/7xx + 8xx(제)) 차변": adj_cogs,
+        "판관비(8xx 차변, (제) 제외)": adj_sga,
+        "원본_5xx_차변": cat.get("5", {}).get("debit", 0),
+        "원본_8xx_차변": raw_sga,
+        "8xx_제_표기_차변(매출원가로_이동)": manuf_8xx_debit,
     }
     return result
 

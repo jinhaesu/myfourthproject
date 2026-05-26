@@ -398,6 +398,9 @@ async def get_income_statement(
 
         item = {"code": code, "name": acct_name, "debit": d, "credit": c, "tx_count": r.tx_count}
 
+        # 위하고: 8xx 중 이름에 "(제)" 포함된 계정(801 급여(제) 등)은 매출원가로 재분류
+        is_manuf_8xx = first == '8' and "(제)" in (acct_name or "")
+
         if mode == "multi":
             if first == '4':
                 item["amount"] = c - d
@@ -407,7 +410,10 @@ async def get_income_statement(
                 cogs_items.append(item)
             elif first == '8':
                 item["amount"] = d - c
-                sga_items.append(item)
+                if is_manuf_8xx:
+                    cogs_items.append(item)
+                else:
+                    sga_items.append(item)
             elif first == '9':
                 net = c - d
                 if net >= 0:
@@ -425,7 +431,10 @@ async def get_income_statement(
                 cogs_items.append(item)
             elif first == '8':
                 item["amount"] = c
-                sga_items.append(item)
+                if is_manuf_8xx:
+                    cogs_items.append(item)
+                else:
+                    sga_items.append(item)
             elif first == '9':
                 if d > c:
                     item["amount"] = d - c
@@ -1208,8 +1217,12 @@ async def get_ai_analysis(
                 cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
             elif first == '8':
                 amt = d - c
-                sga_total += amt
-                sga_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+                if "(제)" in (acct_name or ""):
+                    cogs_total += amt
+                    cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+                else:
+                    sga_total += amt
+                    sga_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
             elif first == '9':
                 net = c - d
                 if net >= 0:
