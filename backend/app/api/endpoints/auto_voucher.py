@@ -2577,6 +2577,235 @@ async def recategorize_accounts(
         await conn.close()
 
 
+@router.post("/admin/run-month-end-closing")
+async def run_month_end_closing(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    dry_run: bool = Query(True),
+    consume_all_153: bool = Query(True, description="True: 153 당월 매입 전체를 사용분으로 인식 (기말재고=0 가정)"),
+):
+    """월말 자동 결산 분개 생성 (ERP 결산 모듈, 위하고 대체).
+
+    [Step 1] 원재료 소비 분개 (153 → 501):
+        (차) 501 원재료비(제)  / (대) 153 원재료
+        - consume_all_153=True: 당월 153 차변 합계 전체
+
+    [Step 2] 매출원가 집계 분개 (모든 원가요소 → 455):
+        (차) 455 제품매출원가  / (대) 5xx(제) 모든 계정 + 8xx(제) 모든 계정
+        - Step1 후 501 차변 합계 + 다른 5xx(제) 차변 + 8xx(제) 차변 → 455로 집계
+
+    멱등: ext_ref = closing:{YYYY-MM}:step{1,2} (중복 호출 시 UNIQUE constraint로 skip).
+    """
+    import asyncpg as _asyncpg
+    from calendar import monthrange
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    last_day = monthrange(year, month)[1]
+    period_start = date(year, month, 1)
+    period_end = date(year, month, last_day)
+    closing_date = period_end  # 결산 분개일자 = 월말일
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+    try:
+        # 부서/사용자 시드 (auto_closing source)
+        from app.services.journal_migration import _ensure_base_data, _journal_voucher_number
+        eff_dept_id, eff_user_id = await _ensure_base_data()
+
+        # 계정 ID 매핑
+        acc_rows = await conn.fetch("SELECT id, code, name FROM accounts WHERE is_active = true")
+        acc_by_code = {r["code"]: {"id": int(r["id"]), "name": r["name"]} for r in acc_rows}
+        if "501" not in acc_by_code:
+            raise HTTPException(status_code=400, detail="501 원재료비(제) 계정 없음")
+        if "455" not in acc_by_code:
+            raise HTTPException(status_code=400, detail="455 제품매출원가 계정 없음")
+        if "153" not in acc_by_code:
+            raise HTTPException(status_code=400, detail="153 원재료 계정 없음")
+
+        report = {
+            "year": year, "month": month, "closing_date": str(closing_date),
+            "dry_run": dry_run,
+            "step1_153_consumption": None,
+            "step2_cogs_aggregation": None,
+            "applied": [],
+            "skipped": [],
+        }
+
+        # ===== STEP 1: 153 원재료 소비 분개 =====
+        step1_ext_ref = f"closing:{year:04d}-{month:02d}:step1_153"
+        existing1 = await conn.fetchval(
+            "SELECT 1 FROM vouchers WHERE external_ref = $1", step1_ext_ref
+        )
+        if existing1:
+            report["skipped"].append(f"step1 already exists: {step1_ext_ref}")
+            consumed_153 = 0.0
+        else:
+            # 당월 153 차변/대변 (auto_closing 본인 제외)
+            r153 = await conn.fetchrow("""
+                SELECT
+                  COALESCE(SUM(vl.debit_amount), 0)::float8 AS d,
+                  COALESCE(SUM(vl.credit_amount), 0)::float8 AS c
+                FROM voucher_lines vl
+                JOIN vouchers v ON v.id = vl.voucher_id
+                JOIN accounts a ON a.id = vl.account_id
+                WHERE a.code = '153'
+                  AND v.voucher_date BETWEEN $1 AND $2
+                  AND v.status IN ('CONFIRMED','APPROVED')
+                  AND (v.source IS NULL OR v.source != 'auto_closing')
+            """, period_start, period_end)
+            d153 = float(r153["d"])
+            c153 = float(r153["c"])
+            consumed_153 = d153 - c153 if consume_all_153 else 0.0  # 잔여 = 사용분
+
+            report["step1_153_consumption"] = {
+                "153_debit_in_month": d153,
+                "153_credit_in_month": c153,
+                "consumed (= D - C, consume_all_153)": consumed_153,
+                "voucher_planned": consumed_153 > 0,
+            }
+
+            if not dry_run and consumed_153 > 0:
+                async with conn.transaction():
+                    vid = int(await conn.fetchval("SELECT nextval('vouchers_id_seq')"))
+                    vnum = _journal_voucher_number(closing_date)
+                    desc1 = f"{year}년 {month}월 원재료 소비 자동결산"
+                    await conn.execute("""
+                        INSERT INTO vouchers
+                          (id, voucher_number, voucher_date, transaction_date, description,
+                           transaction_type, external_ref, source, department_id, created_by,
+                           total_debit, total_credit, status, merchant_name,
+                           confirmed_at, confirmed_by, created_at, updated_at)
+                        VALUES ($1,$2,$3,$3,$4,'GENERAL',$5,'auto_closing',$6,$7,$8,$8,'CONFIRMED',$9,NOW(),$7,NOW(),NOW())
+                    """, vid, vnum, closing_date, desc1, step1_ext_ref, eff_dept_id, eff_user_id,
+                        Decimal(str(consumed_153)), "월말결산_원재료소비")
+                    await conn.execute("""
+                        INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                            debit_amount, credit_amount, vat_amount, supply_amount,
+                            description, counterparty_name, created_at)
+                        VALUES
+                          ($1, 1, $2, $3, 0, 0, $3, $4, '월말결산', NOW()),
+                          ($1, 2, $5, 0, $3, 0, $3, $4, '월말결산', NOW())
+                    """, vid, acc_by_code["501"]["id"], Decimal(str(consumed_153)),
+                        f"{year}.{month:02d} 원재료 소비 자동결산", acc_by_code["153"]["id"])
+                    report["applied"].append({"step": 1, "voucher_id": vid, "amount": consumed_153})
+
+        # ===== STEP 2: 매출원가 집계 분개 =====
+        step2_ext_ref = f"closing:{year:04d}-{month:02d}:step2_cogs"
+        existing2 = await conn.fetchval(
+            "SELECT 1 FROM vouchers WHERE external_ref = $1", step2_ext_ref
+        )
+        if existing2:
+            report["skipped"].append(f"step2 already exists: {step2_ext_ref}")
+        else:
+            # 당월 5xx (제) + 8xx (제) 차변 잔액 (Step1 인서트 포함 — 501에 consumed_153 들어갔음)
+            cost_rows = await conn.fetch("""
+                SELECT a.code, a.name,
+                  COALESCE(SUM(vl.debit_amount), 0)::float8 AS d,
+                  COALESCE(SUM(vl.credit_amount), 0)::float8 AS c
+                FROM voucher_lines vl
+                JOIN vouchers v ON v.id = vl.voucher_id
+                JOIN accounts a ON a.id = vl.account_id
+                WHERE v.voucher_date BETWEEN $1 AND $2
+                  AND v.status IN ('CONFIRMED','APPROVED')
+                  AND (LEFT(a.code,1) IN ('5','6','7') OR (LEFT(a.code,1)='8' AND a.name LIKE '%(제)%'))
+                GROUP BY a.code, a.name
+                HAVING (COALESCE(SUM(vl.debit_amount),0) - COALESCE(SUM(vl.credit_amount),0)) > 0
+            """, period_start, period_end)
+            cost_summary = []
+            total_cogs = 0.0
+            for r in cost_rows:
+                net = float(r["d"]) - float(r["c"])
+                cost_summary.append({"code": r["code"], "name": r["name"], "net_debit": net})
+                total_cogs += net
+
+            report["step2_cogs_aggregation"] = {
+                "components": cost_summary,
+                "total_cogs": total_cogs,
+                "voucher_planned": total_cogs > 0,
+            }
+
+            if not dry_run and total_cogs > 0:
+                async with conn.transaction():
+                    vid2 = int(await conn.fetchval("SELECT nextval('vouchers_id_seq')"))
+                    vnum2 = _journal_voucher_number(closing_date)
+                    desc2 = f"{year}년 {month}월 매출원가 집계 자동결산"
+                    await conn.execute("""
+                        INSERT INTO vouchers
+                          (id, voucher_number, voucher_date, transaction_date, description,
+                           transaction_type, external_ref, source, department_id, created_by,
+                           total_debit, total_credit, status, merchant_name,
+                           confirmed_at, confirmed_by, created_at, updated_at)
+                        VALUES ($1,$2,$3,$3,$4,'GENERAL',$5,'auto_closing',$6,$7,$8,$8,'CONFIRMED',$9,NOW(),$7,NOW(),NOW())
+                    """, vid2, vnum2, closing_date, desc2, step2_ext_ref, eff_dept_id, eff_user_id,
+                        Decimal(str(total_cogs)), "월말결산_매출원가집계")
+                    # (차) 455
+                    await conn.execute("""
+                        INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                            debit_amount, credit_amount, vat_amount, supply_amount,
+                            description, counterparty_name, created_at)
+                        VALUES ($1, 1, $2, $3, 0, 0, $3, $4, '월말결산', NOW())
+                    """, vid2, acc_by_code["455"]["id"], Decimal(str(total_cogs)),
+                        f"{year}.{month:02d} 매출원가 집계")
+                    # (대) 5xx/6xx/7xx/8xx(제) 각 계정
+                    ln = 2
+                    for c in cost_summary:
+                        if c["code"] not in acc_by_code:
+                            continue
+                        await conn.execute("""
+                            INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                                debit_amount, credit_amount, vat_amount, supply_amount,
+                                description, counterparty_name, created_at)
+                            VALUES ($1, $2, $3, 0, $4, 0, $4, $5, '월말결산', NOW())
+                        """, vid2, ln, acc_by_code[c["code"]]["id"], Decimal(str(c["net_debit"])),
+                            f"{c['name']} → 매출원가")
+                        ln += 1
+                    report["applied"].append({"step": 2, "voucher_id": vid2, "amount": total_cogs})
+
+        return report
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/purge-month-end-closing")
+async def purge_month_end_closing(
+    confirm_token: str = Query(..., description="'DELETE_ALL' 필수"),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+):
+    """특정 월 자동결산 분개 삭제 (재실행용)."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "DELETE_ALL":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치 ('DELETE_ALL')")
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        prefix = f"closing:{year:04d}-{month:02d}:%"
+        deleted_lines = await conn.fetchval("""
+            WITH d AS (
+                DELETE FROM voucher_lines
+                WHERE voucher_id IN (SELECT id FROM vouchers WHERE external_ref LIKE $1)
+                RETURNING 1
+            ) SELECT COUNT(*) FROM d
+        """, prefix)
+        deleted_v = await conn.fetchval("""
+            WITH d AS (
+                DELETE FROM vouchers WHERE external_ref LIKE $1 RETURNING 1
+            ) SELECT COUNT(*) FROM d
+        """, prefix)
+        return {"year": year, "month": month, "vouchers_deleted": int(deleted_v or 0),
+                "lines_deleted": int(deleted_lines or 0)}
+    finally:
+        await conn.close()
+
+
 @router.post("/admin/purge-journal-vouchers")
 async def purge_journal_vouchers(
     confirm_token: str = Query(..., description="'DELETE_ALL' 필수"),
