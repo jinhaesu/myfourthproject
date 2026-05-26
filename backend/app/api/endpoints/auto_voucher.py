@@ -2600,22 +2600,29 @@ async def purge_granter_auto_vouchers(
         """, start_date, end_date)
         async with conn.transaction():
             await conn.execute("SET LOCAL statement_timeout = '600s'")
-            # 1) AutoVoucherCandidate 먼저 reset (FK 해제 — voucher 삭제 전에 필수)
+            # 1) AutoVoucherCandidate FK 모두 해제 (confirmed_voucher_id + duplicate_voucher_id)
             cands_reset = await conn.fetchval("""
-                WITH upd AS (
+                WITH target_v AS (
+                    SELECT id FROM vouchers
+                    WHERE source = 'granter_auto'
+                      AND voucher_date BETWEEN $1 AND $2
+                ),
+                upd1 AS (
                     UPDATE auto_voucher_candidates
                     SET status = 'PENDING',
                         confirmed_voucher_id = NULL,
                         confirmed_at = NULL,
                         confirmed_by = NULL
-                    WHERE confirmed_voucher_id IN (
-                        SELECT id FROM vouchers
-                        WHERE source = 'granter_auto'
-                          AND voucher_date BETWEEN $1 AND $2
-                    )
+                    WHERE confirmed_voucher_id IN (SELECT id FROM target_v)
+                    RETURNING 1
+                ),
+                upd2 AS (
+                    UPDATE auto_voucher_candidates
+                    SET duplicate_voucher_id = NULL
+                    WHERE duplicate_voucher_id IN (SELECT id FROM target_v)
                     RETURNING 1
                 )
-                SELECT COUNT(*) FROM upd
+                SELECT (SELECT COUNT(*) FROM upd1) + (SELECT COUNT(*) FROM upd2)
             """, start_date, end_date)
             # 2) voucher_lines 삭제
             lines_deleted = await conn.fetchval("""
