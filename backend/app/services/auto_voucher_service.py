@@ -85,14 +85,14 @@ async def _build_counterparty_cache(force: bool = False) -> Dict[str, Any]:
     hints: Dict[str, str] = {}
 
     async with async_session_factory() as db:
-        # 매출처: 404 제품매출 (그리고 광범위 4xx) 대변 거래처
+        # 매출처: 4xx (매출/매출원가) 대변 — wehago_import + granter_auto 둘 다 학습
         rows = (await db.execute(_text("""
             SELECT vl.counterparty_name, vl.counterparty_business_number
             FROM voucher_lines vl
             JOIN vouchers v ON v.id = vl.voucher_id
             JOIN accounts a ON a.id = vl.account_id
-            WHERE v.source = 'wehago_import'
-              AND LEFT(a.code, 1) = '4'
+            WHERE v.source IN ('wehago_import','granter_auto')
+              AND a.code IN ('401','404')  -- 매출만 (45x 매출원가 제외)
               AND vl.credit_amount > 0
               AND vl.counterparty_name IS NOT NULL
         """))).all()
@@ -102,14 +102,27 @@ async def _build_counterparty_cache(force: bool = False) -> Dict[str, Any]:
             if bn:
                 sales_set.add(_normalize_biznum(bn))
 
-        # 매입처: 153 원재료/5xx/8xx/6xx/7xx 차변 거래처 + 가장 자주 쓰인 계정 코드 hint
+        # 매출처 보강 — AutoVoucherCandidate 중 매출 분개 (CONFIRMED 또는 PENDING):
+        # source_type SALES_TAX_INVOICE / SALES_INVOICE / CASH_RECEIPT 의 counterparty
+        rows_av_sales = (await db.execute(_text("""
+            SELECT DISTINCT counterparty
+            FROM auto_voucher_candidates
+            WHERE counterparty IS NOT NULL
+              AND source_type IN ('SALES_TAX_INVOICE','SALES_INVOICE','CASH_RECEIPT')
+              AND status IN ('CONFIRMED','PENDING','APPROVED')
+        """))).all()
+        for (nm,) in rows_av_sales:
+            if nm:
+                sales_set.add(_normalize_name(nm))
+
+        # 매입처: 153/146/148/5xx/6xx/7xx/8xx 차변 거래처 + 최빈 계정 hint
         rows2 = (await db.execute(_text("""
             SELECT vl.counterparty_name, vl.counterparty_business_number,
                    a.code, COUNT(*) AS cnt
             FROM voucher_lines vl
             JOIN vouchers v ON v.id = vl.voucher_id
             JOIN accounts a ON a.id = vl.account_id
-            WHERE v.source = 'wehago_import'
+            WHERE v.source IN ('wehago_import','granter_auto')
               AND (LEFT(a.code,1) IN ('5','8','6','7')
                    OR a.code IN ('153','146','148'))
               AND vl.debit_amount > 0
@@ -257,14 +270,58 @@ def _classify_counterparty(
     return "UNKNOWN"
 
 
-def _suggest_purchase_account(name: Optional[str]) -> Tuple[str, str]:
-    """매입처별 추천 계정 (wehago 학습 hint). 없으면 default 153 원재료."""
+# 매입 키워드 → 계정 매핑 (description/merchant_name/counterparty 키워드 검색)
+# 우선순위: vendor hint(과거 학습) > 키워드 분류 > 153 원재료(최종 default)
+_PURCHASE_KEYWORD_MAP: List[Tuple[Tuple[str, ...], str, str]] = [
+    # (키워드들, 계정코드, 계정명)
+    (("외주", "용역", "위탁", "외주가공"), "533", "외주가공비"),
+    (("주유", "주차", "차량", "엔진오일", "타이어", "정비", "통행료", "하이패스"), "822", "차량유지비"),
+    (("광고", "마케팅", "프로모션", "퍼블리시", "퍼블리싱", "노출", "sns광고", "구글광고", "페이스북광고", "인스타광고"), "833", "광고선전비"),
+    (("운반", "배송", "택배", "퀵", "용달", "물류", "포워딩"), "824", "운반비"),
+    (("통신", "인터넷", "kt ", "케이티 ", "skt", "lg유플", "유플러스", "전화비"), "814", "통신비(판)"),
+    (("임대", "임차", "월세", "rent", "리스 ", "사무실 "), "819", "지급임차료(판)"),
+    (("회식", "복리", "간식", "식대", "워크샵", "워크숍", "휴게실"), "811", "복리후생비(판)"),
+    (("교육", "강의", "세미나", "컨퍼런스", "training"), "825", "교육훈련비"),
+    (("도서", "책", "정기간행", "구독", "도서구입", "신문"), "826", "도서인쇄비"),
+    (("접대", "회식대", "선물", "경조사", "축의금", "조의금"), "813", "접대비"),
+    (("수도", "전기", "가스", "한국전력", "도시가스", "수도요금"), "815", "수도광열비"),
+    (("보험", "건강보험", "산재", "고용보험", "보험료"), "821", "보험료(판)"),
+    (("수리", "수선", "유지보수", "ac정비", "수리비"), "820", "수선비"),
+    (("출장", "여비", "교통비", "택시", "kt x", "ktx", "고속버스", "철도", "항공", "숙박"), "812", "여비교통비"),
+    (("수수료", "fee", "은행수수료", "송금수수료", "결제수수료", "이체수수료"), "831", "지급수수료(판)"),
+    (("소모품", "비품", "사무용품", "프린터", "잉크", "토너", "복사용지", "마우스", "키보드"), "830", "소모품비(판)"),
+    (("개발", "연구", "rd", "r&d", "프로토타입"), "823", "경상연구개발비"),
+    # 원재료성 키워드 (확실한 것만)
+    (("원료", "원재료", "농산물", "축산물", "수산물", "식품원료"), "153", "원재료"),
+]
+
+
+def _suggest_purchase_account(name: Optional[str], description: Optional[str] = None, merchant: Optional[str] = None) -> Tuple[str, str]:
+    """매입처별 추천 계정.
+    1순위: 거래처 이름 기반 vendor hint (wehago 학습)
+    2순위: description/merchant_name/counterparty의 키워드 매칭
+    3순위: 153 원재료 (default)
+    """
+    # 1순위: vendor hint
     key = _normalize_name(name)
     code = _CP_CACHE["vendor_account_hints"].get(key) if key else None
-    if not code:
-        return "153", "원재료"
-    # 계정명은 _resolve_account_id 시 코드로 lookup 됨 — 여기선 placeholder
-    return code, code
+    if code:
+        return code, code
+
+    # 2순위: 키워드 매칭 (이름+적요+가맹점명 결합 후 소문자)
+    haystack_parts = []
+    for s in (name, description, merchant):
+        if s:
+            haystack_parts.append(str(s).lower())
+    haystack = " ".join(haystack_parts)
+    if haystack:
+        for keywords, kw_code, kw_name in _PURCHASE_KEYWORD_MAP:
+            for kw in keywords:
+                if kw.lower() in haystack:
+                    return kw_code, kw_name
+
+    # 3순위: default 원재료
+    return "153", "원재료"
 
 
 def _is_sales_tax_invoice(ticket: Dict[str, Any]) -> bool:
@@ -402,8 +459,9 @@ def _build_tax_invoice_candidate(
                        else AutoVoucherSourceType.SALES_INVOICE)
         sugg_code, sugg_name = "404", "제품매출"
     else:
-        # 매입 — 거래처(supplier)별 학습된 계정 사용. 없으면 153 원재료 default.
-        sugg_code, sugg_name = _suggest_purchase_account(counterparty)
+        # 매입 — 거래처(supplier)별 학습된 계정. 없으면 키워드 분류, 그것도 없으면 153.
+        ti_memo = (ti.get("invoice") or {}).get("description") or (ti.get("invoice") or {}).get("memo") or ""
+        sugg_code, sugg_name = _suggest_purchase_account(counterparty, description=ti_memo, merchant=counterparty)
         if sugg_code == "153":
             sugg_name = "원재료"
         debit_lines = [{
@@ -466,14 +524,16 @@ def _build_card_candidate(
     if category: desc_parts.append(f"({category})")
     rich_desc = " ".join(desc_parts) if desc_parts else (merchant or "카드 결제")
 
-    # AI 추천 없으면 가맹점(=매입처)별 학습된 hint 사용, 그것도 없으면 830 소모품비
+    # AI 추천 없으면 가맹점(=매입처)별 학습된 hint + 키워드 분류 활용, 그것도 없으면 830 소모품비
     if ai_account_code:
         acc_code, acc_name = ai_account_code, ai_account_name or ai_account_code
     else:
-        hint_code, _ = _suggest_purchase_account(merchant)
+        # category(MCC) 정보가 키워드 매칭에 큰 도움
+        hint_code, hint_name = _suggest_purchase_account(merchant, description=category, merchant=merchant)
         if hint_code != "153":
-            acc_code, acc_name = hint_code, hint_code
+            acc_code, acc_name = hint_code, hint_name
         else:
+            # 카드는 기본 소모품비(판) — 원재료 카드결제는 드뭄
             acc_code, acc_name = "830", "소모품비(판)"
 
     debit_lines = [{
@@ -596,8 +656,8 @@ def _build_bank_candidate(
         sugg_code, sugg_name = "404", "제품매출"
         confidence = Decimal("0.85")
     elif (not is_inbound) and cp_class == "PURCHASE_VENDOR":
-        # 매입처 출금 → 비용 인식 (거래처 hint 계정 + 부가세 10%)
-        hint_code, _ = _suggest_purchase_account(counterparty)
+        # 매입처 출금 → 비용 인식 (거래처 hint + 키워드 분류 + 부가세 10%)
+        hint_code, _ = _suggest_purchase_account(counterparty, description=content, merchant=counterparty)
         try:
             from decimal import Decimal as _D, ROUND_HALF_UP
             t = _D(str(total))
@@ -1062,17 +1122,44 @@ async def reject_candidates_in_confirmed_period(
     start_date: date,
     end_date: date,
     confirmed_sources: Optional[List[str]] = None,
+    duplicate_only: bool = True,
 ) -> Dict[str, int]:
     """
-    확정 분개장(위하고/더존 import)이 있는 날짜의 PENDING 후보를 모두 REJECTED 처리.
+    확정 분개장(위하고/더존)이 있는 기간의 PENDING 후보 정리.
 
-    근거: 그 기간 거래는 이미 회계 처리 완료 → 별도 voucher 생성 불필요.
-    DUPLICATE보다 REJECTED가 적합 (분개와 명확한 1:1 매칭이 아니어도 무관).
+    duplicate_only=True (기본 — 안전):
+        duplicate_voucher_id가 명확히 매치된 후보만 거절.
+        매칭 안 된 후보는 보존하여 사용자 검수 가능.
+
+    duplicate_only=False (구버전 — 공격적):
+        해당 날짜의 모든 PENDING 후보를 거절.
+        같은 날짜에 무관한 거래라도 거절되는 부작용 있음.
     """
     if confirmed_sources is None:
         confirmed_sources = ["wehago_import", "douzone_journal"]
 
-    # 확정 voucher가 있는 distinct 날짜
+    if duplicate_only:
+        # 안전 모드: duplicate_voucher_id가 있고 PENDING인 것만 거절
+        cands_q = select(AutoVoucherCandidate).where(
+            AutoVoucherCandidate.status == AutoVoucherStatus.PENDING,
+            AutoVoucherCandidate.duplicate_voucher_id.isnot(None),
+            AutoVoucherCandidate.transaction_date >= start_date,
+            AutoVoucherCandidate.transaction_date <= end_date,
+        )
+        cands = (await db.execute(cands_q)).scalars().all()
+        rejected = 0
+        for c in cands:
+            c.status = AutoVoucherStatus.REJECTED
+            c.rejected_reason = "위하고/더존 분개와 중복 매칭 — 자동 거절"
+            rejected += 1
+        await db.commit()
+        return {
+            "rejected": rejected,
+            "mode": "duplicate_only",
+            "preserved_pending_in_period": True,
+        }
+
+    # 공격적 모드 (구버전 호환)
     v_dates_q = (
         select(Voucher.transaction_date)
         .where(
@@ -1084,9 +1171,7 @@ async def reject_candidates_in_confirmed_period(
     )
     v_dates = [r[0] for r in (await db.execute(v_dates_q)).all() if r[0]]
     if not v_dates:
-        return {"rejected": 0, "confirmed_dates": 0}
-
-    # 그 날짜들의 pending candidates 모두 REJECTED
+        return {"rejected": 0, "confirmed_dates": 0, "mode": "aggressive_date_match"}
     cands_q = select(AutoVoucherCandidate).where(
         AutoVoucherCandidate.status == AutoVoucherStatus.PENDING,
         AutoVoucherCandidate.transaction_date.in_(v_dates),
@@ -1097,11 +1182,11 @@ async def reject_candidates_in_confirmed_period(
         c.status = AutoVoucherStatus.REJECTED
         c.rejected_reason = "확정 분개장(위하고/더존)이 있는 기간 — 자동 거절"
         rejected += 1
-
     await db.commit()
     return {
         "rejected": rejected,
         "confirmed_dates": len(v_dates),
+        "mode": "aggressive_date_match",
         "min_date": min(v_dates).isoformat() if v_dates else None,
         "max_date": max(v_dates).isoformat() if v_dates else None,
     }
