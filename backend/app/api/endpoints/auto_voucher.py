@@ -2351,6 +2351,48 @@ async def reclassify_bank_vouchers(
             "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
 
 
+@router.get("/admin/inspect-account-lines")
+async def inspect_account_lines(
+    account_code: str = Query(...),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    side: str = Query("credit", description="'credit' or 'debit'"),
+    min_amount: float = Query(0),
+    limit: int = Query(30),
+):
+    """특정 account_code의 voucher_lines 상세 — 이상치 추적."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        amt_col = "vl.credit_amount" if side == "credit" else "vl.debit_amount"
+        rows = await conn.fetch(f"""
+            SELECT v.id AS voucher_id, v.voucher_date, v.voucher_number,
+                   v.description, v.merchant_name, v.source, v.external_ref,
+                   vl.debit_amount::float8 AS d, vl.credit_amount::float8 AS c,
+                   vl.counterparty_name
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE a.code = $1
+              AND v.voucher_date BETWEEN $2 AND $3
+              AND {amt_col} > $4
+            ORDER BY {amt_col} DESC
+            LIMIT {limit}
+        """, account_code, start_date, end_date, min_amount)
+        return {
+            "account_code": account_code,
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "side": side,
+            "rows": [dict(r) for r in rows],
+        }
+    finally:
+        await conn.close()
+
+
 @router.get("/admin/account-breakdown")
 async def account_breakdown(
     start_date: date = Query(...),
