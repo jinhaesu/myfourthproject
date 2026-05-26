@@ -2705,6 +2705,8 @@ async def auto_confirm_high_confidence(
     start_date: date = Query(...),
     end_date: date = Query(...),
     min_confidence: float = Query(0.85),
+    batch_size: int = Query(500, description="한 번에 처리할 후보 수 — worker timeout 회피"),
+    max_seconds: int = Query(60, description="이 시간 안에 처리 후 반환 — 반복 호출용"),
 ):
     """PENDING 후보 중 신뢰도 >= min_confidence인 것을 자동으로 CONFIRMED + voucher 생성.
     위하고 완전 대체 흐름에서 검수 자동화 (낮은 신뢰도는 사용자 수동 검수)."""
@@ -2715,23 +2717,32 @@ async def auto_confirm_high_confidence(
     if confirm_token != "I_UNDERSTAND":
         raise HTTPException(status_code=400, detail="confirm_token 불일치")
 
+    import time as _t
     confirmed_count = 0
     error_count = 0
     error_samples = []
+    started = _t.time()
+    total = 0
+    remaining = 0
+    timed_out = False
     async with async_session_factory() as db:
         cands_q = (_sel(AutoVoucherCandidate)
                    .where(AutoVoucherCandidate.status == AutoVoucherStatus.PENDING)
                    .where(AutoVoucherCandidate.transaction_date >= start_date)
                    .where(AutoVoucherCandidate.transaction_date <= end_date)
                    .where(AutoVoucherCandidate.confidence >= Decimal(str(min_confidence)))
-                   .order_by(AutoVoucherCandidate.id))
+                   .order_by(AutoVoucherCandidate.id)
+                   .limit(batch_size))
         cands = (await db.execute(cands_q)).scalars().all()
         total = len(cands)
         for c in cands:
+            if _t.time() - started > max_seconds:
+                timed_out = True
+                break
             try:
                 await _confirm_candidate_inner(db, c, user_id=1)
                 confirmed_count += 1
-                if confirmed_count % 100 == 0:
+                if confirmed_count % 50 == 0:
                     await db.commit()
             except Exception as e:
                 error_count += 1
@@ -2739,12 +2750,22 @@ async def auto_confirm_high_confidence(
                     error_samples.append(f"id={c.id}: {str(e)[:150]}")
                 await db.rollback()
         await db.commit()
+        # 남은 PENDING 수 별도 query
+        remaining = await db.scalar(_sel(func.count()).select_from(AutoVoucherCandidate)
+            .where(AutoVoucherCandidate.status == AutoVoucherStatus.PENDING)
+            .where(AutoVoucherCandidate.transaction_date >= start_date)
+            .where(AutoVoucherCandidate.transaction_date <= end_date)
+            .where(AutoVoucherCandidate.confidence >= Decimal(str(min_confidence))))
     return {
         "period": {"start": str(start_date), "end": str(end_date)},
         "min_confidence": min_confidence,
-        "total_candidates": total,
+        "batch_size": batch_size,
+        "batch_total": total,
         "confirmed": confirmed_count,
         "errors": error_count,
+        "remaining_pending": int(remaining or 0),
+        "timed_out": timed_out,
+        "elapsed_seconds": round(_t.time() - started, 1),
         "error_samples": error_samples,
     }
 
