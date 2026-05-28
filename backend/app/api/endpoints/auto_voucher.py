@@ -3122,6 +3122,7 @@ async def refile_sales_tax_invoices(
     start_date: date = Query(...),
     end_date: date = Query(...),
     dry_run: bool = Query(True),
+    background: bool = Query(False, description="True=즉시 task_id 반환, False=동기"),
 ):
     """그랜터에서 직접 매출 세금계산서를 가져와 voucher_lines를 매출 분개로 재생성.
 
@@ -3136,17 +3137,51 @@ async def refile_sales_tax_invoices(
 
     그랜터에 있지만 기존에 candidate가 없는 ticket은 새로 voucher + candidate 둘 다 생성.
     """
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    if background:
+        import asyncio as _asyncio
+        from app.services.auto_voucher_service import _new_task, _update
+        task_id = _new_task("매출 세금계산서 재분개 시작…")
+
+        async def _bg():
+            try:
+                # 호출 자체를 동기 모드로 실행 (background=False 우회)
+                result = await _refile_sales_tax_invoices_impl(
+                    start_date, end_date, dry_run,
+                    progress=lambda p, m: _update(task_id, percent=p, message=m),
+                )
+                _update(task_id, status="completed", percent=100,
+                        message=f"완료 — 업데이트 {result.get('updated_existing',0)} / 신규 {result.get('created_new',0)} / 오류 {result.get('errors',0)}",
+                        result=result, finished_at=__import__('time').time())
+            except Exception as ex:
+                logger.exception("refile sales tax 백그라운드 실패")
+                _update(task_id, status="failed",
+                        message=f"실패: {str(ex)[:300]}",
+                        finished_at=__import__('time').time())
+
+        _asyncio.create_task(_bg())
+        return {"task_id": task_id, "message": "백그라운드 시작 — /auto-voucher/progress/{task_id}로 폴링"}
+
+    return await _refile_sales_tax_invoices_impl(start_date, end_date, dry_run)
+
+
+async def _refile_sales_tax_invoices_impl(
+    start_date, end_date, dry_run, progress=None,
+):
     import asyncpg as _asyncpg
     from app.core.config import settings as _settings
     from app.services.granter_client import GranterClient as _GC
     from app.services.auto_voucher_service import (
-        _is_sales_tax_invoice, _normalize_biznum, OUR_BUSINESS_NUMBER,
-        _split_supply_vat, _safe_float, _parse_date,
+        _is_sales_tax_invoice, _split_supply_vat, _safe_float, _parse_date,
     )
     from app.services.journal_migration import _ensure_base_data
 
-    if confirm_token != "I_UNDERSTAND":
-        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+    if progress is None:
+        progress = lambda p, m: None
+
+    progress(2, "그랜터 호출 중…")
 
     # 1) 그랜터에서 TAX_INVOICE_TICKET 직접 호출
     gc = _GC()
@@ -3178,6 +3213,7 @@ async def refile_sales_tax_invoices(
 
     # 2) 매출만 추출
     sales_tickets = [t for t in all_tickets if _is_sales_tax_invoice(t)]
+    progress(15, f"그랜터 ticket {len(all_tickets)}건 중 매출 {len(sales_tickets)}건 식별")
 
     if not sales_tickets:
         return {"message": "매출 세금계산서 없음", "total_in_period": len(all_tickets)}
@@ -3221,8 +3257,11 @@ async def refile_sales_tax_invoices(
             "total_sales_amount": 0.0,
         }
 
-        for t in sales_tickets:
+        for _idx_t, t in enumerate(sales_tickets):
             try:
+                if _idx_t % 25 == 0:
+                    pct = 20 + int(70 * _idx_t / max(len(sales_tickets), 1))
+                    progress(min(pct, 90), f"진행 {_idx_t}/{len(sales_tickets)} · 업데이트 {report['updated_existing']} · 신규 {report['created_new']}")
                 source_id = str(t.get("id", ""))
                 if not source_id:
                     continue
