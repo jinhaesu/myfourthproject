@@ -2699,6 +2699,49 @@ async def restore_rejected_candidates(
         await conn.close()
 
 
+@router.post("/admin/bulk-confirm-candidates")
+async def bulk_confirm_candidates(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    min_confidence: float = Query(0.6, description="이 신뢰도 이상의 PENDING 후보 모두 confirm"),
+    max_candidates: Optional[int] = Query(None, description="처리 상한 (테스트용, None=전부)"),
+    batch_size: int = Query(500),
+    background: bool = Query(True, description="True=백그라운드 + task_id 반환, False=동기 실행"),
+):
+    """Raw SQL bulk insert로 PENDING candidates → CONFIRMED voucher 일괄 변환.
+
+    ORM 기반 /admin/auto-confirm-high-confidence는 1건당 ~2.5초 (25K건 = 17시간).
+    이 endpoint는 batch INSERT로 ~50배 빠름 (25K건 ≈ 1~3분).
+
+    부가세 자동 보정 + 누락 계정 자동 생성 + 멱등 (ON CONFLICT external_ref).
+    """
+    from app.services.auto_voucher_service import (
+        bulk_confirm_candidates_raw,
+        bulk_confirm_candidates_background,
+    )
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    if background:
+        task_id = await bulk_confirm_candidates_background(
+            start_date=start_date, end_date=end_date,
+            min_confidence=min_confidence,
+            max_candidates=max_candidates,
+            batch_size=batch_size,
+        )
+        return {"task_id": task_id, "message": "백그라운드 시작 — /auto-voucher/progress/{task_id}로 폴링"}
+
+    result = await bulk_confirm_candidates_raw(
+        start_date=start_date, end_date=end_date,
+        min_confidence=min_confidence,
+        max_candidates=max_candidates,
+        batch_size=batch_size,
+    )
+    return result
+
+
 @router.post("/admin/auto-confirm-high-confidence")
 async def auto_confirm_high_confidence(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),

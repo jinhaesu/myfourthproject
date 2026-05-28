@@ -1250,3 +1250,373 @@ async def match_voucher_duplicates_grouped(
         "checked_candidates": len(pendings),
         "voucher_keys": len(voucher_index),
     }
+
+
+async def bulk_confirm_candidates_raw(
+    start_date: date,
+    end_date: date,
+    min_confidence: float = 0.6,
+    max_candidates: Optional[int] = None,
+    batch_size: int = 500,
+    progress_cb: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Raw SQL bulk insert로 PENDING 후보 → CONFIRMED voucher 변환.
+
+    _confirm_candidate_inner의 ORM 흐름(per-candidate flush/commit)을 우회.
+    journal_migration.bulk_migrate_journal_raw 패턴과 동일 구조.
+
+    부가세 자동 보정 로직 포함 (8~11% diff → 135/255 라인 자동 추가).
+    이미 confirm된 candidate (source_id로 voucher 존재) → ON CONFLICT skip + candidate UPDATE만.
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+    from datetime import datetime as _dt
+    from app.services.journal_migration import _ensure_base_data
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    # 부서/사용자 시드 (별도 connection)
+    eff_dept_id, eff_user_id = await _ensure_base_data()
+
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+    try:
+        # 1) accounts map 한 번에 로드 + 부족하면 자동 생성용 카테고리 확인
+        acc_rows = await conn.fetch("SELECT id, code FROM accounts WHERE is_active = true")
+        acc_map: Dict[str, int] = {r["code"]: int(r["id"]) for r in acc_rows}
+
+        cat_rows = await conn.fetch("SELECT id, code FROM account_categories")
+        cat_map: Dict[str, int] = {r["code"]: int(r["id"]) for r in cat_rows}
+        # 카테고리 폴백
+        fallback_cat_id = cat_map.get("5") or (int(cat_rows[0]["id"]) if cat_rows else None)
+
+        async def _ensure_account(code: str, name: str) -> Optional[int]:
+            """없으면 raw SQL로 생성 + acc_map 갱신."""
+            code = (code or "").strip()
+            if not code:
+                return None
+            if code in acc_map:
+                return acc_map[code]
+            first = code.lstrip("0")[:1] if code else "9"
+            cat_code_map = {'1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
+                            '6': '5', '7': '5', '8': '5', '9': '5'}
+            cat_id = cat_map.get(cat_code_map.get(first, '5')) or fallback_cat_id
+            if cat_id is None:
+                return None
+            try:
+                new_id = await conn.fetchval("""
+                    INSERT INTO accounts
+                      (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active,
+                       created_at, updated_at)
+                    VALUES ($1, $2, $3, 1, true, true, 10.00, true, NOW(), NOW())
+                    ON CONFLICT (code) DO UPDATE SET updated_at = NOW()
+                    RETURNING id
+                """, code, name or f"계정 {code}", cat_id)
+                if new_id is not None:
+                    acc_map[code] = int(new_id)
+                    return int(new_id)
+            except Exception:
+                logger.exception(f"account 자동 생성 실패: {code}")
+            return None
+
+        # 2) PENDING candidates 로드
+        sql = """
+            SELECT id, source_type, source_id, transaction_date, description, counterparty,
+                   debit_lines, credit_lines, confidence, status
+            FROM auto_voucher_candidates
+            WHERE status = 'PENDING'
+              AND transaction_date >= $1 AND transaction_date <= $2
+              AND confidence >= $3
+            ORDER BY id
+        """
+        params: List[Any] = [start_date, end_date, Decimal(str(min_confidence))]
+        if max_candidates:
+            sql += " LIMIT $4"
+            params.append(int(max_candidates))
+        cands = await conn.fetch(sql, *params)
+
+        total = len(cands)
+        if total == 0:
+            return {"total": 0, "confirmed": 0, "skipped": 0, "errors": 0, "message": "PENDING 없음"}
+
+        if progress_cb:
+            progress_cb(5, f"{total}개 후보 로드 완료")
+
+        confirmed = 0
+        skipped = 0
+        errors = 0
+        error_samples: List[str] = []
+
+        idx = 0
+        while idx < total:
+            batch = cands[idx: idx + batch_size]
+            idx += batch_size
+
+            # 각 candidate에서 voucher / lines 데이터 생성
+            prepared: List[Dict[str, Any]] = []  # 정상 candidates
+            line_account_codes: set = set()  # 필요한 계정 코드 모음
+
+            for c in batch:
+                try:
+                    debit_lines = json.loads(c["debit_lines"] or "[]")
+                    credit_lines = json.loads(c["credit_lines"] or "[]")
+                except Exception:
+                    errors += 1
+                    if len(error_samples) < 10:
+                        error_samples.append(f"id={c['id']}: JSON parse 실패")
+                    continue
+
+                total_debit = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
+                total_credit = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
+
+                # 부가세 자동 보정
+                if total_debit != total_credit:
+                    diff = total_credit - total_debit
+                    total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+                    ratio = abs(diff) / total_abs
+                    if Decimal("0.08") <= ratio <= Decimal("0.11"):
+                        if diff > 0:
+                            debit_lines.append({
+                                "side": "debit", "account_code": "135",
+                                "account_name": "부가세대급금",
+                                "amount": str(diff), "memo": "자동 보정 (부가세 추정)",
+                            })
+                        else:
+                            credit_lines.append({
+                                "side": "credit", "account_code": "255",
+                                "account_name": "부가세예수금",
+                                "amount": str(-diff), "memo": "자동 보정 (부가세 추정)",
+                            })
+                        total_debit = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
+                        total_credit = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
+
+                if total_debit != total_credit:
+                    errors += 1
+                    if len(error_samples) < 10:
+                        error_samples.append(
+                            f"id={c['id']}: 차변({total_debit})≠대변({total_credit})"
+                        )
+                    continue
+
+                all_lines = debit_lines + credit_lines
+                for l in all_lines:
+                    code = (l.get("account_code") or "").strip()
+                    if code:
+                        line_account_codes.add((code, l.get("account_name") or ""))
+
+                prepared.append({
+                    "id": int(c["id"]),
+                    "source_type": c["source_type"],
+                    "source_id": c["source_id"],
+                    "transaction_date": c["transaction_date"],
+                    "description": c["description"] or c["counterparty"] or "",
+                    "counterparty": c["counterparty"],
+                    "confidence": c["confidence"],
+                    "total_debit": total_debit,
+                    "total_credit": total_credit,
+                    "lines": all_lines,
+                })
+
+            if not prepared:
+                continue
+
+            # 누락 계정 자동 생성
+            for code, name in line_account_codes:
+                if code not in acc_map:
+                    await _ensure_account(code, name)
+
+            # transaction_type 매핑
+            txn_type_map = {
+                'CARD': 'CARD', 'BANK': 'BANK_TRANSFER',
+                'CASH_RECEIPT': 'CASH',
+                'SALES_TAX_INVOICE': 'TAX_INVOICE', 'PURCHASE_TAX_INVOICE': 'TAX_INVOICE',
+                'SALES_INVOICE': 'TAX_INVOICE', 'PURCHASE_INVOICE': 'TAX_INVOICE',
+            }
+
+            # batch INSERT
+            try:
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '120s'")
+                    n = len(prepared)
+                    seq_rows = await conn.fetch(
+                        "SELECT nextval('vouchers_id_seq') AS id FROM generate_series(1, $1)", n
+                    )
+                    voucher_ids = [int(r["id"]) for r in seq_rows]
+
+                    v_values: List[str] = []
+                    v_params: List[Any] = []
+                    p = 1
+                    for i, pr in enumerate(prepared):
+                        vid = voucher_ids[i]
+                        vdate: date = pr["transaction_date"]
+                        vnum = f"{vdate.strftime('%Y%m%d')}-G{uuid.uuid4().hex[:8]}"
+                        txn_type = txn_type_map.get(str(pr["source_type"]), 'GENERAL')
+                        # 17 columns + 2 NOW()
+                        v_values.append(
+                            f"(${p}, ${p+1}, ${p+2}, ${p+2}, ${p+3}, ${p+4}, ${p+5}, 'granter_auto', "
+                            f"${p+6}, ${p+7}, ${p+8}, ${p+9}, 'CONFIRMED', ${p+10}, ${p+11}, NOW(), ${p+12}, NOW(), NOW())"
+                        )
+                        v_params.extend([
+                            vid, vnum, vdate, (pr["description"] or "")[:500],
+                            txn_type, pr["source_id"],
+                            eff_dept_id, eff_user_id,
+                            pr["total_debit"], pr["total_credit"],
+                            (pr["counterparty"] or None), pr["confidence"],
+                            eff_user_id,
+                        ])
+                        p += 13
+                    v_sql = f"""
+                        INSERT INTO vouchers
+                          (id, voucher_number, voucher_date, transaction_date, description,
+                           transaction_type, external_ref, source,
+                           department_id, created_by, total_debit, total_credit,
+                           status, merchant_name, ai_confidence_score,
+                           confirmed_at, confirmed_by, created_at, updated_at)
+                        VALUES {','.join(v_values)}
+                        ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL
+                        DO NOTHING
+                        RETURNING id, external_ref
+                    """
+                    inserted_rows = await conn.fetch(v_sql, *v_params)
+                    inserted_ext_to_id = {r["external_ref"]: int(r["id"]) for r in inserted_rows}
+                    actually_inserted = len(inserted_rows)
+
+                    # voucher_lines INSERT
+                    l_values: List[str] = []
+                    l_params: List[Any] = []
+                    p = 1
+                    for pr in prepared:
+                        vid = inserted_ext_to_id.get(pr["source_id"])
+                        if vid is None:
+                            continue
+                        for ln_no, l in enumerate(pr["lines"], start=1):
+                            code = (l.get("account_code") or "").strip()
+                            acc_id = acc_map.get(code)
+                            if acc_id is None:
+                                continue
+                            is_debit = l.get("side") == "debit"
+                            amt = Decimal(str(l.get("amount", 0)))
+                            vat_acc = code in ("135", "255")
+                            line_memo = (l.get("memo") or "").strip()
+                            line_desc = line_memo or pr["description"] or (l.get("account_name") or "")
+                            l_values.append(
+                                f"(${p}, ${p+1}, ${p+2}, ${p+3}, ${p+4}, ${p+5}, ${p+6}, ${p+7}, ${p+8}, NOW())"
+                            )
+                            l_params.extend([
+                                vid, ln_no, acc_id,
+                                amt if is_debit else Decimal("0"),
+                                amt if not is_debit else Decimal("0"),
+                                amt if vat_acc else Decimal("0"),
+                                amt if not vat_acc else Decimal("0"),
+                                (line_desc or "")[:500],
+                                pr["counterparty"],
+                            ])
+                            p += 9
+                    if l_values:
+                        l_sql = f"""
+                            INSERT INTO voucher_lines
+                              (voucher_id, line_number, account_id,
+                               debit_amount, credit_amount, vat_amount, supply_amount,
+                               description, counterparty_name, created_at)
+                            VALUES {','.join(l_values)}
+                        """
+                        await conn.execute(l_sql, *l_params)
+
+                    # auto_voucher_candidates UPDATE — 실제 INSERT된 것만 CONFIRMED
+                    # 두 부류:
+                    #  (a) INSERT 성공 → CONFIRMED + confirmed_voucher_id 설정
+                    #  (b) ON CONFLICT skip (source_id로 voucher 이미 존재) → 기존 voucher.id에 연결
+                    confirmed_pairs: List[Tuple[int, int]] = []  # (cand_id, voucher_id)
+                    conflict_source_ids: List[str] = []
+                    for pr in prepared:
+                        vid = inserted_ext_to_id.get(pr["source_id"])
+                        if vid:
+                            confirmed_pairs.append((pr["id"], vid))
+                        else:
+                            conflict_source_ids.append(pr["source_id"])
+
+                    # 충돌(중복) source_id → 기존 voucher.id 룩업
+                    if conflict_source_ids:
+                        existing_rows = await conn.fetch(
+                            "SELECT id, external_ref FROM vouchers WHERE external_ref = ANY($1::text[]) AND source = 'granter_auto'",
+                            conflict_source_ids,
+                        )
+                        ext_to_vid = {r["external_ref"]: int(r["id"]) for r in existing_rows}
+                        for pr in prepared:
+                            if pr["source_id"] in ext_to_vid:
+                                confirmed_pairs.append((pr["id"], ext_to_vid[pr["source_id"]]))
+
+                    if confirmed_pairs:
+                        # 한 번에 CASE WHEN UPDATE
+                        cand_ids = [p[0] for p in confirmed_pairs]
+                        vids_list = [p[1] for p in confirmed_pairs]
+                        await conn.execute("""
+                            UPDATE auto_voucher_candidates AS c
+                            SET status = 'CONFIRMED',
+                                confirmed_voucher_id = data.vid,
+                                confirmed_at = NOW(),
+                                confirmed_by = $1
+                            FROM unnest($2::int[], $3::int[]) AS data(cid, vid)
+                            WHERE c.id = data.cid
+                        """, eff_user_id, cand_ids, vids_list)
+
+                    confirmed += actually_inserted
+                    skipped += (len(prepared) - actually_inserted)
+
+            except Exception as ex:
+                logger.exception(f"bulk confirm batch 실패 (idx={idx})")
+                errors += len(prepared)
+                if len(error_samples) < 10:
+                    error_samples.append(f"batch fail (idx={idx}): {str(ex)[:200]}")
+
+            if progress_cb and (idx % (batch_size * 2) == 0 or idx >= total):
+                pct = 5 + int(90 * idx / max(total, 1))
+                progress_cb(min(95, pct), f"진행 {min(idx, total)}/{total} · confirm {confirmed}")
+
+        return {
+            "total": total,
+            "confirmed": confirmed,
+            "skipped": skipped,
+            "errors": errors,
+            "error_samples": error_samples,
+        }
+    finally:
+        await conn.close()
+
+
+async def bulk_confirm_candidates_background(
+    start_date: date,
+    end_date: date,
+    min_confidence: float = 0.6,
+    max_candidates: Optional[int] = None,
+    batch_size: int = 500,
+) -> str:
+    """백그라운드 task로 bulk confirm 실행."""
+    task_id = _new_task("Bulk confirm 시작…")
+
+    async def _runner():
+        try:
+            def _cb(pct: int, msg: str):
+                _update(task_id, percent=pct, message=msg)
+            result = await bulk_confirm_candidates_raw(
+                start_date=start_date, end_date=end_date,
+                min_confidence=min_confidence,
+                max_candidates=max_candidates,
+                batch_size=batch_size,
+                progress_cb=_cb,
+            )
+            _update(
+                task_id, status="completed", percent=100,
+                message=f"완료 — confirmed {result.get('confirmed', 0)} / skipped {result.get('skipped', 0)} / errors {result.get('errors', 0)}",
+                result=result, finished_at=time.time(),
+            )
+        except Exception as e:
+            logger.exception("백그라운드 bulk confirm 실패")
+            _update(
+                task_id, status="failed",
+                message=f"실패: {str(e)[:300]}",
+                finished_at=time.time(),
+            )
+
+    asyncio.create_task(_runner())
+    return task_id
