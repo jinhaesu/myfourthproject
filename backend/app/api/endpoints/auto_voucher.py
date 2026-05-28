@@ -3116,6 +3116,219 @@ async def purge_journal_vouchers(
         await conn.close()
 
 
+@router.post("/admin/refile-sales-tax-invoices")
+async def refile_sales_tax_invoices(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+):
+    """그랜터에서 직접 매출 세금계산서를 가져와 voucher_lines를 매출 분개로 재생성.
+
+    배경: generate_candidates가 supplier=우리회사 ticket을 매입으로 잘못 분류한 케이스 복구.
+
+    각 매출 ticket에 대해:
+      1) source_id (= ticket.id) 로 기존 voucher/candidate 찾기
+      2) 기존 voucher_lines 모두 DELETE
+      3) 매출 분개 라인 INSERT: (차) 108 외상매출금 / (대) 404 제품매출 + 255 부가세예수금
+      4) voucher.total, transaction_type, description 업데이트
+      5) candidate.source_type = SALES_TAX_INVOICE 업데이트
+
+    그랜터에 있지만 기존에 candidate가 없는 ticket은 새로 voucher + candidate 둘 다 생성.
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+    from app.services.granter_client import GranterClient as _GC
+    from app.services.auto_voucher_service import (
+        _is_sales_tax_invoice, _normalize_biznum, OUR_BUSINESS_NUMBER,
+        _split_supply_vat, _safe_float, _parse_date,
+    )
+    from app.services.journal_migration import _ensure_base_data
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    # 1) 그랜터에서 TAX_INVOICE_TICKET 직접 호출
+    gc = _GC()
+    if not gc.is_configured:
+        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
+
+    # 31일 chunks
+    from datetime import timedelta as _td
+    chunks = []
+    cur = start_date
+    while cur <= end_date:
+        nxt = min(cur + _td(days=30), end_date)
+        chunks.append((cur, nxt))
+        cur = nxt + _td(days=1)
+
+    all_tickets: List[Dict[str, Any]] = []
+    for s, e in chunks:
+        try:
+            r = await gc.list_tickets({
+                "ticketType": "TAX_INVOICE_TICKET",
+                "startDate": s.isoformat(),
+                "endDate": e.isoformat(),
+            })
+            items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+            all_tickets.extend(items)
+        except Exception as ex:
+            logger.exception(f"그랜터 TAX_INVOICE 호출 실패 {s}~{e}")
+            raise HTTPException(status_code=502, detail=f"그랜터 호출 실패: {str(ex)[:200]}")
+
+    # 2) 매출만 추출
+    sales_tickets = [t for t in all_tickets if _is_sales_tax_invoice(t)]
+
+    if not sales_tickets:
+        return {"message": "매출 세금계산서 없음", "total_in_period": len(all_tickets)}
+
+    # 3) DB 작업
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    eff_dept_id, eff_user_id = await _ensure_base_data()
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+    try:
+        # 계정 ID 매핑 (없으면 생성)
+        async def _ensure_acc(code: str, name: str) -> int:
+            existing = await conn.fetchval("SELECT id FROM accounts WHERE code = $1", code)
+            if existing:
+                return int(existing)
+            first = code[:1]
+            cat_code = {'1':'1','2':'2','3':'3','4':'4'}.get(first, '5')
+            cat_id = await conn.fetchval("SELECT id FROM account_categories WHERE code = $1", cat_code)
+            if not cat_id:
+                cat_id = await conn.fetchval("SELECT id FROM account_categories ORDER BY id LIMIT 1")
+            new_id = await conn.fetchval("""
+                INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                VALUES ($1, $2, $3, 1, true, true, 10.00, true, NOW(), NOW())
+                ON CONFLICT (code) DO UPDATE SET updated_at = NOW()
+                RETURNING id
+            """, code, name, cat_id)
+            return int(new_id)
+
+        acc_108 = await _ensure_acc("108", "외상매출금")
+        acc_404 = await _ensure_acc("404", "제품매출")
+        acc_255 = await _ensure_acc("255", "부가세예수금")
+
+        report = {
+            "dry_run": dry_run,
+            "total_granter_tickets": len(all_tickets),
+            "sales_tickets": len(sales_tickets),
+            "updated_existing": 0,
+            "created_new": 0,
+            "errors": 0,
+            "error_samples": [],
+            "total_sales_amount": 0.0,
+        }
+
+        for t in sales_tickets:
+            try:
+                source_id = str(t.get("id", ""))
+                if not source_id:
+                    continue
+                total = _safe_float(t.get("amount"))
+                tax_amount_raw = t.get("taxAmount")
+                is_taxable = tax_amount_raw is None or float(tax_amount_raw) > 0
+                supply, vat = _split_supply_vat(total, tax_amount_raw if is_taxable else 0)
+                txn_date = _parse_date(t.get("transactAt"))
+                ti = t.get("taxInvoice") or {}
+                contractor = (ti.get("contractor") or {}).get("companyName", "")
+                rich_desc = f"매출 세금계산서 · {contractor}"
+
+                # source_type for candidate
+                cand_source_type = "SALES_TAX_INVOICE" if is_taxable else "SALES_INVOICE"
+
+                report["total_sales_amount"] += float(total)
+
+                if dry_run:
+                    continue
+
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '60s'")
+
+                    # 기존 voucher 찾기
+                    v_row = await conn.fetchrow(
+                        "SELECT id FROM vouchers WHERE external_ref = $1 AND source = 'granter_auto'",
+                        source_id,
+                    )
+                    if v_row:
+                        vid = int(v_row["id"])
+                        # 기존 라인 삭제
+                        await conn.execute(
+                            "DELETE FROM voucher_lines WHERE voucher_id = $1", vid,
+                        )
+                        # voucher 메타 업데이트
+                        await conn.execute("""
+                            UPDATE vouchers
+                            SET total_debit = $1, total_credit = $1,
+                                transaction_type = 'TAX_INVOICE',
+                                description = $2,
+                                merchant_name = $3,
+                                voucher_date = $4, transaction_date = $4,
+                                updated_at = NOW()
+                            WHERE id = $5
+                        """, total, rich_desc[:500], contractor[:200] or None, txn_date, vid)
+                        report["updated_existing"] += 1
+                    else:
+                        # 신규 voucher 생성
+                        vnum = f"{txn_date.strftime('%Y%m%d')}-G{_uuid.uuid4().hex[:8]}"
+                        vid = int(await conn.fetchval("SELECT nextval('vouchers_id_seq')"))
+                        await conn.execute("""
+                            INSERT INTO vouchers
+                              (id, voucher_number, voucher_date, transaction_date, description,
+                               transaction_type, external_ref, source, department_id, created_by,
+                               total_debit, total_credit, status, merchant_name,
+                               confirmed_at, confirmed_by, created_at, updated_at)
+                            VALUES ($1,$2,$3,$3,$4,'TAX_INVOICE',$5,'granter_auto',$6,$7,$8,$8,'CONFIRMED',$9,NOW(),$7,NOW(),NOW())
+                        """, vid, vnum, txn_date, rich_desc[:500], source_id,
+                            eff_dept_id, eff_user_id, total, contractor[:200] or None)
+                        report["created_new"] += 1
+
+                    # 매출 분개 라인 INSERT
+                    # (차) 108 외상매출금 = total
+                    # (대) 404 제품매출 = supply
+                    # (대) 255 부가세예수금 = vat (있을 때만)
+                    await conn.execute("""
+                        INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                            debit_amount, credit_amount, vat_amount, supply_amount,
+                            description, counterparty_name, created_at)
+                        VALUES ($1, 1, $2, $3, 0, 0, $4, $5, $6, NOW())
+                    """, vid, acc_108, total, total, rich_desc[:500], contractor[:200] or None)
+                    await conn.execute("""
+                        INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                            debit_amount, credit_amount, vat_amount, supply_amount,
+                            description, counterparty_name, created_at)
+                        VALUES ($1, 2, $2, 0, $3, 0, $4, $5, $6, NOW())
+                    """, vid, acc_404, supply, supply, rich_desc[:500], contractor[:200] or None)
+                    if vat > 0:
+                        await conn.execute("""
+                            INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                                debit_amount, credit_amount, vat_amount, supply_amount,
+                                description, counterparty_name, created_at)
+                            VALUES ($1, 3, $2, 0, $3, $3, 0, $4, $5, NOW())
+                        """, vid, acc_255, vat, rich_desc[:500], contractor[:200] or None)
+
+                    # candidate source_type 업데이트
+                    await conn.execute("""
+                        UPDATE auto_voucher_candidates
+                        SET source_type = $1::auto_voucher_source_type,
+                            confirmed_voucher_id = $2,
+                            updated_at = NOW()
+                        WHERE source_id = $3
+                    """, cand_source_type, vid, source_id)
+
+            except Exception as ex:
+                report["errors"] += 1
+                if len(report["error_samples"]) < 10:
+                    report["error_samples"].append(f"ticket={t.get('id')}: {str(ex)[:200]}")
+                logger.exception(f"refile sales tax invoice 실패 ticket={t.get('id')}")
+
+        return report
+    finally:
+        await conn.close()
+        await gc.aclose()
+
+
 @router.post("/admin/patch-153-misclassified")
 async def patch_153_misclassified(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
