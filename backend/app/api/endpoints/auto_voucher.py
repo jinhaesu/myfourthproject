@@ -3347,12 +3347,11 @@ async def _refile_sales_tax_invoices_impl(
                             VALUES ($1, 3, $2, 0, $3, $3, 0, $4, $5, NOW())
                         """, vid, acc_255, vat, rich_desc[:500], contractor[:200] or None)
 
-                    # candidate source_type 업데이트
+                    # candidate source_type 업데이트 (updated_at 컬럼 없음 — 빼야 함)
                     await conn.execute("""
                         UPDATE auto_voucher_candidates
                         SET source_type = $1::auto_voucher_source_type,
-                            confirmed_voucher_id = $2,
-                            updated_at = NOW()
+                            confirmed_voucher_id = $2
                         WHERE source_id = $3
                     """, cand_source_type, vid, source_id)
 
