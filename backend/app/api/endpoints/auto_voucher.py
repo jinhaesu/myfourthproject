@@ -3116,6 +3116,121 @@ async def purge_journal_vouchers(
         await conn.close()
 
 
+@router.post("/admin/patch-153-misclassified")
+async def patch_153_misclassified(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+):
+    """153(원재료) 차변 중 명백히 잘못 분류된 패턴을 다른 계정으로 재배치.
+
+    패턴:
+      - 자가 거래 (조인앤조인 ↔ 조인앤조인): 153 → 169(가지급금) ; 회계상 가공 (실제 매입 아님)
+      - 한국전력공사: 153 → 515(수도광열비-제)
+      - 운반·물류 (롯데글로벌로지스, CJ대한통운, 쿠팡, 로지스/물류/운반/택배 키워드): 153 → 524(운반비-제)
+
+    voucher_lines.account_id만 교체 (transaction 분개는 그대로). 결산 재실행 시 매출원가에서 자동 제외.
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+    try:
+        # 1) 필요한 계정 자동 생성
+        async def _ensure_account(code: str, name: str, cat_code: str) -> int:
+            existing = await conn.fetchval("SELECT id FROM accounts WHERE code = $1", code)
+            if existing:
+                return int(existing)
+            cat_id = await conn.fetchval("SELECT id FROM account_categories WHERE code = $1", cat_code)
+            if not cat_id:
+                cat_id = await conn.fetchval("SELECT id FROM account_categories ORDER BY id LIMIT 1")
+            new_id = await conn.fetchval("""
+                INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                VALUES ($1, $2, $3, 1, true, true, 10.00, true, NOW(), NOW())
+                ON CONFLICT (code) DO UPDATE SET updated_at = NOW()
+                RETURNING id
+            """, code, name, cat_id)
+            return int(new_id)
+
+        acc_169 = await _ensure_account("169", "가지급금", "1")  # 자산
+        acc_515 = await _ensure_account("515", "수도광열비(제)", "5")  # 비용
+        acc_524 = await _ensure_account("524", "운반비(제)", "5")  # 비용
+        acc_153 = await conn.fetchval("SELECT id FROM accounts WHERE code = '153'")
+
+        # 2) 패턴별로 voucher_lines.account_id 교체
+        patterns = [
+            {
+                "name": "자가거래(조인앤조인)",
+                "new_acc_id": acc_169,
+                "where": "(v.merchant_name ~ '조인.{0,2}앤.{0,2}조인' OR vl.counterparty_name ~ '조인.{0,2}앤.{0,2}조인')",
+            },
+            {
+                "name": "한국전력공사",
+                "new_acc_id": acc_515,
+                "where": "(v.merchant_name ~ '한국전력|전력공사' OR vl.counterparty_name ~ '한국전력|전력공사')",
+            },
+            {
+                "name": "운반_물류",
+                "new_acc_id": acc_524,
+                "where": "(v.merchant_name ~ '롯데글로벌로지스|CJ대한통운|쿠팡|로지스|택배' OR vl.counterparty_name ~ '롯데글로벌로지스|CJ대한통운|쿠팡|로지스|택배')",
+            },
+        ]
+
+        report = {"dry_run": dry_run, "start": str(start_date), "end": str(end_date), "patches": []}
+
+        for p in patterns:
+            # 매칭 대상 카운트/합계
+            stat_sql = f"""
+                SELECT COUNT(*) AS cnt, COALESCE(SUM(vl.debit_amount), 0)::float8 AS amt
+                FROM voucher_lines vl
+                JOIN vouchers v ON v.id = vl.voucher_id
+                WHERE vl.account_id = $1
+                  AND v.voucher_date BETWEEN $2 AND $3
+                  AND v.status IN ('CONFIRMED', 'APPROVED')
+                  AND vl.debit_amount > 0
+                  AND {p['where']}
+            """
+            stat = await conn.fetchrow(stat_sql, acc_153, start_date, end_date)
+            cnt = int(stat["cnt"])
+            amt = float(stat["amt"])
+            applied = 0
+            if not dry_run and cnt > 0:
+                upd_sql = f"""
+                    UPDATE voucher_lines vl
+                    SET account_id = $1
+                    FROM vouchers v
+                    WHERE vl.voucher_id = v.id
+                      AND vl.account_id = $2
+                      AND v.voucher_date BETWEEN $3 AND $4
+                      AND v.status IN ('CONFIRMED', 'APPROVED')
+                      AND vl.debit_amount > 0
+                      AND {p['where']}
+                """
+                result_str = await conn.execute(upd_sql, p["new_acc_id"], acc_153, start_date, end_date)
+                # asyncpg execute returns "UPDATE n"
+                try:
+                    applied = int(result_str.split()[-1])
+                except Exception:
+                    applied = cnt
+            report["patches"].append({
+                "pattern": p["name"],
+                "new_account_id": p["new_acc_id"],
+                "matched_lines": cnt,
+                "matched_amount": amt,
+                "applied": applied,
+            })
+
+        return report
+    finally:
+        await conn.close()
+
+
 @router.post("/admin/seed-missing-accounts")
 async def seed_missing_accounts(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
