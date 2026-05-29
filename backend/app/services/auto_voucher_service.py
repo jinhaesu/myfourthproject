@@ -291,16 +291,31 @@ _PURCHASE_KEYWORD_MAP: List[Tuple[Tuple[str, ...], str, str]] = [
     (("수수료", "fee", "은행수수료", "송금수수료", "결제수수료", "이체수수료"), "831", "지급수수료(판)"),
     (("소모품", "비품", "사무용품", "프린터", "잉크", "토너", "복사용지", "마우스", "키보드"), "830", "소모품비(판)"),
     (("개발", "연구", "rd", "r&d", "프로토타입"), "823", "경상연구개발비"),
+    # 추가 보강 (2026-05-29) — 식품/제조업 빈도 높은 매입
+    (("급여", "월급", "급료", "임금", "상여", "성과급", "보너스"), "801", "급여"),
+    (("4대보험", "4대 보험", "국민연금", "고용보험료", "산재보험료", "건강보험료"), "811", "복리후생비(판)"),
+    (("청소", "방역", "소독", "위생", "관리비"), "830", "소모품비(판)"),
+    (("쿠팡", "마켓컬리", "네이버페이", "스마트스토어", "11번가", "지마켓", "옥션"), "830", "소모품비(판)"),
+    (("호텔", "리조트", "펜션", "에어비앤비"), "812", "여비교통비"),
+    (("음식점", "식당", "한식", "중식", "일식", "치킨", "피자", "햄버거", "카페", "스타벅스"), "813", "접대비"),
     # 원재료성 키워드 (확실한 것만)
     (("원료", "원재료", "농산물", "축산물", "수산물", "식품원료"), "153", "원재료"),
 ]
 
 
-def _suggest_purchase_account(name: Optional[str], description: Optional[str] = None, merchant: Optional[str] = None) -> Tuple[str, str]:
+def _suggest_purchase_account(
+    name: Optional[str],
+    description: Optional[str] = None,
+    merchant: Optional[str] = None,
+    source_type: Optional[str] = None,
+) -> Tuple[str, str]:
     """매입처별 추천 계정.
     1순위: 거래처 이름 기반 vendor hint (wehago 학습)
     2순위: description/merchant_name/counterparty의 키워드 매칭
-    3순위: 153 원재료 (default)
+    3순위: source_type별 default
+       - PURCHASE_TAX_INVOICE: 153 원재료 (식품/식자재 매입세금계산서는 원재료가 대부분)
+       - CARD/BANK/CASH_RECEIPT: 830 소모품비(판) — 카드/통장 fallback이 모두 153이면
+         매출원가 과대계상 위험. 보수적으로 판관비로 흘림.
     """
     # 1순위: vendor hint
     key = _normalize_name(name)
@@ -320,7 +335,10 @@ def _suggest_purchase_account(name: Optional[str], description: Optional[str] = 
                 if kw.lower() in haystack:
                     return kw_code, kw_name
 
-    # 3순위: default 원재료
+    # 3순위: source_type별 default
+    st = (source_type or "").upper()
+    if st in ("CARD", "BANK", "CASH_RECEIPT"):
+        return "830", "소모품비(판)"
     return "153", "원재료"
 
 
@@ -528,13 +546,11 @@ def _build_card_candidate(
     if ai_account_code:
         acc_code, acc_name = ai_account_code, ai_account_name or ai_account_code
     else:
-        # category(MCC) 정보가 키워드 매칭에 큰 도움
-        hint_code, hint_name = _suggest_purchase_account(merchant, description=category, merchant=merchant)
-        if hint_code != "153":
-            acc_code, acc_name = hint_code, hint_name
-        else:
-            # 카드는 기본 소모품비(판) — 원재료 카드결제는 드뭄
-            acc_code, acc_name = "830", "소모품비(판)"
+        # source_type='CARD' fallback이 자동으로 830 처리 — line 544-548 이중 처리 제거
+        hint_code, hint_name = _suggest_purchase_account(
+            merchant, description=category, merchant=merchant, source_type="CARD",
+        )
+        acc_code, acc_name = hint_code, hint_name
 
     debit_lines = [{
         "side": "debit", "account_code": acc_code, "account_name": acc_name,
@@ -657,7 +673,10 @@ def _build_bank_candidate(
         confidence = Decimal("0.85")
     elif (not is_inbound) and cp_class == "PURCHASE_VENDOR":
         # 매입처 출금 → 비용 인식 (거래처 hint + 키워드 분류 + 부가세 10%)
-        hint_code, _ = _suggest_purchase_account(counterparty, description=content, merchant=counterparty)
+        # source_type='BANK' fallback → 830 (153 X) — 매출원가 과대계상 방지
+        hint_code, _ = _suggest_purchase_account(
+            counterparty, description=content, merchant=counterparty, source_type="BANK",
+        )
         try:
             from decimal import Decimal as _D, ROUND_HALF_UP
             t = _D(str(total))
@@ -840,22 +859,50 @@ async def _generate_candidates_core(
     )
     _report(60, "수집 완료. 분개 후보 생성 중…")
 
-    # 중복 방지용 기존 source_id
-    existing = (await db.execute(
-        select(AutoVoucherCandidate.source_id)
+    # 중복 방지용 기존 source_id → source_type map
+    # (source_type까지 봐야 매출/매입 잘못 분류된 케이스를 mismatch로 감지 가능)
+    existing_q = (await db.execute(
+        select(AutoVoucherCandidate.source_id, AutoVoucherCandidate.source_type)
         .where(AutoVoucherCandidate.source_id.isnot(None))
     )).all()
-    existing_ids = {row[0] for row in existing if row[0]}
+    existing_map: Dict[str, AutoVoucherSourceType] = {
+        row[0]: row[1] for row in existing_q if row[0]
+    }
+    existing_ids = set(existing_map.keys())
 
     counts = {
         "sales_tax_invoice": 0, "purchase_tax_invoice": 0,
         "card": 0, "bank": 0, "cash_receipt": 0,
         "skipped": 0, "errors": 0,
+        # 매출/매입 mismatch 감지 (이전 잘못된 분류가 캐시됨 — refile endpoint로 수정 필요)
+        "mismatch_sales_marked_purchase": 0,
+        "mismatch_purchase_marked_sales": 0,
+        "mismatch_ticket_ids": [],
     }
 
     for t in tickets.get("TAX_INVOICE_TICKET", []) or []:
         tid = str(t.get("id", ""))
         if tid and tid in existing_ids:
+            # source_type 일치 여부 검사
+            try:
+                is_sales = _is_sales_tax_invoice(t)
+                expected = (AutoVoucherSourceType.SALES_TAX_INVOICE if is_sales
+                            else AutoVoucherSourceType.PURCHASE_TAX_INVOICE)
+                cur = existing_map.get(tid)
+                if cur != expected and cur in (
+                    AutoVoucherSourceType.SALES_TAX_INVOICE,
+                    AutoVoucherSourceType.PURCHASE_TAX_INVOICE,
+                    AutoVoucherSourceType.SALES_INVOICE,
+                    AutoVoucherSourceType.PURCHASE_INVOICE,
+                ):
+                    if is_sales:
+                        counts["mismatch_sales_marked_purchase"] += 1
+                    else:
+                        counts["mismatch_purchase_marked_sales"] += 1
+                    if len(counts["mismatch_ticket_ids"]) < 30:
+                        counts["mismatch_ticket_ids"].append(tid)
+            except Exception:
+                pass
             counts["skipped"] += 1
             continue
         try:
