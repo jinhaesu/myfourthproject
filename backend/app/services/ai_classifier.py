@@ -695,7 +695,7 @@ class AIClassifierService:
 
             try:
                 response = client.messages.create(
-                    model=settings.ANTHROPIC_MODEL or "claude-sonnet-4-20250514",
+                    model=settings.ANTHROPIC_MODEL or "claude-opus-4-8",
                     max_tokens=4000,
                     messages=[{"role": "user", "content": prompt}],
                 )
@@ -764,7 +764,7 @@ class AIClassifierService:
 {{"account_code": "계정코드", "account_name": "계정과목명", "confidence": 0.0~1.0, "reasoning": "분류 근거 한 줄"}}"""
 
             response = client.messages.create(
-                model=settings.ANTHROPIC_MODEL or "claude-sonnet-4-20250514",
+                model=settings.ANTHROPIC_MODEL or "claude-opus-4-8",
                 max_tokens=200,
                 messages=[{"role": "user", "content": prompt}],
             )

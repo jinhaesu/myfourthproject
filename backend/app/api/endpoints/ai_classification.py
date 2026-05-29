@@ -3009,7 +3009,7 @@ async def classify_bank_statements(
                         all_batches.append(batch_indices)
 
                     total_batches = len(all_batches)
-                    LLM_MODEL = "claude-sonnet-4-20250514"
+                    LLM_MODEL = "claude-opus-4-8"
 
                     def _call_llm_for_batch(batch_indices, batch_num):
                         """Synchronous LLM call for one batch (runs in thread pool)."""
@@ -4233,7 +4233,7 @@ async def classify_tax_invoices(
                         all_batches.append(batch_indices)
 
                     total_batches = len(all_batches)
-                    LLM_MODEL = "claude-sonnet-4-20250514"
+                    LLM_MODEL = "claude-opus-4-8"
 
                     def _call_llm_for_tax_batch(batch_indices, batch_num):
                         """Synchronous LLM call for one tax invoice batch (runs in thread pool)."""
