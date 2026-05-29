@@ -3367,6 +3367,354 @@ async def _refile_sales_tax_invoices_impl(
         await gc.aclose()
 
 
+@router.get("/admin/closing-verification")
+async def closing_verification(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    expected_sales: Optional[float] = Query(None, description="정답 매출 (위하고 손익) — 비교용"),
+    expected_cogs: Optional[float] = Query(None),
+    expected_sga: Optional[float] = Query(None),
+    warn_threshold_pct: float = Query(15.0, description="이 %를 넘으면 warning 플래그"),
+):
+    """월말 결산 후 자동 검증 + 그랜터 raw vs 시스템 sync %.
+
+    체크 항목:
+      A. 시스템 매출/매출원가/판관비 합계 (sales-breakdown 활용)
+      B. 그랜터 raw vs 시스템 sync 비율 (TAX_INVOICE/CASH_RECEIPT)
+      C. 매출/매입 mismatch candidate 카운트
+      D. PENDING 잔여
+      E. expected 입력 시 diff% 계산 + warn 플래그
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+    from app.services.granter_client import GranterClient as _GC
+    from app.services.auto_voucher_service import _is_sales_tax_invoice
+    import httpx as _httpx
+
+    result: Dict[str, Any] = {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "system_pl": {},
+        "granter_raw": {},
+        "sync_ratio": {},
+        "anomalies": [],
+        "warnings": [],
+    }
+
+    # A. 시스템 P/L (sales-breakdown)
+    async with _httpx.AsyncClient(timeout=120.0) as cli:
+        sb = await cli.get(
+            "http://localhost:8000/api/v1/auto-voucher/admin/sales-breakdown",
+            params={"start_date": str(start_date), "end_date": str(end_date)},
+        )
+        if sb.status_code == 200:
+            data = sb.json()
+            s = data.get("summary", {})
+            sys_sales = next((v for k, v in s.items() if "매출" in k and "원가" not in k), 0) or 0
+            sys_cogs = next((v for k, v in s.items() if "매출원가" in k), 0) or 0
+            sys_sga = next((v for k, v in s.items() if "판관비" in k), 0) or 0
+            result["system_pl"] = {
+                "sales": float(sys_sales), "cogs": float(sys_cogs), "sga": float(sys_sga),
+            }
+
+    # B. 그랜터 raw (TAX_INVOICE만 — count 빠르고 대표성)
+    gc = _GC()
+    granter_sales_ti = 0
+    granter_purchase_ti = 0
+    granter_sales_amount = 0.0
+    if gc.is_configured:
+        try:
+            from datetime import timedelta as _td
+            chunks = []
+            cur = start_date
+            while cur <= end_date:
+                nxt = min(cur + _td(days=30), end_date)
+                chunks.append((cur, nxt))
+                cur = nxt + _td(days=1)
+            tickets = []
+            for s, e in chunks:
+                r = await gc.list_tickets({
+                    "ticketType": "TAX_INVOICE_TICKET",
+                    "startDate": s.isoformat(), "endDate": e.isoformat(),
+                })
+                items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+                tickets.extend(items)
+            for t in tickets:
+                if _is_sales_tax_invoice(t):
+                    granter_sales_ti += 1
+                    granter_sales_amount += float(t.get("amount") or 0)
+                else:
+                    granter_purchase_ti += 1
+            result["granter_raw"] = {
+                "tax_invoice_total": len(tickets),
+                "sales_count": granter_sales_ti,
+                "purchase_count": granter_purchase_ti,
+                "sales_amount": granter_sales_amount,
+            }
+        except Exception as ex:
+            result["granter_raw"] = {"error": str(ex)[:200]}
+        finally:
+            await gc.aclose()
+
+    # C. 시스템 candidate 카운트
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        cand_rows = await conn.fetch("""
+            SELECT source_type::text AS st, status::text AS sts, COUNT(*) AS cnt
+            FROM auto_voucher_candidates
+            WHERE transaction_date BETWEEN $1 AND $2
+            GROUP BY source_type, status
+        """, start_date, end_date)
+        candidate_breakdown = {}
+        for r in cand_rows:
+            candidate_breakdown.setdefault(r["st"], {})[r["sts"]] = int(r["cnt"])
+        result["candidate_breakdown"] = candidate_breakdown
+
+        sys_sales_ti = sum(
+            candidate_breakdown.get("SALES_TAX_INVOICE", {}).values()
+        )
+        sys_purchase_ti = sum(
+            candidate_breakdown.get("PURCHASE_TAX_INVOICE", {}).values()
+        )
+
+        # D. PENDING 잔여
+        pending_total = await conn.fetchval("""
+            SELECT COUNT(*) FROM auto_voucher_candidates
+            WHERE status = 'PENDING' AND transaction_date BETWEEN $1 AND $2
+        """, start_date, end_date)
+        result["pending_remaining"] = int(pending_total or 0)
+    finally:
+        await conn.close()
+
+    # B-2. sync ratio
+    if granter_sales_ti > 0:
+        ratio = sys_sales_ti / granter_sales_ti * 100
+        result["sync_ratio"]["sales_tax_invoice_pct"] = round(ratio, 1)
+        if ratio < 90:
+            result["anomalies"].append(
+                f"매출 세금계산서 sync 부족: 시스템 {sys_sales_ti} / 그랜터 {granter_sales_ti} ({ratio:.1f}%)"
+            )
+    if granter_purchase_ti > 0:
+        ratio_p = sys_purchase_ti / granter_purchase_ti * 100
+        result["sync_ratio"]["purchase_tax_invoice_pct"] = round(ratio_p, 1)
+
+    # E. expected 비교
+    sys_pl = result["system_pl"]
+    diffs = {}
+    if expected_sales and sys_pl.get("sales"):
+        diff = (sys_pl["sales"] - expected_sales) / expected_sales * 100
+        diffs["sales_diff_pct"] = round(diff, 1)
+        if abs(diff) > warn_threshold_pct:
+            result["warnings"].append(f"매출 diff {diff:+.1f}% — 정답 {expected_sales/1e8:.2f}억 / 시스템 {sys_pl['sales']/1e8:.2f}억")
+    if expected_cogs and sys_pl.get("cogs"):
+        diff = (sys_pl["cogs"] - expected_cogs) / expected_cogs * 100
+        diffs["cogs_diff_pct"] = round(diff, 1)
+        if abs(diff) > warn_threshold_pct:
+            result["warnings"].append(f"매출원가 diff {diff:+.1f}% — 정답 {expected_cogs/1e8:.2f}억 / 시스템 {sys_pl['cogs']/1e8:.2f}억")
+    if expected_sga and sys_pl.get("sga"):
+        diff = (sys_pl["sga"] - expected_sga) / expected_sga * 100
+        diffs["sga_diff_pct"] = round(diff, 1)
+        if abs(diff) > warn_threshold_pct:
+            result["warnings"].append(f"판관비 diff {diff:+.1f}% — 정답 {expected_sga/1e8:.2f}억 / 시스템 {sys_pl['sga']/1e8:.2f}억")
+    if diffs:
+        result["expected_vs_actual"] = diffs
+
+    # F. 매출 세금계산서 부족 (sync_ratio < 90%) — 자동 refile 안내
+    if result["sync_ratio"].get("sales_tax_invoice_pct", 100) < 90:
+        result["recommendations"] = result.get("recommendations", [])
+        result["recommendations"].append({
+            "action": "refile_sales_tax_invoices",
+            "endpoint": f"/auto-voucher/admin/refile-sales-tax-invoices?confirm_token=I_UNDERSTAND&start_date={start_date}&end_date={end_date}&dry_run=false&background=true",
+            "reason": "매출 세금계산서가 매입으로 잘못 분류된 가능성 — refile로 복구",
+        })
+
+    return result
+
+
+@router.post("/admin/run-monthly-close")
+async def run_monthly_close(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    skip_grant_sync: bool = Query(False, description="True: 이미 sync된 경우 그랜터 호출 건너뜀"),
+    skip_refile_sales: bool = Query(False, description="True: 매출 세금계산서 refile 건너뜀"),
+):
+    """월말 결산 전체 워크플로우 — 3월부터 매월 한 번 호출만으로 끝.
+
+    단계:
+      1) 그랜터 sync (TAX_INVOICE/EXPENSE/BANK/CASH_RECEIPT) — generate_candidates_for_period
+      2) cache rebuild + duplicate match
+      3) bulk confirm (모든 PENDING)
+      4) 매출 세금계산서 refile (mismatch 자동 복구)
+      5) 153 misclassified patch (자가/한전/물류 + 카드/통장 fallback)
+      6) month-end closing (153→501, 5xx/8xx(제)→455)
+      7) 검증 리포트
+
+    백그라운드 task로 실행. task_id 즉시 반환.
+    """
+    from app.services.auto_voucher_service import (
+        _new_task, _update,
+        generate_candidates_for_period, match_voucher_duplicates_core,
+        bulk_confirm_candidates_raw,
+    )
+    from app.core.database import async_session_factory
+    from calendar import monthrange
+    import asyncio as _asyncio
+    import time as _t
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    last_day = monthrange(year, month)[1]
+    period_start = date(year, month, 1)
+    period_end = date(year, month, last_day)
+
+    task_id = _new_task(f"{year}/{month} 월말 결산 시작…")
+
+    async def _runner():
+        try:
+            steps_result: Dict[str, Any] = {
+                "year": year, "month": month,
+                "period": {"start": str(period_start), "end": str(period_end)},
+                "steps": [],
+            }
+
+            # 1) 그랜터 sync
+            if not skip_grant_sync:
+                _update(task_id, percent=5, message=f"[1/7] 그랜터 sync ({period_start}~{period_end})")
+                async with async_session_factory() as db:
+                    sync_res = await generate_candidates_for_period(db, period_start, period_end)
+                steps_result["steps"].append({"step": "1.granter_sync", "result": sync_res})
+            else:
+                steps_result["steps"].append({"step": "1.granter_sync", "result": "skipped"})
+
+            # 2) cache rebuild + duplicate match
+            _update(task_id, percent=15, message="[2/7] cache rebuild + duplicate match")
+            async with async_session_factory() as db:
+                dup_res = await match_voucher_duplicates_core(db, period_start, period_end)
+            steps_result["steps"].append({"step": "2.duplicate_match", "result": dup_res})
+
+            # 3) bulk confirm
+            _update(task_id, percent=30, message="[3/7] bulk confirm PENDING")
+            conf_res = await bulk_confirm_candidates_raw(
+                start_date=period_start, end_date=period_end,
+                min_confidence=0.0, batch_size=500,
+                progress_cb=lambda p, m: _update(task_id, message=f"[3/7] {m}"),
+            )
+            steps_result["steps"].append({"step": "3.bulk_confirm", "result": conf_res})
+
+            # 4) 매출 세금계산서 refile
+            if not skip_refile_sales:
+                _update(task_id, percent=55, message="[4/7] 매출 세금계산서 refile")
+                refile_res = await _refile_sales_tax_invoices_impl(
+                    period_start, period_end, dry_run=False,
+                    progress=lambda p, m: _update(task_id, message=f"[4/7] {m}"),
+                )
+                steps_result["steps"].append({"step": "4.refile_sales_ti", "result": refile_res})
+            else:
+                steps_result["steps"].append({"step": "4.refile_sales_ti", "result": "skipped"})
+
+            # 5) 153 misclassified patch
+            _update(task_id, percent=75, message="[5/7] 153 misclassified patch")
+            # 5a) 자가/한전/물류
+            from fastapi import Request as _Req  # noqa
+            # 내부 함수 직접 호출 — endpoint 함수를 그대로 부르면 안 됨 (Query 검증 우회)
+            import asyncpg as _asyncpg
+            from app.core.config import settings as _settings
+            raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+            url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+            conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+            try:
+                acc_153 = await conn.fetchval("SELECT id FROM accounts WHERE code = '153'")
+                async def _ensure_acc(code, name, cat):
+                    eid = await conn.fetchval("SELECT id FROM accounts WHERE code=$1", code)
+                    if eid: return int(eid)
+                    cid = await conn.fetchval("SELECT id FROM account_categories WHERE code=$1", cat)
+                    if not cid:
+                        cid = await conn.fetchval("SELECT id FROM account_categories ORDER BY id LIMIT 1")
+                    return int(await conn.fetchval("""
+                        INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                        VALUES ($1,$2,$3,1,true,true,10.00,true,NOW(),NOW())
+                        ON CONFLICT (code) DO UPDATE SET updated_at=NOW() RETURNING id
+                    """, code, name, cid))
+                acc_169 = await _ensure_acc("169", "가지급금", "1")
+                acc_515 = await _ensure_acc("515", "수도광열비(제)", "5")
+                acc_524 = await _ensure_acc("524", "운반비(제)", "5")
+                acc_830 = await _ensure_acc("830", "소모품비(판)", "5")
+
+                patch_results = []
+                for label, new_acc, where_clause in [
+                    ("자가거래", acc_169, "(v.merchant_name ~ '조인.{0,2}앤.{0,2}조인' OR vl.counterparty_name ~ '조인.{0,2}앤.{0,2}조인')"),
+                    ("한국전력", acc_515, "(v.merchant_name ~ '한국전력|전력공사' OR vl.counterparty_name ~ '한국전력|전력공사')"),
+                    ("운반_물류", acc_524, "(v.merchant_name ~ '롯데글로벌로지스|CJ대한통운|쿠팡|로지스|택배' OR vl.counterparty_name ~ '롯데글로벌로지스|CJ대한통운|쿠팡|로지스|택배')"),
+                ]:
+                    cnt = await conn.fetchval(f"""
+                        UPDATE voucher_lines vl SET account_id = $1
+                        FROM vouchers v
+                        WHERE vl.voucher_id = v.id AND vl.account_id = $2 AND vl.debit_amount > 0
+                          AND v.voucher_date BETWEEN $3 AND $4 AND v.status IN ('CONFIRMED','APPROVED')
+                          AND {where_clause}
+                        RETURNING 1
+                    """, new_acc, acc_153, period_start, period_end)
+                    patch_results.append({"pattern": label, "applied": "OK"})
+                # 5b) 카드/통장 fallback
+                applied_830 = await conn.execute("""
+                    UPDATE voucher_lines vl SET account_id = $1
+                    FROM vouchers v, auto_voucher_candidates c
+                    WHERE vl.voucher_id = v.id AND c.confirmed_voucher_id = v.id
+                      AND vl.account_id = $2 AND vl.debit_amount > 0
+                      AND v.voucher_date BETWEEN $3 AND $4
+                      AND v.status IN ('CONFIRMED','APPROVED')
+                      AND c.source_type IN ('CARD','BANK','CASH_RECEIPT')
+                """, acc_830, acc_153, period_start, period_end)
+                patch_results.append({"pattern": "card_bank_153_to_830", "applied": str(applied_830)})
+                steps_result["steps"].append({"step": "5.patch_misclassified", "result": patch_results})
+            finally:
+                await conn.close()
+
+            # 6) month-end closing
+            _update(task_id, percent=85, message="[6/7] month-end closing")
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=180.0) as cli:
+                # purge 후 재실행 (idempotent)
+                base = "http://localhost:8000/api/v1/auto-voucher/admin"
+                try:
+                    await cli.post(f"{base}/purge-month-end-closing",
+                                   params={"confirm_token": "DELETE_ALL", "year": year, "month": month})
+                except Exception:
+                    pass
+                close_r = await cli.post(f"{base}/run-month-end-closing",
+                                         params={"confirm_token": "I_UNDERSTAND",
+                                                 "year": year, "month": month,
+                                                 "dry_run": "false", "consume_all_153": "true"})
+                steps_result["steps"].append({"step": "6.month_end_closing",
+                                              "result": close_r.json() if close_r.status_code == 200 else {"error": close_r.text[:300]}})
+
+            # 7) 검증 — sales-breakdown
+            _update(task_id, percent=95, message="[7/7] 검증 리포트")
+            async with _httpx.AsyncClient(timeout=120.0) as cli:
+                verify_r = await cli.get(
+                    "http://localhost:8000/api/v1/auto-voucher/admin/sales-breakdown",
+                    params={"start_date": str(period_start), "end_date": str(period_end)},
+                )
+                verify = verify_r.json() if verify_r.status_code == 200 else {"error": verify_r.text[:300]}
+            steps_result["steps"].append({"step": "7.verification",
+                                          "summary": verify.get("summary") if isinstance(verify, dict) else None})
+
+            _update(task_id, status="completed", percent=100,
+                    message=f"완료 — {year}/{month} 결산",
+                    result=steps_result, finished_at=_t.time())
+        except Exception as ex:
+            logger.exception("월말 결산 워크플로우 실패")
+            _update(task_id, status="failed",
+                    message=f"실패: {str(ex)[:300]}",
+                    finished_at=_t.time())
+
+    _asyncio.create_task(_runner())
+    return {"task_id": task_id, "message": f"{year}/{month} 결산 백그라운드 시작 — /auto-voucher/progress/{task_id}"}
+
+
 @router.post("/admin/patch-card-bank-153-to-830")
 async def patch_card_bank_153_to_830(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
