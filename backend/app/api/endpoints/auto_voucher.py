@@ -3367,6 +3367,92 @@ async def _refile_sales_tax_invoices_impl(
         await gc.aclose()
 
 
+@router.post("/admin/patch-card-bank-153-to-830")
+async def patch_card_bank_153_to_830(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    target_code: str = Query("830", description="옮길 계정코드 (830 소모품비-판 기본)"),
+    target_name: str = Query("소모품비(판)"),
+    dry_run: bool = Query(True),
+):
+    """카드/통장/현금영수증 매입 중 153(원재료)로 잘못 분류된 line을 830(소모품비-판)으로 변경.
+
+    매입세금계산서는 그대로 (대부분 진짜 원재료). 카드/통장은 키워드 매칭 안 되면 모두 153 fallback이라
+    매출원가 과대계상 원인.
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+    try:
+        # 대상 계정 자동 생성
+        existing = await conn.fetchval("SELECT id FROM accounts WHERE code = $1", target_code)
+        if not existing:
+            cat_id = await conn.fetchval("SELECT id FROM account_categories WHERE code = '5'")
+            if not cat_id:
+                cat_id = await conn.fetchval("SELECT id FROM account_categories ORDER BY id LIMIT 1")
+            existing = await conn.fetchval("""
+                INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                VALUES ($1, $2, $3, 1, true, true, 10.00, true, NOW(), NOW())
+                ON CONFLICT (code) DO UPDATE SET updated_at = NOW()
+                RETURNING id
+            """, target_code, target_name, cat_id)
+        target_acc_id = int(existing)
+        acc_153 = await conn.fetchval("SELECT id FROM accounts WHERE code = '153'")
+
+        # 대상 voucher_lines: candidate.source_type이 카드/통장/현금영수증인 것
+        stat = await conn.fetchrow("""
+            SELECT COUNT(*) AS cnt, COALESCE(SUM(vl.debit_amount), 0)::float8 AS amt
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN auto_voucher_candidates c ON c.confirmed_voucher_id = v.id
+            WHERE vl.account_id = $1
+              AND vl.debit_amount > 0
+              AND v.voucher_date BETWEEN $2 AND $3
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND c.source_type IN ('CARD','BANK','CASH_RECEIPT')
+        """, acc_153, start_date, end_date)
+        cnt = int(stat["cnt"])
+        amt = float(stat["amt"])
+
+        applied = 0
+        if not dry_run and cnt > 0:
+            result_str = await conn.execute("""
+                UPDATE voucher_lines vl
+                SET account_id = $1
+                FROM vouchers v, auto_voucher_candidates c
+                WHERE vl.voucher_id = v.id
+                  AND c.confirmed_voucher_id = v.id
+                  AND vl.account_id = $2
+                  AND vl.debit_amount > 0
+                  AND v.voucher_date BETWEEN $3 AND $4
+                  AND v.status IN ('CONFIRMED','APPROVED')
+                  AND c.source_type IN ('CARD','BANK','CASH_RECEIPT')
+            """, target_acc_id, acc_153, start_date, end_date)
+            try:
+                applied = int(result_str.split()[-1])
+            except Exception:
+                applied = cnt
+
+        return {
+            "dry_run": dry_run,
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "target_code": target_code,
+            "target_account_id": target_acc_id,
+            "matched_lines": cnt,
+            "matched_amount": amt,
+            "applied": applied,
+        }
+    finally:
+        await conn.close()
+
+
 @router.post("/admin/patch-153-misclassified")
 async def patch_153_misclassified(
     confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
