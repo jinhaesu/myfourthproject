@@ -5016,3 +5016,174 @@ async def reclassify_all_uploads(
         "total_reclassified": total_reclassified,
         "errors": errors[:5] if errors else [],
     }
+
+
+# ============ 위하고 분개장 vs 시스템 비교 (업로드 없이) ============
+
+@router.post("/admin/compare-journal")
+async def compare_journal_vs_system(
+    files: List[UploadFile] = File(..., description="위하고 분개장 엑셀 (월별 여러 개 가능)"),
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD. 미지정 시 분개장에서 자동 감지"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    min_gap: float = Query(1_000_000.0, description="계정별 갭 노출 최소 금액"),
+):
+    """위하고 분개장(들)을 **DB에 저장하지 않고** 파싱→집계해서 현재 시스템 손익과 비교.
+
+    위하고 분개장은 이미 완성된 정답 분개이므로:
+      - 계정코드 첫자리로 손익 분류 (4=매출 net credit, 5/6/7=매출원가/제조원가 net debit, 8=판관비 net debit)
+      - 시스템 voucher_lines(모든 source)와 같은 기간으로 나란히 비교
+      - 계정코드별 gap top + 위하고 미매핑 계정명(코드 변환 실패) 노출
+
+    파일 양식 자동 감지(_is_journal_format) → 6컬럼 분개장 파서(_parse_journal) 재활용.
+    """
+    import asyncpg as _asyncpg
+    from datetime import date as _date
+
+    # 1) 파일 파싱 (DB 저장 X)
+    parsed: List[pd.DataFrame] = []
+    parse_log: List[dict] = []
+    for f in files:
+        contents = await f.read()
+        try:
+            df_raw = pd.read_excel(io.BytesIO(contents), header=None)
+        except Exception as e:
+            parse_log.append({"file": f.filename, "status": "read_fail", "detail": str(e)[:200]})
+            continue
+        if not _is_journal_format(df_raw):
+            parse_log.append({"file": f.filename, "status": "not_journal_format"})
+            continue
+        try:
+            df = _parse_journal(df_raw)
+            parsed.append(df)
+            parse_log.append({"file": f.filename, "status": "ok", "rows": int(df.shape[0])})
+        except ValueError as e:
+            parse_log.append({"file": f.filename, "status": "parse_fail", "detail": str(e)[:200]})
+
+    if not parsed:
+        raise HTTPException(status_code=400, detail={"message": "파싱된 분개장 없음", "log": parse_log})
+
+    j = pd.concat(parsed, ignore_index=True)
+
+    # 날짜 범위 자동 감지
+    all_dates = sorted([str(d) for d in j["날짜"].tolist() if d and str(d).strip()])
+    detected = [all_dates[0] if all_dates else None, all_dates[-1] if all_dates else None]
+    eff_start = _date.fromisoformat(start_date) if start_date else (
+        _date.fromisoformat(detected[0]) if detected[0] else None)
+    eff_end = _date.fromisoformat(end_date) if end_date else (
+        _date.fromisoformat(detected[1]) if detected[1] else None)
+    if not eff_start or not eff_end:
+        raise HTTPException(status_code=400, detail="기간을 감지하지 못함 — start_date/end_date를 직접 지정하세요.")
+
+    # 2) 위하고 계정코드별 차/대변 집계
+    wehago_codes: dict = {}      # code -> {name, debit, credit}
+    unmapped: dict = {}          # account_name -> {debit, credit} (코드 변환 실패분)
+    for _, r in j.iterrows():
+        code = str(r.get("원장계정코드") or "").strip()
+        name = str(r.get("원장계정명") or "").strip()
+        try:
+            deb = float(r.get("차변") or 0)
+        except (ValueError, TypeError):
+            deb = 0.0
+        try:
+            cre = float(r.get("대변") or 0)
+        except (ValueError, TypeError):
+            cre = 0.0
+        if code:
+            e = wehago_codes.setdefault(code, {"name": name, "debit": 0.0, "credit": 0.0})
+            e["debit"] += deb
+            e["credit"] += cre
+        elif name:
+            e = unmapped.setdefault(name, {"debit": 0.0, "credit": 0.0})
+            e["debit"] += deb
+            e["credit"] += cre
+
+    def _pl(code_map: dict):
+        """손익 3분류 — 매출(net credit), 매출원가/제조원가(net debit), 판관비(net debit)."""
+        sales = sum(v["credit"] - v["debit"] for c, v in code_map.items() if c.startswith("4"))
+        cogs = sum(v["debit"] - v["credit"] for c, v in code_map.items() if c[:1] in ("5", "6", "7"))
+        sga = sum(v["debit"] - v["credit"] for c, v in code_map.items() if c.startswith("8"))
+        inv153 = sum(v["debit"] - v["credit"] for c, v in code_map.items() if c == "153")
+        return sales, cogs, sga, inv153
+
+    w_sales, w_cogs, w_sga, w_inv = _pl(wehago_codes)
+
+    # 3) 시스템 집계 (asyncpg direct, 같은 기간, 모든 source)
+    raw_url = settings.DATABASE_URL_DIRECT or settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+    try:
+        sys_rows = await conn.fetch(
+            """
+            SELECT a.code AS code, a.name AS name,
+                   SUM(vl.debit_amount)::float8 AS debit,
+                   SUM(vl.credit_amount)::float8 AS credit
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN $1 AND $2
+            GROUP BY a.code, a.name
+            """,
+            eff_start, eff_end,
+        )
+    finally:
+        await conn.close()
+
+    sys_codes = {
+        r["code"]: {"name": r["name"], "debit": float(r["debit"] or 0), "credit": float(r["credit"] or 0)}
+        for r in sys_rows
+    }
+    s_sales, s_cogs, s_sga, s_inv = _pl(sys_codes)
+
+    def _block(label: str, w: float, s: float):
+        d = s - w
+        pct = (d / w * 100) if w else None
+        return {
+            "항목": label,
+            "위하고(정답)": round(w),
+            "시스템": round(s),
+            "차이": round(d),
+            "차이%": round(pct, 1) if pct is not None else None,
+        }
+
+    # 4) 계정코드별 gap (net 기준)
+    all_codes = set(wehago_codes) | set(sys_codes)
+    code_diffs = []
+    for c in all_codes:
+        w = wehago_codes.get(c)
+        s = sys_codes.get(c)
+        w_net = (w["debit"] - w["credit"]) if w else 0.0
+        s_net = (s["debit"] - s["credit"]) if s else 0.0
+        gap = s_net - w_net
+        if abs(gap) >= min_gap:
+            code_diffs.append({
+                "code": c,
+                "name": (w or s or {}).get("name", ""),
+                "위하고_net": round(w_net),
+                "시스템_net": round(s_net),
+                "gap": round(gap),
+                "in_wehago": w is not None,
+                "in_system": s is not None,
+            })
+    code_diffs.sort(key=lambda x: abs(x["gap"]), reverse=True)
+
+    unmapped_total = sum(v["debit"] + v["credit"] for v in unmapped.values())
+
+    return {
+        "parse_log": parse_log,
+        "period": {"detected": detected, "used": [str(eff_start), str(eff_end)]},
+        "pl_comparison": [
+            _block("매출", w_sales, s_sales),
+            _block("매출원가(5/6/7)", w_cogs, s_cogs),
+            _block("판관비(8)", w_sga, s_sga),
+            _block("재고자산 증감(153)", w_inv, s_inv),
+        ],
+        "wehago_unmapped_accounts": {
+            "note": "계정명→코드 변환 실패분. 손익 비교에서 누락되므로 매핑테이블 보강 필요.",
+            "total_amount": round(unmapped_total),
+            "items": [
+                {"name": k, "debit": round(v["debit"]), "credit": round(v["credit"])}
+                for k, v in sorted(unmapped.items(), key=lambda x: -(x[1]["debit"] + x[1]["credit"]))
+            ][:30],
+        },
+        "account_gaps_top": code_diffs[:50],
+    }
