@@ -5065,7 +5065,7 @@ async def compare_journal_vs_system(
 
     j = pd.concat(parsed, ignore_index=True)
 
-    # 날짜 범위 자동 감지
+    # 날짜 범위 자동 감지 (필터 적용 전)
     all_dates = sorted([str(d) for d in j["날짜"].tolist() if d and str(d).strip()])
     detected = [all_dates[0] if all_dates else None, all_dates[-1] if all_dates else None]
     eff_start = _date.fromisoformat(start_date) if start_date else (
@@ -5074,6 +5074,12 @@ async def compare_journal_vs_system(
         _date.fromisoformat(detected[1]) if detected[1] else None)
     if not eff_start or not eff_end:
         raise HTTPException(status_code=400, detail="기간을 감지하지 못함 — start_date/end_date를 직접 지정하세요.")
+
+    # 위하고 분개장도 기간으로 필터링 (시스템과 공정 비교) — start/end 지정 시에만
+    rows_before = int(j.shape[0])
+    j["_d"] = pd.to_datetime(j["날짜"], errors="coerce").dt.date
+    j = j[(j["_d"] >= eff_start) & (j["_d"] <= eff_end)]
+    rows_after = int(j.shape[0])
 
     # 2) 위하고 계정코드별 차/대변 집계
     wehago_codes: dict = {}      # code -> {name, debit, credit}
@@ -5098,15 +5104,43 @@ async def compare_journal_vs_system(
             e["debit"] += deb
             e["credit"] += cre
 
+    def _code_num(c: str) -> int:
+        try:
+            return int(str(c)[:3])
+        except (ValueError, TypeError):
+            return -1
+
     def _pl(code_map: dict):
-        """손익 3분류 — 매출(net credit), 매출원가/제조원가(net debit), 판관비(net debit)."""
-        sales = sum(v["credit"] - v["debit"] for c, v in code_map.items() if c.startswith("4"))
-        cogs = sum(v["debit"] - v["credit"] for c, v in code_map.items() if c[:1] in ("5", "6", "7"))
-        sga = sum(v["debit"] - v["credit"] for c, v in code_map.items() if c.startswith("8"))
-        inv153 = sum(v["debit"] - v["credit"] for c, v in code_map.items() if c == "153")
+        """손익 3분류 (K-GAAP 코드 경계).
+        매출 400~449(net credit), 매출원가 450~499+5xx+6xx+7xx(net debit),
+        판관비 8xx(net debit). 455 제품매출원가/451 상품매출원가는 매출원가로 분류."""
+        sales = cogs = sga = inv153 = 0.0
+        for c, v in code_map.items():
+            n = _code_num(c)
+            ncr = v["credit"] - v["debit"]
+            ndr = v["debit"] - v["credit"]
+            if 400 <= n <= 449:
+                sales += ncr
+            elif 450 <= n <= 799:
+                cogs += ndr
+            elif 800 <= n <= 899:
+                sga += ndr
+            if c == "153":
+                inv153 += ndr
         return sales, cogs, sga, inv153
 
     w_sales, w_cogs, w_sga, w_inv = _pl(wehago_codes)
+
+    # 미매핑 계정도 접미사로 손익 반영 — '(제)' 제조원가→매출원가, '(판)' 판관비
+    unmapped_pl = {"cogs": 0.0, "sga": 0.0}
+    for nm, v in unmapped.items():
+        ndr = v["debit"] - v["credit"]
+        if "(제)" in nm:
+            w_cogs += ndr
+            unmapped_pl["cogs"] += ndr
+        elif "(판)" in nm:
+            w_sga += ndr
+            unmapped_pl["sga"] += ndr
 
     # 3) 시스템 집계 (asyncpg direct, 같은 기간, 모든 source)
     raw_url = settings.DATABASE_URL_DIRECT or settings.DATABASE_URL
@@ -5171,7 +5205,16 @@ async def compare_journal_vs_system(
 
     return {
         "parse_log": parse_log,
-        "period": {"detected": detected, "used": [str(eff_start), str(eff_end)]},
+        "period": {
+            "detected": detected,
+            "used": [str(eff_start), str(eff_end)],
+            "wehago_rows": {"before_filter": rows_before, "after_filter": rows_after},
+        },
+        "unmapped_pl_reflected": {
+            "note": "미매핑 계정 중 '(제)'→매출원가, '(판)'→판관비로 반영한 net 금액",
+            "cogs_added": round(unmapped_pl["cogs"]),
+            "sga_added": round(unmapped_pl["sga"]),
+        },
         "pl_comparison": [
             _block("매출", w_sales, s_sales),
             _block("매출원가(5/6/7)", w_cogs, s_cogs),
