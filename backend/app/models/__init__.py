@@ -41,6 +41,7 @@ from app.models.sales import (
     SalesRecord,
     SalesAutomationSchedule,
 )
+from app.models.payroll import PayrollBatch, PayrollRecord
 
 __all__ = [
     # User
@@ -86,4 +87,7 @@ __all__ = [
     "SalesChannel",
     "SalesRecord",
     "SalesAutomationSchedule",
+    # Payroll
+    "PayrollBatch",
+    "PayrollRecord",
 ]

@@ -32,6 +32,7 @@ from app.api.endpoints import (
     auto_voucher,
     daily_cash_report,
     cards,
+    payroll,
 )
 
 api_router = APIRouter()
@@ -221,4 +222,11 @@ api_router.include_router(
     auto_voucher.router,
     prefix="/auto-voucher",
     tags=["자동전표"]
+)
+
+# 급여(인건비) 관리
+api_router.include_router(
+    payroll.router,
+    prefix="/payroll",
+    tags=["급여관리"],
 )

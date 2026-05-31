@@ -32,6 +32,7 @@ import CashflowForecastPage from '@/pages/CashflowForecastPage'
 import AuditReportPage from '@/pages/AuditReportPage'
 import ExchangeRatesPage from '@/pages/ExchangeRatesPage'
 import ArApPage from '@/pages/ArApPage'
+import PayrollPage from '@/pages/PayrollPage'
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -80,6 +81,7 @@ function App() {
         <Route path="cashflow-forecast" element={<CashflowForecastPage />} />
         <Route path="audit-report" element={<AuditReportPage />} />
         <Route path="ar-ap" element={<ArApPage />} />
+        <Route path="payroll" element={<PayrollPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="admin" element={<AdminPage />} />
       </Route>

@@ -1217,4 +1217,40 @@ export const cardsApi = {
     api.get('/cards/monthly', { params: { card_key, months }, timeout: 120_000 }),
 }
 
+// ==================== 급여(인건비) 관리 ====================
+export const payrollApi = {
+  listBatches: (year?: number) =>
+    api.get('/payroll/batches', { params: { year } }),
+
+  getBatch: (id: number) =>
+    api.get(`/payroll/batches/${id}`),
+
+  createBatch: (data: { period: string; pay_date: string; title?: string; memo?: string }) =>
+    api.post('/payroll/batches', data),
+
+  updateBatch: (id: number, data: { title?: string; pay_date?: string; memo?: string; status?: string }) =>
+    api.put(`/payroll/batches/${id}`, data),
+
+  deleteBatch: (id: number) =>
+    api.delete(`/payroll/batches/${id}`),
+
+  saveRecords: (id: number, records: any[], replace: boolean) =>
+    api.post(`/payroll/batches/${id}/records`, { records, replace }),
+
+  updateRecord: (id: number, data: any) =>
+    api.put(`/payroll/records/${id}`, data),
+
+  deleteRecord: (id: number) =>
+    api.delete(`/payroll/records/${id}`),
+
+  journalPreview: (id: number) =>
+    api.get(`/payroll/batches/${id}/journal-preview`),
+
+  post: (id: number, userId: number) =>
+    api.post(`/payroll/batches/${id}/post`, null, { params: { user_id: userId } }),
+
+  unpost: (id: number) =>
+    api.post(`/payroll/batches/${id}/unpost`),
+}
+
 export default api
