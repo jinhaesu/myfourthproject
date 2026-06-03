@@ -7,7 +7,7 @@ const API_BASE_URL =
   import.meta.env.VITE_API_URL ||
   (import.meta.env.DEV
     ? '/api/v1'
-    : 'https://myfourthproject-production.up.railway.app/api/v1')
+    : 'https://myfourthproject-backend-557811875995.asia-northeast3.run.app/api/v1')
 
 const api = axios.create({
   baseURL: API_BASE_URL,

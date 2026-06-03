@@ -1,0 +1,17 @@
+# Cloud Build 업로드 제외 (배포 속도/용량)
+venv/
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+*.db
+.env
+.env.*
+tests/
+.pytest_cache/
+.mypy_cache/
+uploads/*
+ml/models/*
