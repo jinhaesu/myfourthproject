@@ -96,6 +96,17 @@ async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[
         logger.exception(f"그랜터 EXPENSE_TICKET 조회 실패 ({start_date}~{end_date})")
         items = []
 
+    # 취소/거절 건 제외 — paymentStatus가 정상(NORMAL)이 아닌 카드사용은 실지출이 아님.
+    # (고위드 등 일부 카드는 취소거래도 EXPENSE_TICKET으로 내려와 합계가 2배로 부풀려짐)
+    _BAD_STATUS = {"CANCELED", "PURCHASE_CANCELED", "REJECTED"}
+    _orig = len(items)
+    items = [
+        t for t in items
+        if str(((t.get("cardUsage") or {}).get("paymentStatus") or "NORMAL")).upper() not in _BAD_STATUS
+    ]
+    if _orig != len(items):
+        logger.info(f"카드 EXPENSE_TICKET 취소/거절 {_orig - len(items)}건 제외 ({start_date}~{end_date})")
+
     _EXPENSE_CACHE[key] = (items, now)
     # 5분 지난 캐시 정리
     for k in list(_EXPENSE_CACHE.keys()):
