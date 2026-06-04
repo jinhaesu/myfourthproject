@@ -23,7 +23,7 @@ class PayrollBatch(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    period: Mapped[str] = mapped_column(String(7), nullable=False, index=True)  # "YYYY-MM"
+    period: Mapped[str] = mapped_column(String(7), nullable=False)  # "YYYY-MM" (인덱스는 __table_args__)
     pay_date: Mapped[date] = mapped_column(Date, nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="DRAFT")
@@ -68,7 +68,7 @@ class PayrollRecord(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     batch_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("payroll_batches.id", ondelete="CASCADE"),
-        nullable=False, index=True
+        nullable=False  # 인덱스는 __table_args__
     )
 
     # 사원 정보
