@@ -101,14 +101,30 @@ class VoucherService:
 
         # 전표 라인 생성
         for idx, line_data in enumerate(lines, 1):
+            line_debit = Decimal(str(line_data.get("debit_amount", 0)))
+            line_credit = Decimal(str(line_data.get("credit_amount", 0)))
+            line_vat = Decimal(str(line_data.get("vat_amount", 0)))
+            line_supply = Decimal(str(line_data.get("supply_amount", 0)))
+
+            # VAT 정합성 검증: vat+supply가 0보다 크면 해당 라인 금액과 일치해야 함
+            # vat=0, supply=0인 기존 데이터(비과세 라인 등)는 검증 통과
+            vat_supply_sum = line_vat + line_supply
+            if vat_supply_sum > Decimal("0"):
+                line_amount = line_debit if line_debit > Decimal("0") else line_credit
+                if vat_supply_sum != line_amount:
+                    raise ValueError(
+                        f"라인 {idx}: vat_amount({line_vat}) + supply_amount({line_supply}) = "
+                        f"{vat_supply_sum}이 라인 금액({line_amount})과 일치하지 않습니다."
+                    )
+
             line = VoucherLine(
                 voucher_id=voucher.id,
                 line_number=idx,
                 account_id=line_data["account_id"],
-                debit_amount=Decimal(str(line_data.get("debit_amount", 0))),
-                credit_amount=Decimal(str(line_data.get("credit_amount", 0))),
-                vat_amount=Decimal(str(line_data.get("vat_amount", 0))),
-                supply_amount=Decimal(str(line_data.get("supply_amount", 0))),
+                debit_amount=line_debit,
+                credit_amount=line_credit,
+                vat_amount=line_vat,
+                supply_amount=line_supply,
                 description=line_data.get("description"),
                 counterparty_name=line_data.get("counterparty_name"),
                 counterparty_business_number=line_data.get("counterparty_business_number"),
@@ -264,14 +280,29 @@ class VoucherService:
             total_credit = Decimal("0")
 
             for idx, line_data in enumerate(updates["lines"], 1):
+                u_debit = Decimal(str(line_data.get("debit_amount", 0)))
+                u_credit = Decimal(str(line_data.get("credit_amount", 0)))
+                u_vat = Decimal(str(line_data.get("vat_amount", 0)))
+                u_supply = Decimal(str(line_data.get("supply_amount", 0)))
+
+                # VAT 정합성 검증 (update 경로)
+                u_vat_supply = u_vat + u_supply
+                if u_vat_supply > Decimal("0"):
+                    u_line_amount = u_debit if u_debit > Decimal("0") else u_credit
+                    if u_vat_supply != u_line_amount:
+                        raise ValueError(
+                            f"라인 {idx}: vat_amount({u_vat}) + supply_amount({u_supply}) = "
+                            f"{u_vat_supply}이 라인 금액({u_line_amount})과 일치하지 않습니다."
+                        )
+
                 line = VoucherLine(
                     voucher_id=voucher.id,
                     line_number=idx,
                     account_id=line_data["account_id"],
-                    debit_amount=Decimal(str(line_data.get("debit_amount", 0))),
-                    credit_amount=Decimal(str(line_data.get("credit_amount", 0))),
-                    vat_amount=Decimal(str(line_data.get("vat_amount", 0))),
-                    supply_amount=Decimal(str(line_data.get("supply_amount", 0))),
+                    debit_amount=u_debit,
+                    credit_amount=u_credit,
+                    vat_amount=u_vat,
+                    supply_amount=u_supply,
                     description=line_data.get("description"),
                     counterparty_name=line_data.get("counterparty_name"),
                     counterparty_business_number=line_data.get("counterparty_business_number"),
@@ -337,6 +368,14 @@ class VoucherService:
 
         임시저장 상태만 소프트 삭제 가능.
         확정된 전표는 역분개(cancel_voucher)를 사용해야 합니다.
+
+        [FK ON DELETE SET NULL 처리]
+        auto_voucher_candidates.confirmed_voucher_id / duplicate_voucher_id는
+        DB 레벨 ON DELETE SET NULL 제약으로 설정되어 있습니다.
+        이 메서드는 소프트 삭제(CANCELLED 상태 전환)이므로 vouchers 행이
+        실제로 DELETE되지 않아 FK 트리거가 발생하지 않습니다.
+        하드 DELETE가 필요한 경우(관리자 정리 등)에는 DB FK가 자동으로
+        confirmed_voucher_id / duplicate_voucher_id를 NULL로 정리합니다.
         """
         voucher = await self.db.get(Voucher, voucher_id)
         if not voucher:
@@ -357,6 +396,12 @@ class VoucherService:
 
         회계 감사 원칙에 따라 원본 전표를 삭제하지 않고,
         차변/대변을 반대로 하는 역분개 전표를 생성합니다.
+
+        [FK ON DELETE SET NULL 처리]
+        원본 전표는 CANCELLED 상태로 전환될 뿐 실제 삭제되지 않습니다.
+        auto_voucher_candidates의 confirmed_voucher_id FK는 DB 레벨
+        ON DELETE SET NULL로 설정되어 있어, 향후 하드 DELETE 발생 시
+        자동으로 NULL 처리됩니다. 이 경로에서는 명시적 NULL 처리 불필요.
         """
         original = await self.get_voucher(voucher_id)
         if not original:

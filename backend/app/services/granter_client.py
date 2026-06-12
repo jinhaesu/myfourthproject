@@ -25,6 +25,28 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# 취소/거절 카드거래 paymentStatus — 실지출이 아니므로 모든 소비자가 제외해야 함.
+# (고위드 등 일부 카드는 취소거래도 EXPENSE_TICKET으로 내려와 합계가 2배로 부풀려짐)
+CARD_BAD_PAYMENT_STATUS = {"CANCELED", "PURCHASE_CANCELED", "REJECTED"}
+
+
+def filter_normal_card_tickets(tickets, context: str = "") -> list:
+    """EXPENSE_TICKET 리스트에서 취소/거절(paymentStatus != NORMAL) 건 제외.
+
+    카드 합산·분개 후보·자금일보 등 EXPENSE_TICKET을 쓰는 모든 경로는
+    이 함수를 거쳐야 한다 (개별 구현 금지 — 누락 시 합계 2배 부풀림 재발).
+    """
+    items = tickets or []
+    kept = [
+        t for t in items
+        if str(((t.get("cardUsage") or {}).get("paymentStatus") or "NORMAL")).upper()
+        not in CARD_BAD_PAYMENT_STATUS
+    ]
+    dropped = len(items) - len(kept)
+    if dropped:
+        logger.info("EXPENSE_TICKET 취소/거절 %d건 제외%s", dropped, f" ({context})" if context else "")
+    return kept
+
 
 class GranterAPIError(Exception):
     def __init__(self, message: str, status_code: Optional[int] = None, body: Any = None):

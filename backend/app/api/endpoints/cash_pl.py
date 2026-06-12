@@ -1,9 +1,6 @@
 """
 Cash-Basis P&L API — 현금주의 손익 분석
-AI 분류 메뉴에 업로드된 거래(ai_raw_transaction_data)에서
-계정코드 첫 자리로 매출/원가/판관비/영업외를 자동 분류해 손익 집계.
-
-데이터 소스: ai_raw_transaction_data
+데이터 소스: unified_ledger (CONFIRMED Voucher 단일 소스, 마감전표 제외)
 - 4xx: revenue, 5xx: cogs, 6xx/7xx: 제조원가(cogs로 합산), 8xx: opex, 9xx: non_operating
 """
 import re
@@ -12,11 +9,15 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.ai import AIRawTransactionData
+from app.core.account_category import (
+    categorize_account,
+    strip_code,
+    is_non_operating_income,
+)
 from app.services.unified_ledger import unified_aggregation_subquery
 from app.schemas.cash_pl import (
     CashPLRequest,
@@ -29,88 +30,6 @@ from app.schemas.cash_pl import (
 )
 
 router = APIRouter()
-
-
-def _strip_code(code: Optional[str]) -> str:
-    if not code:
-        return '0'
-    return code.lstrip('0') or '0'
-
-
-# 이름 키워드 기반 분류 (가장 강한 신호)
-_NAME_RULES = [
-    # 매출원가 키워드 (가장 우선 — 매출보다 강함)
-    (('매출원가', '제조원가', '상품매출원가', '제품매출원가', '용역매출원가'), 'cogs'),
-    # 영업외 (특정 키워드)
-    (('이자수익', '이자비용', '외환차익', '외환차손', '외화환산이익', '외화환산손실',
-      '잡이익', '잡손실', '유형자산처분', '무형자산처분', '기부금', '재해손실'), 'non_operating'),
-    # 매출
-    (('상품매출', '제품매출', '용역매출', '공사매출', '임대료수익', '수출매출'), 'revenue'),
-]
-
-
-def _category_of(code: Optional[str], name: str = '') -> str:
-    """
-    카테고리 분류:
-      asset / liability / equity / revenue / cogs / opex / non_operating
-
-    우선순위: 이름 키워드 → 코드 세분화 (4xx 중 45x~49x는 cogs)
-    """
-    n = (name or '').strip()
-
-    # 1) 이름 우선
-    for keywords, cat in _NAME_RULES:
-        if any(k in n for k in keywords):
-            return cat
-
-    # 2) 코드 기반
-    s = _strip_code(code)
-    first = s[0] if s else '0'
-
-    if first == '4':
-        # 4xx 세분화: 45x~49x는 cogs(매출원가), 40x~44x는 revenue
-        if len(s) >= 2 and s[1] in ('5', '6', '7', '8', '9'):
-            return 'cogs'
-        return 'revenue'
-
-    if first == '9':
-        # 9xx은 일반적으로 영업외 — 이름에 '비용'이 있어도 non_operating
-        return 'non_operating'
-
-    return {
-        '1': 'asset',
-        '2': 'liability',
-        '3': 'equity',
-        '5': 'cogs',
-        '6': 'cogs',
-        '7': 'cogs',
-        '8': 'opex',
-    }.get(first, 'opex')
-
-
-def _is_non_operating_income(code: Optional[str], name: str = '') -> bool:
-    """영업외 중에서 '수익'성인지 (이자수익, 잡이익 등)"""
-    n = (name or '').strip()
-    return any(k in n for k in ('수익', '이익', '환입'))
-
-
-def _date_filters(period_start: Optional[date], period_end: Optional[date]):
-    """
-    transaction_date 형식이 'YYYY-MM-DD' 또는 'YYYY.MM.DD' 섞여 있어도 안전 비교.
-    이전 OR 패턴(>= s OR >= s2)은 ASCII '-'(0x2D) < '.'(0x2E)이라
-    'YYYY-MM-DD' 데이터가 '< YYYY.MM.DD' 끝 조건에 항상 True가 되어
-    미래 데이터까지 포함시키는 치명적 버그가 있었음.
-    → func.replace로 '.'를 '-'로 정규화한 후 ISO 형식과 비교.
-    """
-    filters = []
-    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
-    if period_start:
-        s = period_start.strftime('%Y-%m-%d')
-        filters.append(norm_date >= s)
-    if period_end:
-        e_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-        filters.append(norm_date < e_next)
-    return filters
 
 
 def _extract_month_key(date_str: Optional[str]) -> Optional[str]:
@@ -131,13 +50,16 @@ async def _aggregate_by_category(
     기간 내 카테고리별 합계.
     ai_raw + Voucher 통합 데이터(unified_aggregation_subquery)에서 집계.
 
-    분류는 코드 + 계정명으로 결정 (_category_of):
+    분류는 코드 + 계정명으로 결정 (categorize_account):
     - revenue: 401, 404 등 매출 계정
     - cogs: 45x~49x, 5xx, 6xx, 7xx (매출원가/제조원가) 또는 이름에 '매출원가'
     - opex: 8xx (판관비)
     - non_operating: 9xx 또는 이자수익/이자비용/외환 등
+
+    exclude_closing=True: 현금주의 손익에 마감 대체분개가 섞이면 수익/비용이 0으로
+    상쇄되는 이중반영 문제가 발생하므로 자동 마감(auto_closing) 전표를 제외한다.
     """
-    sub = unified_aggregation_subquery(period_start, period_end)
+    sub = unified_aggregation_subquery(period_start, period_end, exclude_closing=True)
     rows = (await db.execute(
         select(
             sub.c.source_account_code,
@@ -152,7 +74,7 @@ async def _aggregate_by_category(
     nop_expense = Decimal('0')
 
     for r in rows:
-        cat = _category_of(r.source_account_code, r.name)
+        cat = categorize_account(r.source_account_code, r.name)
         debit = Decimal(str(r.debit or 0))
         credit = Decimal(str(r.credit or 0))
         if cat == 'revenue':
@@ -163,7 +85,7 @@ async def _aggregate_by_category(
             totals['opex'] += debit - credit
         elif cat == 'non_operating':
             # 영업외 수익/비용 분리
-            if _is_non_operating_income(r.source_account_code, r.name):
+            if is_non_operating_income(r.source_account_code, r.name):
                 nop_income += credit - debit
             else:
                 nop_expense += debit - credit
@@ -217,7 +139,7 @@ async def get_quick_snapshot(
 ):
     """
     당월 vs 전월 매출/영업이익 빠른 스냅샷.
-    실제 ai_raw_transaction_data를 집계하여 반환.
+    CONFIRMED Voucher(마감전표 제외) 기준 집계.
     """
     today = date.today()
     this_month_start = today.replace(day=1)
@@ -339,8 +261,8 @@ async def get_cash_pl(
             req.from_date, req.to_date, f"{req.from_date} ~ {req.to_date}", totals
         ))
 
-    # Line items (전 기간 합계, 계정별) — ai_raw + Voucher 통합
-    sub_li = unified_aggregation_subquery(req.from_date, req.to_date)
+    # Line items (전 기간 합계, 계정별) — Voucher 단일 소스, 마감전표 제외
+    sub_li = unified_aggregation_subquery(req.from_date, req.to_date, exclude_closing=True)
     rows = (await db.execute(
         select(
             sub_li.c.source_account_code,
@@ -353,7 +275,7 @@ async def get_cash_pl(
     total_revenue = sum(s.revenue for s in summaries) or Decimal('1')
     line_items: List[CashPLLineItem] = []
     for r in rows:
-        cat = _category_of(r.source_account_code, r.name)
+        cat = categorize_account(r.source_account_code, r.name)
         if cat in ('asset', 'liability', 'equity'):
             continue
         debit = Decimal(str(r.debit or 0))
@@ -362,12 +284,12 @@ async def get_cash_pl(
             amt = credit - debit
         elif cat == 'non_operating':
             # 영업외수익/비용 둘 다 non_operating 카테고리로 묶음
-            amt = (credit - debit) if _is_non_operating_income(r.source_account_code, r.name) else (debit - credit)
+            amt = (credit - debit) if is_non_operating_income(r.source_account_code, r.name) else (debit - credit)
         else:
             amt = debit - credit
         line_items.append(CashPLLineItem(
             account_code=r.source_account_code,
-            account_name=r.name or f"계정 {_strip_code(r.source_account_code)}",
+            account_name=r.name or f"계정 {strip_code(r.source_account_code)}",
             category=cat,  # type: ignore[arg-type]
             amount=amt,
             pct_of_revenue=float(amt / total_revenue * 100) if total_revenue else 0.0,
@@ -392,11 +314,11 @@ async def _aggregate_by_account_in_period(
     period_end: date,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    기간 내 source_account_code별 합계 (ai_raw + Voucher 통합).
+    기간 내 source_account_code별 합계 — Voucher 단일 소스, 마감전표 제외.
     Returns: { code: { name, category, amount } }
     amount: 카테고리에 따라 부호 적용된 값
     """
-    sub = unified_aggregation_subquery(period_start, period_end)
+    sub = unified_aggregation_subquery(period_start, period_end, exclude_closing=True)
     rows = (await db.execute(
         select(
             sub.c.source_account_code,
@@ -408,7 +330,7 @@ async def _aggregate_by_account_in_period(
 
     out = {}
     for r in rows:
-        cat = _category_of(r.source_account_code, r.name)
+        cat = categorize_account(r.source_account_code, r.name)
         if cat in ('asset', 'liability', 'equity'):
             continue
         debit = Decimal(str(r.debit or 0))
@@ -416,12 +338,12 @@ async def _aggregate_by_account_in_period(
         if cat == 'revenue':
             amt = credit - debit
         elif cat == 'non_operating':
-            amt = (credit - debit) if _is_non_operating_income(r.source_account_code, r.name) else (debit - credit)
+            amt = (credit - debit) if is_non_operating_income(r.source_account_code, r.name) else (debit - credit)
         else:
             amt = debit - credit
         out[r.source_account_code] = {
             "code": r.source_account_code,
-            "name": r.name or f"계정 {_strip_code(r.source_account_code)}",
+            "name": r.name or f"계정 {strip_code(r.source_account_code)}",
             "category": cat,
             "amount": amt,
         }

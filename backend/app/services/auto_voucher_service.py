@@ -932,7 +932,7 @@ async def _generate_candidates_core(
             logger.warning(f"세금계산서 후보 생성 오류 ticket={t.get('id')}: {e}")
             counts["errors"] += 1
 
-    _CARD_BAD_STATUS = {"CANCELED", "PURCHASE_CANCELED", "REJECTED"}
+    from app.services.granter_client import CARD_BAD_PAYMENT_STATUS
     for t in tickets.get("EXPENSE_TICKET", []) or []:
         tid = str(t.get("id", ""))
         if tid and tid in existing_ids:
@@ -940,7 +940,7 @@ async def _generate_candidates_core(
             continue
         # 취소/거절 카드거래는 실지출이 아니므로 분개 제외 (고위드 등 취소건이 중복 청구로 내려옴)
         _pstatus = str(((t.get("cardUsage") or {}).get("paymentStatus") or "NORMAL")).upper()
-        if _pstatus in _CARD_BAD_STATUS:
+        if _pstatus in CARD_BAD_PAYMENT_STATUS:
             counts["skipped"] += 1
             continue
         try:

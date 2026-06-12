@@ -1,21 +1,23 @@
 """
 Account Ledger API — 계정별 원장 (총계정원장)
-AI 분류 메뉴에서 업로드된 거래 데이터(ai_raw_transaction_data)를
-계정과목별로 좌측 리스트 + 우측 엑셀형 그리드로 제공.
-
-데이터 소스: ai_raw_transaction_data
+데이터 소스: unified_ledger (CONFIRMED Voucher 단일 소스)
 - source_account_code/source_account_name: 원장 계정 (좌측 리스트)
-- account_code/account_name: 상대 계정 (우측 그리드의 상대계정 컬럼)
+- merchant_name: 거래처 (상대계정 컬럼)
 """
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
-from typing import Optional, List, Tuple, Any
+from typing import Optional, List, Any
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.account_category import (
+    categorize_coarse,
+    strip_code,
+    CATEGORY_LABEL,
+)
 from app.models.ai import AIRawTransactionData
 from app.schemas.ledger import (
     LedgerAccount,
@@ -28,6 +30,11 @@ from app.schemas.ledger import (
 )
 
 router = APIRouter()
+
+# ============ 카테고리 분류 (공유 모듈 위임) ============
+# categorize_coarse  : cogs/opex → 'expense'로 통합 (원장 용도)
+# strip_code         : 코드 앞 0 제거
+# CATEGORY_LABEL     : 카테고리 → 한글 표시명 (expense:'비용' 포함)
 
 
 # ============ 진단용 ============
@@ -246,90 +253,27 @@ async def diagnose(
 @router.get("/years")
 async def get_available_years(db: AsyncSession = Depends(get_db)):
     """
-    데이터에 존재하는 회계연도 목록.
+    데이터에 존재하는 회계연도 목록 — CONFIRMED Voucher 기준.
     프론트에서 가장 최신 년도를 default로 사용하도록 활용.
     """
-    rows = (await db.execute(
-        select(AIRawTransactionData.transaction_date)
+    from app.models.accounting import Voucher, VoucherStatus
+    from sqlalchemy import extract
+
+    year_rows = (await db.execute(
+        select(func.extract('year', Voucher.transaction_date).label('yr'))
         .where(
-            AIRawTransactionData.transaction_date.isnot(None),
-            AIRawTransactionData.transaction_date != '',
+            Voucher.status == VoucherStatus.CONFIRMED,
+            Voucher.transaction_date.isnot(None),
         )
         .distinct()
+        .order_by(func.extract('year', Voucher.transaction_date).desc())
     )).all()
 
-    years: set = set()
-    for r in rows:
-        s = r[0] or ''
-        m = re.match(r'(\d{4})', s)
-        if m:
-            try:
-                years.add(int(m.group(1)))
-            except ValueError:
-                pass
-
-    years_list = sorted(years, reverse=True)
+    years_list = [int(r.yr) for r in year_rows if r.yr is not None]
     return {
         "years": years_list,
         "latest": years_list[0] if years_list else None,
     }
-
-
-# ============ 카테고리 분류 (코드 + 이름 기반) ============
-CATEGORY_LABEL = {
-    'asset': '자산',
-    'liability': '부채',
-    'equity': '자본',
-    'revenue': '수익',
-    'expense': '비용',
-    'non_operating': '영업외',
-}
-
-# 이름 키워드 기반 분류
-_NAME_RULES = [
-    (('매출원가', '제조원가', '상품매출원가', '제품매출원가', '용역매출원가'), 'expense'),
-    (('이자수익', '이자비용', '외환차익', '외환차손', '외화환산이익', '외화환산손실',
-      '잡이익', '잡손실', '유형자산처분', '무형자산처분', '기부금', '재해손실'), 'non_operating'),
-    (('상품매출', '제품매출', '용역매출', '공사매출', '임대료수익', '수출매출'), 'revenue'),
-]
-
-
-def _strip_code(code: Optional[str]) -> str:
-    if not code:
-        return '0'
-    return code.lstrip('0') or '0'
-
-
-def _category_of(code: Optional[str], name: str = '') -> str:
-    """
-    코드 + 이름 둘 다 보고 정확히 분류.
-    - 이름 우선: '매출원가'는 expense로 (45x인 4xx여도)
-    - 4xx 세분화: 45x~49x는 expense(원가), 40x~44x는 revenue
-    """
-    n = (name or '').strip()
-
-    for keywords, cat in _NAME_RULES:
-        if any(k in n for k in keywords):
-            return cat
-
-    s = _strip_code(code)
-    first = s[0] if s else '0'
-
-    if first == '4':
-        if len(s) >= 2 and s[1] in ('5', '6', '7', '8', '9'):
-            return 'expense'
-        return 'revenue'
-
-    return {
-        '1': 'asset',
-        '2': 'liability',
-        '3': 'equity',
-        '5': 'expense',
-        '6': 'expense',
-        '7': 'expense',
-        '8': 'expense',
-        '9': 'non_operating',
-    }.get(first, 'expense')
 
 
 def _date_to_iso(s: Optional[str]) -> Optional[str]:
@@ -342,20 +286,6 @@ def _date_to_iso(s: Optional[str]) -> Optional[str]:
         y, mo, d = m.groups()
         return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
     return None
-
-
-def _date_range_filters(period_start: Optional[date], period_end: Optional[date]):
-    """transaction_date(string)에 대한 기간 필터 (yyyy-MM-dd / yyyy.MM.dd 모두 매칭).
-    OR 패턴은 ASCII '-' < '.' 때문에 끝 조건이 깨지므로 정규화 후 비교."""
-    filters = []
-    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
-    if period_start:
-        s = period_start.strftime('%Y-%m-%d')
-        filters.append(norm_date >= s)
-    if period_end:
-        e_next = (period_end + timedelta(days=1)).strftime('%Y-%m-%d')
-        filters.append(norm_date < e_next)
-    return filters
 
 
 def _signed_change(category: str, debit: Decimal, credit: Decimal) -> Decimal:
@@ -379,7 +309,7 @@ async def list_accounts(
 ):
     """
     계정과목 리스트 — source_account_code 기준 GROUP BY.
-    ai_raw_transaction_data + Voucher(CONFIRMED) 통합 데이터에서 집계.
+    CONFIRMED Voucher 단일 소스(unified_aggregation_subquery).
     """
     from app.services.unified_ledger import unified_aggregation_subquery
 
@@ -410,7 +340,7 @@ async def list_accounts(
 
     accounts: List[LedgerAccount] = []
     for r in rows:
-        cat = _category_of(r.source_account_code, r.name)
+        cat = categorize_coarse(r.source_account_code, r.name)
         if category and cat != category:
             continue
         debit = Decimal(str(r.debit or 0))
@@ -420,7 +350,7 @@ async def list_accounts(
             continue
         accounts.append(LedgerAccount(
             account_code=r.source_account_code,
-            account_name=r.name or f"계정 {_strip_code(r.source_account_code)}",
+            account_name=r.name or f"계정 {strip_code(r.source_account_code)}",
             category=cat,  # type: ignore[arg-type]
             parent_code=None,
             depth=0,
@@ -432,7 +362,7 @@ async def list_accounts(
             has_children=False,
         ))
 
-    accounts.sort(key=lambda a: (a.category, _strip_code(a.account_code)))
+    accounts.sort(key=lambda a: (a.category, strip_code(a.account_code)))
     return accounts
 
 
@@ -493,7 +423,7 @@ async def get_account_summary(
 ):
     """선택 계정의 기간 요약 (그리드 상단 KPI)"""
     # 임시로 코드만 — 아래에서 name 받아온 후 재분류
-    cat = _category_of(account_code)
+    cat = categorize_coarse(account_code)
 
     # 기간 내 합계 — ai_raw + Voucher 통합
     from app.services.unified_ledger import unified_aggregation_subquery
@@ -520,7 +450,7 @@ async def get_account_summary(
     )).one()
 
     # 이름 받아온 후 카테고리 재분류 (이름 우선)
-    cat = _category_of(account_code, period_row.name or '')
+    cat = categorize_coarse(account_code, period_row.name or '')
 
     # 회계 원칙: 수익·비용·영업외 계정은 매년 기말에 손익으로 마감되어 0으로 리셋된다.
     # 기간 시작 이전 누적을 "기초 잔액"으로 잡으면 매출이 과대 표시되는 오류 발생.
@@ -542,7 +472,7 @@ async def get_account_summary(
 
     return LedgerSummary(
         account_code=account_code,
-        account_name=period_row.name or f"계정 {_strip_code(account_code)}",
+        account_name=period_row.name or f"계정 {strip_code(account_code)}",
         category=cat,  # type: ignore[arg-type]
         period_start=period_start,
         period_end=period_end,
@@ -748,7 +678,7 @@ async def update_entry(
     await db.commit()
     await db.refresh(row)
 
-    cat = _category_of(row.source_account_code)
+    cat = categorize_coarse(row.source_account_code)
     return LedgerEntry(
         id=row.id,
         voucher_id=None,
@@ -803,13 +733,15 @@ async def get_ar_ap_summary(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    매출채권/매입채무 거래처별·월별 요약.
+    매출채권/매입채무 거래처별·월별 요약 — CONFIRMED Voucher 단일 소스.
 
     type은 부호 처리용 (자산=차변증가, 부채=대변증가).
     codes로 계정 단위 선택 가능 — 예:
     - 매출채권: 108(외상매출금), 110(받을어음) → 둘 중 하나 또는 둘 다 선택
     - 매입채무: 251(외상매입금), 253(미지급금) → 둘 중 하나 또는 둘 다 선택
     """
+    from app.services.unified_ledger import unified_aggregation_subquery
+
     default_codes = AR_CODES if type == "receivable" else AP_CODES
     if codes:
         requested = [c.strip() for c in codes.split(',') if c.strip()]
@@ -818,34 +750,27 @@ async def get_ar_ap_summary(
         active_codes = filtered if filtered else default_codes
     else:
         active_codes = default_codes
+
     start = date(fiscal_year, 1, 1)
     end = date(fiscal_year, 12, 31)
-    start_iso = start.strftime('%Y-%m-%d')
-    end_next_iso = (end + timedelta(days=1)).strftime('%Y-%m-%d')
+    # 기초: period_start 이전 전체 (None ~ start-1일)
+    opening_end = start - timedelta(days=1)
 
     # 부호 처리: 자산은 차변=증가/대변=감소, 부채는 반대
     def signed(d: Any, c: Any) -> Decimal:
         d, c = Decimal(str(d or 0)), Decimal(str(c or 0))
         return (d - c) if type == "receivable" else (c - d)
 
-    # transaction_date 형식 정규화 — '.' → '-' (yyyy.mm.dd/yyyy-mm-dd 혼재 안전 비교)
-    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
-    base_filter = AIRawTransactionData.source_account_code.in_(active_codes)
-    opening_filter = and_(
-        base_filter,
-        norm_date < start_iso,
-    )
-    period_filter = and_(
-        base_filter,
-        norm_date >= start_iso,
-        norm_date < end_next_iso,
-    )
+    # unified 서브쿼리는 transaction_date가 항상 'YYYY-MM-DD' 문자열
+    # 기초 잔액 서브쿼리 (period_start 이전 전체)
+    sub_open = unified_aggregation_subquery(None, opening_end)
+    opening_filter = sub_open.c.source_account_code.in_(active_codes)
 
     # 기초 총잔액
     opening_row = (await db.execute(
         select(
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
+            func.coalesce(func.sum(sub_open.c.debit_amount), 0).label('d'),
+            func.coalesce(func.sum(sub_open.c.credit_amount), 0).label('c'),
         ).where(opening_filter)
     )).one()
     opening_balance = signed(opening_row.d, opening_row.c)
@@ -853,25 +778,29 @@ async def get_ar_ap_summary(
     # 거래처별 기초 잔액
     cp_open_rows = (await db.execute(
         select(
-            AIRawTransactionData.merchant_name.label('cp'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
+            sub_open.c.merchant_name.label('cp'),
+            func.coalesce(func.sum(sub_open.c.debit_amount), 0).label('d'),
+            func.coalesce(func.sum(sub_open.c.credit_amount), 0).label('c'),
         ).where(opening_filter)
-         .group_by(AIRawTransactionData.merchant_name)
+         .group_by(sub_open.c.merchant_name)
     )).all()
     cp_opening = {(r.cp or '(미지정)'): signed(r.d, r.c) for r in cp_open_rows}
+
+    # 기간 서브쿼리 (fiscal_year 전체)
+    sub = unified_aggregation_subquery(start, end)
+    period_filter = sub.c.source_account_code.in_(active_codes)
 
     # 거래처별 기간 합계
     cp_rows = (await db.execute(
         select(
-            AIRawTransactionData.merchant_name.label('cp'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
-            func.count(AIRawTransactionData.id).label('cnt'),
-            func.max(AIRawTransactionData.transaction_date).label('latest'),
-            func.min(AIRawTransactionData.transaction_date).label('earliest'),
+            sub.c.merchant_name.label('cp'),
+            func.coalesce(func.sum(sub.c.debit_amount), 0).label('d'),
+            func.coalesce(func.sum(sub.c.credit_amount), 0).label('c'),
+            func.count().label('cnt'),
+            func.max(sub.c.transaction_date).label('latest'),
+            func.min(sub.c.transaction_date).label('earliest'),
         ).where(period_filter)
-         .group_by(AIRawTransactionData.merchant_name)
+         .group_by(sub.c.merchant_name)
     )).all()
 
     counterparties = []
@@ -920,15 +849,14 @@ async def get_ar_ap_summary(
 
     counterparties.sort(key=lambda x: -abs(x['closing_balance']))
 
-    # 월별 시계열 — transaction_date의 앞 7자리(YYYY-MM 또는 YYYY.MM)
-    # PostgreSQL은 GROUP BY/ORDER BY에 SELECT의 표현식과 정확히 같은 객체를 요구하므로 변수로 통일
-    ym_expr = func.substr(AIRawTransactionData.transaction_date, 1, 7)
+    # 월별 시계열 — transaction_date는 'YYYY-MM-DD' 문자열이므로 앞 7자리가 'YYYY-MM'
+    ym_expr = func.substr(sub.c.transaction_date, 1, 7)
     month_rows = (await db.execute(
         select(
             ym_expr.label('ym'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('d'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('c'),
-            func.count(AIRawTransactionData.id).label('cnt'),
+            func.coalesce(func.sum(sub.c.debit_amount), 0).label('d'),
+            func.coalesce(func.sum(sub.c.credit_amount), 0).label('c'),
+            func.count().label('cnt'),
         ).where(period_filter)
          .group_by(ym_expr)
          .order_by(ym_expr)
@@ -939,9 +867,8 @@ async def get_ar_ap_summary(
     for r in month_rows:
         change = signed(r.d, r.c)
         running = running + change
-        ym_raw = (r.ym or '')[:7].replace('.', '-')
         monthly.append({
-            'month': ym_raw,
+            'month': (r.ym or '')[:7],  # unified는 항상 'YYYY-MM-DD' → 앞 7자리가 정확한 'YYYY-MM'
             'period_debit': float(Decimal(str(r.d or 0))),
             'period_credit': float(Decimal(str(r.c or 0))),
             'period_change': float(change),

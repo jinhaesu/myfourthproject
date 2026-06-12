@@ -580,6 +580,21 @@ async def _confirm_candidate_inner(
             raise HTTPException(status_code=400,
                                 detail=f"계정 매핑 실패: code={l.get('account_code')}")
         vat_acc = l.get("account_code") in ("135", "255")
+        line_vat = amt if vat_acc else Decimal("0")
+        line_supply = amt if not vat_acc else Decimal("0")
+
+        # VAT 정합성 검증: vat+supply > 0이면 라인 금액과 일치해야 함
+        # vat=0, supply=0인 기존 패턴(비과세)은 통과
+        vat_supply_sum = line_vat + line_supply
+        if vat_supply_sum > Decimal("0") and vat_supply_sum != amt:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"라인 {line_no}: vat({line_vat}) + supply({line_supply}) = "
+                    f"{vat_supply_sum} ≠ 라인 금액({amt})"
+                ),
+            )
+
         line_memo = (l.get("memo") or "").strip()
         line_desc = line_memo or candidate_desc or l.get("account_name") or ""
         db.add(VoucherLine(
@@ -588,8 +603,8 @@ async def _confirm_candidate_inner(
             account_id=account_id,
             debit_amount=amt if is_debit else Decimal("0"),
             credit_amount=amt if not is_debit else Decimal("0"),
-            vat_amount=amt if vat_acc else Decimal("0"),
-            supply_amount=amt if not vat_acc else Decimal("0"),
+            vat_amount=line_vat,
+            supply_amount=line_supply,
             description=line_desc[:500],
             counterparty_name=c.counterparty,
         ))
@@ -726,11 +741,42 @@ async def create_direct_voucher(
     매입매출 전표 입력 화면에서 사용 — 사용자가 입력한 라인을 바로 Voucher로 변환.
     AutoVoucherCandidate 단계를 거치지 않음 (audit 위해 raw_data만 보관).
     """
-    total_debit = sum(Decimal(str(l.amount)) for l in req.debit_lines)
-    total_credit = sum(Decimal(str(l.amount)) for l in req.credit_lines)
+    # 차대 불일치가 8~11% 범위면 부가세 라인 자동 보정 (_confirm_candidate_inner 동일 패턴)
+    debit_lines_mutable = [l.model_dump() for l in req.debit_lines]
+    credit_lines_mutable = [l.model_dump() for l in req.credit_lines]
+
+    total_debit = sum(Decimal(str(l["amount"])) for l in debit_lines_mutable)
+    total_credit = sum(Decimal(str(l["amount"])) for l in credit_lines_mutable)
+
     if total_debit != total_credit:
-        raise HTTPException(status_code=400,
-                            detail=f"차변 합({total_debit}) ≠ 대변 합({total_credit})")
+        diff = total_credit - total_debit  # 양수면 차변 부족
+        total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+        ratio = abs(diff) / total_abs
+        if Decimal("0.08") <= ratio <= Decimal("0.11"):
+            if diff > 0:
+                debit_lines_mutable.append({
+                    "side": "debit", "account_code": "135", "account_name": "부가세대급금",
+                    "amount": str(diff), "memo": "자동 보정 (부가세 추정)",
+                })
+            else:
+                credit_lines_mutable.append({
+                    "side": "credit", "account_code": "255", "account_name": "부가세예수금",
+                    "amount": str(-diff), "memo": "자동 보정 (부가세 추정)",
+                })
+            total_debit = sum(Decimal(str(l["amount"])) for l in debit_lines_mutable)
+            total_credit = sum(Decimal(str(l["amount"])) for l in credit_lines_mutable)
+
+    if total_debit != total_credit:
+        diff = total_credit - total_debit
+        total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+        ratio_pct = float(abs(diff) / total_abs * 100)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"차변 합({total_debit}) ≠ 대변 합({total_credit}). "
+                f"차이 {diff} ({ratio_pct:.1f}%) — 부가세 범위(8~11%) 밖이라 자동 보정 안 됨."
+            ),
+        )
     if total_debit == 0:
         raise HTTPException(status_code=400, detail="금액이 0입니다.")
 
@@ -786,23 +832,41 @@ async def create_direct_voucher(
     await db.flush()
 
     line_no = 1
-    for l in req.debit_lines + req.credit_lines:
-        is_debit = l.side == "debit"
-        amt = Decimal(str(l.amount))
-        account_id = await _resolve_account_id(db, l.account_code, l.account_name)
+    for l in debit_lines_mutable + credit_lines_mutable:
+        is_debit = l.get("side") == "debit" if isinstance(l, dict) else l.side == "debit"
+        amt = Decimal(str(l.get("amount", 0) if isinstance(l, dict) else l.amount))
+        acc_code = l.get("account_code", "") if isinstance(l, dict) else l.account_code
+        acc_name = l.get("account_name", "") if isinstance(l, dict) else l.account_name
+        acc_memo = l.get("memo", "") if isinstance(l, dict) else (l.memo or "")
+        account_id = await _resolve_account_id(db, acc_code, acc_name)
         if account_id is None:
             raise HTTPException(status_code=400,
-                                detail=f"계정 매핑 실패: code={l.account_code}")
-        vat_acc = l.account_code in ("135", "255")
+                                detail=f"계정 매핑 실패: code={acc_code}")
+        vat_acc = acc_code in ("135", "255")
+        line_vat = amt if vat_acc else Decimal("0")
+        line_supply = amt if not vat_acc else Decimal("0")
+
+        # VAT 정합성 검증: vat+supply > 0이면 라인 금액과 일치해야 함
+        # vat=0, supply=0인 기존 패턴(비과세)은 통과
+        vat_supply_sum = line_vat + line_supply
+        if vat_supply_sum > Decimal("0") and vat_supply_sum != amt:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"라인 {line_no}: vat({line_vat}) + supply({line_supply}) = "
+                    f"{vat_supply_sum} ≠ 라인 금액({amt})"
+                ),
+            )
+
         db.add(VoucherLine(
             voucher_id=voucher.id,
             line_number=line_no,
             account_id=account_id,
             debit_amount=amt if is_debit else Decimal("0"),
             credit_amount=amt if not is_debit else Decimal("0"),
-            vat_amount=amt if vat_acc else Decimal("0"),
-            supply_amount=amt if not vat_acc else Decimal("0"),
-            description=l.memo or "",
+            vat_amount=line_vat,
+            supply_amount=line_supply,
+            description=acc_memo or "",
             counterparty_name=req.counterparty,
         ))
         line_no += 1

@@ -286,6 +286,35 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS ix_avc_transaction_date ON auto_voucher_candidates(transaction_date)",
         # ai_raw_transaction_data — data import 검사용 (자주 조회)
         "CREATE INDEX IF NOT EXISTS ix_ai_raw_source_account ON ai_raw_transaction_data(source_account_name) WHERE source_account_name IS NOT NULL",
+        # 후보 FK를 ON DELETE SET NULL로 — voucher 삭제 시 후보가 orphan FK로 막히지 않게.
+        # (idempotent: confdeltype 'n'(SET NULL)이 아닐 때만 재생성)
+        """DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_constraint
+                       WHERE conname = 'fk_auto_voucher_candidates_confirmed_voucher_id_vouchers'
+                         AND confdeltype <> 'n') THEN
+                ALTER TABLE auto_voucher_candidates
+                    DROP CONSTRAINT fk_auto_voucher_candidates_confirmed_voucher_id_vouchers;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                           WHERE conname = 'fk_auto_voucher_candidates_confirmed_voucher_id_vouchers') THEN
+                ALTER TABLE auto_voucher_candidates
+                    ADD CONSTRAINT fk_auto_voucher_candidates_confirmed_voucher_id_vouchers
+                    FOREIGN KEY (confirmed_voucher_id) REFERENCES vouchers(id) ON DELETE SET NULL;
+            END IF;
+            IF EXISTS (SELECT 1 FROM pg_constraint
+                       WHERE conname = 'auto_voucher_candidates_duplicate_voucher_id_fkey'
+                         AND confdeltype <> 'n') THEN
+                ALTER TABLE auto_voucher_candidates
+                    DROP CONSTRAINT auto_voucher_candidates_duplicate_voucher_id_fkey;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                           WHERE conname = 'auto_voucher_candidates_duplicate_voucher_id_fkey') THEN
+                ALTER TABLE auto_voucher_candidates
+                    ADD CONSTRAINT auto_voucher_candidates_duplicate_voucher_id_fkey
+                    FOREIGN KEY (duplicate_voucher_id) REFERENCES vouchers(id) ON DELETE SET NULL;
+            END IF;
+        END $$""",
     ]
     # direct engine 있으면 인덱스/마이그레이션은 그쪽으로 (풀러 8초 timeout 우회).
     # 큰 테이블 인덱스 빌드는 풀러로는 거의 실패함.

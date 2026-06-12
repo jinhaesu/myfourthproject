@@ -58,10 +58,11 @@ def _build_card_key(t: Dict[str, Any]) -> Optional[str]:
     return label or last4
 
 
-# 메모리 캐시 (period_key → tickets) — 60초 TTL
+# 메모리 캐시 (period_key → tickets) — granter_client와 동일한 5분 TTL
+# (TTL이 경로마다 다르면 같은 기간 조회가 화면마다 다른 스냅샷을 볼 수 있음)
 import time as _time
 _EXPENSE_CACHE: Dict[str, tuple] = {}
-_CACHE_TTL = 60.0
+_CACHE_TTL = 300.0
 
 
 async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
@@ -97,15 +98,8 @@ async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[
         items = []
 
     # 취소/거절 건 제외 — paymentStatus가 정상(NORMAL)이 아닌 카드사용은 실지출이 아님.
-    # (고위드 등 일부 카드는 취소거래도 EXPENSE_TICKET으로 내려와 합계가 2배로 부풀려짐)
-    _BAD_STATUS = {"CANCELED", "PURCHASE_CANCELED", "REJECTED"}
-    _orig = len(items)
-    items = [
-        t for t in items
-        if str(((t.get("cardUsage") or {}).get("paymentStatus") or "NORMAL")).upper() not in _BAD_STATUS
-    ]
-    if _orig != len(items):
-        logger.info(f"카드 EXPENSE_TICKET 취소/거절 {_orig - len(items)}건 제외 ({start_date}~{end_date})")
+    from app.services.granter_client import filter_normal_card_tickets
+    items = filter_normal_card_tickets(items, f"card_management {start_date}~{end_date}")
 
     _EXPENSE_CACHE[key] = (items, now)
     # 5분 지난 캐시 정리

@@ -3010,7 +3010,7 @@ async def classify_bank_statements(
                         all_batches.append(batch_indices)
 
                     total_batches = len(all_batches)
-                    LLM_MODEL = "claude-opus-4-8"
+                    LLM_MODEL = settings.ANTHROPIC_MODEL or "claude-fable-5"
 
                     def _call_llm_for_batch(batch_indices, batch_num):
                         """Synchronous LLM call for one batch (runs in thread pool)."""
@@ -3067,10 +3067,21 @@ async def classify_bank_statements(
                             response = client.messages.create(
                                 model=LLM_MODEL,
                                 max_tokens=16000,
+                                system=[
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "당신은 한국 식품제조회사(조인앤조인) 전문 회계 분류 AI입니다. "
+                                            "통장 거래 내역을 분석하여 정확한 계정과목 코드를 JSON 배열로만 반환합니다. "
+                                            "다른 텍스트나 설명은 절대 출력하지 않습니다."
+                                        ),
+                                        "cache_control": {"type": "ephemeral"},
+                                    }
+                                ],
                                 messages=[{"role": "user", "content": prompt}],
                             )
 
-                            text = response.content[0].text.strip()
+                            text = next(b.text for b in response.content if b.type == "text").strip()
                             if "```" in text:
                                 text = text.split("```")[1]
                                 if text.startswith("json"):
@@ -4234,7 +4245,7 @@ async def classify_tax_invoices(
                         all_batches.append(batch_indices)
 
                     total_batches = len(all_batches)
-                    LLM_MODEL = "claude-opus-4-8"
+                    LLM_MODEL = settings.ANTHROPIC_MODEL or "claude-fable-5"
 
                     def _call_llm_for_tax_batch(batch_indices, batch_num):
                         """Synchronous LLM call for one tax invoice batch (runs in thread pool)."""
@@ -4338,10 +4349,21 @@ async def classify_tax_invoices(
                             response = client.messages.create(
                                 model=LLM_MODEL,
                                 max_tokens=16000,
+                                system=[
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "당신은 한국 식품제조회사(조인앤조인) 전문 회계 분류 AI입니다. "
+                                            "전자세금계산서 거래를 분석하여 차변/대변 계정과목 코드를 JSON 배열로만 반환합니다. "
+                                            "다른 텍스트나 설명은 절대 출력하지 않습니다."
+                                        ),
+                                        "cache_control": {"type": "ephemeral"},
+                                    }
+                                ],
                                 messages=[{"role": "user", "content": prompt}],
                             )
 
-                            text = response.content[0].text.strip()
+                            text = next(b.text for b in response.content if b.type == "text").strip()
                             if "```" in text:
                                 text = text.split("```")[1]
                                 if text.startswith("json"):

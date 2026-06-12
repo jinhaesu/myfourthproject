@@ -94,7 +94,12 @@ async def _granter_expense_tickets(start_date: date, end_date: date) -> List[Dic
         tickets = await client.list_tickets_all_types(
             start_date.isoformat(), end_date.isoformat(),
         )
-        return tickets.get("EXPENSE_TICKET", []) or []
+        # 취소/거절 카드거래 제외 — 자금일보 카드지출 부풀림 방지
+        from app.services.granter_client import filter_normal_card_tickets
+        return filter_normal_card_tickets(
+            tickets.get("EXPENSE_TICKET", []) or [],
+            f"daily_cash_report {start_date}~{end_date}",
+        )
     except Exception:
         logger.exception(f"그랜터 expense_tickets 호출 실패 ({start_date}~{end_date})")
         return []

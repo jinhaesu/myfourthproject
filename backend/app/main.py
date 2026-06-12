@@ -54,6 +54,96 @@ async def _background_init_db():
         logger.warning("Application running without database init")
 
 
+async def _ai_retrain_scheduler():
+    """
+    24시간마다 깨어나 AI 모델 재학습 조건을 확인하고 충족 시 retrain_model 호출.
+
+    조건:
+      1) 마지막 재학습(AIModelVersion.created_at) 후 30일 이상 경과
+      2) user_feedback 타입 AITrainingData가 50건 이상 신규 존재
+
+    실패해도 앱에 영향 없도록 전체 try/except로 감쌈.
+    앱 종료 시 lifespan에서 task.cancel() 처리.
+    """
+    import asyncio
+    from datetime import timedelta
+
+    INTERVAL_HOURS = 24
+    MIN_FEEDBACK_COUNT = 50
+    RETRAIN_INTERVAL_DAYS = 30
+
+    logger.info("[AI Scheduler] 재학습 스케줄러 시작 (24h 간격)")
+
+    while True:
+        try:
+            await asyncio.sleep(INTERVAL_HOURS * 3600)
+        except asyncio.CancelledError:
+            logger.info("[AI Scheduler] 종료 신호 수신 — 스케줄러 종료")
+            return
+
+        try:
+            from sqlalchemy import select, func as sa_func
+            from app.core.database import async_session_factory
+            from app.models.ai import AIModelVersion, AITrainingData
+            from app.services.ai_classifier import AIClassifierService
+            from datetime import datetime as _dt
+
+            async with async_session_factory() as db:
+                # 마지막 학습 시점 조회
+                last_version = (await db.execute(
+                    select(AIModelVersion)
+                    .order_by(AIModelVersion.created_at.desc())
+                    .limit(1)
+                )).scalar_one_or_none()
+
+                now = _dt.utcnow()
+                if last_version:
+                    days_since = (now - last_version.created_at).days
+                    if days_since < RETRAIN_INTERVAL_DAYS:
+                        logger.info(
+                            f"[AI Scheduler] 마지막 학습 {days_since}일 경과 "
+                            f"(기준 {RETRAIN_INTERVAL_DAYS}일) — 재학습 생략"
+                        )
+                        continue
+                    since_dt = last_version.created_at
+                else:
+                    since_dt = _dt(2000, 1, 1)  # 버전 없으면 전체 대상
+
+                # user_feedback 신규 건수 확인
+                feedback_count = await db.scalar(
+                    select(sa_func.count(AITrainingData.id)).where(
+                        AITrainingData.source_type == "user_feedback",
+                        AITrainingData.is_active == True,
+                        AITrainingData.created_at >= since_dt,
+                    )
+                ) or 0
+
+                if feedback_count < MIN_FEEDBACK_COUNT:
+                    logger.info(
+                        f"[AI Scheduler] user_feedback {feedback_count}건 "
+                        f"(기준 {MIN_FEEDBACK_COUNT}건) — 재학습 생략"
+                    )
+                    continue
+
+                logger.info(
+                    f"[AI Scheduler] 재학습 조건 충족 "
+                    f"(경과일={days_since if last_version else 'N/A'}, "
+                    f"피드백={feedback_count}건) — retrain_model 호출"
+                )
+                classifier = AIClassifierService()
+                success, msg = await classifier.retrain_model(db)
+                if success:
+                    logger.info(f"[AI Scheduler] 재학습 완료: {msg}")
+                else:
+                    logger.warning(f"[AI Scheduler] 재학습 실패: {msg}")
+
+        except asyncio.CancelledError:
+            logger.info("[AI Scheduler] 종료 신호 수신 — 스케줄러 종료")
+            return
+        except Exception as e:
+            logger.exception(f"[AI Scheduler] 재학습 스케줄 오류 (앱 영향 없음): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
@@ -63,9 +153,20 @@ async def lifespan(app: FastAPI):
     if init_db:
         # Run init_db in background - don't block app startup
         asyncio.create_task(_background_init_db())
+
+    # AI 재학습 자동 스케줄러 — 24h 간격, 조건 미충족 시 생략
+    _retrain_task = asyncio.create_task(_ai_retrain_scheduler())
+
     yield
+
     # Shutdown
     logger.info("Shutting down Smart Finance Core...")
+    # AI 스케줄러 태스크 취소
+    _retrain_task.cancel()
+    try:
+        await _retrain_task
+    except asyncio.CancelledError:
+        pass
     if close_db:
         try:
             await close_db()

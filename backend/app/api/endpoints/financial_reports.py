@@ -4,13 +4,14 @@ Smart Finance Core - Financial Reports API
 
 - 더존 6자리 계정코드 지원 (000101 → 101 → 자산)
 - 여러 파일을 나눠 업로드해도 같은 기간이면 합산
-- 계정별 원장에서 source_account_code(원장계정)와 account_code(상대계정) 구분
+- 데이터 소스: CONFIRMED Voucher 단일 소스 (ai_raw는 스테이징 전용)
 """
 import json
 import logging
 import math
 import re
-from datetime import datetime
+from datetime import datetime, date as _date
+from calendar import monthrange
 from decimal import Decimal
 from io import BytesIO
 from typing import Optional, List
@@ -32,7 +33,18 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.ai import AIRawTransactionData, AIDataUploadHistory
-from app.models.accounting import Account, AccountCategory
+from app.models.accounting import Account, AccountCategory, Voucher, VoucherLine, VoucherStatus
+from app.services.unified_ledger import (
+    unified_aggregation_subquery,
+    unified_rows_subquery,
+    has_closing_vouchers,
+)
+from app.core.account_category import (
+    categorize_account,
+    CATEGORY_LABEL,
+    strip_code,
+    is_bs_account,
+)
 
 router = APIRouter()
 
@@ -58,9 +70,7 @@ DOUZONE_CATEGORY = {
 
 def _strip_code(code: str) -> str:
     """더존 6자리 코드에서 앞의 0 제거: '000101' → '101'"""
-    if not code:
-        return '0'
-    return code.lstrip('0') or '0'
+    return strip_code(code)
 
 
 def _classify_code(code: str) -> tuple:
@@ -68,63 +78,46 @@ def _classify_code(code: str) -> tuple:
     더존 계정코드 분류.
     Returns: (first_digit, second_digit, stripped_code, category_name)
     """
-    stripped = _strip_code(code)
-    first = stripped[0] if stripped else '0'
-    second = int(stripped[1]) if len(stripped) > 1 and stripped[1].isdigit() else 0
+    s = strip_code(code)
+    first = s[0] if s else '0'
+    second = int(s[1]) if len(s) > 1 and s[1].isdigit() else 0
     cat = DOUZONE_CATEGORY.get(first, '미분류')
-    return first, second, stripped, cat
+    return first, second, s, cat
 
 
 # ============ Helpers ============
 
-def _date_filters(year: Optional[int], month: Optional[int]):
-    filters = []
+def _period_bounds(year: Optional[int], month: Optional[int]):
+    """year/month → (period_start, period_end) date 객체 반환. 둘 다 None이면 (None, None)."""
     if year and month:
-        prefix = f"{year}-{str(month).zfill(2)}"
-        prefix2 = f"{year}.{str(month).zfill(2)}"
-        filters.append(
-            (AIRawTransactionData.transaction_date.like(f"{prefix}%"))
-            | (AIRawTransactionData.transaction_date.like(f"{prefix2}%"))
-        )
+        return (_date(year, month, 1), _date(year, month, monthrange(year, month)[1]))
     elif year:
-        filters.append(
-            (AIRawTransactionData.transaction_date.like(f"{year}-%"))
-            | (AIRawTransactionData.transaction_date.like(f"{year}.%"))
-        )
-    return filters
-
-
-def _extract_month(date_str: str) -> Optional[str]:
-    if not date_str:
-        return None
-    match = re.match(r'(\d{4})[.\-/](\d{1,2})', date_str.strip())
-    if match:
-        return f"{match.group(1)}-{match.group(2).zfill(2)}"
-    return None
+        return (_date(year, 1, 1), _date(year, 12, 31))
+    return (None, None)
 
 
 async def _resolve_names(db: AsyncSession, codes: list, mode: str = "multi") -> dict:
-    """계정 코드 → 이름 매핑 (source_account_name 우선)"""
+    """계정 코드 → 이름 매핑. Voucher/Account 테이블 기반."""
     if not codes:
         return {}
 
     names = {}
 
-    # 1) source_account_name에서 원장 계정명 조회 (multi 모드)
-    if mode == "multi":
-        raw_result = await db.execute(
-            select(
-                AIRawTransactionData.source_account_code,
-                func.max(AIRawTransactionData.source_account_name).label("name"),
-            )
-            .where(
-                AIRawTransactionData.source_account_code.in_(codes),
-                AIRawTransactionData.source_account_name.isnot(None),
-                AIRawTransactionData.source_account_name != "",
-            )
-            .group_by(AIRawTransactionData.source_account_code)
+    # 1) unified(voucher) subquery에서 source_account_name 조회
+    sub = unified_aggregation_subquery()
+    raw_result = await db.execute(
+        select(
+            sub.c.source_account_code,
+            func.max(sub.c.source_account_name).label("name"),
         )
-        names.update({r.source_account_code: r.name for r in raw_result.all()})
+        .where(
+            sub.c.source_account_code.in_(codes),
+            sub.c.source_account_name.isnot(None),
+            sub.c.source_account_name != "",
+        )
+        .group_by(sub.c.source_account_code)
+    )
+    names.update({r.source_account_code: r.name for r in raw_result.all()})
 
     # 2) Account 테이블에서 보충
     missing = [c for c in codes if c not in names]
@@ -134,69 +127,26 @@ async def _resolve_names(db: AsyncSession, codes: list, mode: str = "multi") -> 
         )
         names.update({r.code: r.name for r in result.all()})
 
-    # 3) raw data의 account_code/account_name에서 보충
-    missing = [c for c in codes if c not in names]
-    if missing:
-        raw_result = await db.execute(
-            select(
-                AIRawTransactionData.account_code,
-                func.max(AIRawTransactionData.account_name).label("name"),
-            )
-            .where(
-                AIRawTransactionData.account_code.in_(missing),
-                AIRawTransactionData.account_name.isnot(None),
-                AIRawTransactionData.account_name != "",
-            )
-            .group_by(AIRawTransactionData.account_code)
-        )
-        names.update({r.account_code: r.name for r in raw_result.all()})
-
-    # 4) 최종 fallback
+    # 3) 최종 fallback
     for c in codes:
         if c not in names or not names[c]:
-            names[c] = f"계정 {_strip_code(c)}"
+            names[c] = f"계정 {strip_code(c)}"
     return names
-
-
-async def _detect_ledger_mode(db: AsyncSession, extra_filters: list = None) -> str:
-    """원장 모드 감지: 'multi' (전체 계정별 원장) 또는 'single' (단일 계정 원장)"""
-    filters = [
-        AIRawTransactionData.source_account_code.isnot(None),
-        AIRawTransactionData.source_account_code != "",
-    ]
-    if extra_filters:
-        filters.extend(extra_filters)
-
-    source_count = await db.scalar(
-        select(func.count(func.distinct(AIRawTransactionData.source_account_code)))
-        .where(*filters)
-    ) or 0
-
-    return "multi" if source_count >= 3 else "single"
 
 
 async def _get_account_balances(
     db: AsyncSession,
     year: Optional[int] = None,
     month: Optional[int] = None,
+    exclude_closing: bool = False,
 ) -> list:
     """
-    계정별 잔액 집계 — ai_raw_transaction_data + Voucher(CONFIRMED) 통합.
+    계정별 잔액 집계 — CONFIRMED Voucher 단일 소스.
     year/month 지정 시 그 기간만, 둘 다 None이면 전체.
     """
-    from calendar import monthrange
-    from datetime import date as _date
-    from app.services.unified_ledger import unified_aggregation_subquery
+    period_start, period_end = _period_bounds(year, month)
 
-    period_start = period_end = None
-    if year and month:
-        period_start = _date(year, month, 1)
-        period_end = _date(year, month, monthrange(year, month)[1])
-    elif year:
-        period_start = _date(year, 1, 1)
-        period_end = _date(year, 12, 31)
-
-    sub = unified_aggregation_subquery(period_start, period_end)
+    sub = unified_aggregation_subquery(period_start, period_end, exclude_closing=exclude_closing)
     q = select(
         sub.c.source_account_code.label("code"),
         func.coalesce(func.sum(sub.c.debit_amount), 0).label("debit_total"),
@@ -209,25 +159,22 @@ async def _get_account_balances(
 
 
 async def _detect_years(db: AsyncSession) -> List[int]:
-    """DB에 있는 모든 연도 감지 (transaction_date + upload history created_at)"""
+    """DB에 있는 모든 연도 감지 (CONFIRMED Voucher transaction_date 기준)"""
     years = set()
 
-    # 1) transaction_date에서 연도 추출
+    # 1) Voucher.transaction_date에서 연도 추출
     result = await db.execute(
-        select(AIRawTransactionData.transaction_date)
+        select(func.distinct(func.extract('year', Voucher.transaction_date)))
         .where(
-            AIRawTransactionData.transaction_date.isnot(None),
-            AIRawTransactionData.transaction_date != "",
+            Voucher.status == VoucherStatus.CONFIRMED,
+            Voucher.transaction_date.isnot(None),
         )
-        .distinct()
-        .limit(1000)
     )
     for row in result.all():
-        m = re.match(r'(\d{4})', str(row.transaction_date).strip())
-        if m:
-            years.add(int(m.group(1)))
+        if row[0] is not None:
+            years.add(int(row[0]))
 
-    # 2) AIDataUploadHistory.created_at에서 연도 추출 (fallback)
+    # 2) AIDataUploadHistory.created_at에서 연도 추출 (fallback — staging uploads)
     from app.models.ai import UploadStatus
     upload_years_result = await db.execute(
         select(func.distinct(func.extract('year', AIDataUploadHistory.created_at)))
@@ -262,6 +209,7 @@ async def get_available_years(
     )
     uploads = uploads_result.scalars().all()
 
+    # ai_raw 행 수 — 스테이징 전용 통계
     total_rows = await db.scalar(
         select(func.count(AIRawTransactionData.id))
     ) or 0
@@ -289,23 +237,19 @@ async def get_financial_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """재무 요약 (기간 기반)"""
-    filters = []
-    if year:
-        filters.extend(_date_filters(year, None))
+    """재무 요약 (기간 기반) — Voucher 단일 소스"""
+    period_start, period_end = _period_bounds(year, None)
+    sub = unified_aggregation_subquery(period_start, period_end)
 
     q = select(
-        func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("total_debit"),
-        func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("total_credit"),
-        func.count(AIRawTransactionData.id).label("tx_count"),
+        func.coalesce(func.sum(sub.c.debit_amount), 0).label("total_debit"),
+        func.coalesce(func.sum(sub.c.credit_amount), 0).label("total_credit"),
+        func.count().label("tx_count"),
     )
-    if filters:
-        q = q.where(*filters)
 
     totals = await db.execute(q)
     t = totals.one()
 
-    mode = await _detect_ledger_mode(db, filters)
     years = await _detect_years(db)
 
     return {
@@ -313,7 +257,7 @@ async def get_financial_summary(
         "total_debit": float(t.total_debit),
         "total_credit": float(t.total_credit),
         "total_transactions": t.tx_count,
-        "ledger_mode": mode,
+        "ledger_mode": "multi",
         "available_years": years,
     }
 
@@ -327,11 +271,11 @@ async def get_trial_balance(
     current_user: User = Depends(get_current_user),
 ):
     """시산표 - 계정별 차변/대변 합계 (기간 기반, 더존 코드 분류)"""
-    mode = "multi"
-    rows = await _get_account_balances(db, year=year, month=month)
+    # 시산표는 마감전표 포함(기본) — BS 잔액과 일치시키기 위해
+    rows = await _get_account_balances(db, year=year, month=month, exclude_closing=False)
 
     codes = [r.code for r in rows]
-    names = await _resolve_names(db, codes, mode)
+    names = await _resolve_names(db, codes)
 
     items = []
     total_debit = 0.0
@@ -359,7 +303,7 @@ async def get_trial_balance(
         "items": items,
         "total_debit": total_debit,
         "total_credit": total_credit,
-        "ledger_mode": mode,
+        "ledger_mode": "multi",
     }
 
 
@@ -371,17 +315,19 @@ async def get_income_statement(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """손익계산서 - 더존 계정코드 기준 (기간 기반)"""
+    """손익계산서 - 더존 계정코드 기준 (기간 기반). 마감전표 이중반영 차단."""
     if year is None:
         years = await _detect_years(db)
         if years:
             year = years[0]
 
-    mode = "multi"
-    rows = await _get_account_balances(db, year=year, month=month)
+    # 손익 보고서: 마감전표(auto_closing) 제외 — 이중반영 방지
+    period_start, period_end = _period_bounds(year, month)
+    _has_closing = await has_closing_vouchers(db, period_start, period_end)
+    rows = await _get_account_balances(db, year=year, month=month, exclude_closing=True)
 
     codes = [r.code for r in rows]
-    names = await _resolve_names(db, codes, mode)
+    names = await _resolve_names(db, codes)
 
     revenue_items = []
     cogs_items = []
@@ -391,7 +337,7 @@ async def get_income_statement(
 
     # 위하고 손익계산서 로직: 45x(제품매출원가/상품매출원가)에 결산 분개가 있으면
     # 5xx/6xx/7xx/8xx(제)는 이미 45x로 흡수된 원가요소 → 매출원가에서 제외 (이중계산 방지).
-    # 45x가 비어있으면(결산 전, 진행중인 월) 5xx/6xx/7xx/8xx(제) raw 합 사용.
+    # 45x가 비어있고 마감전표도 없으면(결산 전, 진행중인 월) 5xx/6xx/7xx/8xx(제) raw 합 사용.
     has_45x_cogs = False
     for r in rows:
         code = r.code
@@ -403,6 +349,9 @@ async def get_income_statement(
                     break
             except ValueError:
                 pass
+
+    # 마감전표 존재 시: 5xx~8xx(제) 원가요소는 이미 대체분개로 처리됨 → skip
+    skip_cost_elements = has_45x_cogs or _has_closing
 
     for r in rows:
         code = r.code
@@ -424,55 +373,33 @@ async def get_income_statement(
                 pass
         # 8xx 중 이름에 "(제)" 포함 = 제조원가 요소 (801 급여(제) 등)
         is_manuf_8xx = first == '8' and "(제)" in (acct_name or "")
-        # 5/6/7xx + 8xx(제) 는 원가요소 → 45x 결산 완료 시 제외
+        # 5/6/7xx + 8xx(제) 는 원가요소 → 45x 결산 완료 또는 마감전표 존재 시 제외
         is_cost_element = first in ('5', '6', '7') or is_manuf_8xx
 
-        if mode == "multi":
-            if first == '4':
-                if is_4xx_cogs:
-                    item["amount"] = d - c
-                    cogs_items.append(item)
-                else:
-                    item["amount"] = c - d
-                    revenue_items.append(item)
-            elif is_cost_element:
-                if not has_45x_cogs:  # 결산 전 = raw 합 사용
-                    item["amount"] = d - c
-                    cogs_items.append(item)
-                # else: 45x 결산 완료 — 이중계산 방지로 skip
-            elif first == '8':  # (판) 등 일반 판관비
+        # voucher 단일 소스 → 항상 multi 모드 계산 (source_account_code 기준)
+        if first == '4':
+            if is_4xx_cogs:
                 item["amount"] = d - c
-                sga_items.append(item)
-            elif first == '9':
-                net = c - d
-                if net >= 0:
-                    item["amount"] = net
-                    non_op_income_items.append(item)
-                else:
-                    item["amount"] = -net
-                    non_op_expense_items.append(item)
-        else:
-            if first == '4':
-                if is_4xx_cogs:
-                    item["amount"] = c
-                    cogs_items.append(item)
-                else:
-                    item["amount"] = d
-                    revenue_items.append(item)
-            elif is_cost_element:
-                if not has_45x_cogs:
-                    item["amount"] = c
-                    cogs_items.append(item)
-            elif first == '8':
-                item["amount"] = c
-                sga_items.append(item)
-            elif first == '9':
-                if d > c:
-                    item["amount"] = d - c
-                    non_op_income_items.append(item)
-                elif c > d:
-                    item["amount"] = c - d
-                    non_op_expense_items.append(item)
+                cogs_items.append(item)
+            else:
+                item["amount"] = c - d
+                revenue_items.append(item)
+        elif is_cost_element:
+            if not skip_cost_elements:  # 결산 전 = 원가요소 직접 합산
+                item["amount"] = d - c
+                cogs_items.append(item)
+            # else: 45x 결산 완료 또는 마감전표 존재 — 이중계산 방지로 skip
+        elif first == '8':  # (판) 등 일반 판관비
+            item["amount"] = d - c
+            sga_items.append(item)
+        elif first == '9':
+            net = c - d
+            if net >= 0:
+                item["amount"] = net
+                non_op_income_items.append(item)
+            else:
+                item["amount"] = -net
+                non_op_expense_items.append(item)
 
     for arr in [revenue_items, cogs_items, sga_items, non_op_income_items, non_op_expense_items]:
         arr.sort(key=lambda x: x["amount"], reverse=True)
@@ -512,7 +439,7 @@ async def get_income_statement(
     return {
         "year": year,
         "month": month,
-        "ledger_mode": mode,
+        "ledger_mode": "multi",
         "sections": sections,
         "revenue_total": revenue_total,
         "net_income": net_income,
@@ -526,12 +453,11 @@ async def get_balance_sheet(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """재무상태표 - 더존 계정코드 기준 (기간 기반)"""
-    mode = "multi"
-    rows = await _get_account_balances(db, year=year, month=None)
+    """재무상태표 - 더존 계정코드 기준 (기간 기반). BS는 exclude_closing=False."""
+    rows = await _get_account_balances(db, year=year, month=None, exclude_closing=False)
 
     codes = [r.code for r in rows]
-    names = await _resolve_names(db, codes, mode)
+    names = await _resolve_names(db, codes)
 
     current_asset_items = []
     noncurrent_asset_items = []
@@ -547,23 +473,21 @@ async def get_balance_sheet(
         acct_name = names.get(code, f"계정 {stripped}")
 
         if first == '1':
-            amount = d - c if mode == "multi" else c - d
+            amount = d - c  # 자산: 차변 잔액
             item = {"code": code, "name": acct_name, "amount": amount}
-            # 더존: 10x~14x 유동자산, 15x~19x 비유동자산
             if second <= 4:
                 current_asset_items.append(item)
             else:
                 noncurrent_asset_items.append(item)
         elif first == '2':
-            amount = c - d if mode == "multi" else d - c
+            amount = c - d  # 부채: 대변 잔액
             item = {"code": code, "name": acct_name, "amount": amount}
-            # 더존: 20x~26x 유동부채, 27x~29x 비유동부채
             if second <= 6:
                 current_liab_items.append(item)
             else:
                 noncurrent_liab_items.append(item)
         elif first == '3':
-            amount = c - d if mode == "multi" else d - c
+            amount = c - d  # 자본: 대변 잔액
             equity_items.append({"code": code, "name": acct_name, "amount": amount})
 
     current_asset_total = sum(i["amount"] for i in current_asset_items)
@@ -590,7 +514,7 @@ async def get_balance_sheet(
 
     return {
         "year": year,
-        "ledger_mode": mode,
+        "ledger_mode": "multi",
         "sections": sections,
         "total_assets": total_assets,
         "total_liabilities": total_liabilities,
@@ -609,38 +533,33 @@ async def get_balance_sheet_monthly(
     월별 재무상태표 — 해당 연도 1~12월 각 월말의 누적 BS 시계열.
     한 번의 SQL로 (월, 계정) 그룹화 후 코드 단 누적으로 효율적 처리.
     데이터 없는 월은 skip — 마지막 데이터 월까지만 반환.
+    BS는 마감전표 포함(exclude_closing=False).
     """
     from collections import defaultdict
 
-    norm_date = func.replace(AIRawTransactionData.transaction_date, '.', '-')
-    month_key = func.substr(norm_date, 1, 7)  # 'YYYY-MM'
+    period_start = _date(year, 1, 1)
+    period_end = _date(year, 12, 31)
 
-    base_filters = [
-        norm_date.like(f"{year}-%"),
-        AIRawTransactionData.source_account_code.isnot(None),
-        AIRawTransactionData.source_account_code != "",
-    ]
+    # unified subquery — 연도 전체, BS는 마감전표 포함
+    sub = unified_aggregation_subquery(period_start, period_end, exclude_closing=False)
 
-    mode = await _detect_ledger_mode(db, base_filters)
-    group_col = (
-        AIRawTransactionData.source_account_code if mode == "multi"
-        else AIRawTransactionData.account_code
-    )
+    # 월 키: transaction_date는 'YYYY-MM-DD' 문자열 → substr(1,7) = 'YYYY-MM'
+    month_key = func.substr(sub.c.transaction_date, 1, 7)
 
-    # 한 번의 SQL — (월, 계정) 합산
+    # (월, 계정) 합산
     monthly_rows = (await db.execute(
         select(
             month_key.label('ym'),
-            group_col.label('code'),
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label('debit'),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label('credit'),
+            sub.c.source_account_code.label('code'),
+            func.coalesce(func.sum(sub.c.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(sub.c.credit_amount), 0).label('credit'),
         )
-        .where(*base_filters)
-        .group_by(month_key, group_col)
+        .where(sub.c.source_account_code.isnot(None), sub.c.source_account_code != '')
+        .group_by(month_key, sub.c.source_account_code)
     )).all()
 
     if not monthly_rows:
-        return {"year": year, "ledger_mode": mode, "months": []}
+        return {"year": year, "ledger_mode": "multi", "months": []}
 
     # 월별 그룹화
     monthly_data: dict = defaultdict(dict)  # {ym: {code: {debit, credit}}}
@@ -655,7 +574,7 @@ async def get_balance_sheet_monthly(
 
     # 자산·부채·자본 계정만 BS 대상 (1xx, 2xx, 3xx)
     bs_codes = [c for c in all_codes if _classify_code(c)[0] in ('1', '2', '3')]
-    names = await _resolve_names(db, bs_codes, mode)
+    names = await _resolve_names(db, bs_codes)
 
     # 마지막 데이터 월
     last_m = max(int(ym.split('-')[1]) for ym in months_with_data)
@@ -686,24 +605,23 @@ async def get_balance_sheet_monthly(
             acct_name = names.get(code, f"계정 {stripped}")
 
             if first == '1':
-                amount = d - c if mode == "multi" else c - d
+                amount = d - c  # 자산: 차변 잔액 (voucher=multi 모드)
                 item = {"code": code, "name": acct_name, "amount": amount}
                 if second <= 4:
                     current_asset_items.append(item)
                 else:
                     noncurrent_asset_items.append(item)
             elif first == '2':
-                amount = c - d if mode == "multi" else d - c
+                amount = c - d  # 부채: 대변 잔액
                 item = {"code": code, "name": acct_name, "amount": amount}
                 if second <= 6:
                     current_liab_items.append(item)
                 else:
                     noncurrent_liab_items.append(item)
             elif first == '3':
-                amount = c - d if mode == "multi" else d - c
+                amount = c - d  # 자본: 대변 잔액
                 equity_items.append({"code": code, "name": acct_name, "amount": amount})
 
-        # 잔액 0 제외 (단 표시는 그대로 — sort)
         for items in (current_asset_items, noncurrent_asset_items,
                        current_liab_items, noncurrent_liab_items, equity_items):
             items.sort(key=lambda x: -abs(x["amount"]))
@@ -714,8 +632,6 @@ async def get_balance_sheet_monthly(
         ncl_total = sum(i["amount"] for i in noncurrent_liab_items)
         eq_total = sum(i["amount"] for i in equity_items)
 
-        # 월말 일자
-        from calendar import monthrange
         last_day = monthrange(year, m)[1]
 
         months_result.append({
@@ -742,7 +658,7 @@ async def get_balance_sheet_monthly(
 
     return {
         "year": year,
-        "ledger_mode": mode,
+        "ledger_mode": "multi",
         "months": months_result,
     }
 
@@ -755,48 +671,43 @@ async def get_monthly_trend(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """월별 추이 (기간 기반)"""
-    filters = [
-        AIRawTransactionData.transaction_date.isnot(None),
-        AIRawTransactionData.transaction_date != "",
-    ]
-    if year:
-        filters.extend(_date_filters(year, None))
-    if account_code:
-        filters.append(
-            (AIRawTransactionData.source_account_code == account_code)
-            | (AIRawTransactionData.account_code == account_code)
-        )
+    """월별 추이 (기간 기반) — Voucher 단일 소스"""
+    period_start, period_end = _period_bounds(year, None)
+    sub = unified_aggregation_subquery(period_start, period_end)
 
-    result = await db.execute(
-        select(
-            AIRawTransactionData.transaction_date,
-            AIRawTransactionData.debit_amount,
-            AIRawTransactionData.credit_amount,
-        ).where(*filters)
+    # account_code 필터
+    extra_where = []
+    if account_code:
+        extra_where.append(sub.c.source_account_code == account_code)
+
+    # transaction_date는 'YYYY-MM-DD' 형식 → substr(1,7) = 'YYYY-MM'
+    month_key = func.substr(sub.c.transaction_date, 1, 7)
+
+    q = select(
+        month_key.label('ym'),
+        func.coalesce(func.sum(sub.c.debit_amount), 0).label('debit'),
+        func.coalesce(func.sum(sub.c.credit_amount), 0).label('credit'),
+        func.count().label('cnt'),
     )
+    if extra_where:
+        q = q.where(*extra_where)
+    q = q.group_by(month_key).order_by(month_key)
+
+    result = await db.execute(q)
     rows = result.all()
 
-    monthly: dict = {}
-    for r in rows:
-        month_key = _extract_month(str(r.transaction_date))
-        if not month_key:
-            continue
-        if month_key not in monthly:
-            monthly[month_key] = {"debit": 0.0, "credit": 0.0, "count": 0}
-        monthly[month_key]["debit"] += float(r.debit_amount or 0)
-        monthly[month_key]["credit"] += float(r.credit_amount or 0)
-        monthly[month_key]["count"] += 1
-
     data = []
-    for key in sorted(monthly.keys()):
-        m = monthly[key]
+    for r in rows:
+        if not r.ym:
+            continue
+        debit = float(r.debit or 0)
+        credit = float(r.credit or 0)
         data.append({
-            "month": key,
-            "debit_total": m["debit"],
-            "credit_total": m["credit"],
-            "net": m["debit"] - m["credit"],
-            "tx_count": m["count"],
+            "month": r.ym,
+            "debit_total": debit,
+            "credit_total": credit,
+            "net": debit - credit,
+            "tx_count": r.cnt,
         })
 
     return {
@@ -817,54 +728,43 @@ async def get_account_detail(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """계정별 거래 상세 조회 (기간 기반)"""
-    filters = [
-        (AIRawTransactionData.source_account_code == account_code)
-        | (AIRawTransactionData.account_code == account_code),
-    ]
-    if year:
-        filters.extend(_date_filters(year, None))
+    """계정별 거래 상세 조회 (기간 기반) — Voucher 단일 소스"""
+    period_start, period_end = _period_bounds(year, month)
+    sub = unified_rows_subquery(period_start, period_end)
 
-    base_filter = and_(*filters)
-
-    if month is not None:
-        month_str = f"{month:02d}"
-        if year:
-            date_prefix1 = f"{year}-{month_str}"
-            date_prefix2 = f"{year}.{month_str}"
-            month_filter = or_(
-                AIRawTransactionData.transaction_date.like(f"{date_prefix1}%"),
-                AIRawTransactionData.transaction_date.like(f"{date_prefix2}%"),
-            )
-        else:
-            month_filter = or_(
-                AIRawTransactionData.transaction_date.like(f"{month_str}-%"),
-                AIRawTransactionData.transaction_date.like(f"%-{month_str}-%"),
-            )
-        base_filter = and_(base_filter, month_filter)
+    base_where = [sub.c.source_account_code == account_code]
 
     total = await db.scalar(
-        select(func.count(AIRawTransactionData.id)).where(base_filter)
+        select(func.count()).select_from(sub).where(*base_where)
     ) or 0
     total_pages = max(1, math.ceil(total / size))
 
     summary_result = await db.execute(
         select(
-            func.coalesce(func.sum(AIRawTransactionData.debit_amount), 0).label("debit_total"),
-            func.coalesce(func.sum(AIRawTransactionData.credit_amount), 0).label("credit_total"),
-        ).where(base_filter)
+            func.coalesce(func.sum(sub.c.debit_amount), 0).label("debit_total"),
+            func.coalesce(func.sum(sub.c.credit_amount), 0).label("credit_total"),
+        ).select_from(sub).where(*base_where)
     )
     s = summary_result.one()
 
     offset = (page - 1) * size
     data_result = await db.execute(
-        select(AIRawTransactionData)
-        .where(base_filter)
-        .order_by(AIRawTransactionData.transaction_date, AIRawTransactionData.row_number)
+        select(
+            sub.c.transaction_date,
+            sub.c.description,
+            sub.c.merchant_name,
+            sub.c.debit_amount,
+            sub.c.credit_amount,
+            sub.c.source_account_code,
+            sub.c.row_number,
+        )
+        .select_from(sub)
+        .where(*base_where)
+        .order_by(sub.c.transaction_date, sub.c.row_number)
         .offset(offset)
         .limit(size)
     )
-    rows = data_result.scalars().all()
+    rows = data_result.all()
 
     return {
         "account_code": account_code,
@@ -878,11 +778,11 @@ async def get_account_detail(
             {
                 "row_number": r.row_number,
                 "transaction_date": r.transaction_date,
-                "description": r.original_description,
+                "description": r.description,
                 "merchant_name": r.merchant_name,
-                "debit_amount": float(r.debit_amount),
-                "credit_amount": float(r.credit_amount),
-                "account_code": r.account_code,
+                "debit_amount": float(r.debit_amount or 0),
+                "credit_amount": float(r.credit_amount or 0),
+                "account_code": None,          # voucher는 상대계정 NULL (unified_rows 스펙)
                 "source_account_code": r.source_account_code,
             }
             for r in rows
@@ -902,51 +802,42 @@ async def get_account_monthly_breakdown(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """특정 계정의 월별 집계 (시산표 드릴다운용)"""
-    filters = [
-        (AIRawTransactionData.source_account_code == account_code)
-        | (AIRawTransactionData.account_code == account_code),
-        AIRawTransactionData.transaction_date.isnot(None),
-        AIRawTransactionData.transaction_date != "",
-    ]
-    if year:
-        filters.extend(_date_filters(year, None))
+    """특정 계정의 월별 집계 (시산표 드릴다운용) — Voucher 단일 소스"""
+    period_start, period_end = _period_bounds(year, None)
+    sub = unified_aggregation_subquery(period_start, period_end)
+
+    month_key = func.substr(sub.c.transaction_date, 1, 7)
 
     result = await db.execute(
         select(
-            AIRawTransactionData.transaction_date,
-            AIRawTransactionData.debit_amount,
-            AIRawTransactionData.credit_amount,
-        ).where(and_(*filters))
+            month_key.label('ym'),
+            func.coalesce(func.sum(sub.c.debit_amount), 0).label('debit'),
+            func.coalesce(func.sum(sub.c.credit_amount), 0).label('credit'),
+            func.count().label('cnt'),
+        )
+        .where(sub.c.source_account_code == account_code)
+        .group_by(month_key)
+        .order_by(month_key)
     )
     rows = result.all()
 
-    monthly: dict = {}
+    months_data = []
     for r in rows:
-        month_key = _extract_month(str(r.transaction_date))
-        if not month_key:
+        if not r.ym:
             continue
-        # month_key is "YYYY-MM"; extract month number
         try:
-            m_num = int(month_key.split("-")[1])
+            m_num = int(r.ym.split("-")[1])
         except (IndexError, ValueError):
             continue
-        if m_num not in monthly:
-            monthly[m_num] = {"debit": 0.0, "credit": 0.0, "count": 0}
-        monthly[m_num]["debit"] += float(r.debit_amount or 0)
-        monthly[m_num]["credit"] += float(r.credit_amount or 0)
-        monthly[m_num]["count"] += 1
-
-    months_data = []
-    for m_num in sorted(monthly.keys()):
-        m = monthly[m_num]
+        debit = float(r.debit or 0)
+        credit = float(r.credit or 0)
         months_data.append({
             "month": m_num,
             "month_label": f"{m_num}월",
-            "debit_total": m["debit"],
-            "credit_total": m["credit"],
-            "balance": m["debit"] - m["credit"],
-            "tx_count": m["count"],
+            "debit_total": debit,
+            "credit_total": credit,
+            "balance": debit - credit,
+            "tx_count": r.cnt,
         })
 
     total_debit = sum(m["debit_total"] for m in months_data)
@@ -974,38 +865,25 @@ async def export_account_detail_excel(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """계정별 분개 내역 엑셀 다운로드"""
-    filters = [
-        (AIRawTransactionData.source_account_code == account_code)
-        | (AIRawTransactionData.account_code == account_code),
-    ]
-    if year:
-        filters.extend(_date_filters(year, None))
-
-    base_filter = and_(*filters)
-
-    if month is not None:
-        month_str = f"{month:02d}"
-        if year:
-            date_prefix1 = f"{year}-{month_str}"
-            date_prefix2 = f"{year}.{month_str}"
-            month_filter = or_(
-                AIRawTransactionData.transaction_date.like(f"{date_prefix1}%"),
-                AIRawTransactionData.transaction_date.like(f"{date_prefix2}%"),
-            )
-        else:
-            month_filter = or_(
-                AIRawTransactionData.transaction_date.like(f"{month_str}-%"),
-                AIRawTransactionData.transaction_date.like(f"%-{month_str}-%"),
-            )
-        base_filter = and_(base_filter, month_filter)
+    """계정별 분개 내역 엑셀 다운로드 — Voucher 단일 소스"""
+    period_start, period_end = _period_bounds(year, month)
+    sub = unified_rows_subquery(period_start, period_end)
 
     data_result = await db.execute(
-        select(AIRawTransactionData)
-        .where(base_filter)
-        .order_by(AIRawTransactionData.transaction_date, AIRawTransactionData.row_number)
+        select(
+            sub.c.transaction_date,
+            sub.c.description,
+            sub.c.merchant_name,
+            sub.c.debit_amount,
+            sub.c.credit_amount,
+            sub.c.source_account_code,
+            sub.c.row_number,
+        )
+        .select_from(sub)
+        .where(sub.c.source_account_code == account_code)
+        .order_by(sub.c.transaction_date, sub.c.row_number)
     )
-    rows = data_result.scalars().all()
+    rows = data_result.all()
 
     wb = Workbook()
     ws = wb.active
@@ -1014,7 +892,6 @@ async def export_account_detail_excel(
     header = ["날짜", "적요", "거래처", "차변", "대변", "계정코드"]
     ws.append(header)
 
-    # Header style
     for col_idx, _ in enumerate(header, start=1):
         cell = ws.cell(row=1, column=col_idx)
         cell.font = Font(bold=True)
@@ -1030,20 +907,18 @@ async def export_account_detail_excel(
         total_credit += credit
         ws.append([
             r.transaction_date or "",
-            r.original_description or "",
+            r.description or "",
             r.merchant_name or "",
             debit if debit else None,
             credit if credit else None,
-            r.account_code or "",
+            r.source_account_code or "",
         ])
 
-    # Number format for debit/credit columns (D and E)
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=4, max_col=5):
         for cell in row:
             if cell.value is not None:
                 cell.number_format = "#,##0"
 
-    # Summary row
     summary_row = ws.max_row + 1
     ws.cell(row=summary_row, column=1, value="합계")
     ws.cell(row=summary_row, column=4, value=total_debit)
@@ -1054,7 +929,6 @@ async def export_account_detail_excel(
     for col_idx in [4, 5]:
         ws.cell(row=summary_row, column=col_idx).number_format = "#,##0"
 
-    # Column widths
     col_widths = [15, 40, 20, 18, 18, 12]
     for i, width in enumerate(col_widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
@@ -1089,6 +963,7 @@ async def backfill_account_names(
     """
     기존 업로드 데이터의 source_account_name 보정.
     프론트에서 엑셀 파일의 [CODE] NAME 매핑만 추출해서 전송.
+    (ai_raw는 스테이징 전용이지만 이름 보정은 여기서 유지)
     """
     updated = 0
     for m in data.mappings:
@@ -1114,11 +989,11 @@ async def debug_raw_data(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """DB에 저장된 원본 데이터 구조 확인용"""
-    # 총 행 수
+    """DB에 저장된 원본 데이터 구조 확인용 (ai_raw 스테이징 + Voucher 통계)"""
+    # ai_raw 총 행 수 (스테이징 전용)
     total = await db.scalar(select(func.count(AIRawTransactionData.id))) or 0
 
-    # source_account_code 분포
+    # source_account_code 분포 (ai_raw staging)
     src_codes = await db.execute(
         select(
             AIRawTransactionData.source_account_code,
@@ -1130,7 +1005,7 @@ async def debug_raw_data(
     )
     source_code_dist = [{"code": r.source_account_code, "count": r.cnt} for r in src_codes.all()]
 
-    # account_code 분포
+    # account_code 분포 (ai_raw staging)
     acct_codes = await db.execute(
         select(
             AIRawTransactionData.account_code,
@@ -1142,7 +1017,7 @@ async def debug_raw_data(
     )
     account_code_dist = [{"code": r.account_code, "count": r.cnt} for r in acct_codes.all()]
 
-    # 샘플 행 5개
+    # 샘플 행 5개 (ai_raw staging)
     sample = await db.execute(
         select(AIRawTransactionData).order_by(AIRawTransactionData.id).limit(5)
     )
@@ -1161,31 +1036,28 @@ async def debug_raw_data(
         for r in sample.scalars().all()
     ]
 
-    # 모드 감지
-    mode = await _detect_ledger_mode(db)
-
-    # distinct source_account_code 수
-    distinct_src = await db.scalar(
-        select(func.count(func.distinct(AIRawTransactionData.source_account_code)))
-        .where(
-            AIRawTransactionData.source_account_code.isnot(None),
-            AIRawTransactionData.source_account_code != "",
-        )
+    # Voucher 통계
+    voucher_total = await db.scalar(
+        select(func.count(Voucher.id)).where(Voucher.status == VoucherStatus.CONFIRMED)
     ) or 0
 
-    # distinct account_code 수
-    distinct_acct = await db.scalar(
-        select(func.count(func.distinct(AIRawTransactionData.account_code)))
+    distinct_src = await db.scalar(
+        select(func.count(func.distinct(Account.code)))
+        .select_from(VoucherLine)
+        .join(Account, VoucherLine.account_id == Account.id)
+        .join(Voucher, VoucherLine.voucher_id == Voucher.id)
+        .where(Voucher.status == VoucherStatus.CONFIRMED)
     ) or 0
 
     return {
         "total_rows": total,
-        "detected_mode": mode,
+        "detected_mode": "multi",
         "distinct_source_account_codes": distinct_src,
-        "distinct_account_codes": distinct_acct,
+        "distinct_account_codes": 0,
         "top_source_codes": source_code_dist,
         "top_account_codes": account_code_dist,
         "sample_rows": sample_rows,
+        "voucher_confirmed_count": voucher_total,
     }
 
 
@@ -1214,10 +1086,12 @@ async def get_ai_analysis(
             year = years[0]
 
     period_label = f"{year}년 {month}월" if month else f"{year}년"
-    mode = "multi"
-    rows = await _get_account_balances(db, year=year, month=month)
+    # 손익용: 마감전표 제외
+    period_start, period_end = _period_bounds(year, month)
+    _has_closing = await has_closing_vouchers(db, period_start, period_end)
+    rows = await _get_account_balances(db, year=year, month=month, exclude_closing=True)
     codes = [r.code for r in rows]
-    names = await _resolve_names(db, codes, mode)
+    names = await _resolve_names(db, codes)
 
     # 2) 손익계산서 데이터 구성
     revenue_total = 0.0
@@ -1230,7 +1104,6 @@ async def get_ai_analysis(
     sga_items_text = []
     non_op_items_text = []
 
-    # 위하고: 45x 결산 완료 여부 자동 판단
     has_45x_cogs = False
     for r in rows:
         code = r.code
@@ -1242,6 +1115,8 @@ async def get_ai_analysis(
                     break
             except ValueError:
                 pass
+
+    skip_cost_elements = has_45x_cogs or _has_closing
 
     for r in rows:
         code = r.code
@@ -1261,38 +1136,40 @@ async def get_ai_analysis(
         is_manuf_8xx = first == '8' and "(제)" in (acct_name or "")
         is_cost_element = first in ('5', '6', '7') or is_manuf_8xx
 
-        if mode == "multi":
-            if first == '4':
-                if is_4xx_cogs:
-                    amt = d - c
-                    cogs_total += amt
-                    cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
-                else:
-                    amt = c - d
-                    revenue_total += amt
-                    revenue_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
-            elif is_cost_element:
-                if not has_45x_cogs:
-                    amt = d - c
-                    cogs_total += amt
-                    cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
-            elif first == '8':
+        if first == '4':
+            if is_4xx_cogs:
                 amt = d - c
-                sga_total += amt
-                sga_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
-            elif first == '9':
-                net = c - d
-                if net >= 0:
-                    non_op_income_total += net
-                else:
-                    non_op_expense_total += (-net)
-                non_op_items_text.append(f"  {acct_name}({code}): 차변={d:,.0f} 대변={c:,.0f}")
+                cogs_total += amt
+                cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+            else:
+                amt = c - d
+                revenue_total += amt
+                revenue_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+        elif is_cost_element:
+            if not skip_cost_elements:
+                amt = d - c
+                cogs_total += amt
+                cogs_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+        elif first == '8':
+            amt = d - c
+            sga_total += amt
+            sga_items_text.append(f"  {acct_name}({code}): {amt:,.0f}")
+        elif first == '9':
+            net = c - d
+            if net >= 0:
+                non_op_income_total += net
+            else:
+                non_op_expense_total += (-net)
+            non_op_items_text.append(f"  {acct_name}({code}): 차변={d:,.0f} 대변={c:,.0f}")
 
     gross_profit = revenue_total - cogs_total
     operating_income = gross_profit - sga_total
     net_income = operating_income + non_op_income_total - non_op_expense_total
 
-    # 3) 재무상태표 데이터
+    # 3) 재무상태표 데이터 (BS는 마감전표 포함)
+    bs_rows = await _get_account_balances(db, year=year, month=month, exclude_closing=False)
+    bs_names = await _resolve_names(db, [r.code for r in bs_rows])
+
     asset_items = []
     liab_items = []
     equity_items = []
@@ -1300,25 +1177,25 @@ async def get_ai_analysis(
     total_liab = 0.0
     total_equity = 0.0
 
-    for r in rows:
+    for r in bs_rows:
         code = r.code
         d = float(r.debit_total)
         c = float(r.credit_total)
         first, _, stripped, _ = _classify_code(code)
-        acct_name = names.get(code, f"계정 {stripped}")
+        acct_name = bs_names.get(code, f"계정 {stripped}")
 
         if first == '1':
-            amt = d - c if mode == "multi" else c - d
+            amt = d - c
             total_assets += amt
             if abs(amt) > 10_000_000:
                 asset_items.append(f"  {acct_name}({code}): {amt:,.0f}")
         elif first == '2':
-            amt = c - d if mode == "multi" else d - c
+            amt = c - d
             total_liab += amt
             if abs(amt) > 10_000_000:
                 liab_items.append(f"  {acct_name}({code}): {amt:,.0f}")
         elif first == '3':
-            amt = c - d if mode == "multi" else d - c
+            amt = c - d
             total_equity += amt
             equity_items.append(f"  {acct_name}({code}): {amt:,.0f}")
 
@@ -1387,7 +1264,6 @@ async def get_ai_analysis(
 총 계정 수: {len(rows)}개, 거래 건수: {sum(r.tx_count for r in rows):,}건
 
 ---
-
 위 데이터를 아래 4가지 카테고리로 분석해주세요. 각 카테고리별 3~5개의 구체적 항목을 제시하세요.
 
 반드시 아래 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
@@ -1419,7 +1295,6 @@ async def get_ai_analysis(
                 {"role": "user", "content": prompt},
             ],
         )
-        # content 추출 - thinking 블록이 아닌 text 블록 찾기
         content = ""
         for block in (message.content or []):
             if getattr(block, 'type', None) == 'text':
@@ -1428,17 +1303,14 @@ async def get_ai_analysis(
         if not content:
             content = message.content[0].text if message.content else "{}"
 
-        # JSON 추출 - 여러 전략 시도
         import re as _re
         parsed = None
 
-        # 전략 1: 그대로 파싱
         try:
             parsed = json.loads(content.strip())
         except json.JSONDecodeError:
             pass
 
-        # 전략 2: ```json ... ``` 코드블록 추출
         if parsed is None:
             json_match = _re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
             if json_match:
@@ -1447,7 +1319,6 @@ async def get_ai_analysis(
                 except json.JSONDecodeError:
                     pass
 
-        # 전략 3: 첫 번째 { ... 마지막 } 사이 추출
         if parsed is None:
             brace_match = _re.search(r'\{[\s\S]*\}', content)
             if brace_match:
@@ -1490,7 +1361,7 @@ async def ai_account_check(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """AI 계정 분개 점검 - 선택된 계정코드의 분개 내역을 분석하여 올바른 분류인지 검증"""
+    """AI 계정 분개 점검 - 선택된 계정코드의 분개 내역을 분석하여 올바른 분류인지 검증 — Voucher 단일 소스"""
     from app.core.config import settings
 
     if not settings.ANTHROPIC_API_KEY:
@@ -1505,7 +1376,6 @@ async def ai_account_check(
             detail="검토할 계정코드를 지정해주세요. (account_codes 파라미터)"
         )
 
-    # 1) Parse account_codes from comma-separated string
     code_list = [c.strip() for c in account_codes.split(",") if c.strip()]
     if not code_list:
         raise HTTPException(
@@ -1513,35 +1383,26 @@ async def ai_account_check(
             detail="유효한 계정코드가 없습니다."
         )
 
-    extra_filters = _date_filters(year, None) if year else []
+    period_start, period_end = _period_bounds(year, None)
     period_label = f"{year}년" if year else "전체 기간"
 
-    # 2) For each account code, query transactions
     account_sections = []
     for code in code_list:
-        filters = [
-            or_(
-                AIRawTransactionData.source_account_code == code,
-                AIRawTransactionData.account_code == code,
-            )
-        ]
-        filters.extend(extra_filters)
+        sub = unified_rows_subquery(period_start, period_end)
 
         result = await db.execute(
             select(
-                AIRawTransactionData.original_description,
-                AIRawTransactionData.merchant_name,
-                AIRawTransactionData.amount,
-                AIRawTransactionData.debit_amount,
-                AIRawTransactionData.credit_amount,
-                AIRawTransactionData.transaction_date,
-                AIRawTransactionData.account_code,
-                AIRawTransactionData.account_name,
-                AIRawTransactionData.source_account_code,
-                AIRawTransactionData.source_account_name,
+                sub.c.description,
+                sub.c.merchant_name,
+                sub.c.debit_amount,
+                sub.c.credit_amount,
+                sub.c.transaction_date,
+                sub.c.source_account_code,
+                sub.c.source_account_name,
             )
-            .where(*filters)
-            .order_by(AIRawTransactionData.transaction_date)
+            .select_from(sub)
+            .where(sub.c.source_account_code == code)
+            .order_by(sub.c.transaction_date)
             .limit(50)
         )
         txns = result.all()
@@ -1549,35 +1410,20 @@ async def ai_account_check(
         if not txns:
             continue
 
-        # Resolve account name for this code
         name_map = await _resolve_names(db, [code])
-        acct_name = name_map.get(code, f"계정 {_strip_code(code)}")
+        acct_name = name_map.get(code, f"계정 {strip_code(code)}")
 
-        # Build transaction lines
         tx_lines = []
         for tx in txns:
             date_str = tx.transaction_date or "날짜없음"
-            desc = tx.original_description or ""
+            desc = tx.description or ""
             merchant = tx.merchant_name or ""
             debit = float(tx.debit_amount or 0)
             credit = float(tx.credit_amount or 0)
-            src_code = tx.source_account_code or ""
-            src_name = tx.source_account_name or ""
-            cpart_code = tx.account_code or ""
-            cpart_name = tx.account_name or ""
-
-            # Determine counterpart info based on which side this code is on
-            if src_code == code:
-                counter_code = cpart_code
-                counter_name = cpart_name
-            else:
-                counter_code = src_code
-                counter_name = src_name
 
             tx_lines.append(
                 f"  - {date_str} | {desc} | {merchant} | "
-                f"차변: {debit:,.0f} / 대변: {credit:,.0f} | "
-                f"상대계정: {counter_code} {counter_name}"
+                f"차변: {debit:,.0f} / 대변: {credit:,.0f}"
             )
 
         account_sections.append({
@@ -1593,7 +1439,6 @@ async def ai_account_check(
             detail="지정된 계정코드에 대한 거래 데이터가 없습니다."
         )
 
-    # 3) Build Claude prompt
     accounts_text = "\n\n".join(section["text"] for section in account_sections)
 
     prompt = f"""당신은 한국 중소기업 전문 공인회계사입니다. 아래 선택된 계정의 분개 내역을 검토해주세요.
@@ -1637,7 +1482,6 @@ async def ai_account_check(
   "overall_summary": "전체적인 분개 점검 결과 요약 (내부통제 관점 포함)"
 }}"""
 
-    # 4) Claude API call
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -1651,7 +1495,6 @@ async def ai_account_check(
             ],
         )
 
-        # Extract text content (skip thinking blocks)
         content = ""
         for block in (message.content or []):
             if getattr(block, 'type', None) == 'text':
@@ -1660,17 +1503,14 @@ async def ai_account_check(
         if not content:
             content = message.content[0].text if message.content else "{}"
 
-        # JSON extraction - multiple strategies
         import re as _re
         parsed = None
 
-        # Strategy 1: parse directly
         try:
             parsed = json.loads(content.strip())
         except json.JSONDecodeError:
             pass
 
-        # Strategy 2: extract from ```json ... ``` code block
         if parsed is None:
             json_match = _re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
             if json_match:
@@ -1679,7 +1519,6 @@ async def ai_account_check(
                 except json.JSONDecodeError:
                     pass
 
-        # Strategy 3: extract first { ... last }
         if parsed is None:
             brace_match = _re.search(r'\{[\s\S]*\}', content)
             if brace_match:

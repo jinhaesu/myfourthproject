@@ -695,12 +695,23 @@ class AIClassifierService:
 
             try:
                 response = client.messages.create(
-                    model=settings.ANTHROPIC_MODEL or "claude-opus-4-8",
+                    model=settings.ANTHROPIC_MODEL or "claude-fable-5",
                     max_tokens=4000,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": (
+                                "당신은 한국 식품제조회사(조인앤조인) 전문 회계 분류 AI입니다. "
+                                "신용카드 거래를 분석하여 정확한 계정과목 코드를 JSON 배열로만 반환합니다. "
+                                "다른 텍스트나 설명은 절대 출력하지 않습니다."
+                            ),
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
                     messages=[{"role": "user", "content": prompt}],
                 )
 
-                text = response.content[0].text.strip()
+                text = next(b.text for b in response.content if b.type == "text").strip()
                 if "```" in text:
                     text = text.split("```")[1]
                     if text.startswith("json"):
@@ -764,12 +775,22 @@ class AIClassifierService:
 {{"account_code": "계정코드", "account_name": "계정과목명", "confidence": 0.0~1.0, "reasoning": "분류 근거 한 줄"}}"""
 
             response = client.messages.create(
-                model=settings.ANTHROPIC_MODEL or "claude-opus-4-8",
-                max_tokens=200,
+                model=settings.ANTHROPIC_MODEL or "claude-fable-5",
+                max_tokens=2048,
+                system=[
+                    {
+                        "type": "text",
+                        "text": (
+                            "당신은 한국 기업 회계 전문가입니다. 신용카드 거래 내역을 보고 "
+                            "적절한 계정과목을 분류합니다. 반드시 JSON만 출력하고 다른 텍스트는 출력하지 않습니다."
+                        ),
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            text = response.content[0].text.strip()
+            text = next(b.text for b in response.content if b.type == "text").strip()
             # JSON 추출 (```json ... ``` 또는 { ... } 형태)
             if "```" in text:
                 text = text.split("```")[1]
