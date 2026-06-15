@@ -2,8 +2,15 @@
 Smart Finance Core - AI 계정 분류 API
 더존 과거 데이터 학습 및 자동 분류 기능
 """
+import asyncio
 import json
 import io
+import logging
+import re
+import time
+import traceback
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
@@ -11,19 +18,479 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, Integer
 import pandas as pd
 
 from sqlalchemy import case as sa_case
 
-from app.core.database import get_db
+logger = logging.getLogger(__name__)
+
+# 학습 진행 상태 추적 (in-memory)
+_training_progress: dict = {
+    "status": "idle",  # idle, running, completed, failed
+    "step": "",
+    "progress": 0,      # 0~100
+    "message": "",
+    "started_at": None,
+    "completed_at": None,
+}
+
+from app.core.config import settings
+from app.core.database import get_db, async_session_factory
 from app.core.security import get_current_user
 from app.models.user import User
-from app.models.accounting import Account, AccountCategory
+from app.models.accounting import Account, AccountCategory, AccountCodeMapping
 from app.models.ai import AIClassificationLog, AITrainingData, AIModelVersion
 from app.services.ai_classifier import AIClassifierService
 
 router = APIRouter(prefix="/ai-classification", tags=["AI 분류"])
+
+# 백그라운드 태스크 참조 보관 (GC 방지) + 동시 업로드 제한
+_background_tasks: set = set()
+_MAX_CONCURRENT_UPLOADS = 1
+
+# 분류 진행 상태 추적 (in-memory)
+_classify_progress: dict = {
+    "status": "idle",  # idle, running, completed, failed
+    "step": "",
+    "progress": 0,      # 0~100
+    "message": "",
+    "total_rows": 0,
+    "processed_rows": 0,
+    "low_confidence_count": 0,
+}
+
+
+# ============ 계정별 원장 파싱 헬퍼 ============
+
+def _is_account_ledger_format(df_raw: pd.DataFrame) -> bool:
+    """더존/ERP '계정별 원장' 양식인지 감지"""
+    import re
+    if df_raw.shape[0] < 3:
+        return False
+    # 1차: 첫 8행에서 "계정별 원장" 텍스트 검색 (공백 제거 후)
+    for r in range(min(8, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                normalized = str(cell).replace(" ", "").strip()
+                if "계정별" in normalized and "원장" in normalized:
+                    return True
+    # 2차: [코드] 계정명 패턴 + 날짜/차변/대변 헤더가 있으면 원장으로 판단
+    has_account_header = False
+    has_table_header = False
+    for r in range(min(15, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                cell_str = str(cell).strip()
+                if re.search(r'\[\d{1,6}\]\s*.+', cell_str):
+                    has_account_header = True
+                normalized = cell_str.replace(" ", "")
+                if normalized == "날짜":
+                    has_table_header = True
+        if has_account_header and has_table_header:
+            return True
+    return False
+
+
+def _parse_account_ledger(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    '계정별 원장' 양식 파싱
+    구조:
+      Row 0: "계정별 원장"
+      Row 2: 기간 (예: 2025.01.01 ~ 2025.12.31)
+      Row 4: 회사명 ... [코드] 계정과목명
+      Row 6: 헤더 (날짜, 적요란, 코드, 거래처, 차변, 대변, 잔액)
+      Row 7: 전기이월
+      Row 8+: 거래 데이터
+      여러 계정이 연속되어 나올 수 있음
+    """
+    import re
+
+    rows = []
+    current_account_code = None
+    current_account_name = None
+    header_row_idx = None
+    col_map = {}  # column index -> field name
+    ledger_year = None  # 기간 행에서 추출한 연도
+
+    # 먼저 기간 행에서 연도 추출 (예: "2025.01.01 ~ 2025.12.31")
+    for r in range(min(5, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                year_match = re.search(r'(20\d{2})\s*[./-]', str(cell))
+                if year_match:
+                    ledger_year = year_match.group(1)
+                    break
+        if ledger_year:
+            break
+
+    for idx in range(df_raw.shape[0]):
+        row_vals = [df_raw.iloc[idx, c] if c < df_raw.shape[1] else None for c in range(df_raw.shape[1])]
+
+        # 계정 헤더 감지: "[코드] 계정명" 패턴 찾기
+        for cell in row_vals:
+            if pd.notna(cell):
+                cell_str = str(cell).strip()
+                match = re.search(r'\[(\d{1,6})\]\s*(.+)', cell_str)
+                if match:
+                    current_account_code = match.group(1).strip()
+                    current_account_name = match.group(2).strip()
+                    break
+
+        # 헤더 행 감지: "날짜" 컬럼 (공백 제거 후 비교)
+        first_val = str(row_vals[0]).replace(" ", "").strip() if pd.notna(row_vals[0]) else ""
+        if first_val == "날짜":
+            header_row_idx = idx
+            # 컬럼 매핑 구축
+            col_map = {}
+            for c_idx, val in enumerate(row_vals):
+                if pd.notna(val):
+                    col_name = str(val).replace(" ", "").strip()
+                    if col_name == "날짜":
+                        col_map[c_idx] = "date"
+                    elif col_name in ("적요란", "적요"):
+                        col_map[c_idx] = "description"
+                    elif col_name == "코드":
+                        col_map[c_idx] = "code"
+                    elif col_name in ("거래처", "거래처명"):
+                        col_map[c_idx] = "merchant"
+                    elif col_name == "차변":
+                        col_map[c_idx] = "debit"
+                    elif col_name == "대변":
+                        col_map[c_idx] = "credit"
+                    elif col_name == "잔액":
+                        col_map[c_idx] = "balance"
+            continue
+
+        if header_row_idx is None or not col_map:
+            continue
+
+        # 데이터 행 파싱: 전기이월, 월계, 누계, 빈 행 건너뛰기
+        desc_val = None
+        for c_idx, field_name in col_map.items():
+            if field_name == "description" and c_idx < len(row_vals):
+                desc_val = row_vals[c_idx]
+                break
+
+        if desc_val is None or pd.isna(desc_val):
+            continue
+
+        desc_str = str(desc_val).strip()
+        if desc_str in ("", "전기이월", "전월이월", "월계", "누계", "합계", "이월잔액"):
+            continue
+
+        # 코드 필드 추출
+        code_val = None
+        merchant_val = None
+        debit_val = 0
+        credit_val = 0
+
+        for c_idx, field_name in col_map.items():
+            if c_idx >= len(row_vals):
+                continue
+            val = row_vals[c_idx]
+            if field_name == "code" and pd.notna(val):
+                code_val = str(val).strip()
+            elif field_name == "merchant" and pd.notna(val):
+                merchant_val = str(val).strip()
+            elif field_name == "debit" and pd.notna(val):
+                try:
+                    debit_val = float(val)
+                except (ValueError, TypeError):
+                    debit_val = 0
+            elif field_name == "credit" and pd.notna(val):
+                try:
+                    credit_val = float(val)
+                except (ValueError, TypeError):
+                    credit_val = 0
+
+        # 날짜 추출 (연도 없으면 기간 행의 연도 추가)
+        date_val = None
+        for c_idx, field_name in col_map.items():
+            if field_name == "date" and c_idx < len(row_vals) and pd.notna(row_vals[c_idx]):
+                raw_date = str(row_vals[c_idx]).strip()
+                # "01-15" 또는 "01.15" 형식이면 연도 추가
+                if raw_date and ledger_year and not re.match(r'^\d{4}', raw_date):
+                    date_val = f"{ledger_year}-{raw_date.replace('.', '-')}"
+                else:
+                    date_val = raw_date
+                break
+
+        # 위하고 "계정별 원장" 양식의 "코드" 컬럼은 거래처 코드(6자리 숫자)다.
+        # 회계 계정과목 코드(상대계정)가 아니므로 account_code로 쓰면 안 된다.
+        # → account_code는 원장 계정 자체(source)로 두고, code_val(거래처 코드)은 거래처명 보조 정보로만 사용.
+        if not current_account_code:
+            continue
+
+        amount = debit_val if debit_val > 0 else credit_val
+
+        rows.append({
+            "적요란": desc_str,
+            "거래처": merchant_val or "",
+            "금액": amount,
+            "코드": current_account_code,  # 위하고 양식엔 상대계정 정보 없음 → source 자기 자신
+            "차변": debit_val,
+            "대변": credit_val,
+            "날짜": date_val or "",
+            "원장계정코드": current_account_code or "",
+            "원장계정명": current_account_name or "",
+        })
+
+    if not rows:
+        raise ValueError("계정별 원장에서 유효한 거래 데이터를 찾을 수 없습니다.")
+
+    return pd.DataFrame(rows)
+
+
+# ============ 분개장(전표) 파싱 헬퍼 ============
+
+# 한국 K-GAAP 표준 계정과목명 → 3자리 코드 매핑.
+# 위하고/더존 분개장은 계정코드 없이 이름만 노출하므로 우리 시스템 코드로 변환 필요.
+# (판)·(제) 등 접미사는 그대로 두고 base 매핑 후 fallback 처리.
+_ACCT_NAME_TO_CODE = {
+    # 자산
+    '현금': '101', '당좌예금': '102', '보통예금': '103', '제예금': '104',
+    '단기금융상품': '105', '단기매매증권': '107',
+    '외상매출금': '108', '받을어음': '110', '단기대여금': '114', '미수금': '120',
+    '미수수익': '116', '선급금': '131', '선급비용': '133', '가지급금': '134',
+    '부가세대급금': '135', '예수금':'254',
+    '원재료': '153', '재공품': '169', '제품': '150', '상품': '146',
+    '저장품': '173', '소모품': '173',
+    '토지': '201', '건물': '202', '구축물': '204', '기계장치': '206',
+    '차량운반구': '208', '비품': '212', '공구와기구': '210', '시설장치': '214',
+    '감가상각누계액': '203', '개발비': '218', '특허권': '231',
+    '임차보증금': '232', '전세권': '233', '보증금': '232',
+    # 부채
+    '외상매입금': '251', '지급어음': '252', '미지급금': '253',
+    '예수금(부채)': '254', '부가세예수금': '255', '선수금': '255',
+    '미지급비용': '262', '미지급세금': '261',
+    '단기차입금': '260', '장기차입금': '293', '사채': '291',
+    '퇴직급여충당부채': '295',
+    # 자본
+    '자본금': '331', '주식발행초과금': '341', '이익잉여금': '375',
+    # 수익 (매출)
+    '상품매출': '401', '제품매출': '404', '용역매출': '403',
+    '공사매출': '402', '임대료수익': '904', '수출매출': '404',
+    # 영업외수익
+    '이자수익': '901', '배당금수익': '902', '잡이익': '930',
+    '외환차익': '907', '외화환산이익': '906',
+    # 비용 - 매출원가
+    '상품매출원가': '451', '제품매출원가': '455',
+    # 비용 - 제조원가 (제)
+    '원재료비': '501', '복리후생비': '511', '여비교통비': '512',
+    '접대비': '513', '통신비': '514', '수도광열비': '515', '세금과공과': '517',
+    '감가상각비(제)': '518', '지급임차료': '519', '수선비': '520',
+    '보험료': '521', '차량유지비': '522', '교육훈련비': '525',
+    '도서인쇄비': '526', '소모품비(제)': '530',
+    '지급수수료(제)': '531',
+    '광고선전비(제)': '533', '운반비(제)': '524',
+    # 비용 - 판관비 (판)
+    '직원급여': '801', '급여': '801', '잡급': '803',
+    '복리후생비(판)': '811', '여비교통비(판)': '812', '접대비(판)': '813',
+    '통신비(판)': '814', '수도광열비(판)': '815', '세금과공과(판)': '817',
+    '감가상각비(판)': '818', '지급임차료(판)': '819', '수선비(판)': '820',
+    '보험료(판)': '821', '차량유지비(판)': '822', '경상연구개발비': '823',
+    '운반비': '824', '운반비(판)': '824', '교육훈련비(판)': '825',
+    '도서인쇄비(판)': '826', '회의비(판)': '827',
+    '판매수수료': '839', '지급수수료': '831', '지급수수료(판)': '831',
+    '광고선전비': '833', '광고선전비(판)': '833',
+    '소모품비': '830', '소모품비(판)': '830',
+    '대손상각비': '835',
+    # 영업외비용
+    '이자비용': '951', '외환차손': '952', '잡손실': '980',
+    '기부금': '953', '재해손실': '961',
+}
+
+
+def _account_name_to_code(name: str) -> Optional[str]:
+    """계정과목명 → 3자리 코드. 매핑 실패 시 None."""
+    if not name:
+        return None
+    n = str(name).strip()
+    # 정확 매칭
+    if n in _ACCT_NAME_TO_CODE:
+        return _ACCT_NAME_TO_CODE[n]
+    # 접미사 변형 (예: '소모품비(제)' → '소모품비')
+    base = re.sub(r'\([^)]*\)\s*$', '', n).strip()
+    if base != n and base in _ACCT_NAME_TO_CODE:
+        return _ACCT_NAME_TO_CODE[base]
+    return None
+
+
+def _is_journal_format(df_raw: pd.DataFrame) -> bool:
+    """위하고/더존 '분개장' 양식 감지 — 첫 10행에 '분개장' + 차변·대변 컬럼 헤더"""
+    if df_raw.shape[0] < 5:
+        return False
+    has_journal_title = False
+    has_dr_cr_header = False
+    for r in range(min(10, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                normalized = str(cell).replace(" ", "").strip()
+                if "분개장" in normalized:
+                    has_journal_title = True
+                if normalized == "차변" or normalized == "대변":
+                    has_dr_cr_header = True
+        if has_journal_title and has_dr_cr_header:
+            return True
+    return has_journal_title  # 제목만 있어도 일단 분개장으로 시도
+
+
+def _parse_journal(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    위하고 '분개장' 양식 파싱.
+    구조 (6 컬럼 고정):
+      [0] 월/일, [1] 번호, [2] 차변 금액, [3] 차변 계정과목, [4] 대변 계정과목, [5] 대변 금액
+
+    분개 단위로 그룹화. 한 분개에 차변 N개·대변 M개 가능.
+    한 분개의 마지막에 적요/거래처 행 가능: [3] = 적요, [4] = 거래처명, 금액 없음.
+    페이지 헤더(분개장/회사명/구분/월일·번호) 반복 등장 → 자동 skip.
+
+    출력 DataFrame 컬럼은 _parse_account_ledger와 동일 — downstream 호환.
+    상대계정은 분개에서 자동 도출 (단일 vs 단일 / 다 vs 1 / 1 vs 다 / 다 vs 다).
+    """
+    rows = []
+    journal_year = None
+    header_found = False
+
+    # 기간행에서 연도 추출
+    for r in range(min(5, df_raw.shape[0])):
+        for c in range(df_raw.shape[1]):
+            cell = df_raw.iloc[r, c]
+            if pd.notna(cell):
+                m = re.search(r'(20\d{2})\s*년', str(cell))
+                if m:
+                    journal_year = m.group(1)
+                    break
+        if journal_year:
+            break
+
+    if not journal_year:
+        from datetime import datetime
+        journal_year = str(datetime.now().year)
+
+    COL_MD, COL_NUM, COL_DR_AMT, COL_DR_ACC, COL_CR_ACC, COL_CR_AMT = 0, 1, 2, 3, 4, 5
+
+    def _to_float(v) -> float:
+        if v is None or pd.isna(v):
+            return 0.0
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            try:
+                return float(str(v).replace(',', '').strip())
+            except (ValueError, TypeError):
+                return 0.0
+
+    def _flush(v):
+        if not v or (not v['debits'] and not v['credits']):
+            return
+        debits = v['debits']
+        credits = v['credits']
+        # 상대계정 식별 — 단일 vs 단일이면 명확. 그 외는 가장 큰 반대편 우선.
+        cr_main = max(credits, key=lambda x: abs(x['amount']))['account'] if credits else None
+        dr_main = max(debits, key=lambda x: abs(x['amount']))['account'] if debits else None
+        for d in debits:
+            rows.append({
+                "적요란": v.get('description') or d['account'],
+                "거래처": v.get('merchant') or "",
+                "금액": abs(d['amount']),
+                "코드": _account_name_to_code(cr_main) or "",
+                "차변": d['amount'] if d['amount'] >= 0 else 0,
+                "대변": -d['amount'] if d['amount'] < 0 else 0,
+                "날짜": v['date'],
+                "원장계정코드": _account_name_to_code(d['account']) or "",
+                "원장계정명": d['account'],
+                "_상대계정명": cr_main or "",
+                "_전표번호": v.get('number') or "",
+            })
+        for c in credits:
+            rows.append({
+                "적요란": v.get('description') or c['account'],
+                "거래처": v.get('merchant') or "",
+                "금액": abs(c['amount']),
+                "코드": _account_name_to_code(dr_main) or "",
+                "차변": -c['amount'] if c['amount'] < 0 else 0,
+                "대변": c['amount'] if c['amount'] >= 0 else 0,
+                "날짜": v['date'],
+                "원장계정코드": _account_name_to_code(c['account']) or "",
+                "원장계정명": c['account'],
+                "_상대계정명": dr_main or "",
+                "_전표번호": v.get('number') or "",
+            })
+
+    voucher = None
+
+    for idx in range(df_raw.shape[0]):
+        row = df_raw.iloc[idx].tolist()
+        if len(row) < 6:
+            row = row + [None] * (6 - len(row))
+
+        md_raw = row[COL_MD]
+        num_raw = row[COL_NUM]
+        dr_amt_raw = row[COL_DR_AMT]
+        dr_acc_raw = row[COL_DR_ACC]
+        cr_acc_raw = row[COL_CR_ACC]
+        cr_amt_raw = row[COL_CR_AMT]
+
+        md = str(md_raw).strip() if pd.notna(md_raw) else ''
+        num = str(num_raw).strip() if pd.notna(num_raw) else ''
+        dr_acc = str(dr_acc_raw).strip() if pd.notna(dr_acc_raw) else ''
+        cr_acc = str(cr_acc_raw).strip() if pd.notna(cr_acc_raw) else ''
+
+        # 페이지 헤더 반복 skip — '분개장', '회사명', '구분', '월/일', '차변', '대변' 단어
+        cell_text = ' '.join([str(c) for c in row if pd.notna(c)])
+        if any(k in cell_text for k in ('분   개   장', '분개장', '회사명', '구     분', '월/일')):
+            if not header_found:
+                header_found = True
+            continue
+
+        if not header_found:
+            continue
+
+        # 새 분개 시작 — 월/일 (예: 01/15)
+        if re.match(r'^\d{1,2}/\d{1,2}$', md):
+            _flush(voucher)
+            iso_date = f"{journal_year}-{md.replace('/', '-')}"
+            voucher = {
+                'date': iso_date,
+                'number': num,
+                'debits': [],
+                'credits': [],
+                'description': None,
+                'merchant': None,
+            }
+
+        if voucher is None:
+            continue
+
+        dr_amt = _to_float(dr_amt_raw)
+        cr_amt = _to_float(cr_amt_raw)
+
+        # 차변 추가
+        if dr_amt != 0 and dr_acc:
+            voucher['debits'].append({'amount': dr_amt, 'account': dr_acc})
+        # 대변 추가
+        if cr_amt != 0 and cr_acc:
+            voucher['credits'].append({'amount': cr_amt, 'account': cr_acc})
+
+        # 금액 없고 양쪽 텍스트만 있으면 적요+거래처 행
+        if dr_amt == 0 and cr_amt == 0:
+            if dr_acc and not voucher.get('description'):
+                voucher['description'] = dr_acc
+            if cr_acc and not voucher.get('merchant'):
+                voucher['merchant'] = cr_acc
+
+    _flush(voucher)
+
+    if not rows:
+        raise ValueError("분개장에서 유효한 분개 데이터를 찾을 수 없습니다.")
+
+    return pd.DataFrame(rows)
 
 
 # ============ Pydantic Models ============
@@ -88,37 +555,27 @@ async def get_ai_status(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """AI 모델 상태 조회"""
-    classifier = AIClassifierService()
-    await classifier.load_model(db)
+    """AI 모델 상태 조회 (경량 — 모델 로드 없이 DB 쿼리만)"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus, ClassificationResult
 
-    # 학습 데이터 통계
-    training_count = await db.scalar(
-        select(func.count(AITrainingData.id)).where(AITrainingData.is_active == True)
-    )
-
-    # 분류 로그 통계
-    from app.models.ai import ClassificationResult
-    log_stats = await db.execute(
+    # 단일 쿼리로 여러 COUNT를 한번에 조회
+    counts = await db.execute(
         select(
-            func.count(AIClassificationLog.id).label("total"),
-            func.sum(
-                sa_case(
-                    (AIClassificationLog.classification_result == ClassificationResult.CORRECT, 1),
-                    else_=0
-                )
-            ).label("correct"),
-            func.sum(
-                sa_case(
-                    (AIClassificationLog.classification_result == ClassificationResult.CORRECTED, 1),
-                    else_=0
-                )
-            ).label("corrected")
+            func.count(AITrainingData.id).filter(AITrainingData.is_active == True).label("training"),
+            func.count(AIClassificationLog.id).label("log_total"),
+            func.sum(sa_case(
+                (AIClassificationLog.classification_result == ClassificationResult.CORRECT, 1),
+                else_=0
+            )).label("correct"),
+            func.sum(sa_case(
+                (AIClassificationLog.classification_result == ClassificationResult.CORRECTED, 1),
+                else_=0
+            )).label("corrected"),
         )
     )
-    stats = log_stats.one()
+    c = counts.one()
 
-    # 최신 모델 버전 조회
+    # 모델 버전 (가벼운 쿼리)
     model_result = await db.execute(
         select(AIModelVersion)
         .where(AIModelVersion.is_active == True)
@@ -128,19 +585,53 @@ async def get_ai_status(
     active_model = model_result.scalar_one_or_none()
 
     accuracy_rate = 0
-    if stats.total and stats.total > 0:
-        accuracy_rate = (stats.correct or 0) / stats.total * 100
+    if c.log_total and c.log_total > 0:
+        accuracy_rate = (c.correct or 0) / c.log_total * 100
+
+    # 업로드 통계 (단일 쿼리)
+    upload_counts = await db.execute(
+        select(
+            func.count(AIDataUploadHistory.id).label("total"),
+            func.count(AIDataUploadHistory.id).filter(
+                AIDataUploadHistory.status == UploadStatus.COMPLETED
+            ).label("completed"),
+        )
+    )
+    uc = upload_counts.one()
+
+    total_raw_rows = await db.scalar(
+        select(func.count(AIRawTransactionData.id))
+    ) or 0
+
+    # 최근 업로드
+    latest_upload_result = await db.execute(
+        select(AIDataUploadHistory)
+        .order_by(AIDataUploadHistory.created_at.desc())
+        .limit(1)
+    )
+    latest_upload = latest_upload_result.scalar_one_or_none()
 
     return {
         "model_version": active_model.version if active_model else "default_v1.0",
         "is_trained": active_model is not None,
-        "training_samples": training_count or 0,
-        "total_classifications": stats.total or 0,
-        "correct_classifications": stats.correct or 0,
-        "corrected_classifications": stats.corrected or 0,
+        "training_samples": max(c.training or 0, total_raw_rows or 0),
+        "total_classifications": c.log_total or 0,
+        "correct_classifications": c.correct or 0,
+        "corrected_classifications": c.corrected or 0,
         "accuracy_rate": round(accuracy_rate, 2),
         "last_trained_at": active_model.training_completed_at.isoformat() if active_model and active_model.training_completed_at else None,
-        "model_accuracy": float(active_model.accuracy) if active_model and active_model.accuracy else None
+        "model_accuracy": float(active_model.accuracy) if active_model and active_model.accuracy else None,
+        "upload_count": uc.total or 0,
+        "completed_uploads": uc.completed or 0,
+        "total_raw_transactions": total_raw_rows,
+        "latest_upload": {
+            "id": latest_upload.id,
+            "filename": latest_upload.filename,
+            "row_count": latest_upload.row_count,
+            "saved_count": latest_upload.saved_count,
+            "status": latest_upload.status.value if hasattr(latest_upload.status, 'value') else str(latest_upload.status),
+            "created_at": latest_upload.created_at.isoformat() if latest_upload.created_at else None,
+        } if latest_upload else None,
     }
 
 
@@ -170,6 +661,386 @@ async def get_account_list(
     ]
 
 
+@router.get("/standard-accounts")
+async def get_standard_accounts(
+    current_user: User = Depends(get_current_user)
+):
+    """시산표 기반 표준 계정과목 목록 (DB 무관, 항상 반환)"""
+    from app.services.ai_classifier import STANDARD_ACCOUNTS, EXPENSE_ACCOUNTS
+
+    # 계정 분류 그룹핑
+    groups = {
+        "1": "자산", "2": "부채/유형자산", "3": "자본",
+        "4": "수익/매출원가", "5": "매출원가(제조)", "8": "판관비", "9": "영업외"
+    }
+
+    def group_label(code: str) -> str:
+        return groups.get(code[0], "기타") if code else "기타"
+
+    return {
+        "standard_accounts": [
+            {"code": code, "name": name, "group": group_label(code)}
+            for code, name in sorted(STANDARD_ACCOUNTS.items())
+        ],
+        "expense_accounts": [
+            {"code": code, "name": name, "group": group_label(code)}
+            for code, name in sorted(EXPENSE_ACCOUNTS.items())
+        ],
+    }
+
+
+def _parse_file_sync(content: bytes, filename: str, upload_id: int):
+    """동기 함수: 엑셀/CSV 파싱 (별도 스레드에서 실행)"""
+    is_ledger_format = False
+    all_sheets = None
+    ledger_dfs = []
+    normal_dfs = []
+    sheet_errors = []
+
+    if filename.endswith('.csv'):
+        df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
+    else:
+        engine = 'xlrd' if filename.endswith('.xls') else 'openpyxl'
+        all_sheets = pd.read_excel(io.BytesIO(content), header=None, engine=engine, sheet_name=None)
+        logger.info(f"[BG Upload {upload_id}] 시트 수: {len(all_sheets)}")
+
+        for sheet_name, df_raw in all_sheets.items():
+            if df_raw.shape[0] < 2:
+                continue
+            # 분개장 양식 우선 (상대계정까지 완전한 정보 포함)
+            if _is_journal_format(df_raw):
+                is_ledger_format = True  # downstream에서 ledger 컬럼 처리 재사용
+                try:
+                    parsed = _parse_journal(df_raw)
+                    ledger_dfs.append(parsed)
+                    logger.info(f"[BG Upload {upload_id}] 분개장 시트 '{sheet_name}': {len(parsed)}행 파싱")
+                except Exception as e:
+                    sheet_errors.append(f"분개장 시트 '{sheet_name}': {str(e)[:100]}")
+            elif _is_account_ledger_format(df_raw):
+                is_ledger_format = True
+                try:
+                    parsed = _parse_account_ledger(df_raw)
+                    ledger_dfs.append(parsed)
+                except Exception as e:
+                    sheet_errors.append(f"시트 '{sheet_name}': {str(e)[:100]}")
+            else:
+                normal_dfs.append(pd.read_excel(
+                    io.BytesIO(content), engine=engine, sheet_name=sheet_name
+                ))
+
+        if ledger_dfs:
+            df = pd.concat(ledger_dfs, ignore_index=True)
+        elif normal_dfs:
+            df = pd.concat(normal_dfs, ignore_index=True)
+        else:
+            error_detail = "유효한 데이터가 있는 시트를 찾을 수 없습니다."
+            if sheet_errors:
+                error_detail += " 오류: " + "; ".join(sheet_errors)
+            return {"error": error_detail}
+
+    # 컬럼명 정규화
+    column_mapping = {
+        '적요': 'description', '적요란': 'description',
+        '거래내역': 'description', '내역': 'description',
+        '거래처명': 'merchant_name', '거래처': 'merchant_name',
+        '가맹점': 'merchant_name',
+        '금액': 'amount', '거래금액': 'amount',
+        '계정과목코드': 'account_code', '계정코드': 'account_code',
+        '계정과목': 'account_code', '코드': 'account_code',
+        '계정과목명': 'account_name', '계정명': 'account_name',
+        '차변': 'debit', '대변': 'credit', '날짜': 'date',
+        '원장계정코드': 'source_account_code', '원장계정명': 'source_account_name',
+    }
+
+    original_columns = list(df.columns)
+    df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
+    logger.info(f"[BG Upload {upload_id}] 컬럼: {original_columns} → {list(df.columns)}, 행수(정제전): {len(df)}")
+
+    if 'description' not in df.columns:
+        return {"error": f"'적요' 컬럼 없음. 현재 컬럼: {original_columns}"}
+    if 'account_code' not in df.columns:
+        return {"error": f"'계정과목코드' 컬럼 없음. 현재 컬럼: {original_columns}"}
+
+    # 데이터 정제
+    df = df.dropna(subset=['description', 'account_code'])
+    df['description'] = df['description'].astype(str).str.strip()
+    df['account_code'] = df['account_code'].astype(str).str.strip()
+    if 'merchant_name' in df.columns:
+        df['merchant_name'] = df['merchant_name'].fillna('').astype(str).str.strip()
+    if 'amount' in df.columns:
+        df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+    else:
+        df['amount'] = 0
+
+    # 단일 업로드 내 중복 제거 — 위하고 멀티시트 양식에서 동일 거래가 여러 시트에 등장하면
+    # 우리 파서가 모두 누적 저장되어 차변/대변 합계가 위하고와 안 맞는 문제 해결.
+    # 위하고 양식엔 상대계정 정보 없으니 account_code는 dedupe 키에서 제외.
+    dedupe_cols = []
+    for col in ('date', 'debit', 'credit', 'merchant_name',
+                'description', 'source_account_code'):
+        if col in df.columns:
+            dedupe_cols.append(col)
+    if dedupe_cols:
+        before = len(df)
+        df = df.drop_duplicates(subset=dedupe_cols, keep='first').reset_index(drop=True)
+        after = len(df)
+        if before != after:
+            logger.info(f"[BG Upload {upload_id}] 중복 제거: {before} → {after} ({before-after}건 dropped)")
+
+    logger.info(f"[BG Upload {upload_id}] 파싱 완료: {len(df)}행")
+
+    return {
+        "df": df,
+        "is_ledger_format": is_ledger_format,
+        "all_sheets": all_sheets,
+        "ledger_dfs": ledger_dfs,
+        "normal_dfs": normal_dfs,
+        "sheet_errors": sheet_errors,
+    }
+
+
+async def _process_upload_background(upload_id: int, content: bytes, filename: str, user_id: int):
+    """백그라운드에서 대용량 파일 처리 (자체 DB 세션 사용)"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
+    from sqlalchemy import insert as sa_insert
+    from collections import Counter
+
+    logger.info(f"[BG Upload {upload_id}] 백그라운드 처리 시작: {filename} ({len(content)} bytes)")
+
+    # Step 1: 파일 파싱 (별도 스레드 - 이벤트루프 블로킹 방지)
+    try:
+        parse_result = await asyncio.to_thread(_parse_file_sync, content, filename, upload_id)
+    except Exception as e:
+        logger.error(f"[BG Upload {upload_id}] 파싱 스레드 오류: {e}")
+        async with async_session_factory() as db:
+            upload_history = await db.get(AIDataUploadHistory, upload_id)
+            if upload_history:
+                upload_history.status = UploadStatus.FAILED
+                upload_history.error_message = f"파일 파싱 실패: {str(e)[:400]}"
+                await db.commit()
+        return
+
+    if "error" in parse_result:
+        async with async_session_factory() as db:
+            upload_history = await db.get(AIDataUploadHistory, upload_id)
+            if upload_history:
+                upload_history.status = UploadStatus.FAILED
+                upload_history.error_message = parse_result["error"][:500]
+                await db.commit()
+        return
+
+    df = parse_result["df"]
+    is_ledger_format = parse_result["is_ledger_format"]
+    all_sheets = parse_result["all_sheets"]
+    ledger_dfs = parse_result["ledger_dfs"]
+    normal_dfs = parse_result["normal_dfs"]
+    sheet_errors = parse_result["sheet_errors"]
+
+    # Step 2: DB 작업 (파싱 완료 후 세션 열기)
+    async with async_session_factory() as db:
+        try:
+            upload_history = await db.get(AIDataUploadHistory, upload_id)
+            if not upload_history:
+                logger.error(f"[BG Upload {upload_id}] 업로드 이력을 찾을 수 없음")
+                return
+
+            upload_history.row_count = len(df)
+            await db.flush()
+            logger.info(f"[BG Upload {upload_id}] row_count 업데이트: {len(df)}")
+
+            # Phase A: 계정코드 준비
+            saved_count = 0
+            error_count = 0
+            auto_created_count = 0
+
+            unique_codes = df['account_code'].unique().tolist()
+            has_source_code = 'source_account_code' in df.columns
+            has_source_name = 'source_account_name' in df.columns
+            source_name_map = {}
+            if has_source_code:
+                source_codes_unique = df['source_account_code'].dropna().unique().tolist()
+                if has_source_name:
+                    for _, row in df.drop_duplicates('source_account_code').iterrows():
+                        sc = str(row.get('source_account_code', '')).strip()
+                        sn = str(row.get('source_account_name', '')).strip()
+                        if sc and sn:
+                            source_name_map[sc] = sn
+                for sc in source_codes_unique:
+                    sc = str(sc).strip()
+                    if sc and sc not in unique_codes:
+                        unique_codes.append(sc)
+
+            existing_accounts_result = await db.execute(
+                select(Account).where(Account.is_active == True)
+            )
+            account_cache = {a.code: a for a in existing_accounts_result.scalars().all()}
+
+            existing_mappings_result = await db.execute(
+                select(AccountCodeMapping).where(AccountCodeMapping.source_system == "douzone")
+            )
+            mapping_cache = {m.source_code: m for m in existing_mappings_result.scalars().all()}
+
+            all_categories_result = await db.execute(
+                select(AccountCategory).order_by(AccountCategory.code)
+            )
+            all_categories = {c.code: c for c in all_categories_result.scalars().all()}
+            default_category_id = next(iter(all_categories.values())).id if all_categories else 1
+
+            def _guess_category_id(code: str) -> int:
+                if not code:
+                    return default_category_id
+                digit_map = {'0': '1', '1': '1', '2': '2', '3': '3', '4': '4',
+                             '5': '5', '6': '5', '7': '5', '8': '5', '9': '5'}
+                cat_code = digit_map.get(code[0], '5')
+                return all_categories[cat_code].id if cat_code in all_categories else default_category_id
+
+            desc_patterns: dict = {}
+            for _, row in df.iterrows():
+                code = row['account_code']
+                if code not in desc_patterns:
+                    desc_patterns[code] = []
+                desc_patterns[code].append(row['description'])
+
+            logger.info(f"[BG Upload {upload_id}] Phase A: {len(unique_codes)}개 고유 계정코드")
+
+            for code in unique_codes:
+                code = str(code).strip()
+                if code in account_cache:
+                    continue
+                code_padded = code.zfill(6)
+                if code_padded in account_cache:
+                    account_cache[code] = account_cache[code_padded]
+                    continue
+                if code in mapping_cache and mapping_cache[code].target_account_id:
+                    mapped_id = mapping_cache[code].target_account_id
+                    for a in account_cache.values():
+                        if a.id == mapped_id:
+                            account_cache[code] = a
+                            break
+                    if code in account_cache:
+                        continue
+
+                acct_name = None
+                if has_source_code and has_source_name and code in source_name_map:
+                    acct_name = source_name_map[code]
+                if not acct_name:
+                    descs = desc_patterns.get(code, [])
+                    acct_name = f"더존계정 {code}"
+                    if descs:
+                        word_counter = Counter()
+                        for d in descs[:50]:
+                            for w in str(d).split():
+                                w = w.strip()
+                                if len(w) >= 2:
+                                    word_counter[w] += 1
+                        if word_counter:
+                            acct_name = f"{word_counter.most_common(1)[0][0]} (더존 {code})"
+
+                account = Account(
+                    code=code, name=acct_name,
+                    category_id=_guess_category_id(code),
+                    level=1, is_detail=True,
+                    is_vat_applicable=True, vat_rate=Decimal("10.00"), is_active=True,
+                )
+                db.add(account)
+                await db.flush()
+                account_cache[code] = account
+
+                if code not in mapping_cache:
+                    new_mapping = AccountCodeMapping(
+                        source_system="douzone", source_code=code,
+                        source_name=acct_name,
+                        target_account_id=account.id,
+                        target_account_code=account.code,
+                        is_auto_created=True,
+                    )
+                    db.add(new_mapping)
+                    mapping_cache[code] = new_mapping
+
+                auto_created_count += 1
+
+            await db.flush()
+            logger.info(f"[BG Upload {upload_id}] Phase A 완료: {auto_created_count}개 계정 자동생성")
+
+            # Phase B: Bulk Insert (원본 데이터만 - 학습 데이터는 모델 학습 시 자동 생성)
+            BATCH_SIZE = 2000
+            rows_list = df.to_dict('records')
+            has_debit = 'debit' in df.columns
+            has_credit = 'credit' in df.columns
+            has_date = 'date' in df.columns
+            has_account_name = 'account_name' in df.columns
+
+            logger.info(f"[BG Upload {upload_id}] Phase B: {len(rows_list)}행, batch={BATCH_SIZE}")
+
+            for batch_start in range(0, len(rows_list), BATCH_SIZE):
+                batch = rows_list[batch_start:batch_start + BATCH_SIZE]
+                raw_bulk = []
+
+                for i, row in enumerate(batch):
+                    row_idx = batch_start + i + 1
+                    code = str(row['account_code']).strip()[:20]
+                    desc_val = str(row['description'])[:500]
+                    merchant_val = str(row.get('merchant_name', '') or '')[:200]
+
+                    raw_bulk.append({
+                        "upload_id": upload_id,
+                        "row_number": row_idx,
+                        "original_description": desc_val,
+                        "merchant_name": merchant_val,
+                        "amount": float(row.get('amount', 0)),
+                        "debit_amount": float(row['debit']) if has_debit and pd.notna(row.get('debit')) else 0.0,
+                        "credit_amount": float(row['credit']) if has_credit and pd.notna(row.get('credit')) else 0.0,
+                        "transaction_date": str(row['date']) if has_date and pd.notna(row.get('date')) else None,
+                        "account_code": code,
+                        "account_name": str(row['account_name']).strip()[:100] if has_account_name and pd.notna(row.get('account_name')) else None,
+                        "source_account_code": str(row['source_account_code'])[:20] if has_source_code and pd.notna(row.get('source_account_code')) else None,
+                    })
+
+                    if account_cache.get(code):
+                        saved_count += 1
+                    else:
+                        error_count += 1
+
+                if raw_bulk:
+                    await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
+                await db.flush()
+
+                if batch_start % 10000 == 0:
+                    logger.info(f"[BG Upload {upload_id}] 진행: {batch_start + len(batch)}/{len(rows_list)}")
+
+            # 완료 처리
+            upload_history.saved_count = saved_count
+            upload_history.error_count = error_count
+            upload_history.status = UploadStatus.COMPLETED
+
+            is_csv = filename.endswith('.csv')
+            if is_csv:
+                total_sheets = 1
+                sheets_processed = 1
+            else:
+                total_sheets = len(all_sheets) if all_sheets else 1
+                sheets_processed = len(ledger_dfs) if is_ledger_format else len(normal_dfs)
+
+            upload_history.error_message = None
+
+            logger.info(f"[BG Upload {upload_id}] 커밋: saved={saved_count}, error={error_count}, raw={len(rows_list)}")
+            await db.commit()
+            logger.info(f"[BG Upload {upload_id}] 완료!")
+
+        except Exception as e:
+            error_detail = f"{str(e)[:300]}\n{traceback.format_exc()[-200:]}"
+            logger.error(f"[BG Upload {upload_id}] DB 처리 오류: {error_detail}")
+            try:
+                await db.rollback()
+                upload_history = await db.get(AIDataUploadHistory, upload_id)
+                if upload_history:
+                    upload_history.status = UploadStatus.FAILED
+                    upload_history.error_message = error_detail[:500]
+                    await db.commit()
+            except Exception as e2:
+                logger.error(f"[BG Upload {upload_id}] 오류 상태 저장 실패: {e2}")
+
+
 @router.post("/upload-historical")
 async def upload_historical_data(
     file: UploadFile = File(...),
@@ -177,146 +1048,304 @@ async def upload_historical_data(
     current_user: User = Depends(get_current_user)
 ):
     """
-    더존 과거 데이터 업로드 (학습용)
-
-    엑셀 파일 형식:
-    - 적요 (필수): 거래 내역
-    - 거래처명 (선택)
-    - 금액 (선택)
-    - 계정과목코드 (필수): 더존에서 분류된 계정코드
-    - 계정과목명 (선택)
+    더존 과거 데이터 업로드 (학습용) - 백그라운드 처리
+    파일을 수신하고 즉시 응답, 처리는 백그라운드에서 진행
     """
     if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
         raise HTTPException(status_code=400, detail="엑셀 또는 CSV 파일만 업로드 가능합니다.")
 
+    from app.models.ai import AIDataUploadHistory, UploadStatus
+
     try:
+        # 동시 업로드 제한
+        active_tasks = len(_background_tasks)
+        if active_tasks >= _MAX_CONCURRENT_UPLOADS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"현재 {active_tasks}개 업로드가 처리 중입니다. 완료 후 다시 시도해주세요."
+            )
+
+        # 이전 PROCESSING 상태 업로드 정리 (10분 이상 지난 것)
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(minutes=10)
+        stale_result = await db.execute(
+            select(AIDataUploadHistory).where(
+                AIDataUploadHistory.status == UploadStatus.PROCESSING,
+                AIDataUploadHistory.created_at < cutoff
+            )
+        )
+        for stale in stale_result.scalars().all():
+            stale.status = UploadStatus.FAILED
+            stale.error_message = "시간 초과로 자동 정리됨"
+            logger.info(f"[Upload] 오래된 PROCESSING 업로드 정리: ID={stale.id}")
+        await db.flush()
+
         content = await file.read()
+        logger.info(f"[Upload] 파일 읽기 완료: {file.filename} ({len(content)} bytes)")
 
-        if file.filename.endswith('.csv'):
-            df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
-        else:
-            df = pd.read_excel(io.BytesIO(content))
-
-        # 컬럼명 정규화
-        column_mapping = {
-            '적요': 'description',
-            '거래내역': 'description',
-            '내역': 'description',
-            '거래처명': 'merchant_name',
-            '거래처': 'merchant_name',
-            '가맹점': 'merchant_name',
-            '금액': 'amount',
-            '거래금액': 'amount',
-            '계정과목코드': 'account_code',
-            '계정코드': 'account_code',
-            '계정과목': 'account_code',
-            '계정과목명': 'account_name',
-            '계정명': 'account_name'
-        }
-
-        df.columns = [column_mapping.get(col.strip(), col.strip()) for col in df.columns]
-
-        # 필수 컬럼 확인
-        if 'description' not in df.columns:
-            raise HTTPException(status_code=400, detail="'적요' 또는 '거래내역' 컬럼이 필요합니다.")
-        if 'account_code' not in df.columns:
-            raise HTTPException(status_code=400, detail="'계정과목코드' 컬럼이 필요합니다.")
-
-        # 데이터 정제
-        df = df.dropna(subset=['description', 'account_code'])
-        df['description'] = df['description'].astype(str).str.strip()
-        df['account_code'] = df['account_code'].astype(str).str.strip()
-
-        if 'merchant_name' in df.columns:
-            df['merchant_name'] = df['merchant_name'].fillna('').astype(str).str.strip()
-
-        if 'amount' in df.columns:
-            df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
-        else:
-            df['amount'] = 0
-
-        # 학습 데이터 저장
-        classifier = AIClassifierService()
-        saved_count = 0
-        error_count = 0
-
-        for _, row in df.iterrows():
-            try:
-                # 계정과목 확인
-                account_result = await db.execute(
-                    select(Account).where(Account.code == row['account_code'])
-                )
-                account = account_result.scalar_one_or_none()
-
-                if not account:
-                    # 계정과목이 없으면 6자리로 시도
-                    code_padded = str(row['account_code']).zfill(6)
-                    account_result = await db.execute(
-                        select(Account).where(Account.code == code_padded)
-                    )
-                    account = account_result.scalar_one_or_none()
-
-                if account:
-                    training_data = AITrainingData(
-                        description_tokens=classifier._preprocess_text(
-                            row['description'],
-                            row.get('merchant_name', '')
-                        ),
-                        merchant_name=row.get('merchant_name', ''),
-                        amount_range=classifier._get_amount_range(Decimal(str(row['amount']))),
-                        account_id=account.id,
-                        account_code=account.code,
-                        source_type="historical",
-                        dataset_version="douzone_import",
-                        sample_weight=Decimal("1.0"),
-                        is_active=True
-                    )
-                    db.add(training_data)
-                    saved_count += 1
-                else:
-                    error_count += 1
-
-            except Exception as e:
-                error_count += 1
-                continue
-
+        # 업로드 이력 생성 (PROCESSING 상태로 즉시 커밋)
+        file_ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else 'unknown'
+        upload_history = AIDataUploadHistory(
+            filename=file.filename,
+            file_size=len(content),
+            file_type=file_ext,
+            upload_type="historical",
+            uploaded_by=current_user.id,
+            status=UploadStatus.PROCESSING,
+        )
+        db.add(upload_history)
+        await db.flush()
+        upload_id = upload_history.id
         await db.commit()
 
+        logger.info(f"[Upload {upload_id}] 업로드 접수 완료, 백그라운드 처리 시작: {file.filename}")
+
+        # 백그라운드 태스크 시작 (별도 DB 세션 사용, 참조 보관으로 GC 방지)
+        task = asyncio.create_task(
+            _process_upload_background(upload_id, content, file.filename, current_user.id)
+        )
+        _background_tasks.add(task)
+
+        def _task_done(t):
+            _background_tasks.discard(t)
+            if t.exception():
+                logger.error(f"[Upload {upload_id}] 백그라운드 태스크 예외: {t.exception()}")
+            else:
+                logger.info(f"[Upload {upload_id}] 백그라운드 태스크 정상 종료")
+
+        task.add_done_callback(_task_done)
+
         return {
-            "status": "success",
-            "total_rows": len(df),
-            "saved_count": saved_count,
-            "error_count": error_count,
-            "message": f"{saved_count}개의 학습 데이터가 저장되었습니다."
+            "status": "processing",
+            "upload_id": upload_id,
+            "message": f"파일 '{file.filename}'이 접수되었습니다. 백그라운드에서 처리 중입니다.",
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"파일 처리 중 오류: {str(e)}")
+        logger.error(f"[Upload] 엔드포인트 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"업로드 접수 실패: {str(e)[:200]}")
+
+
+@router.get("/upload-status/{upload_id}")
+async def get_upload_status(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """업로드 처리 상태 조회 (폴링용)"""
+    from app.models.ai import AIDataUploadHistory
+
+    # 캐시된 결과 방지 - 최신 상태를 DB에서 직접 읽기
+    result = await db.execute(
+        select(AIDataUploadHistory).where(AIDataUploadHistory.id == upload_id)
+    )
+    upload = result.scalar_one_or_none()
+    if not upload:
+        raise HTTPException(status_code=404, detail="업로드를 찾을 수 없습니다.")
+
+    return {
+        "upload_id": upload.id,
+        "status": upload.status.value if hasattr(upload.status, 'value') else str(upload.status),
+        "filename": upload.filename,
+        "row_count": upload.row_count or 0,
+        "saved_count": upload.saved_count or 0,
+        "error_count": upload.error_count or 0,
+        "error_message": upload.error_message,
+    }
+
+
+class BatchUploadRow(BaseModel):
+    description: str
+    account_code: str
+    merchant_name: str = ""
+    amount: float = 0
+    debit: float = 0
+    credit: float = 0
+    date: Optional[str] = None
+    account_name: Optional[str] = None
+    source_account_code: Optional[str] = None
+    source_account_name: Optional[str] = None
+
+
+class BatchUploadRequest(BaseModel):
+    upload_id: Optional[int] = None
+    filename: str
+    file_size: int = 0
+    batch_index: int
+    total_batches: int
+    total_rows: int = 0
+    all_account_codes: Optional[List[str]] = None  # 첫 배치에서만 전송
+    rows: List[BatchUploadRow]
+
+
+@router.post("/ping")
+async def ping_test():
+    """POST 연결 테스트"""
+    return {"ok": True, "ts": datetime.utcnow().isoformat()}
+
+
+@router.post("/upload-historical-batch")
+async def upload_historical_batch(
+    data: BatchUploadRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """배치 데이터 수신 - 초경량: 업로드 이력 생성 + raw INSERT만"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
+    from sqlalchemy import insert as sa_insert
+
+    logger.info(f"[Batch] 수신: batch={data.batch_index}, rows={len(data.rows)}, upload_id={data.upload_id}")
+
+    try:
+        # 첫 배치: 업로드 이력 생성
+        if data.batch_index == 0 and not data.upload_id:
+            file_ext = data.filename.rsplit('.', 1)[-1].lower() if '.' in data.filename else 'unknown'
+            upload_history = AIDataUploadHistory(
+                filename=data.filename,
+                file_size=data.file_size,
+                file_type=file_ext,
+                upload_type="historical",
+                uploaded_by=current_user.id,
+                status=UploadStatus.PROCESSING,
+                row_count=data.total_rows,
+            )
+            db.add(upload_history)
+            await db.flush()
+            upload_id = upload_history.id
+            logger.info(f"[Batch {upload_id}] 새 업로드 생성: {data.filename}")
+        else:
+            upload_id = data.upload_id
+            if not upload_id:
+                raise HTTPException(status_code=400, detail="upload_id 필요")
+            upload_history = await db.get(AIDataUploadHistory, upload_id)
+            if not upload_history:
+                raise HTTPException(status_code=404, detail="업로드 없음")
+
+        # 순수 raw INSERT만 (계정 조회/생성 없음)
+        raw_bulk = []
+        for i, row in enumerate(data.rows):
+            raw_bulk.append({
+                "upload_id": upload_id,
+                "row_number": data.batch_index * 500 + i + 1,
+                "original_description": row.description[:500],
+                "merchant_name": (row.merchant_name or '')[:200],
+                "amount": row.amount or 0,
+                "debit_amount": row.debit or 0,
+                "credit_amount": row.credit or 0,
+                "transaction_date": row.date if row.date else None,
+                "account_code": row.account_code.strip()[:20],
+                "account_name": (row.account_name or '')[:100] if row.account_name else None,
+                "source_account_code": row.source_account_code[:20] if row.source_account_code else None,
+                "source_account_name": (row.source_account_name or '')[:100] if row.source_account_name else None,
+            })
+
+        if raw_bulk:
+            await db.execute(sa_insert(AIRawTransactionData), raw_bulk)
+
+        upload_history.saved_count = (upload_history.saved_count or 0) + len(raw_bulk)
+
+        is_last = data.batch_index >= data.total_batches - 1
+        if is_last:
+            upload_history.status = UploadStatus.COMPLETED
+            upload_history.error_message = None
+            logger.info(f"[Batch {upload_id}] 전체 완료! saved={upload_history.saved_count}")
+
+        await db.commit()
+        logger.info(f"[Batch {upload_id}] batch {data.batch_index} 저장 완료: {len(raw_bulk)}행")
+
+        return {
+            "upload_id": upload_id,
+            "batch_index": data.batch_index,
+            "saved_count": len(raw_bulk),
+            "status": "completed" if is_last else "processing",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Batch] 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"배치 오류: {str(e)[:200]}")
 
 
 @router.post("/train")
 async def train_model(
     min_samples: int = Query(default=50, description="최소 학습 샘플 수"),
+    max_samples: Optional[int] = Query(default=None, description="최대 학습 샘플 수 (None=전체)"),
+    upload_ids: Optional[str] = Query(default=None, description="특정 업로드 ID들 (쉼표 구분)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """AI 모델 학습/재학습"""
-    # 관리자 권한 확인
-    if current_user.role_id not in [1, 2]:  # 관리자 또는 재무담당자
-        raise HTTPException(status_code=403, detail="모델 학습 권한이 없습니다.")
+    """AI 모델 학습/재학습 (백그라운드)"""
+    global _training_progress
 
-    classifier = AIClassifierService()
-    success, message = await classifier.retrain_model(db, current_user.id, min_samples)
+    if _training_progress["status"] == "running":
+        raise HTTPException(status_code=409, detail="이미 학습이 진행 중입니다.")
 
-    if not success:
-        raise HTTPException(status_code=400, detail=message)
+    # 즉시 상태 설정
+    _training_progress = {
+        "status": "running",
+        "step": "초기화",
+        "progress": 0,
+        "message": "학습을 시작합니다...",
+        "started_at": datetime.utcnow().isoformat(),
+        "completed_at": None,
+    }
+
+    parsed_upload_ids = None
+    if upload_ids:
+        try:
+            parsed_upload_ids = [int(x.strip()) for x in upload_ids.split(",") if x.strip()]
+        except ValueError:
+            pass
+
+    user_id = current_user.id
+
+    async def _run_training():
+        global _training_progress
+        try:
+            classifier = AIClassifierService()
+            success, message = await classifier.retrain_model_with_progress(
+                async_session_factory, user_id, min_samples, _training_progress,
+                max_samples=max_samples, upload_ids=parsed_upload_ids,
+            )
+            if success:
+                _training_progress["status"] = "completed"
+                _training_progress["progress"] = 100
+                _training_progress["message"] = message
+            else:
+                _training_progress["status"] = "failed"
+                _training_progress["message"] = message
+            _training_progress["completed_at"] = datetime.utcnow().isoformat()
+        except Exception as e:
+            logger.error(f"[Train] 백그라운드 학습 오류: {e}", exc_info=True)
+            _training_progress["status"] = "failed"
+            _training_progress["message"] = f"학습 오류: {str(e)[:200]}"
+            _training_progress["completed_at"] = datetime.utcnow().isoformat()
+
+    asyncio.create_task(_run_training())
 
     return {
-        "status": "success",
-        "message": message
+        "status": "started",
+        "message": "학습이 백그라운드에서 시작되었습니다. 진행 상태를 확인해주세요."
     }
+
+
+@router.get("/train-progress")
+async def get_training_progress(
+    current_user: User = Depends(get_current_user)
+):
+    """학습 진행 상태 조회"""
+    return _training_progress
+
+
+@router.get("/classify-progress")
+async def get_classify_progress(
+    current_user: User = Depends(get_current_user)
+):
+    """분류 진행 상태 조회"""
+    return _classify_progress
 
 
 @router.post("/classify")
@@ -376,32 +1405,59 @@ async def classify_file(
     if not file.filename.endswith(('.xlsx', '.xls', '.csv')):
         raise HTTPException(status_code=400, detail="엑셀 또는 CSV 파일만 업로드 가능합니다.")
 
+    global _classify_progress
+    _classify_progress = {
+        "status": "running", "step": "파일 읽기",
+        "progress": 5, "message": "파일을 읽고 있습니다...",
+        "total_rows": 0, "processed_rows": 0, "low_confidence_count": 0,
+    }
+
     try:
         content = await file.read()
 
         if file.filename.endswith('.csv'):
             df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
         else:
-            df = pd.read_excel(io.BytesIO(content))
+            engine = 'xlrd' if file.filename.endswith('.xls') else 'openpyxl'
+            df = pd.read_excel(io.BytesIO(content), engine=engine)
 
-        # 컬럼명 정규화
+        # 컬럼명 정규화 (일반 + 위하고 신용카드 매입 형식 지원)
         column_mapping = {
-            '적요': 'description',
-            '거래내역': 'description',
-            '내역': 'description',
-            '거래처명': 'merchant_name',
-            '거래처': 'merchant_name',
-            '가맹점': 'merchant_name',
-            '금액': 'amount',
-            '거래금액': 'amount',
-            '거래일자': 'transaction_date',
-            '일자': 'transaction_date'
+            # 적요/설명
+            '적요': 'description', '적요란': 'description',
+            '거래내역': 'description', '내역': 'description', '비고': 'description',
+            # 거래처/가맹점
+            '거래처명': 'merchant_name', '거래처': 'merchant_name',
+            '가맹점': 'merchant_name', '가맹점명': 'merchant_name', '상호': 'merchant_name',
+            # 금액
+            '금액': 'amount', '거래금액': 'amount',
+            '매입금액': 'amount', '결제금액': 'amount', '이용금액': 'amount',
+            '합계금액': 'amount', '합계': 'amount',
+            # 부가세/공급가액
+            '부가세': 'vat_amount', '세액': 'vat_amount', 'VAT': 'vat_amount',
+            '공급가액': 'supply_amount', '과세표준': 'supply_amount',
+            # 날짜
+            '거래일자': 'transaction_date', '일자': 'transaction_date',
+            '거래일': 'transaction_date', '결제일': 'transaction_date',
+            '매입일자': 'transaction_date', '승인일자': 'transaction_date',
+            # 카드 관련
+            '카드번호': 'card_number', '카드NO': 'card_number', '카드': 'card_number',
+            '승인번호': 'approval_number', '승인NO': 'approval_number',
         }
 
-        df.columns = [column_mapping.get(col.strip(), col.strip()) for col in df.columns]
+        df.columns = [column_mapping.get(str(col).strip(), str(col).strip()) for col in df.columns]
+        logger.info(f"[Classify] 매핑된 컬럼: {list(df.columns)}")
 
+        # 위하고 카드 형식: '적요' 없으면 '가맹점명'을 description으로 사용
         if 'description' not in df.columns:
-            raise HTTPException(status_code=400, detail="'적요' 또는 '거래내역' 컬럼이 필요합니다.")
+            if 'merchant_name' in df.columns:
+                df['description'] = df['merchant_name']
+                logger.info("[Classify] '적요' 없음 → '가맹점명'을 적요로 사용 (카드 형식)")
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"'적요' 또는 '가맹점명' 컬럼이 필요합니다. 현재 컬럼: {list(df.columns)}"
+                )
 
         # 데이터 정제
         df['description'] = df['description'].fillna('').astype(str).str.strip()
@@ -417,58 +1473,545 @@ async def classify_file(
         else:
             df['amount'] = 0
 
+        if 'vat_amount' in df.columns:
+            df['vat_amount'] = pd.to_numeric(df['vat_amount'], errors='coerce').fillna(0)
+        if 'supply_amount' in df.columns:
+            df['supply_amount'] = pd.to_numeric(df['supply_amount'], errors='coerce').fillna(0)
+
         # AI 분류 수행
+        total_rows = len(df)
+        _classify_progress.update({
+            "step": "모델 로드", "progress": 10,
+            "message": f"AI 모델 로딩 중... ({total_rows}행 감지)",
+            "total_rows": total_rows,
+        })
         classifier = AIClassifierService()
         await classifier.load_model(db)
+        await classifier.load_known_merchants(db)
 
-        results = []
+        # 카드 형식 감지
+        is_card_format = 'card_number' in df.columns or 'approval_number' in df.columns or 'vat_amount' in df.columns
+
+        # DataFrame → 분류 입력 리스트 변환
+        row_meta = []
         for idx, row in df.iterrows():
-            classification = await classifier.classify(
-                db=db,
-                description=row['description'],
-                merchant_name=row.get('merchant_name', ''),
-                amount=Decimal(str(row.get('amount', 0)))
-            )
-
-            primary = classification.get('primary_prediction', {})
-            results.append({
-                "row_index": int(idx),
-                "description": row['description'],
-                "merchant_name": row.get('merchant_name', ''),
-                "amount": float(row.get('amount', 0)),
-                "predicted_account_code": primary.get('account_code', ''),
-                "predicted_account_name": primary.get('account_name', ''),
-                "confidence": float(primary.get('confidence_score', 0)),
-                "auto_confirm": classification.get('auto_confirm', False),
-                "needs_review": classification.get('needs_review', True),
-                "alternatives": [
-                    {
-                        "account_code": alt.get('account_code', ''),
-                        "account_name": alt.get('account_name', ''),
-                        "confidence": float(alt.get('confidence_score', 0))
-                    }
-                    for alt in classification.get('alternative_predictions', [])[:2]
-                ]
+            desc = row['description']
+            merchant = row.get('merchant_name', '') if row.get('merchant_name', '') != desc else ''
+            amount = float(row.get('amount', 0))
+            vat = float(row.get('vat_amount', 0)) if 'vat_amount' in df.columns else 0
+            supply = float(row.get('supply_amount', 0)) if 'supply_amount' in df.columns else 0
+            txn_date = ''
+            if 'transaction_date' in df.columns and pd.notna(row.get('transaction_date')):
+                txn_date = str(row['transaction_date']).strip()
+            # 카드번호 추출 (피드백: 미지급금 거래처는 카드번호로 설정)
+            card_num = ''
+            if 'card_number' in df.columns and pd.notna(row.get('card_number')):
+                card_num = str(row['card_number']).strip()
+            row_meta.append({
+                "idx": int(idx), "desc": desc, "merchant": merchant or desc,
+                "amount": amount, "vat": vat, "supply": supply, "txn_date": txn_date,
+                "card_number": card_num,
             })
 
+        # ===== LLM(Claude) 기본 분류기 → ML fallback =====
+        llm_used = False
+        llm_map: dict = {}  # index → {account_code, account_name, confidence, reasoning}
+
+        if settings.ANTHROPIC_API_KEY:
+            _classify_progress.update({
+                "step": "AI 분류", "progress": 20,
+                "message": f"Claude AI로 {total_rows}건 분류 중...",
+            })
+            try:
+                llm_items = [
+                    {"idx": i, "desc": m["desc"], "merchant": m["merchant"], "amount": m["amount"]}
+                    for i, m in enumerate(row_meta)
+                ]
+                llm_results = await classifier.classify_batch_with_llm(llm_items)
+
+                success_count = 0
+                for i, llm in enumerate(llm_results):
+                    if llm and llm.get("account_code"):
+                        llm_map[i] = llm
+                        success_count += 1
+
+                llm_used = success_count > 0
+                logger.info(f"[Classify] LLM 분류: {success_count}/{total_rows}건 성공")
+
+                _classify_progress.update({
+                    "progress": 65,
+                    "message": f"AI 분류 완료 ({success_count}/{total_rows}건)",
+                })
+            except Exception as llm_err:
+                logger.warning(f"[Classify] LLM 분류 실패, ML fallback: {llm_err}")
+                _classify_progress.update({
+                    "step": "ML fallback", "progress": 30,
+                    "message": f"AI 분류 실패. ML 모델로 분류 중...",
+                })
+        else:
+            logger.warning("[Classify] ANTHROPIC_API_KEY 미설정 — ML 모델만 사용")
+
+        # LLM 실패한 항목은 ML fallback
+        ml_needed_indices = [i for i in range(total_rows) if i not in llm_map]
+        if ml_needed_indices:
+            _classify_progress.update({
+                "step": "ML 분류" if not llm_used else "ML 보충",
+                "progress": 70 if llm_used else 20,
+                "message": f"ML 모델로 {len(ml_needed_indices)}건 분류 중...",
+            })
+            ml_items = [
+                {"description": row_meta[i]["desc"],
+                 "merchant_name": row_meta[i]["merchant"],
+                 "amount": row_meta[i]["amount"]}
+                for i in ml_needed_indices
+            ]
+            try:
+                ml_results = classifier.classify_batch_ml_pure(ml_items)
+            except Exception:
+                ml_results = [classifier._empty_classification() for _ in ml_items]
+
+        # 결과 조립
+        _classify_progress.update({
+            "step": "결과 조립", "progress": 75,
+            "message": f"결과 정리 중...",
+        })
+        results = []
+        ml_result_idx = 0
+
+        for i, meta in enumerate(row_meta):
+            if i in llm_map:
+                # LLM 결과 사용
+                llm = llm_map[i]
+                debit_code = llm["account_code"]
+                debit_name = llm["account_name"]
+                confidence = llm["confidence"]
+                reasoning = f"[AI 분석] {llm.get('reasoning', '')}"
+                review_reasons = ["AI 분석 (확인 권장)"] if confidence < 0.85 else []
+                auto_confirm = confidence >= 0.85
+                needs_review = confidence < 0.85
+            else:
+                # ML fallback
+                classification = ml_results[ml_result_idx] if ml_needed_indices else classifier._empty_classification()
+                ml_result_idx += 1
+                primary = classification.get('primary_prediction') or {}
+                debit_code = primary.get('account_code', '')
+                debit_name = primary.get('account_name', '')
+                confidence = float(primary.get('confidence_score', 0))
+                reasoning = classification.get('reasoning', '')
+                review_reasons = classification.get('review_reasons') or []
+                auto_confirm = classification.get('auto_confirm', False)
+                needs_review = classification.get('needs_review', True)
+
+            memo = f"{meta['desc']} 카드결제" if is_card_format else meta['desc']
+
+            # 피드백: 카드 사용건 미지급금 거래처는 업체가 아닌 카드번호로 설정
+            credit_code = "253"
+            credit_name = "미지급금"
+            if is_card_format:
+                card_num = meta.get("card_number", "")
+                if card_num:
+                    credit_name = f"미지급금({card_num})"
+                else:
+                    credit_name = "미지급금(신용카드)"
+
+            result_item = {
+                "row_index": meta['idx'],
+                "description": meta['desc'],
+                "merchant_name": meta['merchant'],
+                "amount": meta['amount'],
+                "transaction_date": meta['txn_date'],
+                "memo": memo,
+                "card_number": meta.get("card_number", ""),
+                "predicted_account_code": debit_code,
+                "predicted_account_name": debit_name,
+                "confidence": confidence,
+                "auto_confirm": auto_confirm,
+                "needs_review": needs_review,
+                "review_reasons": review_reasons,
+                "reasoning": reasoning,
+                "alternatives": [],
+                "journal_entry": _build_card_journal_entry(
+                    debit_code, debit_name, credit_code, credit_name,
+                    meta['amount'], meta['vat'],
+                    meta['supply'] if meta['supply'] else meta['amount'] - meta['vat'],
+                ),
+            }
+            results.append(result_item)
+
         # 통계
+        _classify_progress.update({
+            "step": "결과 저장", "progress": 90,
+            "message": f"분류 완료. 결과 저장 중...",
+        })
         auto_confirm_count = sum(1 for r in results if r['auto_confirm'])
         needs_review_count = sum(1 for r in results if r['needs_review'])
         avg_confidence = sum(r['confidence'] for r in results) / len(results) if results else 0
+        total_amount = sum(r['amount'] for r in results)
+
+        # 검토 사유별 통계
+        reason_counts: dict = {}
+        for r in results:
+            for reason in r.get('review_reasons', []):
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+        # DB에 분류 결과 저장 (새로고침/배포 후에도 유지)
+        try:
+            from app.models.ai import AIDataUploadHistory, UploadStatus
+            upload_history = AIDataUploadHistory(
+                filename=file.filename,
+                file_size=len(content),
+                file_type=file.filename.rsplit('.', 1)[-1] if '.' in file.filename else 'unknown',
+                upload_type="classification",
+                uploaded_by=current_user.id,
+                status=UploadStatus.COMPLETED,
+                row_count=len(results),
+                saved_count=len(results),
+                result_json=json.dumps({
+                    "results": results,
+                    "stats": {
+                        "total_rows": len(results),
+                        "auto_confirmed": auto_confirm_count,
+                        "needs_review": needs_review_count,
+                        "average_confidence": round(avg_confidence, 4),
+                        "total_amount": total_amount,
+                        "is_card_format": is_card_format,
+                        "review_reason_counts": reason_counts,
+                    }
+                }, ensure_ascii=False, default=str),
+            )
+            db.add(upload_history)
+            await db.flush()
+            upload_id = upload_history.id
+            logger.info(f"[Classify] 분류 결과 DB 저장 완료 (upload_id={upload_id}, {len(results)}건)")
+        except Exception as save_err:
+            logger.warning(f"[Classify] 분류 결과 DB 저장 실패 (결과는 정상 반환): {save_err}")
+            upload_id = None
+
+        _classify_progress.update({
+            "status": "completed", "step": "완료", "progress": 100,
+            "message": f"분류 완료! {len(results)}건 (자동확정: {auto_confirm_count}, 검토필요: {needs_review_count})",
+            "processed_rows": len(results),
+        })
 
         return {
             "status": "success",
+            "upload_id": upload_id,
             "total_rows": len(results),
             "auto_confirmed": auto_confirm_count,
             "needs_review": needs_review_count,
             "average_confidence": round(avg_confidence, 4),
-            "results": results
+            "total_amount": total_amount,
+            "is_card_format": is_card_format,
+            "review_reason_counts": reason_counts,
+            "results": results,
+        }
+
+    except HTTPException:
+        _classify_progress.update({"status": "failed", "message": "파일 형식 오류"})
+        raise
+    except Exception as e:
+        _classify_progress.update({
+            "status": "failed", "step": "오류",
+            "message": f"분류 오류: {str(e)[:200]}",
+        })
+        raise HTTPException(status_code=500, detail=f"파일 처리 중 오류: {str(e)}")
+
+
+class JournalEntryItem(BaseModel):
+    """확정된 분개 항목"""
+    description: str
+    merchant_name: Optional[str] = None
+    memo: str = ""
+    transaction_date: Optional[str] = None
+    amount: float
+    debit_account_code: str
+    debit_account_name: Optional[str] = None
+    credit_account_code: str = "253000"
+    credit_account_name: Optional[str] = "미지급금(신용카드)"
+    vat_amount: float = 0
+    supply_amount: float = 0
+
+
+class ConfirmJournalRequest(BaseModel):
+    """분개 확정 요청"""
+    entries: List[JournalEntryItem]
+    source_filename: Optional[str] = None
+    selected_indices: Optional[List[int]] = None
+
+
+@router.post("/confirm-journal")
+async def confirm_journal_entries(
+    request: ConfirmJournalRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    확정된 분개를 장부에 반영 (ai_raw_transaction_data에 저장)
+    - 차변/대변 각각 한 행씩 저장
+    - 재무제표에 바로 반영됨
+    """
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, UploadStatus
+
+    try:
+        # selected_indices가 지정된 경우 해당 인덱스만 필터링
+        if request.selected_indices is not None:
+            # 유효한 인덱스만 필터링
+            valid_indices = [
+                idx for idx in request.selected_indices
+                if 0 <= idx < len(request.entries)
+            ]
+            if not valid_indices:
+                raise HTTPException(
+                    status_code=400,
+                    detail="유효한 선택 인덱스가 없습니다."
+                )
+            entries_to_save = [request.entries[idx] for idx in valid_indices]
+        else:
+            entries_to_save = request.entries
+
+        # 업로드 이력 생성
+        upload_history = AIDataUploadHistory(
+            filename=request.source_filename or "AI자동분개",
+            file_size=0,
+            file_type="journal",
+            upload_type="journal_entry",
+            uploaded_by=current_user.id,
+            status=UploadStatus.COMPLETED,
+            row_count=0,  # 동적 업데이트 (VAT 있으면 3줄, 없으면 2줄)
+            saved_count=0,
+        )
+        db.add(upload_history)
+        await db.flush()
+        upload_id = upload_history.id
+
+        saved_count = 0
+        row_counter = 1
+        for i, entry in enumerate(entries_to_save):
+            desc = entry.memo or entry.description
+            merchant = entry.merchant_name or entry.description
+            vat = Decimal(str(entry.vat_amount)) if entry.vat_amount else Decimal("0")
+            supply = Decimal(str(entry.supply_amount)) if entry.supply_amount else Decimal(str(entry.amount))
+            total = supply + vat if vat > 0 else Decimal(str(entry.amount))
+
+            # 매출 여부 판단: 대변이 매출계정(4xx)이면 매출
+            is_sales_entry = entry.credit_account_code.startswith("4") if entry.credit_account_code else False
+
+            if vat > 0 and is_sales_entry:
+                # === 매출 3줄 분개 ===
+                # 차변: 매출채권(총액)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=total, debit_amount=total, credit_amount=Decimal("0"),
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.debit_account_code, account_name=entry.debit_account_name,
+                    source_account_code=entry.credit_account_code, source_account_name=entry.credit_account_name,
+                ))
+                row_counter += 1
+                # 대변: 매출계정(공급가)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=supply, debit_amount=Decimal("0"), credit_amount=supply,
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.credit_account_code, account_name=entry.credit_account_name,
+                    source_account_code=entry.debit_account_code, source_account_name=entry.debit_account_name,
+                ))
+                row_counter += 1
+                # 대변: 부가세예수금(세액)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=vat, debit_amount=Decimal("0"), credit_amount=vat,
+                    transaction_date=entry.transaction_date,
+                    account_code="255", account_name="부가세예수금",
+                    source_account_code=entry.debit_account_code, source_account_name=entry.debit_account_name,
+                ))
+                row_counter += 1
+                saved_count += 3
+
+            elif vat > 0 and not is_sales_entry:
+                # === 매입/카드 3줄 분개 ===
+                # 차변: 비용/자산계정(공급가)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=supply, debit_amount=supply, credit_amount=Decimal("0"),
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.debit_account_code, account_name=entry.debit_account_name,
+                    source_account_code=entry.credit_account_code, source_account_name=entry.credit_account_name,
+                ))
+                row_counter += 1
+                # 차변: 부가세대급금(세액)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=vat, debit_amount=vat, credit_amount=Decimal("0"),
+                    transaction_date=entry.transaction_date,
+                    account_code="135", account_name="부가세대급금",
+                    source_account_code=entry.credit_account_code, source_account_name=entry.credit_account_name,
+                ))
+                row_counter += 1
+                # 대변: 외상매입금/미지급금(총액)
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=total, debit_amount=Decimal("0"), credit_amount=total,
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.credit_account_code, account_name=entry.credit_account_name,
+                    source_account_code=entry.debit_account_code, source_account_name=entry.debit_account_name,
+                ))
+                row_counter += 1
+                saved_count += 3
+
+            else:
+                # === VAT 없음: 기존 2줄 분개 ===
+                # 차변
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=Decimal(str(entry.amount)),
+                    debit_amount=Decimal(str(entry.amount)), credit_amount=Decimal("0"),
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.debit_account_code, account_name=entry.debit_account_name,
+                    source_account_code=entry.credit_account_code, source_account_name=entry.credit_account_name,
+                ))
+                row_counter += 1
+                # 대변
+                db.add(AIRawTransactionData(
+                    upload_id=upload_id, row_number=row_counter,
+                    original_description=desc, merchant_name=merchant,
+                    amount=Decimal(str(entry.amount)),
+                    debit_amount=Decimal("0"), credit_amount=Decimal(str(entry.amount)),
+                    transaction_date=entry.transaction_date,
+                    account_code=entry.credit_account_code, account_name=entry.credit_account_name,
+                    source_account_code=entry.debit_account_code, source_account_name=entry.debit_account_name,
+                ))
+                row_counter += 1
+                saved_count += 2
+
+        upload_history.saved_count = saved_count
+        upload_history.row_count = saved_count
+
+        # AI 학습 데이터 자동 저장 (확정된 분개 = 정답 데이터)
+        from app.models.ai import AITrainingData
+        training_count = 0
+        for entry in entries_to_save:
+            if entry.debit_account_code and entry.description:
+                training_row = AITrainingData(
+                    description_tokens=entry.description.lower(),
+                    merchant_name=entry.merchant_name,
+                    amount_range=(
+                        "small" if entry.amount < 50000 else "medium" if entry.amount < 500000 else "large"
+                    ),
+                    account_code=entry.debit_account_code,
+                    source_type="journal_confirm",
+                    dataset_version="auto",
+                    is_active=True,
+                    sample_weight=Decimal("1.50"),
+                )
+                db.add(training_row)
+                training_count += 1
+
+        await db.commit()
+
+        logger.info(f"[Journal] {len(entries_to_save)}건 분개 확정 → {saved_count}행 장부 반영 + {training_count}건 AI 학습 (upload_id={upload_id})")
+
+        return {
+            "status": "success",
+            "upload_id": upload_id,
+            "entries_count": len(entries_to_save),
+            "saved_rows": saved_count,
+            "training_saved": training_count,
+            "message": f"{len(entries_to_save)}건 분개가 장부에 반영되었습니다. ({training_count}건 AI 학습 데이터 저장)",
+        }
+
+    except Exception as e:
+        logger.error(f"[Journal] 확정 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"분개 확정 오류: {str(e)[:200]}")
+
+
+@router.delete("/journal/{upload_id}")
+async def delete_journal_entries(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    반영된 분개 삭제 (journal_entry 타입만)
+    - AIDataUploadHistory 삭제 (cascade로 AIRawTransactionData 자동 삭제)
+    - 연관된 AITrainingData (source_type="journal_confirm") 삭제
+    """
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData, AITrainingData
+    from sqlalchemy import delete as sa_delete
+
+    try:
+        # 업로드 이력 조회
+        upload = await db.get(AIDataUploadHistory, upload_id)
+        if not upload:
+            raise HTTPException(status_code=404, detail="해당 업로드 이력을 찾을 수 없습니다.")
+
+        # journal_entry 타입만 삭제 가능
+        if upload.upload_type != "journal_entry":
+            raise HTTPException(
+                status_code=400,
+                detail=f"journal_entry 타입만 삭제할 수 있습니다. (현재: {upload.upload_type})"
+            )
+
+        # 삭제할 AIRawTransactionData 행 수 조회
+        raw_count_result = await db.execute(
+            select(func.count(AIRawTransactionData.id))
+            .where(AIRawTransactionData.upload_id == upload_id)
+        )
+        raw_count = raw_count_result.scalar() or 0
+
+        # 연관된 AITrainingData 삭제 (source_type="journal_confirm")
+        # description_tokens 기반으로 매칭 (해당 upload의 raw 데이터와 연결)
+        raw_descriptions_result = await db.execute(
+            select(AIRawTransactionData.original_description)
+            .where(AIRawTransactionData.upload_id == upload_id)
+            .where(AIRawTransactionData.debit_amount > 0)
+        )
+        raw_descriptions = [row[0].lower() for row in raw_descriptions_result.fetchall()]
+
+        training_deleted = 0
+        if raw_descriptions:
+            training_count_result = await db.execute(
+                select(func.count(AITrainingData.id))
+                .where(
+                    AITrainingData.source_type == "journal_confirm",
+                    AITrainingData.description_tokens.in_(raw_descriptions)
+                )
+            )
+            training_deleted = training_count_result.scalar() or 0
+
+            await db.execute(
+                sa_delete(AITrainingData)
+                .where(
+                    AITrainingData.source_type == "journal_confirm",
+                    AITrainingData.description_tokens.in_(raw_descriptions)
+                )
+            )
+
+        # AIDataUploadHistory 삭제 (cascade로 AIRawTransactionData 자동 삭제)
+        await db.delete(upload)
+        await db.commit()
+
+        deleted_entries = raw_count // 2  # 차변/대변 쌍이므로 2로 나눔
+
+        logger.info(f"[Journal] 삭제 완료: upload_id={upload_id}, entries={deleted_entries}, raw_rows={raw_count}, training={training_deleted}")
+
+        return {
+            "status": "success",
+            "deleted_entries": deleted_entries,
+            "message": f"분개 {deleted_entries}건이 삭제되었습니다. (장부 {raw_count}행, AI학습 {training_deleted}건 삭제)",
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"파일 처리 중 오류: {str(e)}")
+        logger.error(f"[Journal] 삭제 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"분개 삭제 오류: {str(e)[:200]}")
 
 
 @router.post("/feedback")
@@ -606,6 +2149,67 @@ async def download_template(
     )
 
 
+@router.delete("/upload/{upload_id}")
+async def delete_upload(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """업로드 데이터 삭제 (원본 거래 데이터 + 업로드 이력)"""
+    from app.models.ai import AIDataUploadHistory
+
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="업로드 이력을 찾을 수 없습니다.")
+
+    filename = upload.filename
+    row_count = upload.saved_count or upload.row_count or 0
+
+    # cascade="all, delete-orphan" 설정으로 raw_transactions 자동 삭제
+    await db.delete(upload)
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"'{filename}' 삭제 완료 ({row_count}건의 거래 데이터 삭제됨)"
+    }
+
+
+@router.delete("/data-by-year/{year}")
+async def delete_data_by_year(
+    year: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """특정 연도의 모든 업로드 데이터 삭제"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData
+
+    # 해당 연도 업로드 이력 조회
+    result = await db.execute(
+        select(AIDataUploadHistory).where(
+            AIDataUploadHistory.user_id == current_user.id,
+            func.extract('year', AIDataUploadHistory.uploaded_at).cast(Integer) == year
+        )
+    )
+    uploads = result.scalars().all()
+
+    if not uploads:
+        raise HTTPException(status_code=404, detail=f"{year}년 데이터가 없습니다.")
+
+    total_deleted = 0
+    file_count = len(uploads)
+    for upload in uploads:
+        total_deleted += upload.saved_count or upload.row_count or 0
+        await db.delete(upload)
+
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"{year}년 데이터 삭제 완료 ({file_count}개 파일, {total_deleted:,}건)"
+    }
+
+
 @router.get("/training-history")
 async def get_training_history(
     limit: int = Query(default=10, description="조회 개수"),
@@ -635,3 +2239,3017 @@ async def get_training_history(
         }
         for v in versions
     ]
+
+
+@router.get("/upload-history")
+async def get_upload_history(
+    limit: int = Query(default=50, description="조회 개수"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """업로드 이력 조회"""
+    from app.models.ai import AIDataUploadHistory
+
+    try:
+        result = await db.execute(
+            select(AIDataUploadHistory)
+            .order_by(AIDataUploadHistory.created_at.desc())
+            .limit(limit)
+        )
+        uploads = result.scalars().all()
+        logger.info(f"[upload-history] {len(uploads)}건 조회 (user={current_user.id})")
+
+        return [
+            {
+                "id": u.id,
+                "filename": u.filename,
+                "file_size": u.file_size,
+                "file_type": u.file_type,
+                "upload_type": u.upload_type,
+                "row_count": u.row_count,
+                "saved_count": u.saved_count,
+                "error_count": u.error_count,
+                "status": u.status.value if hasattr(u.status, 'value') else str(u.status),
+                "error_message": u.error_message,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in uploads
+        ]
+    except Exception as e:
+        logger.error(f"[upload-history] 조회 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"업로드 이력 조회 실패: {str(e)[:200]}")
+
+
+@router.get("/classify-result/{upload_id}")
+async def get_classification_result(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """저장된 분류 결과 불러오기"""
+    from app.models.ai import AIDataUploadHistory
+
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="분류 이력을 찾을 수 없습니다.")
+    if not upload.result_json:
+        raise HTTPException(status_code=404, detail="저장된 분류 결과가 없습니다.")
+
+    try:
+        data = json.loads(upload.result_json)
+        stats = data.get("stats", {})
+        results = data.get("results", [])
+        banks = data.get("banks", None)
+
+        # 통장 분류와 카드 분류 모두 호환되도록 통일
+        total_rows = (
+            stats.get("total_rows") or
+            stats.get("total_transactions") or
+            data.get("total_rows") or
+            len(results)
+        )
+
+        resp = {
+            "upload_id": upload.id,
+            "filename": upload.filename,
+            "file_type": upload.file_type,
+            "created_at": upload.created_at.isoformat() if upload.created_at else None,
+            "total_rows": total_rows,
+            "auto_confirmed": stats.get("auto_confirmed", 0),
+            "needs_review": stats.get("needs_review", 0),
+            "average_confidence": stats.get("average_confidence", 0),
+            "total_amount": stats.get("total_amount", 0),
+            "results": results,
+        }
+        # 통장 분류인 경우 은행 정보 포함
+        if banks is not None:
+            resp["banks"] = banks
+            resp["inter_bank_transfers"] = stats.get("inter_bank_transfers", 0)
+            resp["is_bank_statement"] = True
+        # 세금계산서 분류인 경우
+        if upload.file_type == "tax_invoice" or data.get("is_tax_invoice"):
+            resp["is_tax_invoice"] = True
+        return resp
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"결과 파싱 실패: {str(e)[:200]}")
+
+
+@router.get("/upload/{upload_id}/raw-data")
+async def get_upload_raw_data(
+    upload_id: int,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """업로드된 원본 데이터 조회"""
+    from app.models.ai import AIDataUploadHistory, AIRawTransactionData
+
+    # 업로드 이력 확인
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="업로드 이력을 찾을 수 없습니다.")
+
+    # 총 건수
+    total = await db.scalar(
+        select(func.count(AIRawTransactionData.id))
+        .where(AIRawTransactionData.upload_id == upload_id)
+    )
+
+    # 페이지네이션
+    offset = (page - 1) * size
+    result = await db.execute(
+        select(AIRawTransactionData)
+        .where(AIRawTransactionData.upload_id == upload_id)
+        .order_by(AIRawTransactionData.row_number)
+        .offset(offset)
+        .limit(size)
+    )
+    rows = result.scalars().all()
+
+    return {
+        "upload_id": upload_id,
+        "filename": upload.filename,
+        "total_rows": total,
+        "page": page,
+        "size": size,
+        "data": [
+            {
+                "row_number": r.row_number,
+                "description": r.original_description,
+                "merchant_name": r.merchant_name,
+                "amount": float(r.amount),
+                "debit_amount": float(r.debit_amount),
+                "credit_amount": float(r.credit_amount),
+                "transaction_date": r.transaction_date,
+                "account_code": r.account_code,
+                "account_name": r.account_name,
+                "source_account_code": r.source_account_code,
+                "training_data_id": r.training_data_id,
+            }
+            for r in rows
+        ],
+    }
+
+
+# ============ 통장 거래 내역 분류 ============
+
+def _parse_bank_statement_xls(content: bytes, filename: str) -> dict:
+    """
+    통장 거래 내역 엑셀(.xls/.xlsx) 파싱
+
+    Returns:
+        {
+            "bank_name": str, "account_number": str,
+            "date_range": str, "year": str,
+            "transactions": [{"date": ..., "description": ..., ...}, ...],
+            "total_deposit": float, "total_withdrawal": float,
+        }
+    """
+    import re
+
+    try:
+        import xlrd
+    except ImportError:
+        raise ValueError("xlrd 패키지가 필요합니다: pip install xlrd>=2.0.1")
+
+    if filename.endswith('.xls'):
+        wb = xlrd.open_workbook(file_contents=content)
+        sheet = wb.sheet_by_index(0)
+        nrows = sheet.nrows
+        ncols = sheet.ncols
+
+        def cell_value(r, c):
+            if r < nrows and c < ncols:
+                return sheet.cell_value(r, c)
+            return ""
+    else:
+        # .xlsx
+        import openpyxl
+        wb_xlsx = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb_xlsx.active
+        rows_data = list(ws.iter_rows(values_only=True))
+        nrows = len(rows_data)
+        ncols = max(len(r) for r in rows_data) if rows_data else 0
+
+        def cell_value(r, c):
+            if r < nrows and c < len(rows_data[r]):
+                return rows_data[r][c] if rows_data[r][c] is not None else ""
+            return ""
+
+    # Row 2: date range (e.g., "2026.01.01~2026.02.27")
+    date_range_str = ""
+    year_str = ""
+    for c in range(ncols):
+        val = str(cell_value(2, c)).strip()
+        if val and re.search(r'\d{4}\.\d{2}\.\d{2}', val):
+            date_range_str = val
+            year_match = re.search(r'(\d{4})', val)
+            if year_match:
+                year_str = year_match.group(1)
+            break
+
+    # Row 4: Company name in col A; Bank/account info in col I
+    bank_name = ""
+    account_number = ""
+    # Try col I (index 8) first, then search all columns
+    for c in [8] + list(range(ncols)):
+        val = str(cell_value(4, c)).strip()
+        bank_match = re.search(r'\[(\d+)\](.+?)\((.+?)\)', val)
+        if bank_match:
+            bank_name = bank_match.group(2).strip()
+            account_number = bank_match.group(3).strip()
+            break
+
+    if not year_str:
+        # fallback: try to find year anywhere in first 5 rows
+        for r in range(min(5, nrows)):
+            for c in range(ncols):
+                val = str(cell_value(r, c))
+                ym = re.search(r'(20\d{2})', val)
+                if ym:
+                    year_str = ym.group(1)
+                    break
+            if year_str:
+                break
+
+    # Row 7+: Data rows
+    transactions = []
+    total_deposit = 0.0
+    total_withdrawal = 0.0
+
+    def safe_float(val):
+        if val == "" or val is None:
+            return 0.0
+        try:
+            return float(str(val).replace(",", "").strip())
+        except (ValueError, TypeError):
+            return 0.0
+
+    for r in range(7, nrows):
+        col0 = str(cell_value(r, 0)).strip()
+
+        # Skip repeated header rows (col 0 == "거래일시")
+        if col0 == "거래일시":
+            continue
+
+        # Skip summary rows (contains "합" and "계")
+        if "합" in col0 and "계" in col0:
+            continue
+
+        # Skip empty rows
+        if not col0:
+            continue
+
+        # Parse date: MM-DD → YYYY-MM-DD
+        date_raw = col0.replace(".", "-")
+        if year_str and not re.match(r'^\d{4}', date_raw):
+            transaction_date = f"{year_str}-{date_raw}"
+        else:
+            transaction_date = date_raw
+
+        description = str(cell_value(r, 1)).strip()  # 적요
+        content_val = str(cell_value(r, 2)).strip()   # 내용
+
+        deposit = safe_float(cell_value(r, 3))      # 입금액
+        withdrawal = safe_float(cell_value(r, 4))    # 출금액
+        balance = safe_float(cell_value(r, 5))        # 잔액
+        branch = str(cell_value(r, 6)).strip()         # 취급점
+        counterparty = str(cell_value(r, 7)).strip()   # 거래처
+        remarks = str(cell_value(r, 8)).strip()        # 비고
+
+        # Skip rows that are clearly not data
+        if deposit == 0 and withdrawal == 0 and not description:
+            continue
+
+        total_deposit += deposit
+        total_withdrawal += withdrawal
+
+        transactions.append({
+            "transaction_date": transaction_date,
+            "description": description,
+            "content": content_val,
+            "deposit": deposit,
+            "withdrawal": withdrawal,
+            "balance": balance,
+            "branch": branch,
+            "counterparty": counterparty,
+            "remarks": remarks,
+        })
+
+    return {
+        "bank_name": bank_name or "알수없음",
+        "account_number": account_number or "",
+        "date_range": date_range_str,
+        "year": year_str,
+        "transactions": transactions,
+        "total_deposit": total_deposit,
+        "total_withdrawal": total_withdrawal,
+    }
+
+
+def _detect_inter_bank_transfers(all_transactions: List[dict]) -> List[tuple]:
+    """
+    은행 간 이체 감지: 출금(Bank A) ↔ 입금(Bank B) 매칭
+
+    - 같은 날짜 또는 +1일
+    - 같은 금액
+    - 적요/내용에 은행 관련 키워드 포함
+    """
+    from datetime import timedelta
+
+    transfer_keywords = [
+        "이체", "자금이체", "타행이체", "당행이체", "계좌이체",
+        "신한", "국민", "우리", "하나", "기업", "농협", "수협", "SC",
+        "대구", "부산", "광주", "전북", "제주", "경남",
+    ]
+
+    withdrawals = []
+    deposits = []
+
+    for txn in all_transactions:
+        if txn["withdrawal"] > 0:
+            withdrawals.append(txn)
+        if txn["deposit"] > 0:
+            deposits.append(txn)
+
+    matched_pairs = set()  # (withdrawal_idx, deposit_idx) in all_transactions
+    used_deposit_indices = set()
+
+    for w in withdrawals:
+        w_amount = w["withdrawal"]
+        w_date_str = w["transaction_date"]
+        w_bank = w.get("_bank_name", "")
+        w_text = f"{w['description']} {w['content']} {w.get('counterparty', '')}"
+
+        # Check if this withdrawal looks like a transfer
+        has_keyword = any(kw in w_text for kw in transfer_keywords)
+        if not has_keyword:
+            continue
+
+        try:
+            w_date = datetime.strptime(w_date_str, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+
+        for d in deposits:
+            d_global_idx = d.get("_global_idx")
+            if d_global_idx in used_deposit_indices:
+                continue
+            if d.get("_bank_name", "") == w_bank:
+                continue  # same bank, skip
+            if d["deposit"] != w_amount:
+                continue  # amount mismatch
+
+            try:
+                d_date = datetime.strptime(d["transaction_date"], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+
+            # Same day or +1 day
+            diff = (d_date - w_date).days
+            if diff < 0 or diff > 1:
+                continue
+
+            # Found a match
+            w_global_idx = w.get("_global_idx")
+
+            if w_global_idx is not None and d_global_idx is not None:
+                if w_global_idx not in {p[0] for p in matched_pairs}:
+                    matched_pairs.add((w_global_idx, d_global_idx))
+                    used_deposit_indices.add(d_global_idx)
+                    break  # one match per withdrawal
+
+    return list(matched_pairs)
+
+
+# ── Rule-based bank transaction pre-classifier ──────────────────────
+# Returns a classification dict or None if unsure (fallback to LLM).
+# This eliminates 60-70% of LLM calls for typical bank statements.
+def _rule_classify_bank_txn(txn: dict) -> Optional[dict]:
+    desc = (txn.get("description", "") or "").lower()
+    content = (txn.get("content", "") or "").lower()
+    counterparty = (txn.get("counterparty", "") or "").lower()
+    is_deposit = txn.get("deposit", 0) > 0
+    combined = f"{desc} {content} {counterparty}"
+
+    # ---- 입금 (Deposits) ----
+    if is_deposit:
+        # Interest income (피드백: 이자 수취 시 국세/지방세 동시 공제 후 수취)
+        if any(k in combined for k in ["이자", "예금이자"]):
+            return {"account_code": "901", "account_name": "이자수익",
+                    "confidence": 0.95, "reasoning": "규칙: 이자수익 (실수령액=이자-원천세-지방세)",
+                    "needs_review": True,
+                    "review_reasons": ["이자 수취 시 국세(14%)/지방세(1.4%) 원천징수 공제 확인 필요"]}
+
+        # Loan disbursement
+        if any(k in combined for k in ["대출", "여신실행", "한도대출"]):
+            return {"account_code": "260", "account_name": "단기차입금",
+                    "confidence": 0.85, "reasoning": "규칙: 대출 실행"}
+
+        # Card sales deposit
+        if any(k in combined for k in ["카드입금", "카드매출", "van", "pg입금",
+                                        "나이스", "페이", "ksnet", "kicc"]):
+            return {"account_code": "108", "account_name": "외상매출금",
+                    "confidence": 0.85, "reasoning": "규칙: 카드매출 입금"}
+
+        # 피드백: 입금의 경우 대부분 매출채권(외상매출금) 입금
+        # 거래처 이체 입금 → 외상매출금(108) 회수 (상품매출 아님)
+        if txn.get("deposit", 0) >= 100000 and content in [
+            "타행이체", "fb이체", "당행이체", "bz뱅크", "인터넷이체",
+            "cms입금", "지로입금", "무통장입금",
+        ]:
+            return {"account_code": "108", "account_name": "외상매출금",
+                    "confidence": 0.75, "reasoning": "규칙: 거래처 입금 → 매출채권(108) 회수"}
+
+        # 기타 입금도 기본값은 매출채권 회수 (피드백: 입금 대부분 매출채권)
+        if txn.get("deposit", 0) > 0:
+            return {"account_code": "108", "account_name": "외상매출금",
+                    "confidence": 0.65, "reasoning": "규칙: 입금 기본값 → 매출채권(108) 회수 추정",
+                    "needs_review": True}
+
+    # ---- 출금 (Withdrawals) ----
+    # Interest expense
+    if any(k in combined for k in ["대출이자", "이자출금", "여신이자", "이자납입"]):
+        return {"account_code": "931", "account_name": "이자비용",
+                "confidence": 0.95, "reasoning": "규칙: 대출이자 키워드"}
+
+    # Salary / wages
+    if any(k in combined for k in ["급여", "상여", "월급", "보너스"]):
+        return {"account_code": "802", "account_name": "직원급여",
+                "confidence": 0.93, "reasoning": "규칙: 급여 키워드"}
+    if "급여이체" in content:
+        return {"account_code": "802", "account_name": "직원급여",
+                "confidence": 0.95, "reasoning": "규칙: 급여이체 채널"}
+
+    # 4대보험
+    if any(k in combined for k in ["국민건강보험", "국민연금", "근로복지공단",
+                                     "고용보험", "건강보험", "산재보험"]):
+        return {"account_code": "811", "account_name": "복리후생비",
+                "confidence": 0.93, "reasoning": "규칙: 4대보험"}
+
+    # Tax payments — VAT / withholding
+    if any(k in combined for k in ["부가세", "부가가치세", "원천세", "소득세"]):
+        return {"account_code": "254", "account_name": "예수금",
+                "confidence": 0.90, "reasoning": "규칙: 세금 납부"}
+
+    # Tax payments — property / local
+    if any(k in combined for k in ["재산세", "자동차세", "주민세", "지방세",
+                                     "등록면허세", "종합부동산세"]):
+        return {"account_code": "817", "account_name": "세금과공과금",
+                "confidence": 0.92, "reasoning": "규칙: 지방세/기타세금"}
+
+    # Corporate tax
+    if "법인세" in combined:
+        return {"account_code": "817", "account_name": "세금과공과금",
+                "confidence": 0.90, "reasoning": "규칙: 법인세 납부"}
+
+    # Rent
+    if any(k in combined for k in ["임대료", "월세", "관리비", "임차료"]):
+        return {"account_code": "819", "account_name": "지급임차료",
+                "confidence": 0.92, "reasoning": "규칙: 임대료 키워드"}
+
+    # Insurance (excluding 4대보험)
+    if (any(k in combined for k in ["보험료", "화재보험", "배상책임보험",
+                                      "자동차보험", "상해보험"])
+            and not any(k in combined for k in ["건강보험", "고용보험"])):
+        return {"account_code": "821", "account_name": "보험료",
+                "confidence": 0.90, "reasoning": "규칙: 보험료 키워드"}
+
+    # Utilities — electricity
+    if any(k in combined for k in ["전기료", "전력", "한전", "한국전력"]):
+        return {"account_code": "816", "account_name": "전력비",
+                "confidence": 0.93, "reasoning": "규칙: 전기료"}
+
+    # Utilities — water / gas
+    if any(k in combined for k in ["수도", "가스", "도시가스", "상수도"]):
+        return {"account_code": "815", "account_name": "수도광열비",
+                "confidence": 0.93, "reasoning": "규칙: 수도/가스"}
+
+    # Telecom
+    if any(k in combined for k in ["통신", "kt ", "skt", "lg u+", "인터넷",
+                                     "케이티", "에스케이", "엘지유플러스"]):
+        return {"account_code": "814", "account_name": "통신비",
+                "confidence": 0.92, "reasoning": "규칙: 통신비 키워드"}
+
+    # Fees / commissions
+    if any(k in combined for k in ["수수료", "이체수수료", "송금수수료",
+                                     "카드수수료", "인지세"]):
+        return {"account_code": "831", "account_name": "지급수수료",
+                "confidence": 0.93, "reasoning": "규칙: 수수료 키워드"}
+
+    # Loan repayment
+    if any(k in combined for k in ["대출상환", "원금상환", "원리금"]):
+        return {"account_code": "260", "account_name": "단기차입금",
+                "confidence": 0.88, "reasoning": "규칙: 대출상환 키워드"}
+
+    # Credit card bill payment
+    if ("cc" in content or any(k in combined for k in [
+        "카드대금", "신한카드", "삼성카드", "현대카드", "롯데카드",
+        "국민카드", "bc카드", "비씨카드", "하나카드", "우리카드",
+        "농협카드", "씨티카드",
+    ])):
+        return {"account_code": "253", "account_name": "미지급금",
+                "confidence": 0.92, "reasoning": "규칙: 카드대금 결제"}
+
+    # Delivery / transport
+    if any(k in combined for k in ["택배", "운반", "배송", "화물", "물류",
+                                     "cj대한통운", "한진", "로젠", "우체국택배"]):
+        return {"account_code": "824", "account_name": "운반비",
+                "confidence": 0.90, "reasoning": "규칙: 운반/택배 키워드"}
+
+    # 피드백: 출금의 경우 대부분 매입채무(외상매입금, 미지급금) 지급
+    # 거래처 이체 출금 → 외상매입금(251) 지급
+    if txn.get("withdrawal", 0) >= 100000 and content in [
+        "타행이체", "fb이체", "당행이체", "bz뱅크", "인터넷이체",
+    ]:
+        return {"account_code": "251", "account_name": "외상매입금",
+                "confidence": 0.70, "reasoning": "규칙: 거래처 지급 → 매입채무(251) 결제"}
+
+    # 기타 출금도 기본값은 매입채무 지급 (피드백: 출금 대부분 매입채무)
+    if txn.get("withdrawal", 0) > 0:
+        return {"account_code": "253", "account_name": "미지급금",
+                "confidence": 0.60, "reasoning": "규칙: 출금 기본값 → 미지급금(253) 지급 추정",
+                "needs_review": True}
+
+
+# Thread pool for parallel LLM calls (3 workers)
+_bank_llm_executor = ThreadPoolExecutor(max_workers=3)
+
+
+# 통장 분류 진행 상태 추적 (in-memory, backward compat)
+_bank_classify_progress: dict = {
+    "status": "idle",
+    "step": "",
+    "progress": 0,
+    "message": "",
+    "total_rows": 0,
+    "processed_rows": 0,
+}
+
+
+@router.get("/bank-classify-progress")
+async def get_bank_classify_progress(
+    current_user: User = Depends(get_current_user)
+):
+    """통장 분류 진행 상태 조회 (backward compat)"""
+    return _bank_classify_progress
+
+
+@router.post("/classify-bank-statements")
+async def classify_bank_statements(
+    files: List[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    통장 거래 내역 다중 파일 업로드 및 AI 분류 (SSE 스트리밍 응답)
+
+    - 1~10개의 은행 통장 거래 내역 엑셀 파일(.xls/.xlsx) 동시 업로드
+    - Server-Sent Events로 진행 상태와 최종 결과를 스트리밍 반환
+    """
+    global _bank_classify_progress
+
+    # Validate file count
+    if len(files) < 1 or len(files) > 10:
+        raise HTTPException(status_code=400, detail="1~10개의 파일만 업로드 가능합니다.")
+
+    # Validate file types
+    for f in files:
+        if not f.filename.endswith(('.xls', '.xlsx')):
+            raise HTTPException(
+                status_code=400,
+                detail=f"엑셀 파일(.xls, .xlsx)만 업로드 가능합니다: {f.filename}"
+            )
+
+    # Read all file contents NOW (UploadFile objects expire after response starts)
+    file_data = []
+    for f in files:
+        content = await f.read()
+        file_data.append({"content": content, "filename": f.filename})
+
+    user_id = current_user.id
+
+    async def event_stream():
+        import re
+
+        # SSE 시작 직후, 분류 이력 레코드를 먼저 생성 (status=processing)
+        pre_upload_id = None
+        try:
+            from app.models.ai import AIDataUploadHistory, UploadStatus
+            filenames = ", ".join(fd["filename"] for fd in file_data)
+            async with async_session_factory() as pre_db:
+                pre_upload = AIDataUploadHistory(
+                    filename=f"통장분류: {filenames}"[:500],
+                    file_size=sum(len(fd["content"]) for fd in file_data),
+                    file_type="bank_statement",
+                    upload_type="classification",
+                    uploaded_by=user_id,
+                    status=UploadStatus.PROCESSING,
+                    row_count=0,
+                    saved_count=0,
+                )
+                pre_db.add(pre_upload)
+                await pre_db.flush()
+                pre_upload_id = pre_upload.id
+                await pre_db.commit()
+            logger.info(f"[BankStatement SSE] 이력 레코드 사전 생성 (upload_id={pre_upload_id})")
+        except Exception as pre_err:
+            logger.error(f"[BankStatement SSE] 이력 사전 생성 실패: {pre_err}", exc_info=True)
+
+        try:
+            num_files = len(file_data)
+
+            _bank_classify_progress.update({
+                "status": "running", "step": "파일 파싱", "progress": 5,
+                "message": f"{num_files}개 파일 파싱 중...",
+                "total_rows": 0, "processed_rows": 0,
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '파일 파싱', 'progress': 5, 'message': f'{num_files}개 파일 파싱 중...'}, ensure_ascii=False)}\n\n"
+
+            # ===== Phase 1: Parse all files =====
+            banks_info = []
+            all_transactions = []
+            global_idx = 0
+
+            for fd in file_data:
+                try:
+                    parsed = await asyncio.to_thread(
+                        _parse_bank_statement_xls, fd["content"], fd["filename"]
+                    )
+                except Exception as parse_err:
+                    logger.error(f"[BankStatement SSE] 파싱 실패: {fd['filename']} - {parse_err}")
+                    err_msg = f"파일 파싱 실패 ({fd['filename']}): {str(parse_err)[:200]}"
+                    _bank_classify_progress.update({
+                        "status": "failed", "step": "오류",
+                        "message": err_msg,
+                    })
+                    yield f"data: {json.dumps({'type': 'error', 'message': err_msg}, ensure_ascii=False)}\n\n"
+                    return
+
+                bank_info = {
+                    "bank_name": parsed["bank_name"],
+                    "account_number": parsed["account_number"],
+                    "date_range": parsed["date_range"],
+                    "total_rows": len(parsed["transactions"]),
+                    "total_deposit": parsed["total_deposit"],
+                    "total_withdrawal": parsed["total_withdrawal"],
+                }
+                banks_info.append(bank_info)
+
+                for txn in parsed["transactions"]:
+                    txn["_bank_name"] = parsed["bank_name"]
+                    txn["_account_number"] = parsed["account_number"]
+                    txn["_global_idx"] = global_idx
+                    all_transactions.append(txn)
+                    global_idx += 1
+
+            total_transactions = len(all_transactions)
+            _bank_classify_progress.update({
+                "step": "파싱 완료", "progress": 15,
+                "message": f"{num_files}개 파일, {total_transactions:,}건 거래 파싱 완료",
+                "total_rows": total_transactions,
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '파싱 완료', 'progress': 15, 'message': f'{num_files}개 파일, {total_transactions:,}건 거래 파싱 완료'}, ensure_ascii=False)}\n\n"
+            logger.info(f"[BankStatement SSE] 파싱 완료: {num_files}개 파일, {total_transactions}건")
+
+            # ===== Phase 2: Detect inter-bank transfers =====
+            _bank_classify_progress.update({
+                "step": "은행간 이체 감지", "progress": 20,
+                "message": "은행 간 이체를 감지하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '은행간 이체 감지', 'progress': 20, 'message': '은행 간 이체를 감지하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+            matched_pairs = _detect_inter_bank_transfers(all_transactions)
+            transfer_set = set()
+            transfer_match_map = {}
+            for w_idx, d_idx in matched_pairs:
+                transfer_set.add(w_idx)
+                transfer_set.add(d_idx)
+                transfer_match_map[w_idx] = d_idx
+                transfer_match_map[d_idx] = w_idx
+
+            inter_bank_count = len(matched_pairs)
+            logger.info(f"[BankStatement SSE] 은행간 이체 감지: {inter_bank_count}쌍")
+
+            _bank_classify_progress.update({
+                "step": "AI 분류 준비", "progress": 25,
+                "message": f"은행간 이체 {inter_bank_count}쌍 감지. AI 분류 준비 중...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류 준비', 'progress': 25, 'message': f'은행간 이체 {inter_bank_count}쌍 감지. AI 분류 준비 중...'}, ensure_ascii=False)}\n\n"
+
+            # ===== Phase 3: Classify (rules -> LLM fallback, parallel) =====
+            phase3_start = time.time()
+            normal_indices = [i for i in range(total_transactions) if i not in transfer_set]
+            transfer_indices = list(transfer_set)
+
+            # Auto-classify inter-bank transfers as 보통예금(103)
+            classification_map = {}
+            for idx in transfer_indices:
+                partner_idx = transfer_match_map.get(idx)
+                partner_bank = all_transactions[partner_idx]["_bank_name"] if partner_idx is not None else ""
+                txn = all_transactions[idx]
+                is_withdrawal = txn["withdrawal"] > 0
+
+                classification_map[idx] = {
+                    "account_code": "103",
+                    "account_name": f"보통예금({partner_bank})" if partner_bank else "보통예금",
+                    "confidence": 0.98,
+                    "reasoning": f"은행간 이체 ({'출금→' + partner_bank if is_withdrawal else partner_bank + '→입금'})",
+                }
+
+            # -- Step 3a: Rule-based pre-classification --
+            rule_classified_count = 0
+            llm_needed_indices = []
+            for gi in normal_indices:
+                rule_result = _rule_classify_bank_txn(all_transactions[gi])
+                if rule_result is not None:
+                    classification_map[gi] = rule_result
+                    rule_classified_count += 1
+                else:
+                    llm_needed_indices.append(gi)
+
+            logger.info(
+                f"[BankStatement SSE] 규칙 분류: {rule_classified_count}건, "
+                f"LLM 필요: {len(llm_needed_indices)}건 "
+                f"(전체 {len(normal_indices)}건 중 {rule_classified_count/max(len(normal_indices),1)*100:.0f}% 규칙 처리)"
+            )
+
+            rule_msg = (
+                f"규칙 분류 {rule_classified_count:,}건 완료. "
+                f"Claude AI로 나머지 {len(llm_needed_indices):,}건 분류 중..."
+            )
+            _bank_classify_progress.update({
+                "step": "AI 분류", "progress": 30,
+                "message": rule_msg,
+                "rule_classified": rule_classified_count,
+                "llm_classified": 0,
+                "total_to_classify": len(normal_indices),
+                "elapsed_seconds": round(time.time() - phase3_start, 1),
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류', 'progress': 30, 'message': rule_msg, 'rule_classified': rule_classified_count, 'llm_classified': 0}, ensure_ascii=False)}\n\n"
+
+            # -- Step 3b: LLM classification (batch=200, 3-way parallel) --
+            if llm_needed_indices and settings.ANTHROPIC_API_KEY:
+                try:
+                    from app.services.ai_classifier import STANDARD_ACCOUNTS
+
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+                    account_list = "\n".join(
+                        f"- {code}: {name}" for code, name in sorted(STANDARD_ACCOUNTS.items())
+                    )
+
+                    BATCH_SIZE = 200
+                    llm_classified_so_far = 0
+
+                    all_batches = []
+                    for batch_start in range(0, len(llm_needed_indices), BATCH_SIZE):
+                        batch_indices = llm_needed_indices[batch_start:batch_start + BATCH_SIZE]
+                        all_batches.append(batch_indices)
+
+                    total_batches = len(all_batches)
+                    LLM_MODEL = settings.ANTHROPIC_MODEL or "claude-opus-4-8"
+
+                    def _call_llm_for_batch(batch_indices, batch_num):
+                        """Synchronous LLM call for one batch (runs in thread pool)."""
+                        txn_lines = []
+                        for i, gi in enumerate(batch_indices):
+                            txn = all_transactions[gi]
+                            txn_type = "입금" if txn["deposit"] > 0 else "출금"
+                            amount = txn["deposit"] if txn["deposit"] > 0 else txn["withdrawal"]
+                            txn_lines.append(
+                                f"{i+1}. [{txn['_bank_name']}] {txn_type} | 적요: {txn['description']} | "
+                                f"내용: {txn['content']} | 거래처: {txn['counterparty']} | 금액: {amount:,.0f}원"
+                            )
+                        txn_text = "\n".join(txn_lines)
+
+                        prompt = f"""한국 식품제조회사(조인앤조인) 통장 거래 내역의 계정과목을 분류하세요.
+**반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
+
+## 계정과목 목록
+{account_list}
+
+## 중요 회계 규칙
+- 통장 분류는 매출/매입/카드 분류가 선행된 후 수행하는 것이 원칙
+- 채권회수(입금): 외상매출금(108) 회수, 미수금(109) 회수 등
+- 채무지급(출금): 외상매입금(251) 지급, 미지급금(253) 지급 등
+- 세금계산서 발행/수취 기반으로 대금결제를 구분해야 함
+- **절대 금지: 차변과 대변이 같은 계정코드가 되면 안 됨 (차대변 동일 = 100% 오류)**
+
+## 통장 거래 분류 기준
+- 입금(매출대금 회수): 외상매출금(108) — 거래처 대금 입금
+- 입금(이자): 이자수익(901)
+- 입금(기타): 잡이익(930), 미수금(109) 회수, 선수금(259)
+- 출금(매입대금 지급): 외상매입금(251) — 거래처 대금 지급
+- 출금(경비 지급): 미지급금(253) — 경비 대금 지급
+- 출금(급여): 직원급여(802)
+- 출금(4대보험, 세금): 예수금(254), 세금과공과금(817)
+- 출금(임대/월세): 지급임차료(819)
+- 출금(대출이자): 이자비용(931)
+- 출금(대출상환): 단기차입금(260), 장기차입금(293)
+- 출금(카드대금): 미지급금(253)
+- 출금(보험료): 보험료(821)
+- 출금(수수료): 지급수수료(831)
+- 출금(운반/택배): 운반비(824)
+- 출금(전기/수도/가스): 전력비(816), 수도광열비(815)
+- 출금(통신): 통신비(814)
+- 출금(기타): 적요/거래처 내용으로 판단
+
+## 거래 ({len(batch_indices)}건)
+{txn_text}
+
+## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
+[{{"no":1,"account_code":"108","account_name":"외상매출금","confidence":0.9,"reasoning":"매출대금 회수"}},...]"""
+
+                        try:
+                            response = client.messages.create(
+                                model=LLM_MODEL,
+                                max_tokens=16000,
+                                system=[
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "당신은 한국 식품제조회사(조인앤조인) 전문 회계 분류 AI입니다. "
+                                            "통장 거래 내역을 분석하여 정확한 계정과목 코드를 JSON 배열로만 반환합니다. "
+                                            "다른 텍스트나 설명은 절대 출력하지 않습니다."
+                                        ),
+                                        "cache_control": {"type": "ephemeral"},
+                                    }
+                                ],
+                                messages=[{"role": "user", "content": prompt}],
+                            )
+
+                            text = next(b.text for b in response.content if b.type == "text").strip()
+                            if "```" in text:
+                                text = text.split("```")[1]
+                                if text.startswith("json"):
+                                    text = text[4:]
+                                text = text.strip()
+
+                            batch_results = json.loads(text)
+
+                            mapped = {}
+                            for item_result in batch_results:
+                                no = item_result.get("no", 0) - 1
+                                if 0 <= no < len(batch_indices):
+                                    gi = batch_indices[no]
+                                    code = item_result.get("account_code", "")
+                                    name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+                                    conf = min(float(item_result.get("confidence", 0.8)), 0.95)
+                                    mapped[gi] = {
+                                        "account_code": code,
+                                        "account_name": name,
+                                        "confidence": conf,
+                                        "reasoning": item_result.get("reasoning", "AI 분석"),
+                                    }
+
+                            logger.info(f"[BankStatement LLM] 배치 {batch_num}/{total_batches} 완료 ({len(mapped)}건)")
+                            return mapped
+
+                        except Exception as llm_err:
+                            logger.warning(f"[BankStatement LLM] 배치 {batch_num} 실패: {llm_err}")
+                            return {}
+
+                    # Run batches in parallel groups of 3
+                    PARALLEL = 3
+                    loop = asyncio.get_running_loop()
+
+                    for group_start in range(0, total_batches, PARALLEL):
+                        group_end = min(group_start + PARALLEL, total_batches)
+                        group_tasks = []
+                        for b_idx in range(group_start, group_end):
+                            group_tasks.append(
+                                loop.run_in_executor(
+                                    _bank_llm_executor,
+                                    _call_llm_for_batch,
+                                    all_batches[b_idx],
+                                    b_idx + 1,
+                                )
+                            )
+
+                        group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
+
+                        for res in group_results:
+                            if isinstance(res, dict):
+                                classification_map.update(res)
+                                llm_classified_so_far += len(res)
+                            elif isinstance(res, Exception):
+                                logger.warning(f"[BankStatement LLM] 병렬 배치 예외: {res}")
+
+                        # Update progress after each parallel group
+                        elapsed = time.time() - phase3_start
+                        done_batches = min(group_end, total_batches)
+                        remaining_batches = total_batches - done_batches
+                        avg_per_batch = elapsed / max(done_batches, 1)
+                        remaining_groups = (remaining_batches + PARALLEL - 1) // PARALLEL if remaining_batches > 0 else 0
+                        est_remaining = remaining_groups * avg_per_batch
+
+                        progress_pct = 30 + int(55 * (done_batches / max(total_batches, 1)))
+                        llm_msg = (
+                            f"AI 분류 중... 배치 {done_batches}/{total_batches} "
+                            f"(규칙: {rule_classified_count:,}, AI: {llm_classified_so_far:,}, "
+                            f"경과: {elapsed:.0f}초, 남은 예상: {est_remaining:.0f}초)"
+                        )
+                        _bank_classify_progress.update({
+                            "progress": progress_pct,
+                            "message": llm_msg,
+                            "processed_rows": len(transfer_indices) + rule_classified_count + llm_classified_so_far,
+                            "rule_classified": rule_classified_count,
+                            "llm_classified": llm_classified_so_far,
+                            "total_to_classify": len(normal_indices),
+                            "elapsed_seconds": round(elapsed, 1),
+                            "estimated_remaining": round(est_remaining, 1),
+                        })
+                        yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류', 'progress': progress_pct, 'message': llm_msg, 'rule_classified': rule_classified_count, 'llm_classified': llm_classified_so_far, 'elapsed_seconds': round(elapsed, 1), 'estimated_remaining': round(est_remaining, 1)}, ensure_ascii=False)}\n\n"
+
+                    logger.info(
+                        f"[BankStatement SSE] LLM 분류 완료: {llm_classified_so_far}건, "
+                        f"총 소요: {time.time() - phase3_start:.1f}초"
+                    )
+
+                except Exception as llm_setup_err:
+                    logger.warning(f"[BankStatement SSE] LLM 분류 실패: {llm_setup_err}")
+            elif llm_needed_indices and not settings.ANTHROPIC_API_KEY:
+                logger.warning("[BankStatement SSE] ANTHROPIC_API_KEY 미설정 — LLM 분류 생략")
+
+            phase3_elapsed = time.time() - phase3_start
+            logger.info(
+                f"[BankStatement SSE] Phase 3 총 소요: {phase3_elapsed:.1f}초 "
+                f"(이체: {len(transfer_indices)}, 규칙: {rule_classified_count}, "
+                f"LLM: {len(llm_needed_indices)}건)"
+            )
+
+            # ===== Phase 4: Build results =====
+            _bank_classify_progress.update({
+                "step": "결과 조립", "progress": 88,
+                "message": "결과를 정리하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '결과 조립', 'progress': 88, 'message': '결과를 정리하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+            results = []
+            for i, txn in enumerate(all_transactions):
+                cls = classification_map.get(i)
+                is_transfer = i in transfer_set
+                partner_idx = transfer_match_map.get(i)
+
+                # 후처리 검증: 금지 계정 교정 + 차대변 동일 오류 검사
+                if cls and not is_transfer:
+                    cls = _validate_classification(cls, txn)
+
+                transfer_match_info = None
+                if partner_idx is not None:
+                    partner = all_transactions[partner_idx]
+                    transfer_match_info = {
+                        "matched_index": partner_idx,
+                        "matched_bank": partner["_bank_name"],
+                        "matched_account": partner["_account_number"],
+                        "matched_type": "입금" if partner["deposit"] > 0 else "출금",
+                    }
+
+                amount = txn["deposit"] if txn["deposit"] > 0 else txn["withdrawal"]
+
+                # 검증에서 needs_review가 설정된 경우 반영
+                cls_needs_review = cls.get("needs_review", False) if cls else True
+                cls_review_reasons = cls.get("review_reasons", []) if cls else []
+
+                result_item = {
+                    "bank_name": txn["_bank_name"],
+                    "account_number": txn["_account_number"],
+                    "row_index": i,
+                    "transaction_date": txn["transaction_date"],
+                    "description": txn["description"],
+                    "content": txn["content"],
+                    "deposit": txn["deposit"],
+                    "withdrawal": txn["withdrawal"],
+                    "balance": txn["balance"],
+                    "branch": txn.get("branch", ""),
+                    "counterparty": txn.get("counterparty", ""),
+                    "remarks": txn.get("remarks", ""),
+                    "is_inter_bank_transfer": is_transfer,
+                    "transfer_match": transfer_match_info,
+                    "predicted_account_code": cls["account_code"] if cls else "",
+                    "predicted_account_name": cls["account_name"] if cls else "",
+                    "confidence": cls["confidence"] if cls else 0.0,
+                    "reasoning": cls.get("reasoning", "") if cls else "",
+                    "auto_confirm": (cls["confidence"] >= 0.85 and not cls_needs_review) if cls else False,
+                    "needs_review": cls_needs_review if cls else True,
+                    "review_reasons": cls_review_reasons,
+                    "amount": amount,
+                    "journal_entry": {
+                        "debit_account_code": cls["account_code"] if cls and txn["withdrawal"] > 0 else "103",
+                        "debit_account_name": cls["account_name"] if cls and txn["withdrawal"] > 0 else f"보통예금({txn['_bank_name']})",
+                        "debit_amount": amount,
+                        "credit_account_code": "103" if txn["withdrawal"] > 0 else (cls["account_code"] if cls else ""),
+                        "credit_account_name": f"보통예금({txn['_bank_name']})" if txn["withdrawal"] > 0 else (cls["account_name"] if cls else ""),
+                        "credit_amount": amount,
+                        "is_balanced": True,
+                    } if cls else None,
+                }
+                results.append(result_item)
+
+            # ===== Phase 5: Save to DB and respond =====
+            _bank_classify_progress.update({
+                "step": "결과 저장", "progress": 92,
+                "message": "분류 결과를 저장하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '결과 저장', 'progress': 92, 'message': '분류 결과를 저장하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+            # Statistics
+            auto_confirm_count = sum(1 for r in results if r.get("auto_confirm"))
+            needs_review_count = sum(1 for r in results if r.get("needs_review"))
+            avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
+
+            # Save to DB — 사전 생성된 레코드를 업데이트 (또는 새로 생성)
+            upload_id = pre_upload_id
+            try:
+                from app.models.ai import AIDataUploadHistory, UploadStatus
+
+                result_json_str = json.dumps({
+                    "banks": banks_info,
+                    "results": results,
+                    "stats": {
+                        "total_transactions": total_transactions,
+                        "inter_bank_transfers": inter_bank_count,
+                        "auto_confirmed": auto_confirm_count,
+                        "needs_review": needs_review_count,
+                        "average_confidence": round(avg_confidence, 4),
+                    }
+                }, ensure_ascii=False, default=str)
+
+                async with async_session_factory() as save_db:
+                    if pre_upload_id:
+                        # 사전 생성 레코드 업데이트
+                        upload_rec = await save_db.get(AIDataUploadHistory, pre_upload_id)
+                        if upload_rec:
+                            upload_rec.status = UploadStatus.COMPLETED
+                            upload_rec.row_count = total_transactions
+                            upload_rec.saved_count = total_transactions
+                            upload_rec.result_json = result_json_str
+                            upload_rec.error_message = None
+                            await save_db.commit()
+                            logger.info(f"[BankStatement SSE] 기존 레코드 업데이트 완료 (upload_id={pre_upload_id})")
+                        else:
+                            logger.warning(f"[BankStatement SSE] 사전 레코드 조회 실패, 새로 생성")
+                            pre_upload_id = None  # fallback to create new
+
+                    if not pre_upload_id:
+                        # 사전 생성 실패했으면 새로 생성
+                        filenames = ", ".join(fd["filename"] for fd in file_data)
+                        new_upload = AIDataUploadHistory(
+                            filename=f"통장분류: {filenames}"[:500],
+                            file_size=sum(len(fd["content"]) for fd in file_data),
+                            file_type="bank_statement",
+                            upload_type="classification",
+                            uploaded_by=user_id,
+                            status=UploadStatus.COMPLETED,
+                            row_count=total_transactions,
+                            saved_count=total_transactions,
+                            result_json=result_json_str,
+                        )
+                        save_db.add(new_upload)
+                        await save_db.flush()
+                        upload_id = new_upload.id
+                        await save_db.commit()
+                        logger.info(f"[BankStatement SSE] 새 레코드 생성 완료 (upload_id={upload_id})")
+
+            except Exception as save_err:
+                logger.error(f"[BankStatement SSE] DB 저장 실패: {save_err}", exc_info=True)
+                # result_json이 너무 크면 결과 없이 이력만 저장 시도
+                if pre_upload_id:
+                    try:
+                        async with async_session_factory() as fallback_db:
+                            upload_rec = await fallback_db.get(AIDataUploadHistory, pre_upload_id)
+                            if upload_rec:
+                                upload_rec.status = UploadStatus.COMPLETED
+                                upload_rec.row_count = total_transactions
+                                upload_rec.saved_count = total_transactions
+                                upload_rec.error_message = f"결과 JSON 저장 실패: {str(save_err)[:200]}"
+                                await fallback_db.commit()
+                                logger.info(f"[BankStatement SSE] 폴백: 이력만 저장 (result_json 없이)")
+                    except Exception as fb_err:
+                        logger.error(f"[BankStatement SSE] 폴백 저장도 실패: {fb_err}")
+
+            _bank_classify_progress.update({
+                "status": "completed", "step": "완료", "progress": 100,
+                "message": f"분류 완료! {total_transactions:,}건 (자동확정: {auto_confirm_count:,}, 검토필요: {needs_review_count:,}, 은행간이체: {inter_bank_count}쌍)",
+                "processed_rows": total_transactions,
+            })
+
+            # Send final result
+            final_result = {
+                "status": "completed",
+                "upload_id": upload_id,
+                "banks": banks_info,
+                "total_transactions": total_transactions,
+                "inter_bank_transfers": inter_bank_count,
+                "auto_confirmed": auto_confirm_count,
+                "needs_review": needs_review_count,
+                "average_confidence": round(avg_confidence, 4),
+                "results": results,
+            }
+            yield f"data: {json.dumps({'type': 'result', 'data': final_result}, ensure_ascii=False, default=str)}\n\n"
+            yield "data: {\"type\": \"done\"}\n\n"
+
+        except Exception as e:
+            logger.error(f"[BankStatement SSE] Error: {e}", exc_info=True)
+            _bank_classify_progress.update({
+                "status": "failed", "step": "오류",
+                "message": f"처리 오류: {str(e)[:200]}",
+            })
+            # 사전 생성 레코드를 실패 상태로 업데이트
+            if pre_upload_id:
+                try:
+                    from app.models.ai import AIDataUploadHistory, UploadStatus
+                    async with async_session_factory() as err_db:
+                        upload_rec = await err_db.get(AIDataUploadHistory, pre_upload_id)
+                        if upload_rec:
+                            upload_rec.status = UploadStatus.FAILED
+                            upload_rec.error_message = str(e)[:500]
+                            await err_db.commit()
+                except Exception:
+                    pass
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAX INVOICE (세금계산서) CLASSIFICATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Thread pool for parallel LLM calls (3 workers)
+_tax_llm_executor = ThreadPoolExecutor(max_workers=3)
+
+# 세금계산서 분류 진행 상태 추적 (in-memory)
+_tax_classify_progress: dict = {
+    "status": "idle",
+    "step": "",
+    "progress": 0,
+    "message": "",
+    "total_rows": 0,
+    "processed_rows": 0,
+}
+
+
+def _parse_tax_invoice_xls(content: bytes, filename: str) -> dict:
+    """
+    전자세금계산서 엑셀 파일을 파싱한다.
+
+    컬럼: 일자, Code, 거래처, 유형, 품명, 공급가액, 부가세, 합계,
+           차변계정, 대변계정, 관리, 전표상태
+    헤더 행을 첫 5행에서 자동 탐지한다.
+    """
+    header_keywords = {"일자", "거래처", "공급가액", "부가세", "합계"}
+
+    xls_io = io.BytesIO(content)
+    try:
+        df_raw = pd.read_excel(xls_io, header=None, dtype=str)
+    except Exception:
+        xls_io.seek(0)
+        df_raw = pd.read_excel(xls_io, header=None, dtype=str, engine="xlrd")
+
+    # Detect header row in first 5 rows
+    header_row_idx = None
+    for row_i in range(min(5, len(df_raw))):
+        row_vals = set(str(v).strip() for v in df_raw.iloc[row_i] if pd.notna(v))
+        if len(header_keywords & row_vals) >= 3:
+            header_row_idx = row_i
+            break
+
+    if header_row_idx is None:
+        # Fall back: just use row 0
+        header_row_idx = 0
+
+    # Re-read with detected header
+    xls_io = io.BytesIO(content)
+    try:
+        df = pd.read_excel(xls_io, header=header_row_idx, dtype=str)
+    except Exception:
+        xls_io.seek(0)
+        df = pd.read_excel(xls_io, header=header_row_idx, dtype=str, engine="xlrd")
+
+    # Normalise column names (strip whitespace)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Column name mapping (handle slight variations)
+    col_map = {}
+    for col in df.columns:
+        cl = col.lower().replace(" ", "")
+        if "일자" in col:
+            col_map["date"] = col
+        elif col == "Code" or cl == "code" or "코드" in col:
+            col_map["vendor_code"] = col
+        elif "거래처" in col and "vendor_name" not in col_map:
+            col_map["vendor_name"] = col
+        elif "유형" in col:
+            col_map["tax_type"] = col
+        elif "품명" in col:
+            col_map["item_description"] = col
+        elif "공급가액" in col:
+            col_map["supply_amount"] = col
+        elif "부가세" in col:
+            col_map["vat_amount"] = col
+        elif "합계" in col and "total_amount" not in col_map:
+            col_map["total_amount"] = col
+        elif "차변" in col:
+            col_map["debit_account"] = col
+        elif "대변" in col:
+            col_map["credit_account"] = col
+        elif "관리" in col:
+            col_map["management"] = col
+        elif "전표" in col:
+            col_map["voucher_status"] = col
+
+    def _safe_float(val) -> float:
+        try:
+            if pd.isna(val):
+                return 0.0
+            s = str(val).replace(",", "").replace(" ", "").strip()
+            return float(s) if s else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    transactions = []
+    total_supply = 0.0
+    total_vat = 0.0
+    total_amount = 0.0
+
+    for _, row in df.iterrows():
+        # Skip rows that look like subtotals / totals (no vendor name)
+        vendor_name = str(row.get(col_map.get("vendor_name", ""), "") or "").strip()
+        if not vendor_name or vendor_name in ("nan", "None", "합계", "소계", "합 계"):
+            continue
+
+        supply = _safe_float(row.get(col_map.get("supply_amount", ""), 0))
+        vat = _safe_float(row.get(col_map.get("vat_amount", ""), 0))
+        total = _safe_float(row.get(col_map.get("total_amount", ""), 0))
+
+        # Skip zero-amount rows
+        if supply == 0 and total == 0:
+            continue
+
+        date_raw = str(row.get(col_map.get("date", ""), "") or "").strip()
+        if date_raw in ("nan", "None"):
+            date_raw = ""
+
+        txn = {
+            "date": date_raw,
+            "vendor_code": str(row.get(col_map.get("vendor_code", ""), "") or "").strip(),
+            "vendor_name": vendor_name,
+            "tax_type": str(row.get(col_map.get("tax_type", ""), "") or "").strip(),
+            "item_description": str(row.get(col_map.get("item_description", ""), "") or "").strip(),
+            "supply_amount": supply,
+            "vat_amount": vat,
+            "total_amount": total if total > 0 else (supply + vat),
+        }
+        transactions.append(txn)
+        total_supply += supply
+        total_vat += vat
+        total_amount += txn["total_amount"]
+
+    return {
+        "transactions": transactions,
+        "total_supply": total_supply,
+        "total_vat": total_vat,
+        "total_amount": total_amount,
+        "row_count": len(transactions),
+    }
+
+
+def _build_card_journal_entry(
+    debit_code: str, debit_name: str,
+    credit_code: str, credit_name: str,
+    total_amount: float, vat_amount: float, supply_amount: float,
+) -> dict:
+    """
+    카드 분개 생성.
+    - 차변: 비용계정(공급가) + 부가세대급금(세액)  ← 매입세금계산서와 동일 구조
+    - 대변: 미지급금(카드번호) = 총액
+    """
+    lines = [
+        {"type": "debit", "account_code": debit_code, "account_name": debit_name,
+         "amount": supply_amount},
+    ]
+    if vat_amount > 0:
+        lines.append(
+            {"type": "debit", "account_code": "135", "account_name": "부가세대급금",
+             "amount": vat_amount}
+        )
+    lines.append(
+        {"type": "credit", "account_code": credit_code, "account_name": credit_name,
+         "amount": total_amount}
+    )
+
+    return {
+        "debit_account_code": debit_code,
+        "debit_account_name": debit_name,
+        "debit_amount": supply_amount,
+        "credit_account_code": credit_code,
+        "credit_account_name": credit_name,
+        "credit_amount": total_amount,
+        "vat_amount": vat_amount,
+        "supply_amount": supply_amount,
+        "total_amount": total_amount,
+        "is_balanced": True,
+        "lines": lines,
+    }
+
+
+def _build_tax_journal_entry(
+    is_sales: bool,
+    debit_code: str, debit_name: str,
+    credit_code: str, credit_name: str,
+    supply_amount: float, vat_amount: float, total_amount: float,
+) -> dict:
+    """
+    세금계산서 3줄 T계정 분개 생성 (피드백 반영).
+
+    매출 T계정:
+      차변: 매출채권(108) = 총액 (공급가+세액)
+      대변: 제품매출(402) = 공급가액
+      대변: 부가세예수금(255) = 세액
+
+    매입 T계정:
+      차변: 원재료(152) 등 = 공급가액
+      차변: 부가세대급금(135) = 세액
+      대변: 외상매입금(251) 등 = 총액 (공급가+세액)
+    """
+    if is_sales:
+        lines = [
+            {"type": "debit", "account_code": debit_code, "account_name": debit_name,
+             "amount": total_amount},
+            {"type": "credit", "account_code": credit_code, "account_name": credit_name,
+             "amount": supply_amount},
+        ]
+        if vat_amount > 0:
+            lines.append(
+                {"type": "credit", "account_code": "255", "account_name": "부가세예수금",
+                 "amount": vat_amount}
+            )
+    else:
+        lines = [
+            {"type": "debit", "account_code": debit_code, "account_name": debit_name,
+             "amount": supply_amount},
+        ]
+        if vat_amount > 0:
+            lines.append(
+                {"type": "debit", "account_code": "135", "account_name": "부가세대급금",
+                 "amount": vat_amount}
+            )
+        lines.append(
+            {"type": "credit", "account_code": credit_code, "account_name": credit_name,
+             "amount": total_amount}
+        )
+
+    return {
+        # 기존 flat 구조 유지 (하위호환)
+        "debit_account_code": debit_code,
+        "debit_account_name": debit_name,
+        "debit_amount": total_amount if is_sales else supply_amount,
+        "credit_account_code": credit_code,
+        "credit_account_name": credit_name,
+        "credit_amount": supply_amount if is_sales else total_amount,
+        "vat_amount": vat_amount,
+        "supply_amount": supply_amount,
+        "total_amount": total_amount,
+        "is_balanced": True,
+        # 3줄 T계정 분개 (신규)
+        "lines": lines,
+    }
+
+
+def _determine_credit_account_for_tax(txn: dict, debit_code: str) -> dict:
+    """
+    세금계산서 매입 거래의 대변 계정을 결정.
+    - 원재료/자산 매입(152,153,154) → 외상매입금(251)
+    - 제조경비(5xx) → 미지급금(253)
+    - 판관비(8xx) → 미지급금(253)
+    - 자산 구매(1xx) → 미지급금(253)
+    - 선급금 상계 케이스는 LLM이 판단
+    """
+    # 원재료/부재료/재고자산 매입 관련 → 외상매입금
+    purchase_codes = {"152", "153", "162", "146", "150"}
+    if debit_code in purchase_codes:
+        return {"credit_account_code": "251", "credit_account_name": "외상매입금"}
+
+    # 제조경비(5xx) → 미지급금
+    if debit_code.startswith("5"):
+        return {"credit_account_code": "253", "credit_account_name": "미지급금"}
+
+    # 판관비(8xx) → 미지급금
+    if debit_code.startswith("8"):
+        return {"credit_account_code": "253", "credit_account_name": "미지급금"}
+
+    # 자산(1xx) → 미지급금
+    if debit_code.startswith("1"):
+        return {"credit_account_code": "253", "credit_account_name": "미지급금"}
+
+    # 기본값
+    return {"credit_account_code": "253", "credit_account_name": "미지급금"}
+
+
+def _validate_classification(cls: dict, txn: dict = None) -> dict:
+    """
+    분류 결과 후처리 검증.
+    모든 분류 결과(규칙, 과거이력, LLM)에 대해 호출하여
+    잘못된 계정 사용 및 차대변 동일 오류를 교정한다.
+    """
+    if not cls:
+        return cls
+
+    # --- Rule 1: 금지 계정 교정 ---
+    # 원재료비(501)/부재료비(502) = 결산조정 계정 → 사용 금지
+    # 상품매입(404) = 미사용 계정
+    # 상품매출(401) = 결산조정용 → 매출 세금계산서에서 사용 금지 (제품매출 402 사용)
+    # 상품매출원가(451) = 결산조정 계정
+    forbidden_map = {
+        "501": ("152", "원재료", "원재료비(501)→원재료(152)로 변경 (결산조정 계정)"),
+        "502": ("162", "부재료", "부재료비(502)→부재료(162)로 변경 (결산조정 계정)"),
+        "404": ("152", "원재료", "상품매입(404)→원재료(152)로 변경 (미사용 계정)"),
+        "401": ("402", "제품매출", "상품매출(401)→제품매출(402)로 변경 (결산조정용, 99%는 제품매출)"),
+        "451": ("455", "제품매출원가", "상품매출원가(451)→제품매출원가(455)로 변경 (결산조정 계정)"),
+    }
+
+    acct_code = cls.get("account_code", "")
+    if acct_code in forbidden_map:
+        new_code, new_name, reason = forbidden_map[acct_code]
+        cls["account_code"] = new_code
+        cls["account_name"] = new_name
+        cls["needs_review"] = True
+        cls["confidence"] = min(cls.get("confidence", 0), 0.5)
+        cls.setdefault("review_reasons", []).append(reason)
+        # 교정된 계정에 맞는 대변 계정 설정
+        if new_code in ("152", "162"):
+            # 원재료/부재료 매입 → 외상매입금(251)
+            cls["credit_account_code"] = "251"
+            cls["credit_account_name"] = "외상매입금"
+        elif new_code == "402":
+            # 제품매출 → 외상매출금(108)
+            cls["credit_account_code"] = "108"
+            cls["credit_account_name"] = "외상매출금"
+        elif new_code == "455":
+            # 제품매출원가 → 기존 대변 유지
+            pass
+        else:
+            cls["credit_account_code"] = "253"
+            cls["credit_account_name"] = "미지급금"
+
+    # --- Rule 1b: 유형자산 본계정 직접 분류 방지 → 건설중인자산(214) 경유 강제 ---
+    # 피드백: 기계장치(206), 차량운반구(208), 비품(212), 시설장치(219) 등
+    # 본계정으로 바로 분류하면 오류 → 건설중인자산(214)이나 선급금(131) 경유 필요
+    fixed_asset_accounts = {"206", "208", "212", "219"}
+    acct_code = cls.get("account_code", "")
+    if acct_code in fixed_asset_accounts:
+        old_name = cls.get("account_name", "")
+        cls["account_code"] = "214"
+        cls["account_name"] = "건설중인자산"
+        cls["needs_review"] = True
+        cls["confidence"] = min(cls.get("confidence", 0), 0.5)
+        cls.setdefault("review_reasons", []).append(
+            f"{old_name}({acct_code})→건설중인자산(214)로 변경 (가계정 경유 필수)"
+        )
+        cls["credit_account_code"] = "253"
+        cls["credit_account_name"] = "미지급금"
+
+    # --- Rule 2: 차변/대변 동일 계정 오류 검사 + 자동 교정 ---
+    # 피드백: 차대변 계정이 같은 것들이 전부 오류 — 플래그뿐 아니라 실제 교정 수행
+    debit = cls.get("account_code", "")
+    credit = cls.get("credit_account_code", "")
+
+    def _fix_same_debit_credit(d_code, c_code, target_dict, d_key="account_code", c_key="credit_account_code"):
+        """차대변 동일 시 대변을 적절한 계정으로 자동 교정"""
+        if not d_code or not c_code or d_code != c_code:
+            return
+        target_dict["needs_review"] = True
+        target_dict["confidence"] = min(target_dict.get("confidence", 0), 0.3)
+        target_dict.setdefault("review_reasons", []).append(
+            f"차대변 계정 동일 오류 ({d_code}) — 대변 자동 교정됨"
+        )
+        # 차변 기준으로 대변 교정
+        if d_code.startswith("1"):
+            # 자산 매입 → 대변은 외상매입금
+            target_dict[c_key] = "251"
+            if c_key + ".replace" not in target_dict:
+                # credit name도 있으면 업데이트
+                name_key = c_key.replace("_code", "_name")
+                if name_key in target_dict:
+                    target_dict[name_key] = "외상매입금"
+        elif d_code.startswith("4"):
+            # 매출 계정 → 대변은 외상매출금
+            target_dict[c_key] = "108"
+            name_key = c_key.replace("_code", "_name")
+            if name_key in target_dict:
+                target_dict[name_key] = "외상매출금"
+        elif d_code.startswith(("5", "8")):
+            # 비용 계정 → 대변은 미지급금
+            target_dict[c_key] = "253"
+            name_key = c_key.replace("_code", "_name")
+            if name_key in target_dict:
+                target_dict[name_key] = "미지급금"
+        else:
+            # 기타 → 미지급금
+            target_dict[c_key] = "253"
+            name_key = c_key.replace("_code", "_name")
+            if name_key in target_dict:
+                target_dict[name_key] = "미지급금"
+
+    # journal_entry가 있으면 그것도 확인/교정
+    je = cls.get("journal_entry")
+    if je:
+        je_debit = je.get("debit_account_code", "")
+        je_credit = je.get("credit_account_code", "")
+        _fix_same_debit_credit(je_debit, je_credit, je, "debit_account_code", "credit_account_code")
+
+    _fix_same_debit_credit(debit, credit, cls)
+
+    # --- Rule 3: 고액(100만원 이상) 설비/기계/장비 구매 → 유형자산 확인 필요 ---
+    if txn:
+        amount = txn.get("supply_amount", 0) or txn.get("total_amount", 0) or 0
+        item_desc = (txn.get("item_description", "") or "").lower()
+        if amount >= 1000000 and any(k in item_desc for k in ["설비", "기계", "장비", "기기", "시설"]):
+            cls["needs_review"] = True
+            cls.setdefault("review_reasons", []).append("유형자산 여부 확인 필요 (고액 설비/장비)")
+
+    return cls
+
+
+def _rule_classify_tax_invoice(txn: dict) -> Optional[dict]:
+    """
+    규칙 기반 세금계산서(매입) 계정 분류 (차변 + 대변 모두).
+    거래처명과 품명의 키워드로 판단하며,
+    확실한 경우에만 결과를 반환하고 불확실하면 None을 반환해 LLM에 위임한다.
+
+    회계 원칙:
+    - 원재료비(451)/부재료비(502)는 결산조정 계정 → 사용 금지
+    - 상품매입(404)은 이 회사에서 미사용 → 사용 금지
+    - 식재료/원료 구매 → 원재료(152, 자산계정)
+    - 제조경비(5xx)와 판관비(8xx) 구분 필수
+    - 식품제조회사이므로 애매하면 제조경비로 분류
+    """
+    vendor = (txn.get("vendor_name", "") or "").lower()
+    item = (txn.get("item_description", "") or "").lower()
+    combined = f"{vendor} {item}"
+
+    def _match(keywords):
+        return any(k in combined for k in keywords)
+
+    result = None
+
+    # ========== 원재료/식재료 구매 → 원재료(152, 자산계정) ==========
+    if _match(["식재료", "원료", "원재료", "재료", "농산물", "축산물", "수산물",
+               "식자재", "육류", "수산", "농산", "유지", "전분", "밀가루", "설탕", "소금"]):
+        result = {"account_code": "152", "account_name": "원재료",
+                  "confidence": 0.90, "reasoning": "규칙: 식재료/원료 → 원재료(152) 자산계정"}
+
+    # ========== 부재료 구매 → 부재료(162, 자산계정) ==========
+    elif _match(["부재료", "부자재", "첨가물", "첨가제", "향료", "색소", "보존료",
+                 "유화제", "안정제", "증점제"]):
+        result = {"account_code": "162", "account_name": "부재료",
+                  "confidence": 0.90, "reasoning": "규칙: 부재료/첨가물 → 부재료(162) 자산계정"}
+
+    # ========== 포장재 → 소모품비(813, 제조경비) ==========
+    elif _match(["포장", "용기", "박스", "패키지", "케이스", "포장재", "포장지"]):
+        result = {"account_code": "813", "account_name": "소모품비",
+                  "confidence": 0.88, "reasoning": "규칙: 포장재 → 소모품비(813, 제조경비)"}
+
+    # ========== 설비/기계/장비 구매 → 건설중인자산(214) ==========
+    # 피드백: 유형자산은 반드시 가계정(건설중인자산/선급금)을 거쳐야 함
+    # 본계정(206 기계장치, 219 시설장치 등)으로 직접 분류 금지
+    elif _match(["설비", "기계", "장비", "기기", "시설", "컨베이어", "냉동기", "보일러"]):
+        supply_amount = txn.get("supply_amount", 0) or 0
+        # 소액(100만원 미만)이면 소모품비, 고액이면 건설중인자산
+        if supply_amount < 1000000 and supply_amount > 0:
+            result = {"account_code": "530", "account_name": "소모품비",
+                      "confidence": 0.75, "reasoning": "규칙: 소액 설비/장비 → 소모품비(530, 제조경비)",
+                      "needs_review": True}
+            result.setdefault("review_reasons", []).append("소액 설비 — 자산/비용 구분 확인 필요")
+        else:
+            result = {"account_code": "214", "account_name": "건설중인자산",
+                      "confidence": 0.82, "reasoning": "규칙: 설비/기계 구매 → 건설중인자산(214) 가계정 경유",
+                      "needs_review": True}
+            result.setdefault("review_reasons", []).append("유형자산 — 건설중인자산(214)→본계정 대체 필요")
+
+    # ========== 통신비 → 판관비 823 ==========
+    elif _match(["통신", "전화", "인터넷", "kt", "skt", "lgu+", "엘지유플러스", "sk텔레콤", "케이티"]):
+        result = {"account_code": "823", "account_name": "통신비",
+                  "confidence": 0.90, "reasoning": "규칙: 통신/전화 → 통신비(823, 판관비)"}
+
+    # ========== 수도광열비 → 제조경비 522 ==========
+    elif _match(["전기", "전력", "한국전력", "한전", "kepco",
+                 "수도", "상하수도", "도시가스", "가스", "lng", "lpg"]):
+        result = {"account_code": "522", "account_name": "수도광열비",
+                  "confidence": 0.92, "reasoning": "규칙: 전기/수도/가스 → 수도광열비(522, 제조경비)"}
+
+    # ========== 임차료 — 공장/사무실 구분 ==========
+    elif _match(["임대", "임차", "월세", "관리비", "임차료", "임대료"]):
+        # 사무실 관련 키워드가 있으면 판관비(819), 기본은 제조경비(519)
+        if any(k in combined for k in ["사무", "오피스", "사무실"]):
+            result = {"account_code": "819", "account_name": "임차료",
+                      "confidence": 0.88, "reasoning": "규칙: 사무실 임차 → 임차료(819, 판관비)"}
+        else:
+            result = {"account_code": "519", "account_name": "임차료",
+                      "confidence": 0.88, "reasoning": "규칙: 임차료 → 임차료(519, 제조경비 기본)"}
+
+    # ========== 보험료 — 제조/판관 구분 ==========
+    elif _match(["보험"]):
+        if any(k in combined for k in ["공장", "제조", "생산", "시설", "화재"]):
+            result = {"account_code": "524", "account_name": "보험료",
+                      "confidence": 0.88, "reasoning": "규칙: 공장/시설 보험 → 보험료(524, 제조경비)"}
+        else:
+            result = {"account_code": "824", "account_name": "보험료",
+                      "confidence": 0.85, "reasoning": "규칙: 보험료 → 보험료(824, 판관비)"}
+
+    # ========== 지급수수료 → 판관비 818 ==========
+    elif _match(["세무", "회계", "법무", "컨설팅", "자문", "법인세", "세무사", "회계사", "수수료"]):
+        result = {"account_code": "818", "account_name": "지급수수료",
+                  "confidence": 0.90, "reasoning": "규칙: 세무/회계/법무 → 지급수수료(818, 판관비)"}
+
+    # ========== 운반비 → 제조경비 516 ==========
+    elif _match(["택배", "운송", "배송", "물류", "화물", "운반"]):
+        result = {"account_code": "516", "account_name": "운반비",
+                  "confidence": 0.90, "reasoning": "규칙: 택배/운송 → 운반비(516, 제조경비)"}
+
+    # ========== 수선비 — 제조/판관 구분 ==========
+    elif _match(["수리", "유지", "보수", "정비", "수선"]):
+        if any(k in combined for k in ["사무", "오피스", "사무실"]):
+            result = {"account_code": "821", "account_name": "수선비",
+                      "confidence": 0.85, "reasoning": "규칙: 사무실 수선 → 수선비(821, 판관비)"}
+        else:
+            result = {"account_code": "521", "account_name": "수선비",
+                      "confidence": 0.88, "reasoning": "규칙: 수선비 → 수선비(521, 제조경비 기본)"}
+
+    # ========== 소모품비 — 제조/판관 구분 ==========
+    elif _match(["소모품", "사무용품", "문구", "청소용품"]):
+        if any(k in combined for k in ["사무", "오피스", "문구", "사무용품"]):
+            result = {"account_code": "826", "account_name": "소모품비",
+                      "confidence": 0.85, "reasoning": "규칙: 사무용품 → 소모품비(826, 판관비)"}
+        else:
+            result = {"account_code": "813", "account_name": "소모품비",
+                      "confidence": 0.88, "reasoning": "규칙: 소모품 → 소모품비(813, 제조경비 기본)"}
+
+    # ========== 광고선전비 → 판관비 817 ==========
+    elif _match(["광고", "홍보", "마케팅", "촬영", "디자인", "인쇄"]):
+        result = {"account_code": "817", "account_name": "광고선전비",
+                  "confidence": 0.88, "reasoning": "규칙: 광고/홍보 → 광고선전비(817, 판관비)"}
+
+    # ========== 차량유지비 → 판관비 826 ==========
+    elif _match(["차량", "주유", "경유", "휘발유", "엔진오일", "자동차", "차량유지"]):
+        result = {"account_code": "826", "account_name": "차량유지비",
+                  "confidence": 0.90, "reasoning": "규칙: 차량/주유 → 차량유지비(826, 판관비)"}
+
+    # ========== 교육훈련비 → 판관비 830 ==========
+    elif _match(["교육", "연수", "훈련", "세미나", "강의"]):
+        result = {"account_code": "830", "account_name": "교육훈련비",
+                  "confidence": 0.88, "reasoning": "규칙: 교육/연수 → 교육훈련비(830, 판관비)"}
+
+    if result is None:
+        return None  # 불확실 → LLM 위임
+
+    # 대변 계정도 차변 코드에 따라 결정
+    credit = _determine_credit_account_for_tax(txn, result["account_code"])
+    result["credit_account_code"] = credit["credit_account_code"]
+    result["credit_account_name"] = credit["credit_account_name"]
+    return result
+
+
+def _rule_classify_tax_invoice_sales(txn: dict) -> Optional[dict]:
+    """
+    규칙 기반 매출 세금계산서 계정 분류.
+    account_code = 매출 계정 (대변), credit_account_code = 매출채권 (차변)
+    불확실한 경우 None → LLM에 위임
+
+    회계 원칙:
+    - 조인앤조인은 식품 제조회사 → 자사 제조품 판매는 제품매출(402)
+    - 외부 구매 후 리셀만 상품매출(401)
+    - 대부분 제품매출(402)이 기본
+    """
+    vendor = (txn.get("vendor_name", "") or "").lower()
+    item = (txn.get("item_description", "") or "").lower()
+    combined = f"{vendor} {item}"
+
+    def _match(keywords):
+        return any(k in combined for k in keywords)
+
+    # 임대/기타수입 → 기타매출
+    if _match(["임대", "임차", "수수료", "리베이트", "용역"]):
+        return {
+            "account_code": "403", "account_name": "기타매출",
+            "credit_account_code": "108", "credit_account_name": "외상매출금",
+            "confidence": 0.85, "reasoning": "규칙: 임대/수수료/용역 → 기타매출(403)",
+        }
+
+    # 식품 관련 매출 → 제품매출(402, 자사 제조품)이 기본
+    if _match(["식품", "가공식품", "제품", "반찬", "음료", "소스", "조미"]):
+        return {
+            "account_code": "402", "account_name": "제품매출",
+            "credit_account_code": "108", "credit_account_name": "외상매출금",
+            "confidence": 0.92, "reasoning": "규칙: 식품제조회사 자사 제품 판매 → 제품매출(402)",
+        }
+
+    # 피드백: 매출 세금계산서 99%는 제품매출(402)/외상매출금(108)/부가세예수금(255)
+    # 불확실한 경우에도 기본값은 제품매출(402)로 설정 (LLM 위임 대신)
+    return {
+        "account_code": "402", "account_name": "제품매출",
+        "credit_account_code": "108", "credit_account_name": "외상매출금",
+        "confidence": 0.85, "reasoning": "규칙: 매출 세금계산서 기본값 → 제품매출(402) (99% 적용)",
+    }
+
+
+async def _lookup_vendor_history(vendor_name: str, is_sales: bool = False) -> Optional[dict]:
+    """
+    과거 분류 데이터에서 동일 거래처의 분류 이력을 조회.
+    가장 최근에 확정(장부 반영)된 분류를 우선 사용.
+    """
+    if not vendor_name or not async_session_factory:
+        return None
+
+    try:
+        from app.models.ai import AIRawTransactionData, AIDataUploadHistory
+        async with async_session_factory() as db:
+            # 확정된 장부 반영 이력에서 동일 거래처 검색
+            result = await db.execute(
+                select(AIRawTransactionData)
+                .join(AIDataUploadHistory,
+                      AIRawTransactionData.upload_id == AIDataUploadHistory.id)
+                .where(
+                    AIRawTransactionData.merchant_name.ilike(f"%{vendor_name[:20]}%"),
+                    AIDataUploadHistory.upload_type == "journal_entry",
+                )
+                .order_by(AIRawTransactionData.created_at.desc())
+                .limit(5)
+            )
+            rows = result.scalars().all()
+
+            if not rows:
+                return None
+
+            # 가장 많이 사용된 계정 코드 찾기
+            from collections import Counter
+            codes = Counter()
+            for r in rows:
+                if r.account_code and r.debit_amount > 0:
+                    codes[(r.account_code, r.account_name or "")] += 1
+
+            if not codes:
+                return None
+
+            (best_code, best_name), count = codes.most_common(1)[0]
+            confidence = min(0.92, 0.80 + count * 0.04)
+
+            if is_sales:
+                # 매출: 과거 데이터에서 찾은 계정은 대변(매출계정)
+                # 차변은 외상매출금이 기본
+                return {
+                    "account_code": best_code,
+                    "account_name": best_name,
+                    "credit_account_code": "108",
+                    "credit_account_name": "외상매출금",
+                    "confidence": confidence,
+                    "reasoning": f"과거 이력: {vendor_name} → {best_code} {best_name} ({count}건)",
+                }
+            else:
+                # 매입: 과거 데이터에서 찾은 계정은 차변(비용계정)
+                credit = _determine_credit_account_for_tax({}, best_code)
+                return {
+                    "account_code": best_code,
+                    "account_name": best_name,
+                    "credit_account_code": credit["credit_account_code"],
+                    "credit_account_name": credit["credit_account_name"],
+                    "confidence": confidence,
+                    "reasoning": f"과거 이력: {vendor_name} → {best_code} {best_name} ({count}건)",
+                }
+    except Exception as e:
+        logger.warning(f"[VendorHistory] 거래처 이력 조회 실패 ({vendor_name}): {e}")
+        return None
+
+
+@router.get("/classify-tax-progress")
+async def get_tax_classify_progress(
+    current_user: User = Depends(get_current_user)
+):
+    """세금계산서 분류 진행 상태 조회"""
+    return _tax_classify_progress
+
+
+@router.post("/classify-tax-invoices")
+async def classify_tax_invoices(
+    files: List[UploadFile] = File(...),
+    tax_direction: str = Query(default="purchase", description="purchase=매입, sales=매출"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    전자세금계산서 다중 파일 업로드 및 AI 분류 (SSE 스트리밍 응답)
+
+    - 1~5개의 전자세금계산서 엑셀 파일(.xls/.xlsx) 동시 업로드
+    - tax_direction: "purchase"(매입) 또는 "sales"(매출)
+    - Server-Sent Events로 진행 상태와 최종 결과를 스트리밍 반환
+    """
+    is_sales = (tax_direction == "sales")
+    global _tax_classify_progress
+
+    # Validate file count
+    if len(files) < 1 or len(files) > 5:
+        raise HTTPException(status_code=400, detail="1~5개의 파일만 업로드 가능합니다.")
+
+    # Validate file types
+    for f in files:
+        if not f.filename.endswith(('.xls', '.xlsx')):
+            raise HTTPException(
+                status_code=400,
+                detail=f"엑셀 파일(.xls, .xlsx)만 업로드 가능합니다: {f.filename}"
+            )
+
+    # Read all file contents NOW (UploadFile objects expire after response starts)
+    file_data = []
+    for f in files:
+        content = await f.read()
+        file_data.append({"content": content, "filename": f.filename})
+
+    user_id = current_user.id
+
+    async def event_stream():
+        # SSE 시작 직후, 분류 이력 레코드를 먼저 생성 (status=processing)
+        pre_upload_id = None
+        try:
+            from app.models.ai import AIDataUploadHistory, UploadStatus
+            filenames = ", ".join(fd["filename"] for fd in file_data)
+            async with async_session_factory() as pre_db:
+                pre_upload = AIDataUploadHistory(
+                    filename=f"{'매출' if is_sales else '매입'}세금계산서: {filenames}"[:500],
+                    file_size=sum(len(fd["content"]) for fd in file_data),
+                    file_type="tax_invoice",
+                    upload_type="classification",
+                    uploaded_by=user_id,
+                    status=UploadStatus.PROCESSING,
+                    row_count=0,
+                    saved_count=0,
+                )
+                pre_db.add(pre_upload)
+                await pre_db.flush()
+                pre_upload_id = pre_upload.id
+                await pre_db.commit()
+            logger.info(f"[TaxInvoice SSE] 이력 레코드 사전 생성 (upload_id={pre_upload_id})")
+        except Exception as pre_err:
+            logger.error(f"[TaxInvoice SSE] 이력 사전 생성 실패: {pre_err}", exc_info=True)
+
+        try:
+            num_files = len(file_data)
+
+            _tax_classify_progress.update({
+                "status": "running", "step": "파일 파싱", "progress": 5,
+                "message": f"{num_files}개 파일 파싱 중...",
+                "total_rows": 0, "processed_rows": 0,
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '파일 파싱', 'progress': 5, 'message': f'{num_files}개 파일 파싱 중...'}, ensure_ascii=False)}\n\n"
+
+            # ===== Phase 1: Parse all files =====
+            files_info = []
+            all_transactions = []
+
+            for fd in file_data:
+                try:
+                    parsed = await asyncio.to_thread(
+                        _parse_tax_invoice_xls, fd["content"], fd["filename"]
+                    )
+                except Exception as parse_err:
+                    logger.error(f"[TaxInvoice SSE] 파싱 실패: {fd['filename']} - {parse_err}")
+                    err_msg = f"파일 파싱 실패 ({fd['filename']}): {str(parse_err)[:200]}"
+                    _tax_classify_progress.update({
+                        "status": "failed", "step": "오류",
+                        "message": err_msg,
+                    })
+                    yield f"data: {json.dumps({'type': 'error', 'message': err_msg}, ensure_ascii=False)}\n\n"
+                    return
+
+                file_info = {
+                    "filename": fd["filename"],
+                    "row_count": parsed["row_count"],
+                    "total_supply": parsed["total_supply"],
+                    "total_vat": parsed["total_vat"],
+                    "total_amount": parsed["total_amount"],
+                }
+                files_info.append(file_info)
+
+                for txn in parsed["transactions"]:
+                    txn["_filename"] = fd["filename"]
+                    all_transactions.append(txn)
+
+            total_transactions = len(all_transactions)
+            _tax_classify_progress.update({
+                "step": "파싱 완료", "progress": 15,
+                "message": f"{num_files}개 파일, {total_transactions:,}건 세금계산서 파싱 완료",
+                "total_rows": total_transactions,
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '파싱 완료', 'progress': 15, 'message': f'{num_files}개 파일, {total_transactions:,}건 세금계산서 파싱 완료'}, ensure_ascii=False)}\n\n"
+            logger.info(f"[TaxInvoice SSE] 파싱 완료: {num_files}개 파일, {total_transactions}건")
+
+            # ===== Phase 2 & 3: Rule-based + LLM classification =====
+            phase3_start = time.time()
+
+            # ===== Phase 2a: 과거 거래처 이력 조회 =====
+            _tax_classify_progress.update({
+                "step": "과거 이력 조회", "progress": 15,
+                "message": "과거 분류 데이터에서 거래처 이력을 확인하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '과거 이력 조회', 'progress': 15, 'message': '과거 분류 데이터에서 거래처 이력을 확인하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+            classification_map = {}  # global_idx -> cls_dict
+            history_classified_count = 0
+
+            # 거래처별 중복 조회 방지를 위한 캐시
+            vendor_history_cache: dict = {}
+            unique_vendors = set(txn.get("vendor_name", "") for txn in all_transactions)
+
+            for vendor_name in unique_vendors:
+                if not vendor_name:
+                    continue
+                hist = await _lookup_vendor_history(vendor_name, is_sales)
+                if hist:
+                    vendor_history_cache[vendor_name] = hist
+
+            logger.info(f"[TaxInvoice SSE] 과거 이력 캐시: {len(vendor_history_cache)}개 거래처 매칭")
+
+            # 과거 이력으로 먼저 분류
+            for gi, txn in enumerate(all_transactions):
+                vendor_name = txn.get("vendor_name", "")
+                if vendor_name in vendor_history_cache:
+                    classification_map[gi] = vendor_history_cache[vendor_name].copy()
+                    history_classified_count += 1
+
+            yield f"data: {json.dumps({'type': 'progress', 'step': '과거 이력', 'progress': 20, 'message': f'과거 이력으로 {history_classified_count:,}건 분류 완료'}, ensure_ascii=False)}\n\n"
+
+            # ===== Phase 2b: 규칙 기반 분류 (이력 없는 것만) =====
+            _tax_classify_progress.update({
+                "step": "규칙 분류", "progress": 22,
+                "message": "규칙 기반 분류 중...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '규칙 분류', 'progress': 22, 'message': '규칙 기반 분류 중...'}, ensure_ascii=False)}\n\n"
+
+            llm_needed_indices = []
+            rule_classified_count = 0
+
+            for gi, txn in enumerate(all_transactions):
+                if gi in classification_map:
+                    continue  # 이미 과거 이력으로 분류됨
+                rule_result = (
+                    _rule_classify_tax_invoice_sales(txn) if is_sales
+                    else _rule_classify_tax_invoice(txn)
+                )
+                if rule_result is not None:
+                    classification_map[gi] = rule_result
+                    rule_classified_count += 1
+                else:
+                    llm_needed_indices.append(gi)
+
+            logger.info(
+                f"[TaxInvoice SSE] 과거이력: {history_classified_count}건, "
+                f"규칙: {rule_classified_count}건, LLM 필요: {len(llm_needed_indices)}건 "
+                f"(전체 {total_transactions}건)"
+            )
+
+            rule_msg = (
+                f"과거이력 {history_classified_count:,}건 + 규칙 {rule_classified_count:,}건 완료. "
+                f"Claude AI로 나머지 {len(llm_needed_indices):,}건 분류 중..."
+            )
+            _tax_classify_progress.update({
+                "step": "AI 분류", "progress": 30,
+                "message": rule_msg,
+                "rule_classified": rule_classified_count,
+                "llm_classified": 0,
+                "total_to_classify": total_transactions,
+                "elapsed_seconds": round(time.time() - phase3_start, 1),
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류', 'progress': 30, 'message': rule_msg, 'rule_classified': rule_classified_count, 'llm_classified': 0}, ensure_ascii=False)}\n\n"
+
+            # -- LLM classification (batch=200, 3-way parallel) --
+            if llm_needed_indices and settings.ANTHROPIC_API_KEY:
+                try:
+                    from app.services.ai_classifier import STANDARD_ACCOUNTS
+
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+                    account_list = "\n".join(
+                        f"- {code}: {name}" for code, name in sorted(STANDARD_ACCOUNTS.items())
+                    )
+
+                    BATCH_SIZE = 200
+                    llm_classified_so_far = 0
+
+                    all_batches = []
+                    for batch_start in range(0, len(llm_needed_indices), BATCH_SIZE):
+                        batch_indices = llm_needed_indices[batch_start:batch_start + BATCH_SIZE]
+                        all_batches.append(batch_indices)
+
+                    total_batches = len(all_batches)
+                    LLM_MODEL = settings.ANTHROPIC_MODEL or "claude-opus-4-8"
+
+                    def _call_llm_for_tax_batch(batch_indices, batch_num):
+                        """Synchronous LLM call for one tax invoice batch (runs in thread pool)."""
+                        txn_lines = []
+                        for i, gi in enumerate(batch_indices):
+                            txn = all_transactions[gi]
+                            txn_lines.append(
+                                f"{i+1}. 거래처: {txn['vendor_name']} | "
+                                f"품명: {txn['item_description']} | "
+                                f"유형: {txn['tax_type']} | "
+                                f"공급가액: {txn['supply_amount']:,.0f}원 | "
+                                f"부가세: {txn['vat_amount']:,.0f}원"
+                            )
+                        txn_text = "\n".join(txn_lines)
+
+                        if is_sales:
+                            prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매출)의 계정과목을 분류하세요.
+**조인앤조인은 식품 제조회사이므로 대부분의 매출은 제품매출(402)입니다.**
+**반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
+
+## 계정과목 목록
+{account_list}
+
+## 중요 회계 규칙
+- 이 회사(조인앤조인)는 식품 제조회사이므로 자사 제조품 판매는 제품매출(402)
+- 외부에서 구매하여 리셀하는 것만 상품매출(401) (크림빵, 에너지드링크 등 확인 필요)
+- 업체별 출고 품목을 확인하여 제품/상품 구분
+- **절대 금지: 차변과 대변이 같은 계정코드가 되면 안 됨 (차대변 동일 = 100% 오류)**
+
+## 매출 세금계산서 분류 기준
+- account_code = 대변(매출 계정): 제품매출(402), 상품매출(401), 기타매출(403) 등
+- credit_code = 차변(매출채권): 외상매출금(108), 미수금(109), 받을어음(110) 등
+
+## 대변(매출) 분류 기준
+- 자사 제조 식품/가공식품 판매 (대부분): **제품매출(402)** ← 기본값
+- 외부 상품 단순 유통/리셀: 상품매출(401) — 드문 경우
+- 임대수입, 수수료, 용역: 기타매출(403) 또는 잡이익(901)
+
+## 차변(매출채권) 분류 기준
+- 일반 거래처 외상 판매 (대부분): 외상매출금(108)
+- 미수금(용역/기타 비정기): 미수금(109)
+- 선수금 상계(이미 선수금 받은 거래처): 선수금(259)
+
+## 세금계산서 거래 ({len(batch_indices)}건)
+{txn_text}
+
+## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
+[{{"no":1,"account_code":"402","account_name":"제품매출","credit_code":"108","credit_name":"외상매출금","confidence":0.9,"reasoning":"식품 제조 판매→제품매출/외상매출금"}},...]"""
+                        else:
+                            prompt = f"""한국 식품제조회사(조인앤조인) 전자세금계산서(매입)의 차변/대변 계정과목을 분류하세요.
+**반드시 아래 계정과목 목록에 있는 코드만 사용하세요. 목록에 없는 코드 금지.**
+
+## 계정과목 목록
+{account_list}
+
+## 중요 회계 규칙
+- 원재료비(501)/부재료비(502)/상품매출원가(451)는 결산조정 계정으로 일반 분류에 절대 사용 금지
+- 원재료 구매: 원재료(152) 사용 (자산계정), 부재료 구매: 부재료(162) 사용 (자산계정)
+- 상품매입(404) 계정은 사용하지 않음, 상품매출(401)도 사용하지 않음 (제품매출 402 사용)
+- 제조경비(5xx)와 판관비(8xx)를 구분할 것
+  - 공장/생산 관련 비용 → 제조경비 (예: 수도광열비 522, 수선비 521, 운반비 516)
+  - 사무/관리 관련 비용 → 판관비 (예: 통신비 823, 지급수수료 818, 광고선전비 817)
+- 설비/기계/장비 등 유형자산 구매: 건설중인자산(214) 또는 선급금(131) — 본계정(206,208,212,219) 직접 분류 금지
+- **절대 금지: 차변과 대변이 같은 계정코드가 되면 안 됨 (차대변 동일 = 100% 오류)**
+
+## 차변(비용/자산) 분류 기준
+- 식재료/원료 구매: **원재료(152)** (자산계정, 501 사용 금지)
+- 부재료/첨가물/부자재 구매: **부재료(162)** (자산계정, 502 사용 금지)
+- 포장재/용기: 소모품비(813, 제조경비)
+- 소모품(공장): 소모품비(813, 제조경비)
+- 사무용품: 소모품비(826, 판관비)
+- 임대료/관리비(공장): 임차료(519, 제조경비)
+- 임대료/관리비(사무실): 임차료(819, 판관비)
+- 전기/수도/가스: 수도광열비(522, 제조경비)
+- 통신비(전화/인터넷): 통신비(823, 판관비)
+- 보험료(공장/시설): 보험료(524, 제조경비)
+- 보험료(일반): 보험료(824, 판관비)
+- 차량유지/주유: 차량유지비(826, 판관비)
+- 수리/보수(공장): 수선비(521, 제조경비)
+- 수리/보수(사무실): 수선비(821, 판관비)
+- 운반/택배/물류: 운반비(516, 제조경비)
+- 광고/홍보/마케팅: 광고선전비(817, 판관비)
+- 세무/회계/법무/컨설팅: 지급수수료(818, 판관비)
+- 교육/연수: 교육훈련비(830, 판관비)
+- 설비/기계/장비 구매: 건설중인자산(214) — 본계정(206 기계장치 등) 직접 분류 금지
+
+## 대변(부채) 분류 기준 — 거래처와 거래 성격에 따라 판단
+- 원재료 매입(152): 외상매입금(251)
+- 제조경비/판관비: 미지급금(253)
+- 자산 구매: 미지급금(253)
+- 선급금 상계(이미 선급 지급한 거래처): 선급금(131)
+- 확실하지 않으면 거래 유형에 따라 외상매입금(251) 또는 미지급금(253) 중 택1
+
+## 세금계산서 거래 ({len(batch_indices)}건)
+{txn_text}
+
+## 응답 (JSON 배열만 출력, 다른 텍스트 금지)
+[{{"no":1,"account_code":"152","account_name":"원재료","credit_code":"251","credit_name":"외상매입금","confidence":0.9,"reasoning":"식재료 매입→원재료(152)/외상매입금(251)"}},...]"""
+
+                        try:
+                            response = client.messages.create(
+                                model=LLM_MODEL,
+                                max_tokens=16000,
+                                system=[
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "당신은 한국 식품제조회사(조인앤조인) 전문 회계 분류 AI입니다. "
+                                            "전자세금계산서 거래를 분석하여 차변/대변 계정과목 코드를 JSON 배열로만 반환합니다. "
+                                            "다른 텍스트나 설명은 절대 출력하지 않습니다."
+                                        ),
+                                        "cache_control": {"type": "ephemeral"},
+                                    }
+                                ],
+                                messages=[{"role": "user", "content": prompt}],
+                            )
+
+                            text = next(b.text for b in response.content if b.type == "text").strip()
+                            if "```" in text:
+                                text = text.split("```")[1]
+                                if text.startswith("json"):
+                                    text = text[4:]
+                                text = text.strip()
+
+                            batch_results = json.loads(text)
+
+                            mapped = {}
+                            for item_result in batch_results:
+                                no = item_result.get("no", 0) - 1
+                                if 0 <= no < len(batch_indices):
+                                    gi = batch_indices[no]
+                                    code = item_result.get("account_code", "")
+                                    name = item_result.get("account_name", "") or STANDARD_ACCOUNTS.get(code, "")
+                                    conf = min(float(item_result.get("confidence", 0.8)), 0.95)
+                                    mapped[gi] = {
+                                        "account_code": code,
+                                        "account_name": name,
+                                        "confidence": conf,
+                                        "reasoning": item_result.get("reasoning", "AI 분석"),
+                                    }
+
+                            # 대변 계정도 포함
+                            for gi, m in mapped.items():
+                                if "credit_account_code" not in m:
+                                    credit_info = _determine_credit_account_for_tax(
+                                        all_transactions[gi], m["account_code"]
+                                    )
+                                    m["credit_account_code"] = credit_info["credit_account_code"]
+                                    m["credit_account_name"] = credit_info["credit_account_name"]
+
+                            logger.info(f"[TaxInvoice LLM] 배치 {batch_num}/{total_batches} 완료 ({len(mapped)}건)")
+                            return mapped
+
+                        except Exception as llm_err:
+                            logger.warning(f"[TaxInvoice LLM] 배치 {batch_num} 실패: {llm_err}")
+                            return {}
+
+                    # Run batches in parallel groups of 3
+                    PARALLEL = 3
+                    loop = asyncio.get_running_loop()
+
+                    for group_start in range(0, total_batches, PARALLEL):
+                        group_end = min(group_start + PARALLEL, total_batches)
+                        group_tasks = []
+                        for b_idx in range(group_start, group_end):
+                            group_tasks.append(
+                                loop.run_in_executor(
+                                    _tax_llm_executor,
+                                    _call_llm_for_tax_batch,
+                                    all_batches[b_idx],
+                                    b_idx + 1,
+                                )
+                            )
+
+                        group_results = await asyncio.gather(*group_tasks, return_exceptions=True)
+
+                        for res in group_results:
+                            if isinstance(res, dict):
+                                classification_map.update(res)
+                                llm_classified_so_far += len(res)
+                            elif isinstance(res, Exception):
+                                logger.warning(f"[TaxInvoice LLM] 병렬 배치 예외: {res}")
+
+                        # Update progress after each parallel group
+                        elapsed = time.time() - phase3_start
+                        done_batches = min(group_end, total_batches)
+                        remaining_batches = total_batches - done_batches
+                        avg_per_batch = elapsed / max(done_batches, 1)
+                        remaining_groups = (remaining_batches + PARALLEL - 1) // PARALLEL if remaining_batches > 0 else 0
+                        est_remaining = remaining_groups * avg_per_batch
+
+                        progress_pct = 30 + int(55 * (done_batches / max(total_batches, 1)))
+                        llm_msg = (
+                            f"AI 분류 중... 배치 {done_batches}/{total_batches} "
+                            f"(규칙: {rule_classified_count:,}, AI: {llm_classified_so_far:,}, "
+                            f"경과: {elapsed:.0f}초, 남은 예상: {est_remaining:.0f}초)"
+                        )
+                        _tax_classify_progress.update({
+                            "progress": progress_pct,
+                            "message": llm_msg,
+                            "processed_rows": rule_classified_count + llm_classified_so_far,
+                            "rule_classified": rule_classified_count,
+                            "llm_classified": llm_classified_so_far,
+                            "total_to_classify": total_transactions,
+                            "elapsed_seconds": round(elapsed, 1),
+                            "estimated_remaining": round(est_remaining, 1),
+                        })
+                        yield f"data: {json.dumps({'type': 'progress', 'step': 'AI 분류', 'progress': progress_pct, 'message': llm_msg, 'rule_classified': rule_classified_count, 'llm_classified': llm_classified_so_far, 'elapsed_seconds': round(elapsed, 1), 'estimated_remaining': round(est_remaining, 1)}, ensure_ascii=False)}\n\n"
+
+                    logger.info(
+                        f"[TaxInvoice SSE] LLM 분류 완료: {llm_classified_so_far}건, "
+                        f"총 소요: {time.time() - phase3_start:.1f}초"
+                    )
+
+                except Exception as llm_setup_err:
+                    logger.warning(f"[TaxInvoice SSE] LLM 분류 실패: {llm_setup_err}")
+            elif llm_needed_indices and not settings.ANTHROPIC_API_KEY:
+                logger.warning("[TaxInvoice SSE] ANTHROPIC_API_KEY 미설정 — LLM 분류 생략")
+
+            phase3_elapsed = time.time() - phase3_start
+            logger.info(
+                f"[TaxInvoice SSE] Phase 3 총 소요: {phase3_elapsed:.1f}초 "
+                f"(규칙: {rule_classified_count}, LLM: {len(llm_needed_indices)}건)"
+            )
+
+            # ===== Phase 4: Build results =====
+            _tax_classify_progress.update({
+                "step": "결과 조립", "progress": 88,
+                "message": "결과를 정리하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '결과 조립', 'progress': 88, 'message': '결과를 정리하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+            results = []
+            for i, txn in enumerate(all_transactions):
+                cls = classification_map.get(i)
+
+                # 후처리 검증: 금지 계정 교정 + 차대변 동일 오류 검사
+                if cls:
+                    cls = _validate_classification(cls, txn)
+
+                if is_sales and cls:
+                    # 매출 T계정 (피드백 3줄 분개):
+                    #   차변: 매출채권(108) = 총액(공급가+세액)
+                    #   대변: 제품매출(402) = 공급가액
+                    #   대변: 부가세예수금(255) = 세액
+                    debit_code = cls.get("credit_account_code", "108")
+                    debit_name = cls.get("credit_account_name", "외상매출금")
+                    credit_code = cls["account_code"]
+                    credit_name = cls["account_name"]
+                elif cls:
+                    # 매입 T계정 (피드백 3줄 분개):
+                    #   차변: 원재료(152) 등 = 공급가액
+                    #   차변: 부가세대급금(135) = 세액
+                    #   대변: 외상매입금(251) 등 = 총액(공급가+세액)
+                    debit_code = cls["account_code"]
+                    debit_name = cls["account_name"]
+                    credit_code = cls.get("credit_account_code", "253")
+                    credit_name = cls.get("credit_account_name", "미지급금")
+                else:
+                    debit_code = debit_name = credit_code = credit_name = ""
+
+                # 검증에서 needs_review가 설정된 경우 반영
+                cls_needs_review = cls.get("needs_review", False) if cls else True
+                cls_review_reasons = cls.get("review_reasons", []) if cls else []
+
+                result_item = {
+                    "row_index": i,
+                    "date": txn["date"],
+                    "vendor_code": txn["vendor_code"],
+                    "vendor_name": txn["vendor_name"],
+                    "tax_type": txn["tax_type"],
+                    "item_description": txn["item_description"],
+                    "supply_amount": txn["supply_amount"],
+                    "vat_amount": txn["vat_amount"],
+                    "total_amount": txn["total_amount"],
+                    "predicted_account_code": cls["account_code"] if cls else "",
+                    "predicted_account_name": cls["account_name"] if cls else "",
+                    "confidence": cls["confidence"] if cls else 0.0,
+                    "reasoning": cls.get("reasoning", "") if cls else "",
+                    "auto_confirm": (cls["confidence"] >= 0.85 and not cls_needs_review) if cls else False,
+                    "needs_review": cls_needs_review if cls else True,
+                    "review_reasons": cls_review_reasons,
+                    "credit_account_code": credit_code,
+                    "credit_account_name": credit_name,
+                    "journal_entry": _build_tax_journal_entry(
+                        is_sales, debit_code, debit_name, credit_code, credit_name,
+                        txn["supply_amount"], txn["vat_amount"], txn["total_amount"],
+                    ) if cls else None,
+                }
+                results.append(result_item)
+
+            # ===== Phase 5: Save to DB and respond =====
+            _tax_classify_progress.update({
+                "step": "결과 저장", "progress": 92,
+                "message": "분류 결과를 저장하고 있습니다...",
+            })
+            yield f"data: {json.dumps({'type': 'progress', 'step': '결과 저장', 'progress': 92, 'message': '분류 결과를 저장하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+            # Statistics
+            auto_confirm_count = sum(1 for r in results if r.get("auto_confirm"))
+            needs_review_count = sum(1 for r in results if r.get("needs_review"))
+            avg_confidence = sum(r["confidence"] for r in results) / len(results) if results else 0
+
+            total_supply_sum = sum(t["supply_amount"] for t in all_transactions)
+            total_vat_sum = sum(t["vat_amount"] for t in all_transactions)
+            total_amount_sum = sum(t["total_amount"] for t in all_transactions)
+
+            # Save to DB
+            upload_id = pre_upload_id
+            try:
+                from app.models.ai import AIDataUploadHistory, UploadStatus
+
+                result_json_str = json.dumps({
+                    "files": files_info,
+                    "results": results,
+                    "stats": {
+                        "total_transactions": total_transactions,
+                        "auto_confirmed": auto_confirm_count,
+                        "needs_review": needs_review_count,
+                        "average_confidence": round(avg_confidence, 4),
+                        "total_supply": total_supply_sum,
+                        "total_vat": total_vat_sum,
+                        "total_amount": total_amount_sum,
+                    }
+                }, ensure_ascii=False, default=str)
+
+                async with async_session_factory() as save_db:
+                    if pre_upload_id:
+                        # 사전 생성 레코드 업데이트
+                        upload_rec = await save_db.get(AIDataUploadHistory, pre_upload_id)
+                        if upload_rec:
+                            upload_rec.status = UploadStatus.COMPLETED
+                            upload_rec.row_count = total_transactions
+                            upload_rec.saved_count = total_transactions
+                            upload_rec.result_json = result_json_str
+                            upload_rec.error_message = None
+                            await save_db.commit()
+                            logger.info(f"[TaxInvoice SSE] 기존 레코드 업데이트 완료 (upload_id={pre_upload_id})")
+                        else:
+                            logger.warning(f"[TaxInvoice SSE] 사전 레코드 조회 실패, 새로 생성")
+                            pre_upload_id = None  # fallback to create new
+
+                    if not pre_upload_id:
+                        # 사전 생성 실패했으면 새로 생성
+                        filenames = ", ".join(fd["filename"] for fd in file_data)
+                        new_upload = AIDataUploadHistory(
+                            filename=f"{'매출' if is_sales else '매입'}세금계산서: {filenames}"[:500],
+                            file_size=sum(len(fd["content"]) for fd in file_data),
+                            file_type="tax_invoice",
+                            upload_type="classification",
+                            uploaded_by=user_id,
+                            status=UploadStatus.COMPLETED,
+                            row_count=total_transactions,
+                            saved_count=total_transactions,
+                            result_json=result_json_str,
+                        )
+                        save_db.add(new_upload)
+                        await save_db.flush()
+                        upload_id = new_upload.id
+                        await save_db.commit()
+                        logger.info(f"[TaxInvoice SSE] 새 레코드 생성 완료 (upload_id={upload_id})")
+
+            except Exception as save_err:
+                logger.error(f"[TaxInvoice SSE] DB 저장 실패: {save_err}", exc_info=True)
+                if pre_upload_id:
+                    try:
+                        async with async_session_factory() as fallback_db:
+                            upload_rec = await fallback_db.get(AIDataUploadHistory, pre_upload_id)
+                            if upload_rec:
+                                upload_rec.status = UploadStatus.COMPLETED
+                                upload_rec.row_count = total_transactions
+                                upload_rec.saved_count = total_transactions
+                                upload_rec.error_message = f"결과 JSON 저장 실패: {str(save_err)[:200]}"
+                                await fallback_db.commit()
+                                logger.info(f"[TaxInvoice SSE] 폴백: 이력만 저장 (result_json 없이)")
+                    except Exception as fb_err:
+                        logger.error(f"[TaxInvoice SSE] 폴백 저장도 실패: {fb_err}")
+
+            _tax_classify_progress.update({
+                "status": "completed", "step": "완료", "progress": 100,
+                "message": f"분류 완료! {total_transactions:,}건 (자동확정: {auto_confirm_count:,}, 검토필요: {needs_review_count:,})",
+                "processed_rows": total_transactions,
+            })
+
+            # Send final result
+            final_result = {
+                "status": "completed",
+                "upload_id": upload_id,
+                "files": files_info,
+                "total_transactions": total_transactions,
+                "auto_confirmed": auto_confirm_count,
+                "needs_review": needs_review_count,
+                "average_confidence": round(avg_confidence, 4),
+                "total_supply": total_supply_sum,
+                "total_vat": total_vat_sum,
+                "total_amount": total_amount_sum,
+                "is_tax_invoice": True,
+                "tax_direction": "sales" if is_sales else "purchase",
+                "results": results,
+            }
+            yield f"data: {json.dumps({'type': 'result', 'data': final_result}, ensure_ascii=False, default=str)}\n\n"
+            yield "data: {\"type\": \"done\"}\n\n"
+
+        except Exception as e:
+            logger.error(f"[TaxInvoice SSE] Error: {e}", exc_info=True)
+            _tax_classify_progress.update({
+                "status": "failed", "step": "오류",
+                "message": f"처리 오류: {str(e)[:200]}",
+            })
+            # 사전 생성 레코드를 실패 상태로 업데이트
+            if pre_upload_id:
+                try:
+                    from app.models.ai import AIDataUploadHistory, UploadStatus
+                    async with async_session_factory() as err_db:
+                        upload_rec = await err_db.get(AIDataUploadHistory, pre_upload_id)
+                        if upload_rec:
+                            upload_rec.status = UploadStatus.FAILED
+                            upload_rec.error_message = str(e)[:500]
+                            await err_db.commit()
+                except Exception:
+                    pass
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)[:500]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/reclassify/{upload_id}")
+async def reclassify_upload(
+    upload_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    기존 분류 결과를 최신 규칙으로 재분류.
+    저장된 result_json의 각 항목을 규칙 기반으로 재분류하고 결과를 업데이트.
+    """
+    from app.models.ai import AIDataUploadHistory, UploadStatus
+
+    upload = await db.get(AIDataUploadHistory, upload_id)
+    if not upload:
+        raise HTTPException(status_code=404, detail="분류 이력을 찾을 수 없습니다.")
+    if not upload.result_json:
+        raise HTTPException(status_code=400, detail="저장된 분류 결과가 없습니다.")
+
+    try:
+        data = json.loads(upload.result_json)
+        results = data.get("results", [])
+        if not results:
+            raise HTTPException(status_code=400, detail="재분류할 항목이 없습니다.")
+
+        is_bank = upload.file_type == "bank_statement"
+        is_tax = upload.file_type == "tax_invoice"
+        is_sales = "매출" in (upload.filename or "")
+
+        reclassified_count = 0
+
+        for r in results:
+            # Build a transaction dict for rule-based classification
+            if is_tax:
+                txn = {
+                    "vendor_name": r.get("vendor_name", ""),
+                    "item_description": r.get("item_description", ""),
+                    "supply_amount": r.get("supply_amount", 0),
+                    "tax_type": r.get("tax_type", ""),
+                }
+                if is_sales:
+                    new_cls = _rule_classify_tax_invoice_sales(txn)
+                else:
+                    new_cls = _rule_classify_tax_invoice(txn)
+
+                # Also try vendor history lookup
+                if not new_cls:
+                    # Try vendor history (sync version - just try rules)
+                    pass
+
+            elif is_bank:
+                txn = {
+                    "description": r.get("description", ""),
+                    "content": r.get("content", ""),
+                    "deposit": r.get("deposit", 0),
+                    "withdrawal": r.get("withdrawal", 0),
+                    "counterparty": r.get("counterparty", ""),
+                    "_bank_name": r.get("bank_name", ""),
+                }
+                # Skip inter-bank transfers
+                if r.get("is_inter_bank_transfer"):
+                    continue
+                new_cls = _rule_classify_bank_txn(txn)
+            else:
+                # Card/generic - use description
+                txn = {
+                    "vendor_name": r.get("merchant_name", r.get("description", "")),
+                    "item_description": r.get("description", ""),
+                    "supply_amount": r.get("amount", 0),
+                    "tax_type": "과세",
+                }
+                new_cls = _rule_classify_tax_invoice(txn)
+
+            if new_cls:
+                # Validate the new classification
+                new_cls = _validate_classification(new_cls, txn)
+
+                # Update the result
+                r["predicted_account_code"] = new_cls.get("account_code", r.get("predicted_account_code", ""))
+                r["predicted_account_name"] = new_cls.get("account_name", r.get("predicted_account_name", ""))
+                r["confidence"] = new_cls.get("confidence", r.get("confidence", 0))
+                r["reasoning"] = new_cls.get("reasoning", "") + " [재분류]"
+                r["auto_confirm"] = new_cls.get("confidence", 0) >= 0.85 and not new_cls.get("needs_review")
+                r["needs_review"] = new_cls.get("needs_review", new_cls.get("confidence", 0) < 0.85)
+
+                if "credit_account_code" in new_cls:
+                    r["credit_account_code"] = new_cls["credit_account_code"]
+                    r["credit_account_name"] = new_cls["credit_account_name"]
+
+                # Update journal_entry — 3줄 T계정 분개 재생성
+                supply_amt = r.get("supply_amount", 0) or 0
+                vat_amt = r.get("vat_amount", 0) or 0
+                total_amt = r.get("total_amount", 0) or r.get("amount", 0) or (supply_amt + vat_amt)
+
+                if is_tax:
+                    debit_c = new_cls.get("credit_account_code", "108") if is_sales else new_cls["account_code"]
+                    debit_n = new_cls.get("credit_account_name", "외상매출금") if is_sales else new_cls["account_name"]
+                    credit_c = new_cls["account_code"] if is_sales else new_cls.get("credit_account_code", "253")
+                    credit_n = new_cls["account_name"] if is_sales else new_cls.get("credit_account_name", "미지급금")
+                    r["journal_entry"] = _build_tax_journal_entry(
+                        is_sales, debit_c, debit_n, credit_c, credit_n,
+                        supply_amt, vat_amt, total_amt,
+                    )
+                elif is_bank:
+                    bank_name = r.get("bank_name", txn.get("_bank_name", ""))
+                    is_withdrawal = txn.get("withdrawal", 0) > 0
+                    amount = r.get("withdrawal", 0) or r.get("deposit", 0) or r.get("amount", 0)
+                    if is_withdrawal:
+                        r["journal_entry"] = {
+                            "debit_account_code": new_cls["account_code"],
+                            "debit_account_name": new_cls["account_name"],
+                            "debit_amount": amount,
+                            "credit_account_code": "103",
+                            "credit_account_name": f"보통예금({bank_name})",
+                            "credit_amount": amount,
+                            "is_balanced": True,
+                        }
+                    else:
+                        r["journal_entry"] = {
+                            "debit_account_code": "103",
+                            "debit_account_name": f"보통예금({bank_name})",
+                            "debit_amount": amount,
+                            "credit_account_code": new_cls["account_code"],
+                            "credit_account_name": new_cls["account_name"],
+                            "credit_amount": amount,
+                            "is_balanced": True,
+                        }
+                else:
+                    # 카드 — 3줄 분개
+                    credit_c = new_cls.get("credit_account_code", "253")
+                    credit_n = new_cls.get("credit_account_name", "미지급금")
+                    r["journal_entry"] = _build_card_journal_entry(
+                        new_cls["account_code"], new_cls["account_name"],
+                        credit_c, credit_n,
+                        total_amt, vat_amt, supply_amt,
+                    )
+
+                # Add review_reasons if any
+                if new_cls.get("review_reasons"):
+                    r["review_reasons"] = new_cls["review_reasons"]
+
+                reclassified_count += 1
+            else:
+                # No rule match - run validation on existing classification
+                existing_cls = {
+                    "account_code": r.get("predicted_account_code", ""),
+                    "account_name": r.get("predicted_account_name", ""),
+                    "confidence": r.get("confidence", 0),
+                    "credit_account_code": r.get("credit_account_code", ""),
+                    "credit_account_name": r.get("credit_account_name", ""),
+                }
+                validated = _validate_classification(existing_cls, txn)
+                if validated.get("needs_review") or validated.get("account_code") != existing_cls["account_code"]:
+                    r["predicted_account_code"] = validated["account_code"]
+                    r["predicted_account_name"] = validated["account_name"]
+                    r["confidence"] = validated.get("confidence", r.get("confidence", 0))
+                    r["needs_review"] = validated.get("needs_review", False)
+                    if validated.get("review_reasons"):
+                        r["review_reasons"] = validated["review_reasons"]
+                    reclassified_count += 1
+
+        # Recalculate stats
+        auto_confirm_count = sum(1 for r in results if r.get("auto_confirm"))
+        needs_review_count = sum(1 for r in results if r.get("needs_review"))
+        avg_confidence = sum(r.get("confidence", 0) for r in results) / len(results) if results else 0
+
+        # Update stats in data
+        stats = data.get("stats", {})
+        stats["auto_confirmed"] = auto_confirm_count
+        stats["needs_review"] = needs_review_count
+        stats["average_confidence"] = round(avg_confidence, 4)
+        data["stats"] = stats
+        data["results"] = results
+
+        # Save back to DB
+        upload.result_json = json.dumps(data, ensure_ascii=False, default=str)
+        await db.flush()
+
+        logger.info(f"[Reclassify] upload_id={upload_id}: {reclassified_count}/{len(results)}건 재분류 완료")
+
+        return {
+            "message": f"{reclassified_count}건 재분류 완료 (전체 {len(results)}건)",
+            "upload_id": upload_id,
+            "total": len(results),
+            "reclassified": reclassified_count,
+            "auto_confirmed": auto_confirm_count,
+            "needs_review": needs_review_count,
+            "average_confidence": round(avg_confidence, 4),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Reclassify] 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"재분류 실패: {str(e)[:200]}")
+
+
+@router.post("/reclassify-all")
+async def reclassify_all_uploads(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """모든 분류 이력을 최신 규칙으로 일괄 재분류"""
+    from app.models.ai import AIDataUploadHistory
+
+    # 모든 분류 이력 조회 (카드/세금계산서=classification, 통장=bank_classification)
+    result = await db.execute(
+        select(AIDataUploadHistory)
+        .where(
+            AIDataUploadHistory.upload_type.in_(["classification", "bank_classification"]),
+            AIDataUploadHistory.result_json.isnot(None)
+        )
+        .order_by(AIDataUploadHistory.created_at.desc())
+    )
+    uploads = result.scalars().all()
+
+    if not uploads:
+        return {"message": "재분류할 이력이 없습니다.", "total": 0, "reclassified": 0}
+
+    total_reclassified = 0
+    total_items = 0
+    errors = []
+
+    for upload in uploads:
+        try:
+            # Reuse the single reclassify logic inline
+            data = json.loads(upload.result_json)
+            results_list = data.get("results", [])
+            if not results_list:
+                continue
+
+            is_bank = upload.file_type == "bank_statement"
+            is_tax = upload.file_type == "tax_invoice"
+            is_sales = "매출" in (upload.filename or "")
+
+            reclassified_count = 0
+            for r in results_list:
+                if is_tax:
+                    txn = {
+                        "vendor_name": r.get("vendor_name", ""),
+                        "item_description": r.get("item_description", ""),
+                        "supply_amount": r.get("supply_amount", 0),
+                        "tax_type": r.get("tax_type", ""),
+                    }
+                    new_cls = _rule_classify_tax_invoice_sales(txn) if is_sales else _rule_classify_tax_invoice(txn)
+                elif is_bank:
+                    if r.get("is_inter_bank_transfer"):
+                        continue
+                    txn = {
+                        "description": r.get("description", ""),
+                        "content": r.get("content", ""),
+                        "deposit": r.get("deposit", 0),
+                        "withdrawal": r.get("withdrawal", 0),
+                        "counterparty": r.get("counterparty", ""),
+                        "_bank_name": r.get("bank_name", ""),
+                    }
+                    new_cls = _rule_classify_bank_txn(txn)
+                else:
+                    txn = {
+                        "vendor_name": r.get("merchant_name", r.get("description", "")),
+                        "item_description": r.get("description", ""),
+                        "supply_amount": r.get("amount", 0),
+                        "tax_type": "과세",
+                    }
+                    new_cls = _rule_classify_tax_invoice(txn)
+
+                # Validate (existing or new)
+                existing = {
+                    "account_code": r.get("predicted_account_code", ""),
+                    "account_name": r.get("predicted_account_name", ""),
+                    "confidence": r.get("confidence", 0),
+                    "credit_account_code": r.get("credit_account_code", ""),
+                    "credit_account_name": r.get("credit_account_name", ""),
+                }
+                cls = new_cls if new_cls else existing
+                cls = _validate_classification(cls, txn)
+
+                if cls.get("account_code") != existing["account_code"] or cls.get("needs_review"):
+                    r["predicted_account_code"] = cls.get("account_code", "")
+                    r["predicted_account_name"] = cls.get("account_name", "")
+                    r["confidence"] = cls.get("confidence", 0)
+                    r["reasoning"] = cls.get("reasoning", "") + " [일괄재분류]"
+                    r["auto_confirm"] = cls.get("confidence", 0) >= 0.85 and not cls.get("needs_review")
+                    r["needs_review"] = cls.get("needs_review", cls.get("confidence", 0) < 0.85)
+                    if cls.get("review_reasons"):
+                        r["review_reasons"] = cls["review_reasons"]
+                    if cls.get("credit_account_code"):
+                        r["credit_account_code"] = cls["credit_account_code"]
+                        r["credit_account_name"] = cls.get("credit_account_name", "")
+
+                    # Update journal_entry — 3줄 T계정 분개 재생성
+                    supply_amt = r.get("supply_amount", 0) or 0
+                    vat_amt = r.get("vat_amount", 0) or 0
+                    total_amt = r.get("total_amount", 0) or r.get("amount", 0) or (supply_amt + vat_amt)
+
+                    if is_tax:
+                        debit_c = cls.get("credit_account_code", "108") if is_sales else cls["account_code"]
+                        debit_n = cls.get("credit_account_name", "외상매출금") if is_sales else cls["account_name"]
+                        credit_c = cls["account_code"] if is_sales else cls.get("credit_account_code", "253")
+                        credit_n = cls["account_name"] if is_sales else cls.get("credit_account_name", "미지급금")
+                        r["journal_entry"] = _build_tax_journal_entry(
+                            is_sales, debit_c, debit_n, credit_c, credit_n,
+                            supply_amt, vat_amt, total_amt,
+                        )
+                    elif is_bank:
+                        bank_name = r.get("bank_name", txn.get("_bank_name", ""))
+                        is_withdrawal = r.get("withdrawal", 0) > 0 or txn.get("withdrawal", 0) > 0
+                        amount = r.get("withdrawal", 0) or r.get("deposit", 0) or r.get("amount", 0)
+                        if is_withdrawal:
+                            r["journal_entry"] = {
+                                "debit_account_code": cls["account_code"],
+                                "debit_account_name": cls["account_name"],
+                                "debit_amount": amount,
+                                "credit_account_code": "103",
+                                "credit_account_name": f"보통예금({bank_name})",
+                                "credit_amount": amount,
+                                "is_balanced": True,
+                            }
+                        else:
+                            r["journal_entry"] = {
+                                "debit_account_code": "103",
+                                "debit_account_name": f"보통예금({bank_name})",
+                                "debit_amount": amount,
+                                "credit_account_code": cls["account_code"],
+                                "credit_account_name": cls["account_name"],
+                                "credit_amount": amount,
+                                "is_balanced": True,
+                            }
+                    else:
+                        # 카드 — 3줄 분개
+                        credit_c = cls.get("credit_account_code", "253")
+                        credit_n = cls.get("credit_account_name", "미지급금")
+                        r["journal_entry"] = _build_card_journal_entry(
+                            cls["account_code"], cls["account_name"],
+                            credit_c, credit_n,
+                            total_amt, vat_amt, supply_amt,
+                        )
+
+                    reclassified_count += 1
+
+            # Update stats
+            stats = data.get("stats", {})
+            stats["auto_confirmed"] = sum(1 for rr in results_list if rr.get("auto_confirm"))
+            stats["needs_review"] = sum(1 for rr in results_list if rr.get("needs_review"))
+            avg_conf = sum(rr.get("confidence", 0) for rr in results_list) / len(results_list) if results_list else 0
+            stats["average_confidence"] = round(avg_conf, 4)
+            data["stats"] = stats
+            data["results"] = results_list
+
+            upload.result_json = json.dumps(data, ensure_ascii=False, default=str)
+            total_reclassified += reclassified_count
+            total_items += len(results_list)
+
+        except Exception as e:
+            errors.append(f"upload_id={upload.id}: {str(e)[:100]}")
+            logger.warning(f"[ReclassifyAll] upload_id={upload.id} 실패: {e}")
+
+    await db.flush()
+
+    logger.info(f"[ReclassifyAll] 완료: {len(uploads)}개 이력, {total_reclassified}/{total_items}건 재분류")
+
+    return {
+        "message": f"{len(uploads)}개 이력에서 {total_reclassified}건 재분류 완료",
+        "uploads_processed": len(uploads),
+        "total_items": total_items,
+        "total_reclassified": total_reclassified,
+        "errors": errors[:5] if errors else [],
+    }
+
+
+# ============ 위하고 분개장 vs 시스템 비교 (업로드 없이) ============
+
+@router.post("/admin/compare-journal")
+async def compare_journal_vs_system(
+    files: List[UploadFile] = File(..., description="위하고 분개장 엑셀 (월별 여러 개 가능)"),
+    start_date: Optional[str] = Query(None, description="YYYY-MM-DD. 미지정 시 분개장에서 자동 감지"),
+    end_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    min_gap: float = Query(1_000_000.0, description="계정별 갭 노출 최소 금액"),
+):
+    """위하고 분개장(들)을 **DB에 저장하지 않고** 파싱→집계해서 현재 시스템 손익과 비교.
+
+    위하고 분개장은 이미 완성된 정답 분개이므로:
+      - 계정코드 첫자리로 손익 분류 (4=매출 net credit, 5/6/7=매출원가/제조원가 net debit, 8=판관비 net debit)
+      - 시스템 voucher_lines(모든 source)와 같은 기간으로 나란히 비교
+      - 계정코드별 gap top + 위하고 미매핑 계정명(코드 변환 실패) 노출
+
+    파일 양식 자동 감지(_is_journal_format) → 6컬럼 분개장 파서(_parse_journal) 재활용.
+    """
+    import asyncpg as _asyncpg
+    from datetime import date as _date
+
+    # 1) 파일 파싱 (DB 저장 X)
+    parsed: List[pd.DataFrame] = []
+    parse_log: List[dict] = []
+    for f in files:
+        contents = await f.read()
+        try:
+            df_raw = pd.read_excel(io.BytesIO(contents), header=None)
+        except Exception as e:
+            parse_log.append({"file": f.filename, "status": "read_fail", "detail": str(e)[:200]})
+            continue
+        if not _is_journal_format(df_raw):
+            parse_log.append({"file": f.filename, "status": "not_journal_format"})
+            continue
+        try:
+            df = _parse_journal(df_raw)
+            parsed.append(df)
+            parse_log.append({"file": f.filename, "status": "ok", "rows": int(df.shape[0])})
+        except ValueError as e:
+            parse_log.append({"file": f.filename, "status": "parse_fail", "detail": str(e)[:200]})
+
+    if not parsed:
+        raise HTTPException(status_code=400, detail={"message": "파싱된 분개장 없음", "log": parse_log})
+
+    j = pd.concat(parsed, ignore_index=True)
+
+    # 날짜 범위 자동 감지 (필터 적용 전)
+    all_dates = sorted([str(d) for d in j["날짜"].tolist() if d and str(d).strip()])
+    detected = [all_dates[0] if all_dates else None, all_dates[-1] if all_dates else None]
+    eff_start = _date.fromisoformat(start_date) if start_date else (
+        _date.fromisoformat(detected[0]) if detected[0] else None)
+    eff_end = _date.fromisoformat(end_date) if end_date else (
+        _date.fromisoformat(detected[1]) if detected[1] else None)
+    if not eff_start or not eff_end:
+        raise HTTPException(status_code=400, detail="기간을 감지하지 못함 — start_date/end_date를 직접 지정하세요.")
+
+    # 위하고 분개장도 기간으로 필터링 (시스템과 공정 비교) — start/end 지정 시에만
+    rows_before = int(j.shape[0])
+    j["_d"] = pd.to_datetime(j["날짜"], errors="coerce").dt.date
+    j = j[(j["_d"] >= eff_start) & (j["_d"] <= eff_end)]
+    rows_after = int(j.shape[0])
+
+    # 2) 위하고 계정코드별 차/대변 집계
+    wehago_codes: dict = {}      # code -> {name, debit, credit}
+    unmapped: dict = {}          # account_name -> {debit, credit} (코드 변환 실패분)
+    for _, r in j.iterrows():
+        code = str(r.get("원장계정코드") or "").strip()
+        name = str(r.get("원장계정명") or "").strip()
+        try:
+            deb = float(r.get("차변") or 0)
+        except (ValueError, TypeError):
+            deb = 0.0
+        try:
+            cre = float(r.get("대변") or 0)
+        except (ValueError, TypeError):
+            cre = 0.0
+        if code:
+            e = wehago_codes.setdefault(code, {"name": name, "debit": 0.0, "credit": 0.0})
+            e["debit"] += deb
+            e["credit"] += cre
+        elif name:
+            e = unmapped.setdefault(name, {"debit": 0.0, "credit": 0.0})
+            e["debit"] += deb
+            e["credit"] += cre
+
+    def _code_num(c: str) -> int:
+        try:
+            return int(str(c)[:3])
+        except (ValueError, TypeError):
+            return -1
+
+    def _pl(code_map: dict):
+        """손익 3분류 (K-GAAP 코드 경계).
+        매출 400~449(net credit), 매출원가 450~499+5xx+6xx+7xx(net debit),
+        판관비 8xx(net debit). 455 제품매출원가/451 상품매출원가는 매출원가로 분류."""
+        sales = cogs = sga = inv153 = 0.0
+        for c, v in code_map.items():
+            n = _code_num(c)
+            ncr = v["credit"] - v["debit"]
+            ndr = v["debit"] - v["credit"]
+            if 400 <= n <= 449:
+                sales += ncr
+            elif 450 <= n <= 799:
+                cogs += ndr
+            elif 800 <= n <= 899:
+                sga += ndr
+            if c == "153":
+                inv153 += ndr
+        return sales, cogs, sga, inv153
+
+    w_sales, w_cogs, w_sga, w_inv = _pl(wehago_codes)
+
+    # 미매핑 계정도 접미사로 손익 반영 — '(제)' 제조원가→매출원가, '(판)' 판관비
+    unmapped_pl = {"cogs": 0.0, "sga": 0.0}
+    for nm, v in unmapped.items():
+        ndr = v["debit"] - v["credit"]
+        if "(제)" in nm:
+            w_cogs += ndr
+            unmapped_pl["cogs"] += ndr
+        elif "(판)" in nm:
+            w_sga += ndr
+            unmapped_pl["sga"] += ndr
+
+    # 3) 시스템 집계 (asyncpg direct, 같은 기간, 모든 source)
+    raw_url = settings.DATABASE_URL_DIRECT or settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+    try:
+        sys_rows = await conn.fetch(
+            """
+            SELECT a.code AS code, a.name AS name,
+                   SUM(vl.debit_amount)::float8 AS debit,
+                   SUM(vl.credit_amount)::float8 AS credit
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN $1 AND $2
+            GROUP BY a.code, a.name
+            """,
+            eff_start, eff_end,
+        )
+    finally:
+        await conn.close()
+
+    sys_codes = {
+        r["code"]: {"name": r["name"], "debit": float(r["debit"] or 0), "credit": float(r["credit"] or 0)}
+        for r in sys_rows
+    }
+    s_sales, s_cogs, s_sga, s_inv = _pl(sys_codes)
+
+    def _block(label: str, w: float, s: float):
+        d = s - w
+        pct = (d / w * 100) if w else None
+        return {
+            "항목": label,
+            "위하고(정답)": round(w),
+            "시스템": round(s),
+            "차이": round(d),
+            "차이%": round(pct, 1) if pct is not None else None,
+        }
+
+    # 4) 계정코드별 gap (net 기준)
+    all_codes = set(wehago_codes) | set(sys_codes)
+    code_diffs = []
+    for c in all_codes:
+        w = wehago_codes.get(c)
+        s = sys_codes.get(c)
+        w_net = (w["debit"] - w["credit"]) if w else 0.0
+        s_net = (s["debit"] - s["credit"]) if s else 0.0
+        gap = s_net - w_net
+        if abs(gap) >= min_gap:
+            code_diffs.append({
+                "code": c,
+                "name": (w or s or {}).get("name", ""),
+                "위하고_net": round(w_net),
+                "시스템_net": round(s_net),
+                "gap": round(gap),
+                "in_wehago": w is not None,
+                "in_system": s is not None,
+            })
+    code_diffs.sort(key=lambda x: abs(x["gap"]), reverse=True)
+
+    unmapped_total = sum(v["debit"] + v["credit"] for v in unmapped.values())
+
+    return {
+        "parse_log": parse_log,
+        "period": {
+            "detected": detected,
+            "used": [str(eff_start), str(eff_end)],
+            "wehago_rows": {"before_filter": rows_before, "after_filter": rows_after},
+        },
+        "unmapped_pl_reflected": {
+            "note": "미매핑 계정 중 '(제)'→매출원가, '(판)'→판관비로 반영한 net 금액",
+            "cogs_added": round(unmapped_pl["cogs"]),
+            "sga_added": round(unmapped_pl["sga"]),
+        },
+        "pl_comparison": [
+            _block("매출", w_sales, s_sales),
+            _block("매출원가(5/6/7)", w_cogs, s_cogs),
+            _block("판관비(8)", w_sga, s_sga),
+            _block("재고자산 증감(153)", w_inv, s_inv),
+        ],
+        "wehago_unmapped_accounts": {
+            "note": "계정명→코드 변환 실패분. 손익 비교에서 누락되므로 매핑테이블 보강 필요.",
+            "total_amount": round(unmapped_total),
+            "items": [
+                {"name": k, "debit": round(v["debit"]), "credit": round(v["credit"])}
+                for k, v in sorted(unmapped.items(), key=lambda x: -(x[1]["debit"] + x[1]["credit"]))
+            ][:30],
+        },
+        "account_gaps_top": code_diffs[:50],
+    }

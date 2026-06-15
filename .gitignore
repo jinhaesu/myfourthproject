@@ -173,3 +173,5 @@ temp/
 .coverage
 htmlcov/
 .claude/worktrees/
+
+.vercel

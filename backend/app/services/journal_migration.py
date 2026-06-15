@@ -1,0 +1,1137 @@
+"""
+위하고/더존 분개장 import → Voucher 일괄 변환.
+
+위하고 분개장은 이미 차변/대변까지 완성된 분개 데이터이므로,
+ai_raw(학습용 원천)가 아니라 Voucher(확정 전표)로 격상해야 한다.
+
+그룹핑 키: (upload_id, transaction_date, original_description, merchant_name)
+  → 같은 그룹의 ai_raw 행들을 묶어 1 Voucher (n-line) 생성.
+
+각 ai_raw 행:
+  - source_account_code = 본 계정 코드 (분개의 한 라인)
+  - debit_amount > 0  → 그 라인은 차변
+  - credit_amount > 0 → 그 라인은 대변
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import re
+import time
+import uuid
+from collections import defaultdict
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Optional, Dict, Any, List, Tuple
+
+from sqlalchemy import select, and_, func, case, Integer, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import async_session_factory
+from app.services.auto_voucher_service import _new_task, _update
+
+from app.models.accounting import (
+    Voucher, VoucherLine, VoucherStatus, TransactionType, Account, AccountCategory,
+)
+from app.models.ai import AIRawTransactionData, AIDataUploadHistory
+from app.models.user import User, Department
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_iso_date(s: Any) -> Optional[date]:
+    if not s:
+        return None
+    if isinstance(s, date):
+        return s
+    s = str(s).strip()
+    m = re.match(r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})', s)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+async def _resolve_account_id_cached(
+    db: AsyncSession,
+    code: str,
+    name: str,
+    cache: Dict[str, int],
+) -> Optional[int]:
+    """account_code → accounts.id (없으면 자동 생성). cache로 동일 코드 반복 lookup 회피."""
+    if not code:
+        return None
+    if code in cache:
+        return cache[code]
+    acc = (await db.execute(
+        select(Account).where(Account.code == code, Account.is_active == True)
+    )).scalar_one_or_none()
+    if acc:
+        cache[code] = acc.id
+        return acc.id
+
+    # 자동 생성
+    first = code.lstrip("0")[:1] if code else "9"
+    cat_code_map = {'1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
+                    '6': '5', '7': '5', '8': '5', '9': '5'}
+    cat_code = cat_code_map.get(first, '5')
+    cat = (await db.execute(
+        select(AccountCategory).where(AccountCategory.code == cat_code)
+    )).scalar_one_or_none()
+    if not cat:
+        cat = (await db.execute(select(AccountCategory).limit(1))).scalar_one_or_none()
+    if not cat:
+        return None
+    new_acc = Account(
+        code=code, name=name or f"계정 {code}",
+        category_id=cat.id, level=1, is_detail=True,
+        is_vat_applicable=True, vat_rate=Decimal("10.00"), is_active=True,
+    )
+    db.add(new_acc)
+    await db.flush()
+    cache[code] = new_acc.id
+    return new_acc.id
+
+
+def _journal_voucher_number(vdate: date) -> str:
+    """
+    위하고 분개장 import 전용 voucher_number 생성기.
+
+    Format: YYYYMMDD-J{uuid_hex[:8]}
+    - 'J' prefix로 수기 시퀀스(YYYYMMDD-NNNN)와 구분
+    - UUID 8자리로 동시 task / 재시도에도 충돌 없음 (2^32 분의 1)
+    """
+    return f"{vdate.strftime('%Y%m%d')}-J{uuid.uuid4().hex[:8]}"
+
+
+async def _find_journal_upload_ids(
+    db: AsyncSession, only_ids: Optional[List[int]] = None,
+    min_journal_rows: int = 5,
+) -> List[int]:
+    """
+    "분개장 데이터를 보유한 업로드" 식별 — upload_type 무관.
+
+    기준: ai_raw 행 중 (debit_amount > 0 OR credit_amount > 0) AND account_code 채워짐.
+    이 조건을 만족하는 행이 ≥ min_journal_rows건인 업로드만 분개장으로 본다.
+
+    source_account_code는 _account_name_to_code 매핑 실패 시 비어있을 수 있으므로
+    필수 조건에서 제외 (실제 분개 변환 시점에 account_code/source_account_code 둘 다 시도).
+    """
+    q = (
+        select(
+            AIRawTransactionData.upload_id,
+            func.count(AIRawTransactionData.id).label("cnt"),
+        )
+        .where(
+            AIRawTransactionData.account_code.isnot(None),
+            AIRawTransactionData.account_code != "",
+            (AIRawTransactionData.debit_amount > 0) | (AIRawTransactionData.credit_amount > 0),
+        )
+        .group_by(AIRawTransactionData.upload_id)
+    )
+    if only_ids:
+        q = q.where(AIRawTransactionData.upload_id.in_(only_ids))
+    rows = (await db.execute(q)).all()
+    return [r.upload_id for r in rows if (r.cnt or 0) >= min_journal_rows]
+
+
+async def diagnose_journal_data(
+    db: AsyncSession, upload_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    ai_raw 진단 — 어떤 컬럼이 어떻게 채워졌는지 업로드별 통계.
+    분개장 식별이 왜 실패하는지 디버깅용.
+    """
+    debit_flag = case((AIRawTransactionData.debit_amount > 0, 1), else_=0)
+    credit_flag = case((AIRawTransactionData.credit_amount > 0, 1), else_=0)
+    src_filled_flag = case(
+        (
+            and_(
+                AIRawTransactionData.source_account_code.isnot(None),
+                AIRawTransactionData.source_account_code != "",
+            ),
+            1,
+        ),
+        else_=0,
+    )
+
+    stat_q = (
+        select(
+            AIRawTransactionData.upload_id,
+            func.count(AIRawTransactionData.id).label("total"),
+            func.count(AIRawTransactionData.account_code).label("acc_code_cnt"),
+            func.sum(src_filled_flag).label("src_code_cnt"),
+            func.count(AIRawTransactionData.transaction_date).label("date_cnt"),
+            func.sum(debit_flag).label("debit_cnt"),
+            func.sum(credit_flag).label("credit_cnt"),
+        )
+        .group_by(AIRawTransactionData.upload_id)
+        .order_by(AIRawTransactionData.upload_id.desc())
+    )
+    if upload_id is not None:
+        stat_q = stat_q.where(AIRawTransactionData.upload_id == upload_id)
+    stat_rows = (await db.execute(stat_q)).all()
+
+    # 업로드 메타 join
+    upload_q = select(
+        AIDataUploadHistory.id,
+        AIDataUploadHistory.filename,
+        AIDataUploadHistory.upload_type,
+        AIDataUploadHistory.row_count,
+    )
+    if upload_id is not None:
+        upload_q = upload_q.where(AIDataUploadHistory.id == upload_id)
+    uploads = {u.id: u for u in (await db.execute(upload_q)).all()}
+
+    # 샘플 행 (디버깅용 — 첫 3행)
+    sample_rows = []
+    if upload_id is not None:
+        sample_q = (
+            select(AIRawTransactionData)
+            .where(AIRawTransactionData.upload_id == upload_id)
+            .order_by(AIRawTransactionData.row_number)
+            .limit(5)
+        )
+        for r in (await db.execute(sample_q)).scalars().all():
+            sample_rows.append({
+                "row_number": r.row_number,
+                "transaction_date": r.transaction_date,
+                "original_description": r.original_description[:50] if r.original_description else None,
+                "merchant_name": r.merchant_name,
+                "account_code": r.account_code,
+                "account_name": r.account_name,
+                "source_account_code": r.source_account_code,
+                "source_account_name": r.source_account_name,
+                "debit_amount": str(r.debit_amount),
+                "credit_amount": str(r.credit_amount),
+            })
+
+    result = []
+    for s in stat_rows:
+        u = uploads.get(s.upload_id)
+        result.append({
+            "upload_id": s.upload_id,
+            "filename": u.filename if u else None,
+            "upload_type": u.upload_type if u else None,
+            "history_row_count": u.row_count if u else None,
+            "ai_raw_total": s.total or 0,
+            "account_code_filled": s.acc_code_cnt or 0,
+            "source_account_code_filled": s.src_code_cnt or 0,
+            "transaction_date_filled": s.date_cnt or 0,
+            "rows_with_debit": int(s.debit_cnt or 0),
+            "rows_with_credit": int(s.credit_cnt or 0),
+            "is_journal_by_account_code": (s.acc_code_cnt or 0) >= 5 and (int(s.debit_cnt or 0) + int(s.credit_cnt or 0)) >= 5,
+            "is_journal_by_source_code": (s.src_code_cnt or 0) >= 5 and (int(s.debit_cnt or 0) + int(s.credit_cnt or 0)) >= 5,
+        })
+
+    return {
+        "uploads": result,
+        "sample_rows": sample_rows if upload_id is not None else None,
+    }
+
+
+async def _ensure_base_data() -> tuple[int, int]:
+    """
+    부서·사용자 시드를 별도 connection/트랜잭션에서 보장 (raw SQL + ON CONFLICT).
+
+    이유: 호출 측 트랜잭션 안에서 INSERT departments 하면 Supabase의 8s statement_timeout +
+    이전 트랜잭션의 lock 잔여물 때문에 QueryCanceledError 발생.
+    별도 connection은 fresh lock context → 안전하게 시드 가능.
+
+    반환: (department_id, user_id)
+    """
+    from app.core.database import engine
+
+    async with engine.begin() as conn:
+        # 이 connection의 statement timeout을 1분으로 늘림 (Supabase 기본값 무시)
+        try:
+            await conn.execute(text("SET LOCAL statement_timeout = '60000'"))
+        except Exception:
+            pass  # Supabase가 SET LOCAL 막을 수도 있으므로 best-effort
+
+        # 계정 카테고리 시드 (자산/부채/자본/수익/비용)
+        # _resolve_account_id_cached의 자동 계정 생성이 category_id를 필요로 함
+        await conn.execute(text("""
+            INSERT INTO account_categories (code, name, description) VALUES
+                ('1', '자산', '유동자산·비유동자산'),
+                ('2', '부채', '유동부채·비유동부채'),
+                ('3', '자본', '자본금·이익잉여금 등'),
+                ('4', '수익', '매출·영업외수익'),
+                ('5', '비용', '판관비·영업외비용')
+            ON CONFLICT (code) DO NOTHING
+        """))
+
+        # 부서 보장
+        await conn.execute(text("""
+            INSERT INTO departments (code, name, level, sort_order, is_active, created_at, updated_at)
+            VALUES ('DEFAULT', '기본 부서', 1, 0, true, NOW(), NOW())
+            ON CONFLICT (code) DO NOTHING
+        """))
+        dept_id = (await conn.execute(
+            text("SELECT id FROM departments WHERE is_active = true ORDER BY id LIMIT 1")
+        )).scalar()
+        if not dept_id:
+            # 최후 폴백 — is_active 무시
+            dept_id = (await conn.execute(
+                text("SELECT id FROM departments ORDER BY id LIMIT 1")
+            )).scalar()
+
+        # 사용자 보장 — 가장 먼저 만들어진 1명 사용. 없으면 시스템 계정 생성.
+        user_id = (await conn.execute(
+            text("SELECT id FROM users ORDER BY id LIMIT 1")
+        )).scalar()
+        if not user_id:
+            await conn.execute(text("""
+                INSERT INTO users
+                  (employee_id, email, username, hashed_password, full_name, is_active, is_superuser,
+                   failed_login_attempts, two_factor_enabled, created_at, updated_at)
+                VALUES
+                  ('SYSTEM', 'system@smartfinance.local', 'system', '!disabled!',
+                   'System (자동생성)', true, false, 0, false, NOW(), NOW())
+                ON CONFLICT (email) DO NOTHING
+            """))
+            user_id = (await conn.execute(
+                text("SELECT id FROM users WHERE email = 'system@smartfinance.local'")
+            )).scalar()
+
+    if not dept_id or not user_id:
+        raise RuntimeError(f"기초 데이터 시드 실패 (dept_id={dept_id}, user_id={user_id})")
+    return dept_id, user_id
+
+
+async def migrate_journal_uploads_to_vouchers(
+    db: AsyncSession,
+    upload_ids: Optional[List[int]] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    user_id: Optional[int] = None,
+    department_id: Optional[int] = None,
+    source_label: str = "wehago_import",
+    task_id: Optional[str] = None,
+    commit_every: int = 100,
+    yield_every: int = 20,
+) -> Dict[str, Any]:
+    """
+    위하고/더존 분개장 업로드 → Voucher(CONFIRMED) 일괄 변환.
+
+    필터:
+      - upload_ids: 특정 업로드만 대상 (없으면 모든 분개장 업로드)
+      - start_date/end_date: ai_raw.transaction_date 기간 필터
+
+    동일 (upload_id, transaction_date, description, merchant_name) 그룹의 모든 ai_raw 행 → 1 Voucher.
+    이미 마이그레이션된 그룹(Voucher.external_ref 매칭)은 skip — idempotent.
+
+    "분개장" 판정: upload_type이 아니라 ai_raw 데이터에 분개 정보가 있는지로 자동 감지.
+    upload-historical 경로로 들어온 위하고 분개장도 잡힌다.
+    """
+    # 0) FK 보장: 부서·사용자 시드를 별도 connection에서 처리 후 검증
+    seeded_dept_id, seeded_user_id = await _ensure_base_data()
+
+    effective_department_id = department_id
+    if effective_department_id is None:
+        effective_department_id = seeded_dept_id
+    else:
+        exists = await db.scalar(
+            select(Department.id).where(Department.id == effective_department_id)
+        )
+        if not exists:
+            effective_department_id = seeded_dept_id
+
+    effective_user_id = user_id
+    if effective_user_id is None:
+        effective_user_id = seeded_user_id
+    else:
+        exists = await db.scalar(
+            select(User.id).where(User.id == effective_user_id)
+        )
+        if not exists:
+            effective_user_id = seeded_user_id
+
+    # 1) 대상 업로드 선정 — 분개 정보 보유 업로드 자동 감지
+    target_upload_ids = await _find_journal_upload_ids(db, only_ids=upload_ids)
+
+    if not target_upload_ids:
+        return {
+            "migrated_count": 0, "skipped_count": 0, "error_count": 0,
+            "voucher_ids": [], "errors": [],
+            "message": "대상 분개장 업로드 없음",
+        }
+
+    # 2) ai_raw 행 로드 (필터 적용)
+    rq = select(AIRawTransactionData).where(
+        AIRawTransactionData.upload_id.in_(target_upload_ids),
+    ).order_by(
+        AIRawTransactionData.upload_id, AIRawTransactionData.row_number,
+    )
+    rows = (await db.execute(rq)).scalars().all()
+
+    if start_date or end_date:
+        def _row_in_period(r: AIRawTransactionData) -> bool:
+            d = _parse_iso_date(r.transaction_date)
+            if not d:
+                return False
+            if start_date and d < start_date:
+                return False
+            if end_date and d > end_date:
+                return False
+            return True
+        rows = [r for r in rows if _row_in_period(r)]
+
+    if not rows:
+        return {
+            "migrated_count": 0, "skipped_count": 0, "error_count": 0,
+            "voucher_ids": [], "errors": [],
+            "message": "기간 내 분개장 데이터 없음",
+        }
+
+    # 3) 그룹핑 — row_number 순서로 누적해 차변=대변 도달 시 한 분개로 마감
+    #    위하고 _parse_journal()의 _flush()가 한 분개를 연속 행으로 출력하므로
+    #    이 패턴이 가장 정확. description fallback 차이 문제 회피.
+    groups: Dict[Tuple, List[AIRawTransactionData]] = {}
+    # upload_id 별로 정렬
+    rows_by_upload: Dict[int, List[AIRawTransactionData]] = defaultdict(list)
+    for r in rows:
+        if _parse_iso_date(r.transaction_date):
+            rows_by_upload[r.upload_id].append(r)
+    for uid in rows_by_upload:
+        rows_by_upload[uid].sort(key=lambda x: x.row_number or 0)
+
+    group_seq = 0
+    for upload_id_grp, urs in rows_by_upload.items():
+        current: List[AIRawTransactionData] = []
+        cur_d = Decimal("0")
+        cur_c = Decimal("0")
+        cur_date = None
+        for r in urs:
+            d = _parse_iso_date(r.transaction_date)
+            # 날짜 바뀌면 이전 그룹 강제 마감 (불완전해도 errors로 처리)
+            if cur_date is not None and d != cur_date and current:
+                group_seq += 1
+                key = (upload_id_grp, cur_date.isoformat() if cur_date else "0000-00-00", group_seq)
+                groups[key] = current
+                current = []
+                cur_d = Decimal("0")
+                cur_c = Decimal("0")
+            cur_date = d
+            current.append(r)
+            cur_d += Decimal(str(r.debit_amount or 0))
+            cur_c += Decimal(str(r.credit_amount or 0))
+            # 차변=대변 도달 + 둘 다 > 0 → 한 분개 완성
+            if cur_d > 0 and cur_d == cur_c:
+                group_seq += 1
+                key = (upload_id_grp, d.isoformat(), group_seq)
+                groups[key] = current
+                current = []
+                cur_d = Decimal("0")
+                cur_c = Decimal("0")
+        # 잔여 (불완전 분개)
+        if current:
+            group_seq += 1
+            key = (upload_id_grp, (cur_date.isoformat() if cur_date else "0000-00-00"), group_seq)
+            groups[key] = current
+
+    # 4) 이미 마이그레이션된 그룹 확인 (external_ref 기준)
+    existing_refs_q = select(Voucher.external_ref).where(
+        Voucher.source == source_label,
+        Voucher.external_ref.isnot(None),
+    )
+    existing_refs = {r[0] for r in (await db.execute(existing_refs_q)).all() if r[0]}
+
+    migrated_count = 0
+    skipped_count = 0
+    error_count = 0
+    voucher_ids: List[int] = []
+    errors: List[Dict[str, Any]] = []
+
+    account_cache: Dict[str, int] = {}
+
+    def _report(pct: int, msg: str, extra: Optional[Dict[str, Any]] = None):
+        if task_id:
+            payload = {"percent": pct, "message": msg}
+            if extra:
+                payload.update(extra)
+            _update(task_id, **payload)
+
+    _report(10, f"{len(groups)}개 분개 그룹 처리 시작…")
+
+    # 5) 그룹별 Voucher 생성 — 청크 단위로 commit
+    processed = 0
+    total_groups = len(groups)
+    for key, grp in groups.items():
+        upload_id, date_iso, group_seq = key
+        # 그룹 내 첫 행에서 description/merchant 추출 (전체 그룹이 공유한다는 가정)
+        first = grp[0]
+        desc = (first.original_description or "")[:200] if first else ""
+        merchant = (first.merchant_name or "")[:200] if first else ""
+        # ext_ref를 그룹 내용(row_id sorted) 기반 SHA256으로 결정적 생성
+        # → 같은 분개는 항상 같은 ext_ref → 재실행 시 정확히 idempotent
+        row_ids_str = ",".join(str(r.id) for r in sorted(grp, key=lambda x: x.id))
+        content_hash = hashlib.sha256(row_ids_str.encode()).hexdigest()[:16]
+        ext_ref = f"journal:upload:{upload_id}:{date_iso}:{content_hash}"
+        if ext_ref in existing_refs:
+            skipped_count += 1
+            processed += 1
+            continue
+
+        # 그룹별로 savepoint를 열어 부분 실패해도 다음 그룹 진행 가능하게
+        savepoint = await db.begin_nested()
+        try:
+            vdate = date.fromisoformat(date_iso)
+            total_debit = Decimal("0")
+            total_credit = Decimal("0")
+            line_specs: List[Dict[str, Any]] = []
+
+            for r in grp:
+                debit_amt = Decimal(str(r.debit_amount or 0))
+                credit_amt = Decimal(str(r.credit_amount or 0))
+                # source_account_code = 본 계정 (분개장 파서가 그렇게 저장)
+                acc_code = (r.source_account_code or r.account_code or "").strip()
+                acc_name = (r.source_account_name or r.account_name or "").strip()
+                if not acc_code:
+                    continue
+                # 5자리 이상 거래처 코드는 계정 코드가 아님 - skip
+                if acc_code.isdigit() and len(acc_code) >= 5:
+                    continue
+
+                if debit_amt > 0:
+                    total_debit += debit_amt
+                    line_specs.append({
+                        "side": "debit", "account_code": acc_code, "account_name": acc_name,
+                        "amount": debit_amt,
+                    })
+                if credit_amt > 0:
+                    total_credit += credit_amt
+                    line_specs.append({
+                        "side": "credit", "account_code": acc_code, "account_name": acc_name,
+                        "amount": credit_amt,
+                    })
+
+            if not line_specs:
+                await savepoint.rollback()
+                error_count += 1
+                errors.append({"group": list(key), "reason": "유효한 라인 없음"})
+                continue
+
+            if total_debit != total_credit:
+                await savepoint.rollback()
+                error_count += 1
+                errors.append({
+                    "group": list(key),
+                    "reason": f"차변({total_debit}) ≠ 대변({total_credit})",
+                })
+                continue
+
+            voucher = Voucher(
+                voucher_number=_journal_voucher_number(vdate),
+                voucher_date=vdate,
+                transaction_date=vdate,
+                description=(desc or merchant or "위하고 분개장 import")[:500],
+                transaction_type=TransactionType.GENERAL,
+                external_ref=ext_ref,
+                source=source_label,
+                department_id=effective_department_id,
+                created_by=effective_user_id,
+                total_debit=total_debit,
+                total_credit=total_credit,
+                status=VoucherStatus.CONFIRMED,
+                merchant_name=merchant or None,
+                confirmed_at=datetime.utcnow(),
+                confirmed_by=effective_user_id,
+            )
+            db.add(voucher)
+            await db.flush()  # voucher.id 확보
+
+            line_no = 1
+            for spec in line_specs:
+                account_id = await _resolve_account_id_cached(
+                    db, spec["account_code"], spec["account_name"], account_cache,
+                )
+                if account_id is None:
+                    raise ValueError(f"계정 매핑 실패: code={spec['account_code']}")
+                is_debit = spec["side"] == "debit"
+                amt = spec["amount"]
+                vat_acc = spec["account_code"] in ("135", "255")
+                db.add(VoucherLine(
+                    voucher_id=voucher.id,
+                    line_number=line_no,
+                    account_id=account_id,
+                    debit_amount=amt if is_debit else Decimal("0"),
+                    credit_amount=amt if not is_debit else Decimal("0"),
+                    vat_amount=amt if vat_acc else Decimal("0"),
+                    supply_amount=amt if not vat_acc else Decimal("0"),
+                    description=desc[:500] if desc else None,
+                    counterparty_name=merchant or None,
+                ))
+                line_no += 1
+
+            await savepoint.commit()
+            voucher_ids.append(voucher.id)
+            migrated_count += 1
+
+        except Exception as e:
+            try:
+                await savepoint.rollback()
+            except Exception:
+                pass
+            logger.exception(f"분개장 → Voucher 변환 실패 (group={key})")
+            error_count += 1
+            errors.append({"group": list(key), "reason": str(e)[:200]})
+
+        processed += 1
+        # 매 yield_every 그룹마다 이벤트 루프 양보 → 다른 API 처리 가능
+        if processed % yield_every == 0:
+            await asyncio.sleep(0)
+
+        # 청크 단위 commit — lock 짧게 유지해 다른 API 방해 안 함
+        if processed % commit_every == 0:
+            commit_failed = False
+            try:
+                await db.commit()
+            except Exception as commit_err:
+                commit_failed = True
+                logger.exception("청크 commit 실패")
+                errors.append({"group": ["__commit__"], "reason": f"commit 실패: {str(commit_err)[:200]}"})
+                # 세션이 invalid 상태일 수 있으므로 rollback 시도
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+            pct = 10 + int(80 * processed / max(total_groups, 1))
+            recent_errors = [e["reason"] for e in errors[-5:]]
+            _report(
+                pct,
+                f"진행 {processed}/{total_groups} — 변환 {migrated_count}건"
+                + (" (commit 실패)" if commit_failed else ""),
+                {
+                    "migrated_count": migrated_count,
+                    "error_count": error_count,
+                    "skipped_count": skipped_count,
+                    "recent_errors": recent_errors,
+                },
+            )
+
+    # 마지막 commit
+    await db.commit()
+    _report(95, f"완료 직전 — 변환 {migrated_count}건")
+
+    return {
+        "migrated_count": migrated_count,
+        "skipped_count": skipped_count,
+        "error_count": error_count,
+        "voucher_ids": voucher_ids[:200],  # 응답 크기 제한
+        "errors": errors[:20],
+        "total_groups": len(groups),
+        "target_uploads": len(target_upload_ids),
+    }
+
+
+async def delete_wehago_import_vouchers(
+    source_label: str = "wehago_import",
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    위하고 import voucher 전체 삭제.
+
+    작은 청크(500/200) × 별도 connection 반복 — Supabase 8s statement_timeout 안에
+    완료되는 SQL만 실행.
+    """
+    from app.core.database import engine
+
+    deleted_lines = 0
+    deleted_vouchers = 0
+
+    def _report(pct: int, msg: str, extra: Optional[Dict[str, Any]] = None):
+        if task_id:
+            payload = {"percent": pct, "message": msg}
+            if extra:
+                payload.update(extra)
+            _update(task_id, **payload)
+
+    _report(5, "삭제 대상 카운트 중…")
+    # 전체 개수 확인 (별도 connection)
+    async with engine.connect() as conn:
+        total_v = (await conn.execute(text(
+            "SELECT COUNT(*) FROM vouchers WHERE source = :s"
+        ), {"s": source_label})).scalar() or 0
+        total_l = (await conn.execute(text(
+            """SELECT COUNT(*) FROM voucher_lines vl
+               JOIN vouchers v ON vl.voucher_id = v.id
+               WHERE v.source = :s"""
+        ), {"s": source_label})).scalar() or 0
+
+    if total_v == 0:
+        return {"deleted_vouchers": 0, "deleted_lines": 0, "message": "삭제할 데이터 없음"}
+    _report(10, f"voucher_lines {total_l}개, vouchers {total_v}개 삭제 시작…")
+
+    # 1) FK 정리 — duplicate_voucher_id를 먼저 NULL로
+    async with engine.begin() as conn:
+        await conn.execute(text("""
+            UPDATE auto_voucher_candidates SET duplicate_voucher_id = NULL
+            WHERE duplicate_voucher_id IN (SELECT id FROM vouchers WHERE source = :s)
+        """), {"s": source_label})
+
+    # 2) voucher_lines + vouchers를 한 statement(CTE)로 청크 삭제
+    #    - 한 트랜잭션에서 lock 일치 보장 (race condition 없음)
+    #    - FK constraint 이름과 무관 (ALTER 불필요)
+    #    - 청크 2000으로 크게 (Supabase statement_timeout=60s 안 - SET LOCAL로 보장)
+    CHUNK = 50  # CTE 대신 단계별 SQL — 각 lock 짧게
+    for it in range(5000):
+        async with engine.begin() as conn:
+            try:
+                await conn.execute(text("SET LOCAL statement_timeout = '60000'"))
+            except Exception:
+                pass
+            # 1단계: 삭제 대상 voucher id 목록
+            ids = [row[0] for row in (await conn.execute(
+                text("SELECT id FROM vouchers WHERE source = :s LIMIT :lim"),
+                {"s": source_label, "lim": CHUNK},
+            )).all()]
+            if not ids:
+                break
+            # 2단계: voucher_lines 먼저 삭제
+            await conn.execute(
+                text("DELETE FROM voucher_lines WHERE voucher_id = ANY(:ids)"),
+                {"ids": ids},
+            )
+            # 3단계: vouchers 삭제
+            await conn.execute(
+                text("DELETE FROM vouchers WHERE id = ANY(:ids)"),
+                {"ids": ids},
+            )
+            deleted_vouchers += len(ids)
+
+        pct = 10 + int(85 * deleted_vouchers / max(total_v, 1))
+        _report(pct, f"삭제 진행 {deleted_vouchers}/{total_v}",
+                {"deleted_vouchers": deleted_vouchers, "deleted_lines": 0})
+        await asyncio.sleep(0)
+
+    _report(98, f"완료 직전 — vouchers {deleted_vouchers}건")
+
+    return {
+        "deleted_vouchers": deleted_vouchers,
+        "deleted_lines": deleted_lines,
+        "total_before": total_v,
+    }
+
+
+async def delete_wehago_imports_background(
+    source_label: str = "wehago_import",
+) -> str:
+    """위하고 import voucher 삭제 - 백그라운드 task."""
+    task_id = _new_task("위하고 import 삭제 시작…")
+
+    async def _runner():
+        try:
+            result = await delete_wehago_import_vouchers(
+                source_label=source_label, task_id=task_id,
+            )
+            _update(
+                task_id, status="completed", percent=100,
+                message=f"완료 — voucher {result.get('deleted_vouchers',0)}건, lines {result.get('deleted_lines',0)}건 삭제",
+                result=result, finished_at=time.time(),
+            )
+        except Exception as e:
+            logger.exception("백그라운드 삭제 실패")
+            _update(
+                task_id, status="failed",
+                message=f"실패: {str(e)[:300]}",
+                finished_at=time.time(),
+            )
+
+    asyncio.create_task(_runner())
+    return task_id
+
+
+async def bulk_migrate_journal_raw(
+    upload_id: int,
+    source_label: str = "wehago_import",
+    batch_size: int = 500,
+    progress_cb: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Raw SQL bulk insert로 마이그레이션 — direct asyncpg connection 사용.
+    ORM/savepoint/flush 우회로 10배+ 빠름.
+    이미 변환된 그룹(ext_ref 매칭)은 skip — idempotent.
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    # 0) 부서·사용자 시드 (기존 코드 재사용 — ORM)
+    eff_dept_id, eff_user_id = await _ensure_base_data()
+
+    # 1) direct connection
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+
+    try:
+        # 2) ai_raw 행 로드
+        rows = await conn.fetch("""
+            SELECT id, upload_id, row_number, transaction_date,
+                   original_description, merchant_name,
+                   debit_amount, credit_amount,
+                   COALESCE(source_account_code, account_code) AS acc_code,
+                   COALESCE(source_account_name, account_name) AS acc_name
+            FROM ai_raw_transaction_data
+            WHERE upload_id = $1
+            ORDER BY row_number
+        """, upload_id)
+
+        if not rows:
+            return {"migrated": 0, "skipped": 0, "errors": 0, "message": "ai_raw 없음"}
+
+        # 3) 계정 코드 → id map 한 번에 로드
+        acc_rows = await conn.fetch("SELECT id, code FROM accounts WHERE is_active = true")
+        acc_map = {r["code"]: r["id"] for r in acc_rows}
+
+        # 4) 그룹핑 — 차변=대변 도달 시 한 분개로 마감 (날짜 바뀌면 강제 마감)
+        groups: List[List[dict]] = []
+        current: List[dict] = []
+        cur_d = Decimal("0")
+        cur_c = Decimal("0")
+        cur_date: Optional[date] = None
+
+        for r in rows:
+            r_dict = dict(r)
+            d = _parse_iso_date(r_dict["transaction_date"])
+            if not d:
+                continue
+            # 날짜 바뀌면 이전 그룹 강제 마감
+            if cur_date is not None and d != cur_date and current:
+                groups.append(current)
+                current = []
+                cur_d = Decimal("0")
+                cur_c = Decimal("0")
+            cur_date = d
+            r_dict["_date"] = d
+            current.append(r_dict)
+            cur_d += Decimal(str(r_dict["debit_amount"] or 0))
+            cur_c += Decimal(str(r_dict["credit_amount"] or 0))
+            if cur_d > 0 and cur_d == cur_c:
+                groups.append(current)
+                current = []
+                cur_d = Decimal("0")
+                cur_c = Decimal("0")
+        if current:
+            groups.append(current)
+
+        total_groups = len(groups)
+        if progress_cb:
+            progress_cb(5, f"{total_groups}개 그룹 식별")
+
+        # 5) 이미 변환된 ext_ref 로드
+        existing = await conn.fetch(
+            "SELECT external_ref FROM vouchers WHERE source = $1 AND external_ref IS NOT NULL",
+            source_label,
+        )
+        existing_refs = {r["external_ref"] for r in existing}
+
+        migrated = 0
+        skipped = 0
+        errors = 0
+        error_details: List[str] = []
+
+        # 6) batch 처리
+        idx = 0
+        while idx < total_groups:
+            batch_groups = []
+            batch_ext_refs = []
+            batch_voucher_rows = []  # (vdate, ext_ref, desc, merchant, total_d, line_specs)
+
+            # 한 batch 분량 모으기 (skip 포함)
+            while idx < total_groups and len(batch_groups) < batch_size:
+                grp = groups[idx]
+                idx += 1
+                first = grp[0]
+                vdate = first["_date"]
+                date_iso = vdate.isoformat()
+                # ext_ref: SHA256 of sorted row ids
+                row_ids_str = ",".join(str(r["id"]) for r in sorted(grp, key=lambda x: x["id"]))
+                content_hash = hashlib.sha256(row_ids_str.encode()).hexdigest()[:16]
+                ext_ref = f"journal:upload:{upload_id}:{date_iso}:{content_hash}"
+                if ext_ref in existing_refs:
+                    skipped += 1
+                    continue
+
+                # 라인 처리
+                total_d = Decimal("0")
+                total_c = Decimal("0")
+                line_specs = []
+                for r in grp:
+                    acc_code = (r["acc_code"] or "").strip()
+                    acc_name = (r["acc_name"] or "").strip()
+                    if not acc_code:
+                        continue
+                    if acc_code.isdigit() and len(acc_code) >= 5:
+                        continue
+                    acc_id = acc_map.get(acc_code)
+                    if acc_id is None:
+                        # 계정 없음 — skip 라인 (에러로 안 만들고 그룹 통과)
+                        continue
+                    deb = Decimal(str(r["debit_amount"] or 0))
+                    cre = Decimal(str(r["credit_amount"] or 0))
+                    if deb > 0:
+                        total_d += deb
+                        line_specs.append((acc_id, acc_code, deb, Decimal("0"), r.get("merchant_name")))
+                    if cre > 0:
+                        total_c += cre
+                        line_specs.append((acc_id, acc_code, Decimal("0"), cre, r.get("merchant_name")))
+
+                if not line_specs or total_d != total_c:
+                    errors += 1
+                    if len(error_details) < 5:
+                        error_details.append(f"{date_iso}: D={total_d} C={total_c} lines={len(line_specs)}")
+                    continue
+
+                desc = (first.get("original_description") or "")[:500]
+                merchant = (first.get("merchant_name") or "")[:200]
+                batch_voucher_rows.append({
+                    "vdate": vdate,
+                    "ext_ref": ext_ref,
+                    "desc": desc or merchant or "위하고 분개장 import",
+                    "merchant": merchant or None,
+                    "total_d": total_d,
+                    "line_specs": line_specs,
+                })
+                batch_ext_refs.append(ext_ref)
+                batch_groups.append(grp)
+
+            if not batch_voucher_rows:
+                continue
+
+            # 7) batch INSERT in single transaction
+            try:
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '120s'")
+
+                    # voucher_id batch 미리 받기
+                    n = len(batch_voucher_rows)
+                    seq_rows = await conn.fetch(
+                        "SELECT nextval('vouchers_id_seq') AS id FROM generate_series(1, $1)", n
+                    )
+                    voucher_ids = [int(r["id"]) for r in seq_rows]
+
+                    # vouchers INSERT — executemany 대신 큰 VALUES
+                    v_values = []
+                    v_params: List[Any] = []
+                    p_idx = 1
+                    for i, vr in enumerate(batch_voucher_rows):
+                        vid = voucher_ids[i]
+                        vnum = _journal_voucher_number(vr["vdate"])
+                        # 14 columns
+                        v_values.append(
+                            f"(${p_idx}, ${p_idx+1}, ${p_idx+2}, ${p_idx+3}, ${p_idx+4}, ${p_idx+5}, "
+                            f"${p_idx+6}, ${p_idx+7}, ${p_idx+8}, ${p_idx+9}, ${p_idx+10}, ${p_idx+11}, "
+                            f"${p_idx+12}, ${p_idx+13}, ${p_idx+14}, ${p_idx+15}, NOW(), NOW())"
+                        )
+                        v_params.extend([
+                            vid, vnum, vr["vdate"], vr["vdate"], vr["desc"][:500],
+                            "GENERAL", vr["ext_ref"], source_label,
+                            eff_dept_id, eff_user_id,
+                            vr["total_d"], vr["total_d"],
+                            "CONFIRMED", vr["merchant"],
+                            datetime.utcnow(), eff_user_id,
+                        ])
+                        p_idx += 16
+                    v_sql = f"""
+                        INSERT INTO vouchers
+                          (id, voucher_number, voucher_date, transaction_date, description,
+                           transaction_type, external_ref, source,
+                           department_id, created_by,
+                           total_debit, total_credit,
+                           status, merchant_name,
+                           confirmed_at, confirmed_by,
+                           created_at, updated_at)
+                        VALUES {','.join(v_values)}
+                        ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL
+                        DO NOTHING
+                        RETURNING id, external_ref
+                    """
+                    inserted_rows = await conn.fetch(v_sql, *v_params)
+                    inserted_ext_to_id = {r["external_ref"]: int(r["id"]) for r in inserted_rows}
+                    actually_inserted = len(inserted_rows)
+                    conflict_skipped = len(batch_voucher_rows) - actually_inserted
+
+                    # voucher_lines INSERT — 한 번에 (실제 INSERT된 voucher만)
+                    l_values = []
+                    l_params: List[Any] = []
+                    p_idx = 1
+                    for i, vr in enumerate(batch_voucher_rows):
+                        vid = inserted_ext_to_id.get(vr["ext_ref"])
+                        if vid is None:
+                            continue  # conflict skip
+                        for ln, (acc_id, acc_code, deb, cre, cp_name) in enumerate(vr["line_specs"], start=1):
+                            vat_acc = acc_code in ("135", "255")
+                            amt = deb if deb > 0 else cre
+                            # 11 columns
+                            l_values.append(
+                                f"(${p_idx}, ${p_idx+1}, ${p_idx+2}, ${p_idx+3}, ${p_idx+4}, "
+                                f"${p_idx+5}, ${p_idx+6}, ${p_idx+7}, ${p_idx+8}, ${p_idx+9})"
+                            )
+                            l_params.extend([
+                                vid, ln, acc_id, deb, cre,
+                                amt if vat_acc else Decimal("0"),
+                                amt if not vat_acc else Decimal("0"),
+                                vr["desc"][:500] if vr.get("desc") else None,
+                                cp_name,
+                                datetime.utcnow(),
+                            ])
+                            p_idx += 10
+                    if l_values:
+                        l_sql = f"""
+                            INSERT INTO voucher_lines
+                              (voucher_id, line_number, account_id,
+                               debit_amount, credit_amount,
+                               vat_amount, supply_amount,
+                               description, counterparty_name, created_at)
+                            VALUES {','.join(l_values)}
+                        """
+                        await conn.execute(l_sql, *l_params)
+
+                    migrated += actually_inserted
+                    skipped += conflict_skipped
+                    existing_refs.update(batch_ext_refs)
+            except Exception as ex:
+                logger.exception(f"bulk batch 실패 (idx={idx})")
+                errors += len(batch_voucher_rows)
+                if len(error_details) < 10:
+                    error_details.append(f"batch fail: {str(ex)[:200]}")
+
+            if progress_cb and idx % (batch_size * 2) == 0:
+                pct = 5 + int(90 * idx / max(total_groups, 1))
+                progress_cb(min(95, pct), f"진행 {idx}/{total_groups} · 변환 {migrated}")
+
+        return {
+            "total_groups": total_groups,
+            "migrated": migrated,
+            "skipped": skipped,
+            "errors": errors,
+            "error_samples": error_details,
+        }
+    finally:
+        await conn.close()
+
+
+async def migrate_journal_uploads_background(
+    upload_ids: Optional[List[int]] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    user_id: Optional[int] = None,
+    department_id: Optional[int] = None,
+    source_label: str = "wehago_import",
+) -> str:
+    """
+    백그라운드 task로 분개장 변환. task_id 즉시 반환.
+    호출자는 /auto-voucher/progress/{task_id}로 폴링.
+    """
+    task_id = _new_task("위하고 분개장 → 전표 변환 시작…")
+
+    async def _runner():
+        try:
+            # 풀러 사용 (direct engine은 _ensure_base_data와 다른 connection이라 FK 충돌)
+            async with async_session_factory() as db:
+                result = await migrate_journal_uploads_to_vouchers(
+                    db,
+                    upload_ids=upload_ids,
+                    start_date=start_date,
+                    end_date=end_date,
+                    user_id=user_id,
+                    department_id=department_id,
+                    source_label=source_label,
+                    task_id=task_id,
+                )
+                _update(
+                    task_id, status="completed", percent=100,
+                    message=f"완료 — {result.get('migrated_count', 0)}건 변환",
+                    result=result, finished_at=time.time(),
+                )
+        except Exception as e:
+            logger.exception("백그라운드 분개장 변환 실패")
+            _update(
+                task_id, status="failed",
+                message=f"실패: {str(e)[:300]}",
+                finished_at=time.time(),
+            )
+
+    asyncio.create_task(_runner())
+    return task_id
+
+
+async def list_journal_uploads(db: AsyncSession) -> List[Dict[str, Any]]:
+    """
+    분개장 데이터를 보유한 업로드 목록 — 모달 선택용.
+
+    upload_type 무관. ai_raw 행 중 분개 정보(debit/credit + source_account_code)가
+    있는 업로드만 노출 → upload-historical 경로로 들어온 위하고 분개장도 보임.
+    """
+    journal_ids = await _find_journal_upload_ids(db)
+    if not journal_ids:
+        return []
+
+    # 각 분개장 업로드별 메타 + 분개 행 수
+    q = (
+        select(
+            AIDataUploadHistory.id,
+            AIDataUploadHistory.filename,
+            AIDataUploadHistory.row_count,
+            AIDataUploadHistory.created_at,
+            AIDataUploadHistory.upload_type,
+            AIDataUploadHistory.file_type,
+        )
+        .where(AIDataUploadHistory.id.in_(journal_ids))
+        .order_by(AIDataUploadHistory.created_at.desc())
+    )
+    rows = (await db.execute(q)).all()
+
+    # 분개 행 수 카운트 (별도 쿼리) — _find_journal_upload_ids와 동일 기준
+    journal_row_q = (
+        select(
+            AIRawTransactionData.upload_id,
+            func.count(AIRawTransactionData.id).label("journal_rows"),
+            func.min(AIRawTransactionData.transaction_date).label("min_date"),
+            func.max(AIRawTransactionData.transaction_date).label("max_date"),
+        )
+        .where(
+            AIRawTransactionData.upload_id.in_(journal_ids),
+            AIRawTransactionData.account_code.isnot(None),
+            AIRawTransactionData.account_code != "",
+            (AIRawTransactionData.debit_amount > 0) | (AIRawTransactionData.credit_amount > 0),
+        )
+        .group_by(AIRawTransactionData.upload_id)
+    )
+    stat_rows = (await db.execute(journal_row_q)).all()
+    stat_map = {r.upload_id: r for r in stat_rows}
+
+    # 이미 변환된 그룹 수 — Voucher.external_ref 기반
+    refs_q = select(Voucher.external_ref).where(
+        Voucher.source.in_(["wehago_import", "douzone_journal"]),
+        Voucher.external_ref.like("journal:upload:%"),
+    )
+    refs = [r[0] for r in (await db.execute(refs_q)).all() if r[0]]
+    migrated_per_upload: Dict[int, int] = defaultdict(int)
+    for ref in refs:
+        # journal:upload:{upload_id}:...
+        parts = ref.split(":")
+        if len(parts) >= 3 and parts[1] == "upload":
+            try:
+                migrated_per_upload[int(parts[2])] += 1
+            except ValueError:
+                pass
+
+    return [
+        {
+            "id": r.id,
+            "filename": r.filename,
+            "row_count": r.row_count,
+            "journal_rows": (stat_map.get(r.id).journal_rows if stat_map.get(r.id) else 0),
+            "min_date": (stat_map.get(r.id).min_date if stat_map.get(r.id) else None),
+            "max_date": (stat_map.get(r.id).max_date if stat_map.get(r.id) else None),
+            "migrated_vouchers": migrated_per_upload.get(r.id, 0),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "upload_type": r.upload_type,
+            "file_type": r.file_type,
+        }
+        for r in rows
+    ]

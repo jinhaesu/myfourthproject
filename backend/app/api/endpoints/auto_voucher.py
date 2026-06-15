@@ -1,0 +1,4750 @@
+"""
+자동 전표 후보 검수 큐 API.
+
+회계담당자 워크플로:
+1. POST /auto-voucher/generate-candidates  - 기간 지정해 그랜터 거래 → 후보 일괄 생성
+2. POST /auto-voucher/match-duplicates     - 카드↔통장 중복 매칭 (DUPLICATE 표시)
+3. GET  /auto-voucher/list                 - 검수 큐 (신뢰도/유형/상태별 필터)
+4. POST /auto-voucher/{id}/confirm         - 단건 확정 (Voucher 생성)
+5. POST /auto-voucher/confirm-batch        - 다중 확정
+6. POST /auto-voucher/{id}/reject          - 거절
+7. PATCH /auto-voucher/{id}                - 라인/계정/금액 수정
+"""
+import json
+import logging
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Optional, List, Dict
+
+from fastapi import APIRouter, Depends, Query, HTTPException, Body
+from pydantic import BaseModel, Field
+from sqlalchemy import select, func, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.models.accounting import (
+    AutoVoucherCandidate, AutoVoucherSourceType, AutoVoucherStatus,
+    Voucher, VoucherLine, VoucherStatus, TransactionType, Account,
+)
+from app.services.auto_voucher_service import (
+    generate_candidates_for_period,
+    generate_candidates_background,
+    match_card_bank_duplicates,
+    match_voucher_duplicates_core,
+    match_voucher_duplicates_grouped,
+    reject_candidates_in_confirmed_period,
+    get_progress,
+)
+from app.services.journal_migration import (
+    migrate_journal_uploads_to_vouchers,
+    migrate_journal_uploads_background,
+    list_journal_uploads,
+    diagnose_journal_data,
+    delete_wehago_import_vouchers,
+    delete_wehago_imports_background,
+)
+
+
+import uuid as _uuid
+
+
+async def _voucher_number(db: AsyncSession, vdate: date) -> str:
+    """
+    YYYYMMDD-G{uuid8} 형식 (Granter auto). UUID 기반이라 count 호출 없음.
+    수기 입력은 NNNN 시퀀스, 위하고 import는 J{hex}, 그랜터 자동은 G{hex}로 구분.
+    """
+    return f"{vdate.strftime('%Y%m%d')}-G{_uuid.uuid4().hex[:8]}"
+
+
+async def _resolve_account_id(
+    db: AsyncSession, code: str, name: str = "",
+    cache: Optional[Dict[str, int]] = None,
+) -> Optional[int]:
+    """account_code → accounts.id. 없으면 자동 생성. cache 전달 시 SELECT 1회로 단축."""
+    if not code:
+        return None
+    if cache is not None and code in cache:
+        return cache[code]
+    acc = (await db.execute(
+        select(Account).where(Account.code == code, Account.is_active == True)
+    )).scalar_one_or_none()
+    if acc:
+        if cache is not None:
+            cache[code] = acc.id
+        return acc.id
+    # 자동 생성 — 회계담당자가 더존에서 쓰던 코드를 그대로 받아쓸 수 있게
+    from app.models.accounting import AccountCategory
+    # 카테고리 추정 (1xx 자산 .. 9xx 영업외)
+    first = code.lstrip("0")[:1] if code else "9"
+    cat_code_map = {'1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
+                    '6': '5', '7': '5', '8': '5', '9': '5'}
+    cat_code = cat_code_map.get(first, '5')
+    cat = (await db.execute(
+        select(AccountCategory).where(AccountCategory.code == cat_code)
+    )).scalar_one_or_none()
+    if not cat:
+        cat = (await db.execute(select(AccountCategory).limit(1))).scalar_one_or_none()
+    if not cat:
+        return None  # 시드 데이터 부재 — 호출자가 에러 처리
+    new_acc = Account(
+        code=code, name=name or f"계정 {code}",
+        category_id=cat.id, level=1, is_detail=True,
+        is_vat_applicable=True, vat_rate=Decimal("10.00"), is_active=True,
+    )
+    db.add(new_acc)
+    await db.flush()
+    if cache is not None:
+        cache[code] = new_acc.id
+    return new_acc.id
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+# ============ Schemas ============
+
+class GenerateRequest(BaseModel):
+    start_date: date
+    end_date: date
+    asset_id: Optional[int] = None
+    auto_match_duplicates: bool = True
+
+
+class CandidateLine(BaseModel):
+    side: str  # 'debit' | 'credit'
+    account_code: str
+    account_name: str
+    amount: Decimal
+    memo: Optional[str] = ""
+
+
+class DuplicateVoucherInfo(BaseModel):
+    id: int
+    voucher_number: str
+    voucher_date: date
+    transaction_date: date
+    source: Optional[str]
+    merchant_name: Optional[str]
+    total_debit: Decimal
+    description: Optional[str]
+
+
+class CandidateOut(BaseModel):
+    id: int
+    source_type: str
+    source_id: Optional[str]
+    status: str
+    transaction_date: date
+    counterparty: Optional[str]
+    description: Optional[str]
+    supply_amount: Decimal
+    vat_amount: Decimal
+    total_amount: Decimal
+    confidence: float
+    suggested_account_code: Optional[str]
+    suggested_account_name: Optional[str]
+    debit_lines: List[CandidateLine]
+    credit_lines: List[CandidateLine]
+    duplicate_of_id: Optional[int]
+    duplicate_voucher_id: Optional[int] = None
+    duplicate_voucher: Optional[DuplicateVoucherInfo] = None
+    confirmed_voucher_id: Optional[int]
+    created_at: datetime
+
+
+class CandidatePatch(BaseModel):
+    debit_lines: Optional[List[CandidateLine]] = None
+    credit_lines: Optional[List[CandidateLine]] = None
+    counterparty: Optional[str] = None
+    description: Optional[str] = None
+    suggested_account_code: Optional[str] = None
+    suggested_account_name: Optional[str] = None
+
+
+def _candidate_to_out(
+    c: AutoVoucherCandidate,
+    voucher_map: Optional[Dict[int, Voucher]] = None,
+) -> CandidateOut:
+    def _parse_lines(s: Optional[str]) -> List[CandidateLine]:
+        if not s:
+            return []
+        try:
+            arr = json.loads(s)
+            return [CandidateLine(**item) for item in arr]
+        except Exception:
+            return []
+
+    dup_info = None
+    if voucher_map and c.duplicate_voucher_id and c.duplicate_voucher_id in voucher_map:
+        v = voucher_map[c.duplicate_voucher_id]
+        dup_info = DuplicateVoucherInfo(
+            id=v.id,
+            voucher_number=v.voucher_number,
+            voucher_date=v.voucher_date,
+            transaction_date=v.transaction_date,
+            source=v.source,
+            merchant_name=v.merchant_name,
+            total_debit=v.total_debit,
+            description=v.description,
+        )
+
+    return CandidateOut(
+        id=c.id,
+        source_type=c.source_type.value if hasattr(c.source_type, 'value') else str(c.source_type),
+        source_id=c.source_id,
+        status=c.status.value if hasattr(c.status, 'value') else str(c.status),
+        transaction_date=c.transaction_date,
+        counterparty=c.counterparty,
+        description=c.description,
+        supply_amount=c.supply_amount,
+        vat_amount=c.vat_amount,
+        total_amount=c.total_amount,
+        confidence=float(c.confidence or 0),
+        suggested_account_code=c.suggested_account_code,
+        suggested_account_name=c.suggested_account_name,
+        debit_lines=_parse_lines(c.debit_lines),
+        credit_lines=_parse_lines(c.credit_lines),
+        duplicate_of_id=c.duplicate_of_id,
+        duplicate_voucher_id=c.duplicate_voucher_id,
+        duplicate_voucher=dup_info,
+        confirmed_voucher_id=c.confirmed_voucher_id,
+        created_at=c.created_at,
+    )
+
+
+# ============ Endpoints ============
+
+@router.post("/generate-candidates")
+async def generate_candidates(
+    req: GenerateRequest,
+    background: bool = Query(True, description="true: 즉시 task_id 반환 후 백그라운드 처리"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    기간 내 그랜터 거래를 분개 후보로 일괄 생성.
+    background=true (default): task_id 즉시 반환 → /progress/{task_id} 폴링으로 진행률 추적.
+    background=false: 동기 처리 (소규모 기간용, 응답까지 대기).
+    """
+    if req.end_date < req.start_date:
+        raise HTTPException(status_code=400, detail="end_date < start_date")
+    if (req.end_date - req.start_date).days > 366:
+        raise HTTPException(status_code=400, detail="기간이 1년을 초과할 수 없습니다.")
+
+    if background:
+        task_id = await generate_candidates_background(
+            req.start_date, req.end_date,
+            asset_id=req.asset_id,
+            auto_match_duplicates=req.auto_match_duplicates,
+        )
+        return {
+            "task_id": task_id,
+            "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}",
+        }
+
+    result = await generate_candidates_for_period(
+        db, req.start_date, req.end_date, asset_id=req.asset_id,
+    )
+    if req.auto_match_duplicates:
+        match_result = await match_card_bank_duplicates(
+            db, req.start_date, req.end_date,
+        )
+        result["duplicate_matching"] = match_result
+        voucher_dup = await match_voucher_duplicates_grouped(
+            db, req.start_date, req.end_date,
+        )
+        result["voucher_duplicate_matching"] = voucher_dup
+    return result
+
+
+@router.get("/progress/{task_id}")
+async def get_task_progress(task_id: str):
+    """백그라운드 후보 생성 진행률 조회."""
+    p = get_progress(task_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="task를 찾을 수 없습니다 (만료 또는 잘못된 id).")
+    return p
+
+
+@router.post("/match-duplicates")
+async def match_duplicates(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    day_window: int = Query(35, ge=1, le=90,
+                            description="카드 사용일 → 통장 결제일 매칭 윈도우 일수"),
+    db: AsyncSession = Depends(get_db),
+):
+    """기존 PENDING 후보 중 카드↔통장 중복 매칭."""
+    return await match_card_bank_duplicates(db, start_date, end_date, day_window)
+
+
+@router.get("/list")
+async def list_candidates(
+    status: Optional[str] = Query(None, description="pending|confirmed|rejected|duplicate"),
+    source_type: Optional[str] = Query(None,
+        description="sales_tax_invoice|purchase_tax_invoice|card|bank|cash_receipt|sales_invoice|purchase_invoice"),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    confidence_lt: Optional[float] = Query(None, description="신뢰도가 이 값 미만만"),
+    confidence_gte: Optional[float] = Query(None, description="신뢰도가 이 값 이상만"),
+    counterparty: Optional[str] = Query(None),
+    sort: str = Query("date_desc", description="date_asc|date_desc|conf_asc|conf_desc"),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=50000),
+    db: AsyncSession = Depends(get_db),
+):
+    """검수 큐 목록 — 신뢰도/유형/상태/기간/거래처별 필터."""
+    filters = []
+    if status:
+        try:
+            filters.append(AutoVoucherCandidate.status == AutoVoucherStatus(status))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"invalid status: {status}")
+    if source_type:
+        try:
+            filters.append(AutoVoucherCandidate.source_type == AutoVoucherSourceType(source_type))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"invalid source_type: {source_type}")
+    if start_date:
+        filters.append(AutoVoucherCandidate.transaction_date >= start_date)
+    if end_date:
+        filters.append(AutoVoucherCandidate.transaction_date <= end_date)
+    if confidence_lt is not None:
+        filters.append(AutoVoucherCandidate.confidence < Decimal(str(confidence_lt)))
+    if confidence_gte is not None:
+        filters.append(AutoVoucherCandidate.confidence >= Decimal(str(confidence_gte)))
+    if counterparty:
+        filters.append(AutoVoucherCandidate.counterparty.ilike(f"%{counterparty}%"))
+
+    where = and_(*filters) if filters else True
+
+    total = await db.scalar(
+        select(func.count(AutoVoucherCandidate.id)).where(where)
+    ) or 0
+
+    order_clause = {
+        "date_desc": AutoVoucherCandidate.transaction_date.desc(),
+        "date_asc": AutoVoucherCandidate.transaction_date.asc(),
+        "conf_desc": AutoVoucherCandidate.confidence.desc(),
+        "conf_asc": AutoVoucherCandidate.confidence.asc(),
+    }.get(sort, AutoVoucherCandidate.transaction_date.desc())
+
+    offset = (page - 1) * size
+    rows = (await db.execute(
+        select(AutoVoucherCandidate)
+        .where(where)
+        .order_by(order_clause)
+        .offset(offset).limit(size)
+    )).scalars().all()
+
+    # 중복 매칭된 Voucher 일괄 조회 (N+1 회피)
+    voucher_ids = [r.duplicate_voucher_id for r in rows if r.duplicate_voucher_id]
+    voucher_map: Dict[int, Voucher] = {}
+    if voucher_ids:
+        v_rows = (await db.execute(
+            select(Voucher).where(Voucher.id.in_(voucher_ids))
+        )).scalars().all()
+        voucher_map = {v.id: v for v in v_rows}
+
+    # 상태별·유형별 카운트 (필터 적용 후 — 큐 요약)
+    summary_rows = (await db.execute(
+        select(
+            AutoVoucherCandidate.status,
+            AutoVoucherCandidate.source_type,
+            func.count(AutoVoucherCandidate.id).label('cnt'),
+        ).where(where).group_by(AutoVoucherCandidate.status, AutoVoucherCandidate.source_type)
+    )).all()
+
+    summary = {}
+    for s, st, cnt in summary_rows:
+        st_key = st.value if hasattr(st, 'value') else str(st)
+        s_key = s.value if hasattr(s, 'value') else str(s)
+        summary.setdefault(s_key, {})[st_key] = cnt
+
+    return {
+        "total": total,
+        "page": page,
+        "size": size,
+        "items": [_candidate_to_out(c, voucher_map) for c in rows],
+        "summary": summary,
+    }
+
+
+@router.get("/journal-uploads")
+async def get_journal_uploads(db: AsyncSession = Depends(get_db)):
+    """
+    위하고/더존 분개장 업로드 목록 — 일괄 변환 모달 선택용.
+    /{candidate_id} 라우트보다 앞서야 정상 매칭됨.
+    """
+    return {"uploads": await list_journal_uploads(db)}
+
+
+@router.get("/journal-diagnostic")
+async def journal_diagnostic(
+    upload_id: Optional[int] = Query(None, description="특정 업로드 ID만 진단 (없으면 전체)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    ai_raw 진단 — 분개장 데이터가 어떻게 저장됐는지 컬럼별 통계.
+    분개장 식별이 왜 실패하는지 디버깅용. /{candidate_id}보다 앞서야 함.
+    """
+    return await diagnose_journal_data(db, upload_id=upload_id)
+
+
+@router.get("/{candidate_id}")
+async def get_candidate(
+    candidate_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    c = await db.get(AutoVoucherCandidate, candidate_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="후보를 찾을 수 없습니다.")
+    voucher_map: Dict[int, Voucher] = {}
+    if c.duplicate_voucher_id:
+        v = await db.get(Voucher, c.duplicate_voucher_id)
+        if v:
+            voucher_map[v.id] = v
+    return _candidate_to_out(c, voucher_map)
+
+
+@router.patch("/{candidate_id}")
+async def patch_candidate(
+    candidate_id: int,
+    patch: CandidatePatch,
+    db: AsyncSession = Depends(get_db),
+):
+    c = await db.get(AutoVoucherCandidate, candidate_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="후보를 찾을 수 없습니다.")
+    if c.status != AutoVoucherStatus.PENDING:
+        raise HTTPException(status_code=400,
+                            detail=f"PENDING 상태가 아닌 후보는 수정할 수 없습니다 (현재: {c.status.value})")
+
+    if patch.debit_lines is not None:
+        c.debit_lines = json.dumps(
+            [l.model_dump(mode='json') for l in patch.debit_lines],
+            ensure_ascii=False, default=str,
+        )
+    if patch.credit_lines is not None:
+        c.credit_lines = json.dumps(
+            [l.model_dump(mode='json') for l in patch.credit_lines],
+            ensure_ascii=False, default=str,
+        )
+    if patch.counterparty is not None:
+        c.counterparty = patch.counterparty
+    if patch.description is not None:
+        c.description = patch.description
+    if patch.suggested_account_code is not None:
+        c.suggested_account_code = patch.suggested_account_code
+    if patch.suggested_account_name is not None:
+        c.suggested_account_name = patch.suggested_account_name
+
+    await db.commit()
+    await db.refresh(c)
+    return _candidate_to_out(c)
+
+
+@router.post("/{candidate_id}/reject")
+async def reject_candidate(
+    candidate_id: int,
+    reason: Optional[str] = Body(None, embed=True),
+    db: AsyncSession = Depends(get_db),
+):
+    c = await db.get(AutoVoucherCandidate, candidate_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="후보를 찾을 수 없습니다.")
+    c.status = AutoVoucherStatus.REJECTED
+    c.rejected_reason = reason
+    await db.commit()
+    return {"id": c.id, "status": c.status.value}
+
+
+# ============ 확정 → Voucher 생성 ============
+
+async def _confirm_candidate_inner(
+    db: AsyncSession, c: AutoVoucherCandidate, user_id: int, department_id: int = 1,
+    _seed_cache: Optional[Dict[str, int]] = None,
+    _account_cache: Optional[Dict[str, int]] = None,
+) -> Voucher:
+    """후보 → Voucher + VoucherLine 변환.
+
+    _seed_cache: {dept_id, user_id} 보장된 값 캐시 — batch 호출 시 매번 시드 안 함.
+    _account_cache: account_code → accounts.id 캐시 — batch에서 SELECT 반복 절약.
+    """
+    if c.status == AutoVoucherStatus.CONFIRMED and c.confirmed_voucher_id:
+        # 이미 처리됨 — idempotent하게 기존 voucher 반환 (성공으로 간주)
+        existing = await db.get(Voucher, c.confirmed_voucher_id)
+        if existing:
+            return existing
+    if c.status != AutoVoucherStatus.PENDING:
+        raise HTTPException(status_code=400,
+                            detail=f"PENDING 상태가 아닙니다 (id={c.id}, status={c.status.value})")
+
+    # FK 보장 — departments/users 시드 데이터 부재 시 자동 생성 (별도 connection)
+    if _seed_cache is None or "dept_id" not in _seed_cache:
+        from app.services.journal_migration import _ensure_base_data
+        seeded_dept_id, seeded_user_id = await _ensure_base_data()
+        if _seed_cache is not None:
+            _seed_cache["dept_id"] = seeded_dept_id
+            _seed_cache["user_id"] = seeded_user_id
+        department_id = seeded_dept_id
+        user_id = seeded_user_id
+    else:
+        department_id = _seed_cache["dept_id"]
+        user_id = _seed_cache["user_id"]
+
+    debit_lines = json.loads(c.debit_lines or "[]")
+    credit_lines = json.loads(c.credit_lines or "[]")
+
+    total_debit = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
+    total_credit = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
+
+    # 자동 균형 조정 — 부가세 누락이 명확한 경우(차이/총액 8~11%)만 보정
+    # 회계 안전성을 위해 좁은 범위만 자동 처리, 그 외는 사용자 수동 검토 요구
+    if total_debit != total_credit:
+        diff = total_credit - total_debit  # 양수면 차변 부족, 음수면 대변 부족
+        total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+        ratio = abs(diff) / total_abs
+        # 부가세 = 총액의 약 9.09% (1/11). 0.08~0.11 범위면 부가세 누락 확실
+        if Decimal("0.08") <= ratio <= Decimal("0.11"):
+            if diff > 0:
+                debit_lines.append({
+                    "side": "debit", "account_code": "135", "account_name": "부가세대급금",
+                    "amount": str(diff), "memo": "자동 보정 (부가세 추정)",
+                })
+            else:
+                credit_lines.append({
+                    "side": "credit", "account_code": "255", "account_name": "부가세예수금",
+                    "amount": str(-diff), "memo": "자동 보정 (부가세 추정)",
+                })
+            total_debit = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
+            total_credit = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
+
+    if total_debit != total_credit:
+        diff = total_credit - total_debit
+        total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+        ratio = float(abs(diff) / total_abs * 100)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"차변 합({total_debit:,}) ≠ 대변 합({total_credit:,}). "
+                f"차이 {diff:,} ({ratio:.1f}%) — 부가세 범위(8~11%) 밖이라 자동 보정 안 됨. "
+                f"수동으로 라인 추가/수정 필요."
+            ),
+        )
+
+    txn_type_map = {
+        AutoVoucherSourceType.CARD: TransactionType.CARD,
+        AutoVoucherSourceType.BANK: TransactionType.BANK_TRANSFER,
+        AutoVoucherSourceType.CASH_RECEIPT: TransactionType.CASH,
+        AutoVoucherSourceType.SALES_TAX_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.PURCHASE_TAX_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.SALES_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.PURCHASE_INVOICE: TransactionType.TAX_INVOICE,
+    }
+    txn_type = txn_type_map.get(c.source_type, TransactionType.GENERAL)
+
+    voucher = Voucher(
+        voucher_number=await _voucher_number(db, c.transaction_date),
+        voucher_date=c.transaction_date,
+        transaction_date=c.transaction_date,
+        description=(c.description or c.counterparty or "")[:500],
+        transaction_type=txn_type,
+        external_ref=c.source_id,
+        source="granter_auto",
+        department_id=department_id,
+        created_by=user_id,
+        total_debit=total_debit,
+        total_credit=total_credit,
+        status=VoucherStatus.CONFIRMED,
+        merchant_name=c.counterparty,
+        ai_confidence_score=c.confidence,
+        confirmed_at=datetime.utcnow(),
+        confirmed_by=user_id,
+    )
+    db.add(voucher)
+    await db.flush()  # voucher.id 확보
+
+    # 적요(description) 우선순위: 라인 메모 > candidate.description > counterparty
+    candidate_desc = (c.description or c.counterparty or "")[:500]
+
+    line_no = 1
+    for l in debit_lines + credit_lines:
+        is_debit = l.get("side") == "debit"
+        amt = Decimal(str(l.get("amount", 0)))
+        account_id = await _resolve_account_id(
+            db, l.get("account_code", ""), l.get("account_name", ""),
+            cache=_account_cache,
+        )
+        if account_id is None:
+            raise HTTPException(status_code=400,
+                                detail=f"계정 매핑 실패: code={l.get('account_code')}")
+        vat_acc = l.get("account_code") in ("135", "255")
+        line_vat = amt if vat_acc else Decimal("0")
+        line_supply = amt if not vat_acc else Decimal("0")
+
+        # VAT 정합성 검증: vat+supply > 0이면 라인 금액과 일치해야 함
+        # vat=0, supply=0인 기존 패턴(비과세)은 통과
+        vat_supply_sum = line_vat + line_supply
+        if vat_supply_sum > Decimal("0") and vat_supply_sum != amt:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"라인 {line_no}: vat({line_vat}) + supply({line_supply}) = "
+                    f"{vat_supply_sum} ≠ 라인 금액({amt})"
+                ),
+            )
+
+        line_memo = (l.get("memo") or "").strip()
+        line_desc = line_memo or candidate_desc or l.get("account_name") or ""
+        db.add(VoucherLine(
+            voucher_id=voucher.id,
+            line_number=line_no,
+            account_id=account_id,
+            debit_amount=amt if is_debit else Decimal("0"),
+            credit_amount=amt if not is_debit else Decimal("0"),
+            vat_amount=line_vat,
+            supply_amount=line_supply,
+            description=line_desc[:500],
+            counterparty_name=c.counterparty,
+        ))
+        line_no += 1
+
+    c.status = AutoVoucherStatus.CONFIRMED
+    c.confirmed_voucher_id = voucher.id
+    c.confirmed_at = datetime.utcnow()
+    c.confirmed_by = user_id
+
+    return voucher
+
+
+@router.post("/{candidate_id}/confirm")
+async def confirm_candidate(
+    candidate_id: int,
+    user_id: int = Query(1, description="확정 사용자 id (인증 도입 시 자동)"),
+    db: AsyncSession = Depends(get_db),
+):
+    c = await db.get(AutoVoucherCandidate, candidate_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="후보를 찾을 수 없습니다.")
+    voucher = await _confirm_candidate_inner(db, c, user_id)
+    await db.commit()
+    return {"candidate_id": c.id, "voucher_id": voucher.id, "status": c.status.value}
+
+
+class DirectVoucherLine(BaseModel):
+    side: str  # 'debit' | 'credit'
+    account_code: str
+    account_name: str
+    amount: Decimal
+    memo: Optional[str] = ""
+
+
+class DirectVoucherRequest(BaseModel):
+    """매입매출 전표 직접 입력 — candidate 단계 skip, 즉시 Voucher 생성."""
+    transaction_date: date
+    source_type: str = Field(..., description="거래 유형 (sales_tax_invoice|purchase_tax_invoice|card|cash_receipt 등)")
+    counterparty: Optional[str] = None
+    description: Optional[str] = None
+    supply_amount: Decimal = Decimal("0")
+    vat_amount: Decimal = Decimal("0")
+    debit_lines: List[DirectVoucherLine]
+    credit_lines: List[DirectVoucherLine]
+    external_ref: Optional[str] = None
+    force: bool = Field(False, description="중복 후보가 있어도 강제 저장")
+
+
+async def _find_duplicate_candidates(
+    db: AsyncSession,
+    transaction_date: date,
+    total_amount: Decimal,
+    counterparty: Optional[str],
+    amount_tolerance: Decimal = Decimal("1"),
+) -> List[dict]:
+    """
+    같은 (날짜±3일, 금액±tolerance, 거래처 일부일치)인 기존 거래 검색.
+    그랜터 자동 후보 + 확정 Voucher 모두 검사.
+    """
+    from datetime import timedelta as _td
+    results = []
+
+    # 1) PENDING / CONFIRMED AutoVoucherCandidate
+    q = select(AutoVoucherCandidate).where(
+        AutoVoucherCandidate.transaction_date.between(
+            transaction_date - _td(days=3), transaction_date + _td(days=3)
+        ),
+        AutoVoucherCandidate.status.in_([AutoVoucherStatus.PENDING, AutoVoucherStatus.CONFIRMED]),
+        AutoVoucherCandidate.total_amount.between(
+            total_amount - amount_tolerance, total_amount + amount_tolerance
+        ),
+    )
+    if counterparty:
+        q = q.where(AutoVoucherCandidate.counterparty.ilike(f"%{counterparty[:10]}%"))
+    cands = (await db.execute(q.limit(5))).scalars().all()
+    for c in cands:
+        results.append({
+            "kind": "auto_candidate",
+            "id": c.id,
+            "status": c.status.value,
+            "transaction_date": c.transaction_date.isoformat(),
+            "counterparty": c.counterparty,
+            "total_amount": str(c.total_amount),
+            "source_type": c.source_type.value,
+        })
+
+    # 2) 확정 Voucher
+    vq = select(Voucher).where(
+        Voucher.transaction_date.between(
+            transaction_date - _td(days=3), transaction_date + _td(days=3)
+        ),
+        Voucher.status == VoucherStatus.CONFIRMED,
+        Voucher.total_debit.between(
+            total_amount - amount_tolerance, total_amount + amount_tolerance
+        ),
+    )
+    if counterparty:
+        vq = vq.where(Voucher.merchant_name.ilike(f"%{counterparty[:10]}%"))
+    vouchers = (await db.execute(vq.limit(5))).scalars().all()
+    for v in vouchers:
+        results.append({
+            "kind": "voucher",
+            "id": v.id,
+            "voucher_number": v.voucher_number,
+            "transaction_date": v.transaction_date.isoformat(),
+            "counterparty": v.merchant_name,
+            "total_amount": str(v.total_debit),
+            "source": v.source,
+        })
+    return results
+
+
+@router.post("/check-duplicate")
+async def check_duplicate(
+    transaction_date: date = Body(...),
+    total_amount: Decimal = Body(...),
+    counterparty: Optional[str] = Body(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """수기 입력 화면에서 호출 — 같은 거래가 이미 있는지 사전 확인."""
+    dups = await _find_duplicate_candidates(db, transaction_date, total_amount, counterparty)
+    return {"duplicates": dups, "count": len(dups)}
+
+
+@router.post("/direct-voucher")
+async def create_direct_voucher(
+    req: DirectVoucherRequest,
+    user_id: int = Query(1),
+    department_id: int = Query(1),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    매입매출 전표 입력 화면에서 사용 — 사용자가 입력한 라인을 바로 Voucher로 변환.
+    AutoVoucherCandidate 단계를 거치지 않음 (audit 위해 raw_data만 보관).
+    """
+    # 차대 불일치가 8~11% 범위면 부가세 라인 자동 보정 (_confirm_candidate_inner 동일 패턴)
+    debit_lines_mutable = [l.model_dump() for l in req.debit_lines]
+    credit_lines_mutable = [l.model_dump() for l in req.credit_lines]
+
+    total_debit = sum(Decimal(str(l["amount"])) for l in debit_lines_mutable)
+    total_credit = sum(Decimal(str(l["amount"])) for l in credit_lines_mutable)
+
+    if total_debit != total_credit:
+        diff = total_credit - total_debit  # 양수면 차변 부족
+        total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+        ratio = abs(diff) / total_abs
+        if Decimal("0.08") <= ratio <= Decimal("0.11"):
+            if diff > 0:
+                debit_lines_mutable.append({
+                    "side": "debit", "account_code": "135", "account_name": "부가세대급금",
+                    "amount": str(diff), "memo": "자동 보정 (부가세 추정)",
+                })
+            else:
+                credit_lines_mutable.append({
+                    "side": "credit", "account_code": "255", "account_name": "부가세예수금",
+                    "amount": str(-diff), "memo": "자동 보정 (부가세 추정)",
+                })
+            total_debit = sum(Decimal(str(l["amount"])) for l in debit_lines_mutable)
+            total_credit = sum(Decimal(str(l["amount"])) for l in credit_lines_mutable)
+
+    if total_debit != total_credit:
+        diff = total_credit - total_debit
+        total_abs = max(abs(total_debit), abs(total_credit), Decimal("1"))
+        ratio_pct = float(abs(diff) / total_abs * 100)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"차변 합({total_debit}) ≠ 대변 합({total_credit}). "
+                f"차이 {diff} ({ratio_pct:.1f}%) — 부가세 범위(8~11%) 밖이라 자동 보정 안 됨."
+            ),
+        )
+    if total_debit == 0:
+        raise HTTPException(status_code=400, detail="금액이 0입니다.")
+
+    # 중복 검사 — 그랜터 자동 후보·기존 확정 전표와 매칭
+    if not req.force:
+        dups = await _find_duplicate_candidates(
+            db, req.transaction_date, total_debit, req.counterparty,
+        )
+        if dups:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "duplicate_candidates",
+                    "message": f"비슷한 거래 {len(dups)}건이 이미 있습니다. 다시 등록하려면 force=true.",
+                    "duplicates": dups,
+                },
+            )
+
+    try:
+        src = AutoVoucherSourceType(req.source_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"invalid source_type: {req.source_type}")
+
+    txn_type_map = {
+        AutoVoucherSourceType.CARD: TransactionType.CARD,
+        AutoVoucherSourceType.BANK: TransactionType.BANK_TRANSFER,
+        AutoVoucherSourceType.CASH_RECEIPT: TransactionType.CASH,
+        AutoVoucherSourceType.SALES_TAX_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.PURCHASE_TAX_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.SALES_INVOICE: TransactionType.TAX_INVOICE,
+        AutoVoucherSourceType.PURCHASE_INVOICE: TransactionType.TAX_INVOICE,
+    }
+    txn_type = txn_type_map.get(src, TransactionType.GENERAL)
+
+    voucher = Voucher(
+        voucher_number=await _voucher_number(db, req.transaction_date),
+        voucher_date=req.transaction_date,
+        transaction_date=req.transaction_date,
+        description=(req.description or req.counterparty or "")[:500],
+        transaction_type=txn_type,
+        external_ref=req.external_ref,
+        source="manual",
+        department_id=department_id,
+        created_by=user_id,
+        total_debit=total_debit,
+        total_credit=total_credit,
+        status=VoucherStatus.CONFIRMED,
+        merchant_name=req.counterparty,
+        confirmed_at=datetime.utcnow(),
+        confirmed_by=user_id,
+    )
+    db.add(voucher)
+    await db.flush()
+
+    line_no = 1
+    for l in debit_lines_mutable + credit_lines_mutable:
+        is_debit = l.get("side") == "debit" if isinstance(l, dict) else l.side == "debit"
+        amt = Decimal(str(l.get("amount", 0) if isinstance(l, dict) else l.amount))
+        acc_code = l.get("account_code", "") if isinstance(l, dict) else l.account_code
+        acc_name = l.get("account_name", "") if isinstance(l, dict) else l.account_name
+        acc_memo = l.get("memo", "") if isinstance(l, dict) else (l.memo or "")
+        account_id = await _resolve_account_id(db, acc_code, acc_name)
+        if account_id is None:
+            raise HTTPException(status_code=400,
+                                detail=f"계정 매핑 실패: code={acc_code}")
+        vat_acc = acc_code in ("135", "255")
+        line_vat = amt if vat_acc else Decimal("0")
+        line_supply = amt if not vat_acc else Decimal("0")
+
+        # VAT 정합성 검증: vat+supply > 0이면 라인 금액과 일치해야 함
+        # vat=0, supply=0인 기존 패턴(비과세)은 통과
+        vat_supply_sum = line_vat + line_supply
+        if vat_supply_sum > Decimal("0") and vat_supply_sum != amt:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"라인 {line_no}: vat({line_vat}) + supply({line_supply}) = "
+                    f"{vat_supply_sum} ≠ 라인 금액({amt})"
+                ),
+            )
+
+        db.add(VoucherLine(
+            voucher_id=voucher.id,
+            line_number=line_no,
+            account_id=account_id,
+            debit_amount=amt if is_debit else Decimal("0"),
+            credit_amount=amt if not is_debit else Decimal("0"),
+            vat_amount=line_vat,
+            supply_amount=line_supply,
+            description=acc_memo or "",
+            counterparty_name=req.counterparty,
+        ))
+        line_no += 1
+
+    await db.commit()
+    return {
+        "voucher_id": voucher.id,
+        "voucher_number": voucher.voucher_number,
+        "status": voucher.status.value,
+        "total_debit": str(total_debit),
+        "total_credit": str(total_credit),
+    }
+
+
+class MigrateJournalRequest(BaseModel):
+    upload_ids: Optional[List[int]] = Field(None, description="특정 업로드만 (없으면 모든 분개장 업로드)")
+    start_date: Optional[date] = Field(None, description="ai_raw.transaction_date 기간 필터 시작")
+    end_date: Optional[date] = Field(None, description="ai_raw.transaction_date 기간 필터 종료")
+    source_label: str = Field("wehago_import", description="Voucher.source 라벨")
+
+
+@router.post("/delete-wehago-imports")
+async def delete_wehago_imports(
+    confirm_token: str = Query(..., description="확인 토큰: 'I_UNDERSTAND_DATA_LOSS' 필수"),
+    source_label: str = Query("wehago_import"),
+    background: bool = Query(True, description="기본 백그라운드 처리"),
+):
+    """
+    위하고 import로 생성된 모든 Voucher 일괄 삭제 (회복 불가).
+    background=true (default): task_id 즉시 반환, /progress/{task_id} 폴링.
+    """
+    if confirm_token != "I_UNDERSTAND_DATA_LOSS":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+    if background:
+        task_id = await delete_wehago_imports_background(source_label=source_label)
+        return {
+            "task_id": task_id, "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}",
+        }
+    return await delete_wehago_import_vouchers(source_label=source_label)
+
+
+_MIGRATE_LOCK_ENABLED = False  # 정리 완료 — 변환 다시 허용
+
+
+@router.post("/migrate-from-journal")
+async def migrate_from_journal(
+    req: MigrateJournalRequest,
+    user_id: Optional[int] = Query(None, description="없으면 첫 번째 사용자 자동 사용"),
+    department_id: Optional[int] = Query(None, description="없으면 첫 번째 부서 자동 사용"),
+    background: bool = Query(True, description="true: task_id 즉시 반환 + 백그라운드 처리"),
+    bypass_lock: bool = Query(False, description="LOCK 우회 (디버그용)"),
+    db: AsyncSession = Depends(get_db),
+):
+    if _MIGRATE_LOCK_ENABLED and not bypass_lock:
+        raise HTTPException(
+            status_code=423,
+            detail="분개장 변환이 일시 잠금 상태입니다 (데이터 정리 중). 잠시 후 다시 시도하세요.",
+        )
+    """
+    위하고/더존 분개장 업로드(ai_raw)를 Voucher(CONFIRMED, source=wehago_import)로 일괄 변환.
+    이미 변환된 그룹(external_ref 매칭)은 skip — idempotent.
+
+    background=true (default): task_id 즉시 반환, /progress/{task_id} 폴링으로 진행률 추적.
+    수천 개 그룹 처리 시 동기 요청은 timeout 됨.
+    """
+    if req.start_date and req.end_date and req.end_date < req.start_date:
+        raise HTTPException(status_code=400, detail="end_date < start_date")
+
+    if background:
+        task_id = await migrate_journal_uploads_background(
+            upload_ids=req.upload_ids,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            user_id=user_id,
+            department_id=department_id,
+            source_label=req.source_label,
+        )
+        return {
+            "task_id": task_id,
+            "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}",
+        }
+
+    return await migrate_journal_uploads_to_vouchers(
+        db,
+        upload_ids=req.upload_ids,
+        start_date=req.start_date,
+        end_date=req.end_date,
+        user_id=user_id,
+        department_id=department_id,
+        source_label=req.source_label,
+    )
+
+
+@router.post("/admin/reprocess-cash-receipts")
+async def reprocess_cash_receipts(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    background: bool = Query(True, description="background task 모드 (기본 true)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    기간 내 cash_receipt confirmed candidate들을 raw_data 기반으로 재분개.
+    background=true (default): task_id 즉시 반환 + /progress/{tid} 폴링.
+    """
+    from app.services.auto_voucher_service import _build_cash_receipt_candidate, _new_task, _update
+    from app.core.database import async_session_factory
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    if background:
+        import asyncio, time as _time
+        task_id = _new_task("cash_receipt 재분개 시작…")
+
+        async def _runner():
+            try:
+                async with async_session_factory() as bg_db:
+                    cands = (await bg_db.execute(
+                        select(AutoVoucherCandidate).where(
+                            AutoVoucherCandidate.source_type == AutoVoucherSourceType.CASH_RECEIPT,
+                            AutoVoucherCandidate.transaction_date >= start_date,
+                            AutoVoucherCandidate.transaction_date <= end_date,
+                        )
+                    )).scalars().all()
+                    OUR_BIZ = "5038701038"
+                    reprocessed = 0
+                    voucher_ids_to_delete: List[int] = []
+                    total = len(cands)
+                    _update(task_id, percent=5, message=f"{total}건 재분개 시작…")
+
+                    # 1단계: candidate 라인 재계산
+                    for idx, c in enumerate(cands):
+                        try:
+                            raw = json.loads(c.raw_data) if c.raw_data else {}
+                            new_cand = _build_cash_receipt_candidate(raw, our_business_number=OUR_BIZ)
+                            c.debit_lines = new_cand.debit_lines
+                            c.credit_lines = new_cand.credit_lines
+                            c.description = new_cand.description
+                            c.supply_amount = new_cand.supply_amount
+                            c.vat_amount = new_cand.vat_amount
+                            c.total_amount = new_cand.total_amount
+                            if c.confirmed_voucher_id:
+                                voucher_ids_to_delete.append(c.confirmed_voucher_id)
+                            c.status = AutoVoucherStatus.PENDING
+                            c.confirmed_voucher_id = None
+                            c.confirmed_at = None
+                            c.confirmed_by = None
+                            reprocessed += 1
+                        except Exception:
+                            logger.exception(f"cand {c.id} reprocess 실패")
+                        if (idx + 1) % 200 == 0:
+                            try: await bg_db.commit()
+                            except Exception: pass
+                            pct = 5 + int(45 * (idx + 1) / max(total, 1))
+                            _update(task_id, percent=pct,
+                                    message=f"라인 재계산 {idx+1}/{total}",
+                                    reprocessed=reprocessed)
+                    try: await bg_db.commit()
+                    except Exception: pass
+
+                    # 2단계: voucher 삭제 (청크)
+                    from sqlalchemy import text as _text
+                    deleted_v = 0
+                    deleted_l = 0
+                    CHUNK = 50
+                    for i in range(0, len(voucher_ids_to_delete), CHUNK):
+                        batch = voucher_ids_to_delete[i:i + CHUNK]
+                        try:
+                            r1 = await bg_db.execute(
+                                _text("DELETE FROM voucher_lines WHERE voucher_id = ANY(:ids)"),
+                                {"ids": batch})
+                            deleted_l += r1.rowcount or 0
+                            r2 = await bg_db.execute(
+                                _text("DELETE FROM vouchers WHERE id = ANY(:ids)"),
+                                {"ids": batch})
+                            deleted_v += r2.rowcount or 0
+                            await bg_db.commit()
+                        except Exception:
+                            logger.exception(f"voucher 삭제 chunk {i} 실패")
+                            try: await bg_db.rollback()
+                            except Exception: pass
+                        if i % (CHUNK * 10) == 0:
+                            pct = 50 + int(45 * i / max(len(voucher_ids_to_delete), 1))
+                            _update(task_id, percent=pct,
+                                    message=f"voucher 삭제 {deleted_v}/{len(voucher_ids_to_delete)}",
+                                    deleted_vouchers=deleted_v)
+
+                    _update(task_id, status="completed", percent=100,
+                            message=f"완료 — 재분개 {reprocessed}건, voucher 삭제 {deleted_v}건",
+                            result={"reprocessed": reprocessed, "deleted_vouchers": deleted_v,
+                                    "deleted_lines": deleted_l},
+                            finished_at=_time.time())
+            except Exception as e:
+                logger.exception("reprocess 백그라운드 실패")
+                _update(task_id, status="failed", message=f"실패: {str(e)[:300]}",
+                        finished_at=_time.time())
+
+        asyncio.create_task(_runner())
+        return {"task_id": task_id, "status": "queued",
+                "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+    # 동기 모드 (작은 기간용)
+    cands = (await db.execute(
+        select(AutoVoucherCandidate).where(
+            AutoVoucherCandidate.source_type == AutoVoucherSourceType.CASH_RECEIPT,
+            AutoVoucherCandidate.transaction_date >= start_date,
+            AutoVoucherCandidate.transaction_date <= end_date,
+        )
+    )).scalars().all()
+
+    OUR_BIZ = "5038701038"
+    reprocessed = 0
+    voucher_ids_to_delete: List[int] = []
+    for c in cands:
+        try:
+            raw = json.loads(c.raw_data) if c.raw_data else {}
+        except Exception:
+            continue
+        # 새 candidate 객체로 분개 재계산 후 dict만 가져옴
+        new_cand = _build_cash_receipt_candidate(raw, our_business_number=OUR_BIZ)
+        c.debit_lines = new_cand.debit_lines
+        c.credit_lines = new_cand.credit_lines
+        c.description = new_cand.description
+        c.supply_amount = new_cand.supply_amount
+        c.vat_amount = new_cand.vat_amount
+        c.total_amount = new_cand.total_amount
+        # 기존 voucher가 있으면 삭제 대상 + candidate를 PENDING으로 reset
+        if c.confirmed_voucher_id:
+            voucher_ids_to_delete.append(c.confirmed_voucher_id)
+        c.status = AutoVoucherStatus.PENDING
+        c.confirmed_voucher_id = None
+        c.confirmed_at = None
+        c.confirmed_by = None
+        reprocessed += 1
+
+    # 기존 voucher 삭제 (line CASCADE)
+    deleted_v = 0
+    deleted_l = 0
+    if voucher_ids_to_delete:
+        from sqlalchemy import text as _text
+        CHUNK = 50
+        for i in range(0, len(voucher_ids_to_delete), CHUNK):
+            batch = voucher_ids_to_delete[i:i + CHUNK]
+            try:
+                r1 = await db.execute(
+                    _text("DELETE FROM voucher_lines WHERE voucher_id = ANY(:ids)"),
+                    {"ids": batch},
+                )
+                deleted_l += r1.rowcount or 0
+                r2 = await db.execute(
+                    _text("DELETE FROM vouchers WHERE id = ANY(:ids)"),
+                    {"ids": batch},
+                )
+                deleted_v += r2.rowcount or 0
+                await db.commit()
+            except Exception:
+                logger.exception(f"voucher 삭제 chunk {i} 실패")
+                try: await db.rollback()
+                except Exception: pass
+
+    await db.commit()
+    return {
+        "reprocessed_candidates": reprocessed,
+        "deleted_vouchers": deleted_v,
+        "deleted_lines": deleted_l,
+        "next_step": "이제 자동 전표 검수 큐에서 일괄 확정으로 새 분개 생성",
+    }
+
+
+@router.post("/admin/cleanup-direct")
+async def cleanup_direct(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """
+    asyncpg direct connection (풀러 우회) + statement_timeout=0
+    + 단일 transaction 한 방 DELETE.
+    background task로 실행 — task_id 폴링.
+    """
+    from app.services.auto_voucher_service import _new_task, _update
+    from app.core.config import settings as _settings
+    import asyncpg as _asyncpg
+    import asyncio as _asyncio
+    import time as _time
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    raw_url = _settings.DATABASE_URL
+    # asyncpg는 +asyncpg 드라이버 prefix 모름
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    # transaction pooler URL이면 prepared statement 안 됨 → statement_cache_size=0
+
+    task_id = _new_task("cleanup-direct 시작…")
+
+    async def _runner():
+        try:
+            _update(task_id, percent=5, message="direct connection 열기…")
+            conn = await _asyncpg.connect(
+                url, statement_cache_size=0, command_timeout=600,
+            )
+            try:
+                _update(task_id, percent=10, message="target voucher 식별 중…")
+                # 식별 SELECT는 가벼움 — transaction 밖에서 OK
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '300s'")
+                    v_ids_rows = await conn.fetch(
+                        """
+                        SELECT v.id FROM vouchers v
+                        WHERE v.source = 'granter_auto'
+                          AND v.external_ref IN (
+                            SELECT source_id FROM auto_voucher_candidates
+                            WHERE source_type = 'CASH_RECEIPT'
+                              AND transaction_date BETWEEN $1 AND $2
+                              AND source_id IS NOT NULL
+                          )
+                        """,
+                        start_date, end_date,
+                    )
+                v_ids = [r["id"] for r in v_ids_rows]
+                _update(task_id, percent=20,
+                        message=f"target voucher {len(v_ids)}개 식별",
+                        vouchers_found=len(v_ids))
+
+                if not v_ids:
+                    _update(task_id, status="completed", percent=100,
+                            message="삭제 대상 없음",
+                            result={"vouchers_found": 0, "deleted_vouchers": 0,
+                                    "deleted_lines": 0},
+                            finished_at=_time.time())
+                    return
+
+                # 청크별 transaction. CHUNK 100 — PK 인덱스 lookup만으로 8초 안 처리.
+                # voucher_lines는 이전 cleanup에서 31,904건 삭제됨 — 보험 차원에서만 실행
+                # (인덱스 ix_voucher_lines_voucher_id 적용 가정. 잔여분 0~소수)
+                CHUNK = 100
+                deleted_lines_total = 0
+                deleted_vouchers_total = 0
+                total_batches = (len(v_ids) + CHUNK - 1) // CHUNK
+
+                for idx in range(0, len(v_ids), CHUNK):
+                    batch = v_ids[idx:idx + CHUNK]
+                    try:
+                        async with conn.transaction():
+                            await conn.execute("SET LOCAL statement_timeout = '60s'")
+                            r1 = await conn.execute(
+                                "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])",
+                                batch,
+                            )
+                            r2 = await conn.execute(
+                                "DELETE FROM vouchers WHERE id = ANY($1::int[])",
+                                batch,
+                            )
+                        # asyncpg execute returns 'DELETE N' string
+                        try:
+                            n1 = int(r1.split()[-1])
+                        except Exception:
+                            n1 = 0
+                        try:
+                            n2 = int(r2.split()[-1])
+                        except Exception:
+                            n2 = 0
+                        deleted_lines_total += n1
+                        deleted_vouchers_total += n2
+                    except Exception as ex:
+                        logger.warning(f"cleanup-direct chunk {idx} 실패: {ex}")
+                    done_batches = (idx // CHUNK) + 1
+                    pct = 20 + int(75 * done_batches / max(total_batches, 1))
+                    _update(task_id, percent=min(95, pct),
+                            message=f"청크 {done_batches}/{total_batches} · "
+                                    f"삭제 voucher {deleted_vouchers_total}/lines {deleted_lines_total}",
+                            deleted_vouchers=deleted_vouchers_total,
+                            deleted_lines=deleted_lines_total)
+
+                _update(task_id, status="completed", percent=100,
+                        message=f"완료 — vouchers {deleted_vouchers_total}건 / lines {deleted_lines_total}건 삭제",
+                        result={
+                            "vouchers_found": len(v_ids),
+                            "deleted_vouchers": deleted_vouchers_total,
+                            "deleted_lines": deleted_lines_total,
+                        },
+                        finished_at=_time.time())
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.exception("cleanup-direct 실패")
+            _update(task_id, status="failed",
+                    message=f"실패: {str(e)[:300]}",
+                    finished_at=_time.time())
+
+    _asyncio.create_task(_runner())
+    return {"task_id": task_id, "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+
+@router.post("/admin/cleanup-cash-receipt-vouchers")
+async def cleanup_cash_receipt_vouchers(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+    background: bool = Query(True),
+):
+    """
+    reprocess 후 남은 cash_receipt 고아 voucher 정리.
+    candidate.source_id (granter ticket id) ↔ voucher.external_ref 매칭.
+    PENDING 상태로 reset된 cash_receipt 후보들의 source_id에 해당하는
+    granter_auto voucher를 청크 단위로 삭제.
+    """
+    from app.services.auto_voucher_service import _new_task, _update
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as _text
+    import asyncio, time as _time
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    async def _scan_and_delete(bg_db: AsyncSession, do_delete: bool,
+                                task_id: Optional[str] = None):
+        src_rows = (await bg_db.execute(
+            select(AutoVoucherCandidate.source_id).where(
+                AutoVoucherCandidate.source_type == AutoVoucherSourceType.CASH_RECEIPT,
+                AutoVoucherCandidate.transaction_date >= start_date,
+                AutoVoucherCandidate.transaction_date <= end_date,
+                AutoVoucherCandidate.source_id.isnot(None),
+            )
+        )).all()
+        src_ids = [r[0] for r in src_rows if r[0]]
+        total_src = len(src_ids)
+        if task_id:
+            _update(task_id, percent=5,
+                    message=f"{total_src}개 candidate source_id 수집됨")
+
+        deleted_v, deleted_l = 0, 0
+        scanned_v = 0
+        SCAN_CHUNK = 500
+        for i in range(0, total_src, SCAN_CHUNK):
+            batch_src = src_ids[i:i + SCAN_CHUNK]
+            try:
+                v_id_rows = (await bg_db.execute(
+                    select(Voucher.id).where(
+                        Voucher.source == 'granter_auto',
+                        Voucher.external_ref.in_(batch_src),
+                    )
+                )).all()
+                v_ids = [v[0] for v in v_id_rows]
+                scanned_v += len(v_ids)
+                if v_ids and do_delete:
+                    DEL_CHUNK = 20
+                    for j in range(0, len(v_ids), DEL_CHUNK):
+                        del_batch = v_ids[j:j + DEL_CHUNK]
+                        try:
+                            r1 = await bg_db.execute(
+                                _text("DELETE FROM voucher_lines WHERE voucher_id = ANY(:ids)"),
+                                {"ids": del_batch})
+                            deleted_l += r1.rowcount or 0
+                            r2 = await bg_db.execute(
+                                _text("DELETE FROM vouchers WHERE id = ANY(:ids)"),
+                                {"ids": del_batch})
+                            deleted_v += r2.rowcount or 0
+                            await bg_db.commit()
+                        except Exception:
+                            logger.exception(f"cleanup chunk {j} 삭제 실패")
+                            try: await bg_db.rollback()
+                            except Exception: pass
+            except Exception:
+                logger.exception(f"cleanup scan chunk {i} 실패")
+                try: await bg_db.rollback()
+                except Exception: pass
+            if task_id:
+                pct = 5 + int(90 * (i + SCAN_CHUNK) / max(total_src, 1))
+                pct = min(95, pct)
+                _update(task_id, percent=pct,
+                        message=f"scan {min(i+SCAN_CHUNK, total_src)}/{total_src} · "
+                                f"발견 {scanned_v} · 삭제 {deleted_v}",
+                        scanned_vouchers=scanned_v,
+                        deleted_vouchers=deleted_v)
+        return {
+            "candidates_scanned": total_src,
+            "vouchers_found": scanned_v,
+            "deleted_vouchers": deleted_v,
+            "deleted_lines": deleted_l,
+            "dry_run": not do_delete,
+        }
+
+    if background and not dry_run:
+        task_id = _new_task("cash_receipt voucher cleanup 시작…")
+        async def _runner():
+            try:
+                async with async_session_factory() as bg_db:
+                    result = await _scan_and_delete(bg_db, do_delete=True,
+                                                    task_id=task_id)
+                    _update(task_id, status="completed", percent=100,
+                            message=f"완료 — voucher 삭제 {result['deleted_vouchers']}건",
+                            result=result, finished_at=_time.time())
+            except Exception as e:
+                logger.exception("cleanup 백그라운드 실패")
+                _update(task_id, status="failed",
+                        message=f"실패: {str(e)[:300]}",
+                        finished_at=_time.time())
+        asyncio.create_task(_runner())
+        return {"task_id": task_id, "status": "queued",
+                "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+    # foreground (dry_run 또는 명시적 sync)
+    async with async_session_factory() as bg_db:
+        return await _scan_and_delete(bg_db, do_delete=not dry_run, task_id=None)
+
+
+@router.post("/admin/create-perf-indexes")
+async def create_perf_indexes():
+    """
+    성능 인덱스 명시 생성 (CONCURRENTLY — 다른 query 차단 안 함).
+    voucher_lines.voucher_id / vouchers.source 인덱스.
+    """
+    from sqlalchemy import text as _text
+    from app.core.database import engine
+    results = []
+    queries = [
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_vouchers_source ON vouchers(source)",
+    ]
+    for q in queries:
+        # CONCURRENTLY는 transaction 안에서 불가 — connection autocommit
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(_text("COMMIT"))  # exit any implicit tx
+                await conn.execute(_text(q))
+                results.append({"sql": q[:80], "status": "ok"})
+        except Exception as e:
+            results.append({"sql": q[:80], "status": "err", "error": str(e)[:200]})
+    return {"results": results}
+
+
+@router.post("/backfill-line-descriptions")
+async def backfill_line_descriptions(
+    confirm_token: str = Query(..., description="확인 토큰: 'I_UNDERSTAND' 필수"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    voucher_lines.description이 비어있거나 거래처와 동일한 행을 더 풍부하게 보정.
+
+    v2 알고리즘:
+    - candidate.raw_data가 있으면 카드명/가맹점/카테고리 추출 → 적요 재구성
+    - 그 외엔 voucher.description + ' · ' + 계정명으로 차별화
+    """
+    from sqlalchemy import text as _text
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치 (I_UNDERSTAND 필수)")
+
+    # 1단계: candidate.raw_data 활용해서 풍부한 description으로 재구성
+    candidates = (await db.execute(
+        select(AutoVoucherCandidate).where(
+            AutoVoucherCandidate.confirmed_voucher_id.isnot(None),
+            AutoVoucherCandidate.raw_data.isnot(None),
+        )
+    )).scalars().all()
+
+    enriched_descs: Dict[int, str] = {}  # voucher_id → rich_desc
+    for c in candidates:
+        try:
+            raw = json.loads(c.raw_data) if c.raw_data else {}
+        except Exception:
+            raw = {}
+        cu = raw.get("cardUsage") or {}
+        bt = raw.get("bankTransaction") or {}
+        ti = raw.get("taxInvoice") or {}
+        cr = raw.get("cashReceipt") or {}
+
+        parts = []
+        if cu:
+            card = cu.get("card") or {}
+            cn = (card.get("nickname") or card.get("name") or "").split('|')[0].strip()
+            store = cu.get("storeName") or ""
+            cat = cu.get("category") or ""
+            if cn: parts.append(cn)
+            if store: parts.append(store)
+            if cat: parts.append(f"({cat})")
+        elif bt:
+            opp = bt.get("opponent") or bt.get("counterparty") or ""
+            content = bt.get("content") or ""
+            if opp: parts.append(opp)
+            if content and content != opp: parts.append(content)
+        elif ti:
+            party = (ti.get("contractor") or ti.get("supplier") or {}).get("companyName", "")
+            if party: parts.append(f"세금계산서 · {party}")
+        elif cr:
+            issuer = (cr.get("issuer") or {}).get("companyName", "")
+            if issuer: parts.append(f"현금영수증 · {issuer}")
+
+        rich = " · ".join(parts) if parts else (c.description or c.counterparty or "")
+        if rich:
+            enriched_descs[c.confirmed_voucher_id] = rich[:500]
+
+    # 2단계: voucher_line별 적요 = (rich_desc 또는 voucher.description) + " · " + 계정명
+    # 한 번에 SQL로 처리 (CTE 활용)
+    updated = 0
+    if enriched_descs:
+        # voucher_id → rich_desc dict를 SQL VALUES로 전달
+        from sqlalchemy import bindparam
+        chunks = list(enriched_descs.items())
+        CHUNK = 50  # deadlock 회피 — 작은 청크
+        import asyncio as _aio
+        for i in range(0, len(chunks), CHUNK):
+            batch = chunks[i:i + CHUNK]
+            values_sql = ", ".join(f"({v_id}, :d_{idx})" for idx, (v_id, _) in enumerate(batch))
+            params = {f"d_{idx}": d for idx, (_, d) in enumerate(batch)}
+            stmt = _text(f"""
+                WITH new_desc(voucher_id, rich) AS (VALUES {values_sql})
+                UPDATE voucher_lines vl
+                SET description = nd.rich || ' · ' || COALESCE(
+                    (SELECT name FROM accounts WHERE id = vl.account_id), ''
+                )
+                FROM new_desc nd
+                WHERE vl.voucher_id = nd.voucher_id
+            """)
+            try:
+                r = await db.execute(stmt, params)
+                updated += r.rowcount or 0
+                await db.commit()
+            except Exception:
+                logger.exception(f"backfill chunk {i} 실패 (deadlock 등) — skip")
+                try: await db.rollback()
+                except Exception: pass
+            await _aio.sleep(0)
+
+    # 3단계: 나머지 (raw_data 없는 voucher 등) — voucher.description + 계정명
+    fallback_result = await db.execute(_text("""
+        UPDATE voucher_lines vl
+        SET description = COALESCE(NULLIF(v.description, ''), '거래') || ' · ' || COALESCE(
+            (SELECT name FROM accounts WHERE id = vl.account_id), ''
+        )
+        FROM vouchers v
+        WHERE vl.voucher_id = v.id
+          AND (
+            vl.description IS NULL OR vl.description = '' OR vl.description = v.description
+            OR vl.description = COALESCE(v.merchant_name, '')
+          )
+    """))
+    fallback_updated = fallback_result.rowcount or 0
+    await db.commit()
+
+    return {
+        "enriched_from_raw": updated,
+        "fallback_updated": fallback_updated,
+        "total_candidates_processed": len(candidates),
+    }
+
+
+@router.post("/reject-confirmed-period")
+async def reject_confirmed_period(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    확정 분개장(위하고/더존 import) 기간의 PENDING 후보를 모두 REJECTED 처리.
+    이미 회계 완료된 거래라 별도 voucher 생성 불필요.
+    """
+    return await reject_candidates_in_confirmed_period(db, start_date, end_date)
+
+
+@router.post("/match-voucher-duplicates")
+async def match_voucher_duplicates(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    mode: str = Query("grouped", description="grouped(분개 묶음 매칭, 추천) | strict(1:1 amount 비교)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    PENDING 후보 중 기존 Voucher (위하고 import 등)와 중복인 것 매칭.
+
+    mode=grouped (default): 분개 단위 묶음 매칭 — 위하고 voucher 1개가 그랜터 거래 N개를 묶음.
+      매칭 조건: 날짜±3, 정규화 거래처 일치만 (amount 비교 없음).
+      위하고 분개장이 회계 처리 완료된 거래만 모아 합산되어 있어 amount 1:1 매칭 안 됨.
+    mode=strict: 1:1 amount 매칭 (기존).
+    """
+    if mode == "grouped":
+        return await match_voucher_duplicates_grouped(db, start_date, end_date)
+    return await match_voucher_duplicates_core(db, start_date, end_date)
+
+
+async def _confirm_batch_background(candidate_ids: List[int], user_id: int) -> str:
+    """
+    대량 확정 백그라운드 — bulk INSERT로 5~10배 빠르게.
+
+    핵심 최적화:
+    1. account preload (단일 SELECT)
+    2. candidate 일괄 fetch
+    3. in-memory validation (차변=대변, 부가세 자동 보정)
+    4. Voucher INSERT 단일 SQL (RETURNING id)
+    5. VoucherLine INSERT 단일 SQL
+    6. AutoVoucherCandidate UPDATE 단일 SQL
+    """
+    import asyncio, time as _time
+    from sqlalchemy import insert as sa_insert, update as sa_update
+    from app.services.auto_voucher_service import _new_task, _update
+    from app.core.database import async_session_factory
+    from app.services.journal_migration import _ensure_base_data
+
+    task_id = _new_task(f"{len(candidate_ids)}건 일괄 확정 시작…")
+
+    async def _runner():
+        try:
+            # 0. FK 시드 보장 (별도 connection)
+            dept_id, uid = await _ensure_base_data()
+
+            async with async_session_factory() as db:
+                # 1. account preload
+                account_cache: Dict[str, int] = {}
+                preload = (await db.execute(
+                    select(Account.code, Account.id).where(Account.is_active == True)
+                )).all()
+                for code, aid in preload:
+                    if code:
+                        account_cache[code] = aid
+
+                # account_categories 캐시 (자동 생성 시 사용)
+                from app.models.accounting import AccountCategory
+                cat_rows = (await db.execute(
+                    select(AccountCategory.code, AccountCategory.id)
+                )).all()
+                cat_map = {code: cid for code, cid in cat_rows}
+                cat_code_lookup = {'1': '1', '2': '2', '3': '3', '4': '4',
+                                   '5': '5', '6': '5', '7': '5', '8': '5', '9': '5'}
+
+                txn_type_map = {
+                    AutoVoucherSourceType.CARD: TransactionType.CARD,
+                    AutoVoucherSourceType.BANK: TransactionType.BANK_TRANSFER,
+                    AutoVoucherSourceType.CASH_RECEIPT: TransactionType.CASH,
+                    AutoVoucherSourceType.SALES_TAX_INVOICE: TransactionType.TAX_INVOICE,
+                    AutoVoucherSourceType.PURCHASE_TAX_INVOICE: TransactionType.TAX_INVOICE,
+                    AutoVoucherSourceType.SALES_INVOICE: TransactionType.TAX_INVOICE,
+                    AutoVoucherSourceType.PURCHASE_INVOICE: TransactionType.TAX_INVOICE,
+                }
+
+                success_count = 0
+                failure_count = 0
+                failures: List[Dict[str, Any]] = []
+                CHUNK = 200
+                total = len(candidate_ids)
+
+                for start in range(0, total, CHUNK):
+                    chunk_ids = candidate_ids[start:start + CHUNK]
+                    cands = (await db.execute(
+                        select(AutoVoucherCandidate).where(AutoVoucherCandidate.id.in_(chunk_ids))
+                    )).scalars().all()
+
+                    # === in-memory validation + 새 account 식별 ===
+                    voucher_rows: List[Dict[str, Any]] = []
+                    line_specs_per_voucher: List[List[Dict[str, Any]]] = []
+                    candidate_ids_ok: List[int] = []
+                    new_account_codes: Dict[str, str] = {}  # code → name
+
+                    for c in cands:
+                        # 이미 confirmed면 성공 카운트 (idempotent — 다른 task가 먼저 처리)
+                        if c.status == AutoVoucherStatus.CONFIRMED:
+                            success_count += 1
+                            continue
+                        if c.status != AutoVoucherStatus.PENDING:
+                            # rejected/duplicate 등은 skip (실패 아님)
+                            continue
+                        try:
+                            debit_lines = json.loads(c.debit_lines or "[]")
+                            credit_lines = json.loads(c.credit_lines or "[]")
+                            td = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
+                            tc = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
+
+                            if td != tc:
+                                diff = tc - td
+                                total_abs = max(abs(td), abs(tc), Decimal("1"))
+                                ratio = abs(diff) / total_abs
+                                if Decimal("0.08") <= ratio <= Decimal("0.11"):
+                                    if diff > 0:
+                                        debit_lines.append({
+                                            "side": "debit", "account_code": "135",
+                                            "account_name": "부가세대급금",
+                                            "amount": str(diff), "memo": "자동 보정 (부가세 추정)",
+                                        })
+                                    else:
+                                        credit_lines.append({
+                                            "side": "credit", "account_code": "255",
+                                            "account_name": "부가세예수금",
+                                            "amount": str(-diff), "memo": "자동 보정 (부가세 추정)",
+                                        })
+                                    td = sum(Decimal(str(l.get("amount", 0))) for l in debit_lines)
+                                    tc = sum(Decimal(str(l.get("amount", 0))) for l in credit_lines)
+
+                            if td != tc:
+                                failure_count += 1
+                                failures.append({
+                                    "candidate_id": c.id,
+                                    "reason": f"차변({td}) ≠ 대변({tc}). 차이 {tc-td}",
+                                })
+                                continue
+
+                            # 새 account 식별 (preload 안 된 것)
+                            line_specs = []
+                            ok = True
+                            for l in debit_lines + credit_lines:
+                                code = (l.get("account_code") or "").strip()
+                                if not code:
+                                    continue
+                                if code not in account_cache:
+                                    new_account_codes[code] = l.get("account_name") or f"계정 {code}"
+                                line_specs.append({
+                                    "side": l.get("side"),
+                                    "code": code,
+                                    "amount": Decimal(str(l.get("amount", 0))),
+                                    "memo": l.get("memo", ""),
+                                })
+                            if not line_specs:
+                                failure_count += 1
+                                failures.append({"candidate_id": c.id, "reason": "유효한 라인 없음"})
+                                continue
+
+                            voucher_rows.append({
+                                "candidate": c,
+                                "txn_type": txn_type_map.get(c.source_type, TransactionType.GENERAL),
+                                "total_debit": td,
+                                "total_credit": tc,
+                                "line_specs": line_specs,
+                            })
+                            line_specs_per_voucher.append(line_specs)
+                            candidate_ids_ok.append(c.id)
+                        except Exception as e:
+                            failure_count += 1
+                            failures.append({"candidate_id": c.id, "reason": str(e)[:200]})
+
+                    # === 새 account 일괄 생성 ===
+                    if new_account_codes:
+                        new_acc_rows = []
+                        for code, name in new_account_codes.items():
+                            first = code.lstrip("0")[:1] if code else "9"
+                            cat_code = cat_code_lookup.get(first, '5')
+                            cat_id = cat_map.get(cat_code) or (list(cat_map.values())[0] if cat_map else None)
+                            if cat_id is None:
+                                continue
+                            new_acc_rows.append({
+                                "code": code, "name": name, "category_id": cat_id,
+                                "level": 1, "is_detail": True,
+                                "is_vat_applicable": True, "vat_rate": Decimal("10.00"),
+                                "is_active": True,
+                                "created_at": datetime.utcnow(), "updated_at": datetime.utcnow(),
+                            })
+                        if new_acc_rows:
+                            try:
+                                inserted = await db.execute(
+                                    sa_insert(Account).returning(Account.code, Account.id),
+                                    new_acc_rows,
+                                )
+                                for code, aid in inserted.all():
+                                    account_cache[code] = aid
+                            except Exception:
+                                logger.exception("account bulk insert 실패")
+
+                    # === Voucher ORM bulk add (add_all + flush — enum 자동 변환) ===
+                    now = datetime.utcnow()
+                    voucher_objs: List[Voucher] = []
+                    for v in voucher_rows:
+                        c = v["candidate"]
+                        voucher_objs.append(Voucher(
+                            voucher_number=f"{c.transaction_date.strftime('%Y%m%d')}-G{_uuid.uuid4().hex[:8]}",
+                            voucher_date=c.transaction_date,
+                            transaction_date=c.transaction_date,
+                            description=(c.description or c.counterparty or "")[:500],
+                            transaction_type=v["txn_type"],
+                            external_ref=c.source_id,
+                            source="granter_auto",
+                            department_id=dept_id,
+                            created_by=uid,
+                            total_debit=v["total_debit"],
+                            total_credit=v["total_credit"],
+                            status=VoucherStatus.CONFIRMED,
+                            merchant_name=c.counterparty,
+                            ai_confidence_score=c.confidence,
+                            confirmed_at=now,
+                            confirmed_by=uid,
+                        ))
+
+                    if voucher_objs:
+                        try:
+                            db.add_all(voucher_objs)
+                            await db.flush()  # 모든 voucher.id 채워짐
+                        except Exception as e:
+                            logger.exception("Voucher bulk add 실패")
+                            for c_id in candidate_ids_ok:
+                                failure_count += 1
+                                failures.append({"candidate_id": c_id, "reason": f"voucher 실패: {str(e)[:150]}"})
+                            try: await db.rollback()
+                            except Exception: pass
+                            voucher_objs = []
+
+                    # === VoucherLine bulk add ===
+                    if voucher_objs:
+                        line_objs: List[VoucherLine] = []
+                        for voucher_idx, (voucher, specs) in enumerate(zip(voucher_objs, line_specs_per_voucher)):
+                            v_row = voucher_rows[voucher_idx]
+                            cand = v_row["candidate"]
+                            # 적요 fallback: line.memo > candidate.description > counterparty
+                            cand_desc = (cand.description or cand.counterparty or "")[:500]
+                            line_no = 1
+                            for spec in specs:
+                                acc_id = account_cache.get(spec["code"])
+                                if not acc_id:
+                                    continue
+                                is_debit = spec["side"] == "debit"
+                                amt = spec["amount"]
+                                vat_acc = spec["code"] in ("135", "255")
+                                line_memo = (spec.get("memo") or "").strip()
+                                line_desc = (line_memo or cand_desc or "")[:500]
+                                line_objs.append(VoucherLine(
+                                    voucher_id=voucher.id,
+                                    line_number=line_no,
+                                    account_id=acc_id,
+                                    debit_amount=amt if is_debit else Decimal("0"),
+                                    credit_amount=amt if not is_debit else Decimal("0"),
+                                    vat_amount=amt if vat_acc else Decimal("0"),
+                                    supply_amount=amt if not vat_acc else Decimal("0"),
+                                    description=line_desc,
+                                    counterparty_name=cand.counterparty,
+                                ))
+                                line_no += 1
+                        if line_objs:
+                            db.add_all(line_objs)
+
+                        # Candidate UPDATE — bulk
+                        candidate_to_voucher = {
+                            voucher_rows[i]["candidate"].id: voucher_objs[i].id
+                            for i in range(len(voucher_objs))
+                        }
+                        for c_id, v_id in candidate_to_voucher.items():
+                            await db.execute(
+                                sa_update(AutoVoucherCandidate)
+                                .where(AutoVoucherCandidate.id == c_id)
+                                .values(
+                                    status=AutoVoucherStatus.CONFIRMED,
+                                    confirmed_voucher_id=v_id,
+                                    confirmed_at=now,
+                                    confirmed_by=uid,
+                                )
+                            )
+                        success_count += len(voucher_objs)
+
+                    try:
+                        await db.commit()
+                    except Exception:
+                        logger.exception("청크 commit 실패")
+                        try: await db.rollback()
+                        except Exception: pass
+
+                    processed = start + len(chunk_ids)
+                    pct = 10 + int(85 * processed / max(total, 1))
+                    _update(
+                        task_id, percent=pct,
+                        message=f"진행 {processed}/{total} — 확정 {success_count}건, 실패 {failure_count}건",
+                        success_count=success_count,
+                        failure_count=failure_count,
+                        recent_failures=[f["reason"] for f in failures[-5:]],
+                    )
+                    await asyncio.sleep(0)
+
+                _update(
+                    task_id, status="completed", percent=100,
+                    message=f"완료 — 확정 {success_count}건, 실패 {failure_count}건",
+                    result={
+                        "total": total,
+                        "success_count": success_count,
+                        "failure_count": failure_count,
+                        "failures": failures[:50],
+                    },
+                    finished_at=_time.time(),
+                )
+        except Exception as e:
+            logger.exception("confirm-batch 백그라운드 실패")
+            _update(
+                task_id, status="failed",
+                message=f"실패: {str(e)[:300]}",
+                finished_at=_time.time(),
+            )
+
+    asyncio.create_task(_runner())
+    return task_id
+
+
+@router.post("/confirm-batch")
+async def confirm_batch(
+    candidate_ids: List[int] = Body(...),
+    user_id: int = Body(1),
+    background: bool = Body(False, description="true: task_id 즉시 반환 + 백그라운드 처리"),
+    db: AsyncSession = Depends(get_db),
+):
+    """다중 확정 — 라인 합이 안 맞는 후보는 실패 처리하고 나머지는 진행.
+
+    응답:
+      success_count — 새로 confirmed
+      already_confirmed_count — 이번 호출 이전에 이미 confirmed (idempotent 성공)
+      skipped_count — rejected/duplicate (실패 아님)
+      failure_count — 실제 처리 실패 (분개 오류 등)
+
+    background=true (또는 200건 초과): task_id 반환 + 폴링.
+    """
+    if background or len(candidate_ids) > 200:
+        task_id = await _confirm_batch_background(candidate_ids, user_id)
+        return {
+            "task_id": task_id,
+            "status": "queued",
+            "total": len(candidate_ids),
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}",
+        }
+
+    rows = (await db.execute(
+        select(AutoVoucherCandidate).where(AutoVoucherCandidate.id.in_(candidate_ids))
+    )).scalars().all()
+
+    seed_cache: Dict[str, int] = {}
+    success = []
+    already_confirmed = []
+    skipped = []
+    failures = []
+    for c in rows:
+        # 사전 분기 — 이미 confirmed면 idempotent 성공
+        if c.status == AutoVoucherStatus.CONFIRMED:
+            already_confirmed.append({
+                "candidate_id": c.id, "voucher_id": c.confirmed_voucher_id,
+            })
+            continue
+        # rejected/duplicate은 skip (실패 아님)
+        if c.status != AutoVoucherStatus.PENDING:
+            skipped.append({"candidate_id": c.id, "status": c.status.value})
+            continue
+
+        savepoint = await db.begin_nested()
+        try:
+            voucher = await _confirm_candidate_inner(db, c, user_id, _seed_cache=seed_cache)
+            await savepoint.commit()
+            success.append({"candidate_id": c.id, "voucher_id": voucher.id})
+        except HTTPException as e:
+            try: await savepoint.rollback()
+            except Exception: pass
+            failures.append({"candidate_id": c.id, "reason": str(e.detail)[:200]})
+        except Exception as e:
+            try: await savepoint.rollback()
+            except Exception: pass
+            logger.exception(f"confirm-batch 항목 실패 (id={c.id})")
+            failures.append({"candidate_id": c.id, "reason": str(e)[:200]})
+
+    await db.commit()
+    return {
+        "total": len(rows),
+        "success_count": len(success),
+        "already_confirmed_count": len(already_confirmed),
+        "skipped_count": len(skipped),
+        "failure_count": len(failures),
+        "success": success,
+        "already_confirmed": already_confirmed,
+        "skipped": skipped,
+        "failures": failures,
+    }
+
+
+@router.get("/admin/sales-breakdown")
+async def sales_breakdown(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """매출 갭 진단 — 기간 내 voucher_lines를 다음 축으로 합계:
+    1) 매출/비용 큰 카테고리별 (account code 첫 자리)
+    2) source별 (granter_auto/wehago_import/manual) × 매출/비용
+    3) bank confirmed candidate가 어떤 계정으로 분개됐는지 (108 미수금 vs 4xx 매출 vs 252 미지급금 등)
+    direct connection 사용 — 큰 집계 풀러 timeout 회피."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+
+    result = {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "by_account_category": {},
+        "by_source_and_category": [],
+        "sales_accounts_detail": [],
+        "bank_voucher_debit_credit_breakdown": [],
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '180s'"))
+        except Exception:
+            pass
+
+        # 1) 계정 첫자리(category) × 차/대변 합계 — confirmed/approved voucher만
+        rows = (await db.execute(_text("""
+            SELECT
+              LEFT(a.code, 1) AS cat,
+              SUM(vl.debit_amount) AS debit,
+              SUM(vl.credit_amount) AS credit,
+              COUNT(*) AS lines
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+            GROUP BY LEFT(a.code, 1)
+            ORDER BY LEFT(a.code, 1)
+        """), {"s": start_date, "e": end_date})).all()
+        cat_label = {"1":"자산","2":"부채","3":"자본","4":"매출","5":"매출원가","6":"제조원가",
+                     "7":"제조원가","8":"판관비","9":"영업외"}
+        for r in rows:
+            result["by_account_category"][r[0]] = {
+                "label": cat_label.get(r[0], "?"),
+                "debit": float(r[1] or 0),
+                "credit": float(r[2] or 0),
+                "lines": int(r[3] or 0),
+            }
+
+        # 2) source별 × 매출(4xx 대변) / 비용(8xx,5xx 차변)
+        rows2 = (await db.execute(_text("""
+            SELECT
+              COALESCE(v.source, '(null)') AS src,
+              SUM(CASE WHEN LEFT(a.code,1)='4' THEN vl.credit_amount ELSE 0 END) AS sales,
+              SUM(CASE WHEN LEFT(a.code,1)='5' THEN vl.debit_amount ELSE 0 END) AS cogs,
+              SUM(CASE WHEN LEFT(a.code,1) IN ('6','7','8') THEN vl.debit_amount ELSE 0 END) AS sga,
+              COUNT(DISTINCT v.id) AS vouchers
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+            GROUP BY COALESCE(v.source, '(null)')
+            ORDER BY sales DESC
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows2:
+            result["by_source_and_category"].append({
+                "source": r[0],
+                "sales_credit": float(r[1] or 0),
+                "cogs_debit": float(r[2] or 0),
+                "sga_debit": float(r[3] or 0),
+                "vouchers": int(r[4] or 0),
+            })
+
+        # 3) 매출 계정 세부 (4xx, 대변 기준)
+        rows3 = (await db.execute(_text("""
+            SELECT
+              a.code, a.name,
+              SUM(vl.credit_amount) AS sales,
+              COUNT(*) AS lines
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code, 1) = '4'
+            GROUP BY a.code, a.name
+            HAVING SUM(vl.credit_amount) > 0
+            ORDER BY sales DESC
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows3:
+            result["sales_accounts_detail"].append({
+                "code": r[0], "name": r[1],
+                "sales": float(r[2] or 0), "lines": int(r[3] or 0),
+            })
+
+        # 4) bank transaction에서 변환된 voucher의 분개 계정 분포
+        # (auto_voucher_candidates source_type='BANK' 으로 confirmed된 후보의 voucher_id 기반)
+        rows4 = (await db.execute(_text("""
+            WITH bank_v AS (
+              SELECT confirmed_voucher_id AS vid
+              FROM auto_voucher_candidates
+              WHERE source_type = 'BANK'
+                AND status = 'CONFIRMED'
+                AND transaction_date BETWEEN :s AND :e
+                AND confirmed_voucher_id IS NOT NULL
+            )
+            SELECT
+              a.code, a.name,
+              SUM(vl.debit_amount) AS debit,
+              SUM(vl.credit_amount) AS credit,
+              COUNT(*) AS lines
+            FROM bank_v
+            JOIN voucher_lines vl ON vl.voucher_id = bank_v.vid
+            JOIN accounts a ON a.id = vl.account_id
+            GROUP BY a.code, a.name
+            ORDER BY (SUM(vl.debit_amount) + SUM(vl.credit_amount)) DESC
+            LIMIT 30
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows4:
+            result["bank_voucher_debit_credit_breakdown"].append({
+                "code": r[0], "name": r[1],
+                "debit": float(r[2] or 0),
+                "credit": float(r[3] or 0),
+                "lines": int(r[4] or 0),
+            })
+
+    # 위하고 손익계산서 로직:
+    # - 45x (제품/상품매출원가) 차변 = 결산 후 매출원가 (이것이 정답)
+    # - 5xx/6xx/7xx + 8xx(제) 차변 = 원가요소 (45x로 흡수됨, 이중계산 방지로 제외)
+    # - 4xx 중 45x 제외 차변/대변 = 매출(에누리/반품 차감)
+    # - 8xx 중 (제) 제외 차변 = 판관비
+    sub45x_d = 0.0
+    sub45x_c = 0.0
+    manuf_8xx_d = 0.0
+    sales_4xx_d = 0.0
+    sales_4xx_c = 0.0
+    async with get_db_direct() as db2:
+        try:
+            await db2.execute(_text("SET LOCAL statement_timeout = '60s'"))
+        except Exception:
+            pass
+        # 45x 차변/대변
+        r45 = (await db2.execute(_text("""
+            SELECT SUM(vl.debit_amount) AS d, SUM(vl.credit_amount) AS c
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code,1)='4'
+              AND a.code ~ '^4[5-9][0-9]'
+        """), {"s": start_date, "e": end_date})).first()
+        if r45:
+            sub45x_d = float(r45[0] or 0)
+            sub45x_c = float(r45[1] or 0)
+        # 4xx 중 45x 제외 (= 매출 계정)
+        r4 = (await db2.execute(_text("""
+            SELECT SUM(vl.debit_amount) AS d, SUM(vl.credit_amount) AS c
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code,1)='4'
+              AND NOT (a.code ~ '^4[5-9][0-9]')
+        """), {"s": start_date, "e": end_date})).first()
+        if r4:
+            sales_4xx_d = float(r4[0] or 0)
+            sales_4xx_c = float(r4[1] or 0)
+        # 8xx (제) 차변
+        m8 = (await db2.execute(_text("""
+            SELECT SUM(vl.debit_amount) AS d
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code,1)='8'
+              AND a.name LIKE '%(제)%'
+        """), {"s": start_date, "e": end_date})).first()
+        if m8:
+            manuf_8xx_d = float(m8[0] or 0)
+
+    cat = result["by_account_category"]
+    raw_5xx_d = cat.get("5", {}).get("debit", 0)
+    raw_67xx_d = cat.get("6", {}).get("debit", 0) + cat.get("7", {}).get("debit", 0)
+    raw_8xx_d = cat.get("8", {}).get("debit", 0)
+
+    # 결산 완료 여부 자동 판단
+    has_45x = sub45x_d > 0
+    if has_45x:
+        cogs_final = sub45x_d  # 위하고 결산 후 매출원가
+        cogs_method = "45x_결산"
+    else:
+        cogs_final = raw_5xx_d + raw_67xx_d + manuf_8xx_d
+        cogs_method = "5/6/7xx + 8xx(제) raw (결산전)"
+
+    sales_final = sales_4xx_c - sales_4xx_d  # 매출 - 에누리/반품
+    sga_final = raw_8xx_d - manuf_8xx_d  # 8xx 중 (제) 제외
+
+    result["summary"] = {
+        "매출": sales_final,
+        "매출원가": cogs_final,
+        "판관비": sga_final,
+        "매출원가_산출방식": cogs_method,
+        "_세부": {
+            "4xx_매출계정_차변(에누리)": sales_4xx_d,
+            "4xx_매출계정_대변": sales_4xx_c,
+            "45x_매출원가_차변(결산후)": sub45x_d,
+            "5xx_차변": raw_5xx_d,
+            "6/7xx_차변": raw_67xx_d,
+            "8xx_전체_차변": raw_8xx_d,
+            "8xx_제_차변": manuf_8xx_d,
+        },
+    }
+    return result
+
+
+@router.get("/admin/duplicate-period-check")
+async def duplicate_period_check(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """매출 중복 진단 — source × 일자별 매출 매트릭스 + cash_receipt confirmed 거래일 히스토그램.
+    wehago_import(1.1~2.10)와 granter_auto cash_receipt가 같은 날짜에 매출 이중계상되는지 확인."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+
+    result = {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "source_x_day_sales": [],
+        "cash_receipt_candidates_by_day": [],
+        "overlap_summary": {},
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '180s'"))
+        except Exception:
+            pass
+
+        # 1) source별 × 일자별 매출 (4xx 대변)
+        rows = (await db.execute(_text("""
+            SELECT
+              v.voucher_date AS d,
+              COALESCE(v.source, '(null)') AS src,
+              SUM(vl.credit_amount) AS sales,
+              COUNT(DISTINCT v.id) AS vouchers
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code, 1) = '4'
+            GROUP BY v.voucher_date, COALESCE(v.source, '(null)')
+            ORDER BY v.voucher_date, COALESCE(v.source, '(null)')
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows:
+            result["source_x_day_sales"].append({
+                "date": str(r[0]),
+                "source": r[1],
+                "sales": float(r[2] or 0),
+                "vouchers": int(r[3] or 0),
+            })
+
+        # 2) cash_receipt confirmed 후보의 transaction_date 히스토그램
+        rows2 = (await db.execute(_text("""
+            SELECT
+              transaction_date AS d,
+              COUNT(*) AS cnt,
+              SUM(total_amount) AS amount
+            FROM auto_voucher_candidates
+            WHERE source_type = 'CASH_RECEIPT'
+              AND status = 'CONFIRMED'
+              AND transaction_date BETWEEN :s AND :e
+            GROUP BY transaction_date
+            ORDER BY transaction_date
+        """), {"s": start_date, "e": end_date})).all()
+        for r in rows2:
+            result["cash_receipt_candidates_by_day"].append({
+                "date": str(r[0]),
+                "count": int(r[1] or 0),
+                "amount": float(r[2] or 0),
+            })
+
+        # 3) 같은 날짜에 wehago_import + granter_auto 둘 다 매출 있는 날 = 중복 의심
+        rows3 = (await db.execute(_text("""
+            WITH per_src AS (
+              SELECT
+                v.voucher_date AS d,
+                COALESCE(v.source, '(null)') AS src,
+                SUM(vl.credit_amount) AS sales
+              FROM voucher_lines vl
+              JOIN vouchers v ON v.id = vl.voucher_id
+              JOIN accounts a ON a.id = vl.account_id
+              WHERE v.voucher_date BETWEEN :s AND :e
+                AND v.status IN ('CONFIRMED','APPROVED')
+                AND LEFT(a.code, 1) = '4'
+              GROUP BY v.voucher_date, COALESCE(v.source, '(null)')
+            )
+            SELECT
+              COUNT(DISTINCT d) AS overlap_days,
+              SUM(CASE WHEN src = 'wehago_import' THEN sales ELSE 0 END) AS wehago_sales_overlap,
+              SUM(CASE WHEN src = 'granter_auto' THEN sales ELSE 0 END) AS granter_sales_overlap
+            FROM per_src
+            WHERE d IN (
+              SELECT d FROM per_src WHERE src = 'wehago_import'
+              INTERSECT
+              SELECT d FROM per_src WHERE src = 'granter_auto'
+            )
+        """), {"s": start_date, "e": end_date})).first()
+        if rows3:
+            result["overlap_summary"] = {
+                "overlap_days": int(rows3[0] or 0),
+                "wehago_sales_in_overlap_days": float(rows3[1] or 0),
+                "granter_sales_in_overlap_days": float(rows3[2] or 0),
+                "interpretation": "overlap_days 가 0이면 중복 아님. 0보다 크고 두 source 매출이 비슷한 규모면 이중계상 의심."
+            }
+
+        # 4) wehago_import 기간 끝 + granter_auto 시작일 확인
+        rows4 = (await db.execute(_text("""
+            SELECT
+              COALESCE(v.source, '(null)') AS src,
+              MIN(v.voucher_date) AS first_d,
+              MAX(v.voucher_date) AS last_d,
+              COUNT(DISTINCT v.id) AS vouchers
+            FROM vouchers v
+            WHERE v.voucher_date BETWEEN :s AND :e
+              AND v.status IN ('CONFIRMED','APPROVED')
+            GROUP BY COALESCE(v.source, '(null)')
+            ORDER BY MIN(v.voucher_date)
+        """), {"s": start_date, "e": end_date})).all()
+        result["source_date_range"] = [
+            {"source": r[0], "first": str(r[1]), "last": str(r[2]), "vouchers": int(r[3] or 0)}
+            for r in rows4
+        ]
+
+    return result
+
+
+@router.post("/admin/reclassify-bank-vouchers")
+async def reclassify_bank_vouchers(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+):
+    """기존 confirmed BANK candidate들의 분개를 새 정책(거래처 매칭)으로 재생성.
+    - 매출처 입금 → 매출 인식
+    - 매입처 출금 → 비용 인식
+    - 우리계좌 ↔ 우리계좌 → DUPLICATE (자기이체)
+    - 그 외 → 기존 default (외상매출금/미지급금)
+    """
+    from app.services.auto_voucher_service import (
+        _new_task, _update, _build_counterparty_cache, _build_bank_candidate,
+    )
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as _text
+    import asyncio as _asyncio
+    import asyncpg as _asyncpg
+    import time as _time
+    import json as _json
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    from app.core.config import settings as _settings
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    task_id = _new_task("reclassify-bank-vouchers 시작…")
+
+    async def _runner():
+        try:
+            _update(task_id, percent=2, message="거래처 마스터 캐시 빌드…")
+            await _build_counterparty_cache(force=True)
+
+            _update(task_id, percent=10, message="confirmed BANK 후보 식별…")
+            async with async_session_factory() as db:
+                rows = (await db.execute(_text("""
+                    SELECT c.id, c.confirmed_voucher_id, c.raw_data
+                    FROM auto_voucher_candidates c
+                    WHERE c.source_type = 'BANK'
+                      AND c.status = 'CONFIRMED'
+                      AND c.transaction_date BETWEEN :s AND :e
+                """), {"s": start_date, "e": end_date})).all()
+
+            total = len(rows)
+            _update(task_id, percent=15, message=f"{total}건 식별")
+
+            # 1) 각 candidate의 raw_data로 새 분개 시뮬레이션 + 분류 카운트
+            from app.services.auto_voucher_service import _classify_counterparty
+            counts = {"OUR_ACCOUNT": 0, "CARD_ISSUER": 0,
+                      "SALES_CUSTOMER": 0, "PURCHASE_VENDOR": 0, "UNKNOWN": 0}
+            todo = []  # (cid, vid, new_cand_dict)
+            for r in rows:
+                try:
+                    raw = _json.loads(r[2]) if r[2] else {}
+                except Exception:
+                    raw = {}
+                bt = raw.get("bankTransaction") or {}
+                cp = bt.get("counterparty") or bt.get("opponent") or bt.get("content") or ""
+                direction = (raw.get("transactionType") or "").upper()
+                is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
+                cls = _classify_counterparty(cp, direction=("inbound" if is_in else "outbound"))
+                counts[cls if cls in counts else "UNKNOWN"] += 1
+                try:
+                    new_cand = _build_bank_candidate(raw)
+                except Exception:
+                    continue
+                todo.append((int(r[0]), int(r[1]) if r[1] else None, new_cand))
+
+            _update(task_id, percent=25,
+                    message=f"분류 — OUR={counts['OUR_ACCOUNT']} / SALES={counts['SALES_CUSTOMER']} / "
+                            f"PURCHASE={counts['PURCHASE_VENDOR']} / UNKNOWN={counts['UNKNOWN']}",
+                    classification=counts)
+
+            if dry_run:
+                _update(task_id, status="completed", percent=100,
+                        message="DRY RUN — 분류 결과만 (변경 X)",
+                        result={"total": total, "classification": counts,
+                                "note": "OUR_ACCOUNT/SALES/PURCHASE는 새 분개 / UNKNOWN은 기존 그대로"},
+                        finished_at=_time.time())
+                return
+
+            # 2) voucher_id가 있는 것들 → voucher 삭제 (asyncpg direct, 청크)
+            voucher_ids = [vid for (_cid, vid, _nc) in todo if vid]
+            _update(task_id, percent=30,
+                    message=f"voucher {len(voucher_ids)}건 삭제 시작…")
+
+            conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+            try:
+                CHUNK = 200
+                deleted_v, deleted_l = 0, 0
+                for i in range(0, len(voucher_ids), CHUNK):
+                    batch = voucher_ids[i:i+CHUNK]
+                    try:
+                        async with conn.transaction():
+                            await conn.execute("SET LOCAL statement_timeout = '60s'")
+                            await conn.execute(
+                                "UPDATE auto_voucher_candidates SET confirmed_voucher_id = NULL "
+                                "WHERE confirmed_voucher_id = ANY($1::int[])", batch)
+                            r1 = await conn.execute(
+                                "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])", batch)
+                            r2 = await conn.execute(
+                                "DELETE FROM vouchers WHERE id = ANY($1::int[])", batch)
+                        try: deleted_l += int(r1.split()[-1])
+                        except Exception: pass
+                        try: deleted_v += int(r2.split()[-1])
+                        except Exception: pass
+                    except Exception as ex:
+                        logger.warning(f"bank reclassify del chunk {i} 실패: {ex}")
+                _update(task_id, percent=55,
+                        message=f"voucher {deleted_v}건 / lines {deleted_l}건 삭제",
+                        deleted_vouchers=deleted_v, deleted_lines=deleted_l)
+            finally:
+                await conn.close()
+
+            # 3) candidate 필드 업데이트 (새 분개 + status PENDING/DUPLICATE)
+            updated = 0
+            UPD_CHUNK = 500
+            from app.models.accounting import AutoVoucherStatus as _AVS
+            for i in range(0, len(todo), UPD_CHUNK):
+                batch = todo[i:i+UPD_CHUNK]
+                try:
+                    async with async_session_factory() as db:
+                        for cid, _vid, new_cand in batch:
+                            # status: OUR_ACCOUNT 인 경우 DUPLICATE, 그 외 PENDING
+                            new_status = (new_cand.status or _AVS.PENDING).value.upper()
+                            await db.execute(_text("""
+                                UPDATE auto_voucher_candidates
+                                SET status = :st,
+                                    confirmed_voucher_id = NULL,
+                                    confirmed_at = NULL,
+                                    confirmed_by = NULL,
+                                    counterparty = :cp,
+                                    description = :desc,
+                                    supply_amount = :sup,
+                                    vat_amount = :vat,
+                                    total_amount = :tot,
+                                    confidence = :conf,
+                                    suggested_account_code = :sac,
+                                    suggested_account_name = :san,
+                                    debit_lines = :dl,
+                                    credit_lines = :cl,
+                                    rejected_reason = :rr
+                                WHERE id = :id
+                            """), {
+                                "st": new_status,
+                                "cp": new_cand.counterparty,
+                                "desc": new_cand.description,
+                                "sup": new_cand.supply_amount,
+                                "vat": new_cand.vat_amount,
+                                "tot": new_cand.total_amount,
+                                "conf": new_cand.confidence,
+                                "sac": new_cand.suggested_account_code,
+                                "san": new_cand.suggested_account_name,
+                                "dl": new_cand.debit_lines,
+                                "cl": new_cand.credit_lines,
+                                "rr": new_cand.rejected_reason,
+                                "id": cid,
+                            })
+                            updated += 1
+                        await db.commit()
+                except Exception as ex:
+                    logger.warning(f"bank reclassify update chunk {i} 실패: {ex}")
+                pct = 55 + int(40 * (i + UPD_CHUNK) / max(len(todo), 1))
+                _update(task_id, percent=min(95, pct),
+                        message=f"재분개 진행 {updated}/{len(todo)}",
+                        reclassified=updated)
+
+            _update(task_id, status="completed", percent=100,
+                    message=f"완료 — voucher {deleted_v} 삭제 / candidate {updated} 재분개",
+                    result={
+                        "total": total,
+                        "classification": counts,
+                        "deleted_vouchers": deleted_v,
+                        "deleted_lines": deleted_l,
+                        "reclassified": updated,
+                        "next_step": "검수 큐 BANK PENDING 일괄 확정 → 매출/비용 자동 인식",
+                    },
+                    finished_at=_time.time())
+        except Exception as e:
+            logger.exception("reclassify-bank-vouchers 실패")
+            _update(task_id, status="failed",
+                    message=f"실패: {str(e)[:300]}",
+                    finished_at=_time.time())
+
+    _asyncio.create_task(_runner())
+    return {"task_id": task_id, "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+
+@router.get("/admin/inspect-account-lines")
+async def inspect_account_lines(
+    account_code: str = Query(...),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    side: str = Query("credit", description="'credit' or 'debit'"),
+    min_amount: float = Query(0),
+    limit: int = Query(30),
+):
+    """특정 account_code의 voucher_lines 상세 — 이상치 추적."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        amt_col = "vl.credit_amount" if side == "credit" else "vl.debit_amount"
+        rows = await conn.fetch(f"""
+            SELECT v.id AS voucher_id, v.voucher_date, v.voucher_number,
+                   v.description, v.merchant_name, v.source, v.external_ref,
+                   vl.debit_amount::float8 AS d, vl.credit_amount::float8 AS c,
+                   vl.counterparty_name
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE a.code = $1
+              AND v.voucher_date BETWEEN $2 AND $3
+              AND {amt_col} > $4
+            ORDER BY {amt_col} DESC
+            LIMIT {limit}
+        """, account_code, start_date, end_date, min_amount)
+        return {
+            "account_code": account_code,
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "side": side,
+            "rows": [dict(r) for r in rows],
+        }
+    finally:
+        await conn.close()
+
+
+@router.get("/admin/account-breakdown")
+async def account_breakdown(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    first_digit: Optional[str] = Query(None, description="계정코드 첫 자리 필터 (예: '6','7','8','5')"),
+    limit: int = Query(200),
+):
+    """기간 내 계정코드별 차변/대변 합계 (재분류 진단용).
+    first_digit으로 필터링 — 예: '8'이면 판관비 계정만, '5'면 매출원가.
+    accounts.category와 실제 코드 매핑 차이 확인용."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        where_extra = ""
+        if first_digit:
+            where_extra = f"AND a.code LIKE '{first_digit[0]}%'"
+        sql = f"""
+            SELECT a.code, a.name,
+                   COALESCE(ac.code, LEFT(a.code,1)) AS cat_prefix,
+                   ac.name AS cat_name,
+                   COUNT(vl.id) AS lines,
+                   SUM(vl.debit_amount)::float8 AS debit,
+                   SUM(vl.credit_amount)::float8 AS credit,
+                   (SUM(vl.debit_amount) - SUM(vl.credit_amount))::float8 AS net
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            LEFT JOIN account_categories ac ON ac.id = a.category_id
+            WHERE v.voucher_date BETWEEN $1 AND $2
+              AND v.source = 'wehago_import'
+              {where_extra}
+            GROUP BY a.code, a.name, ac.code, ac.name
+            ORDER BY (SUM(vl.debit_amount) + SUM(vl.credit_amount)) DESC
+            LIMIT {limit}
+        """
+        rows = await conn.fetch(sql, start_date, end_date)
+        # 카테고리 prefix 별 집계
+        agg = {}
+        for r in rows:
+            k = (r["cat_prefix"], r["cat_name"])
+            agg.setdefault(k, {"debit": 0.0, "credit": 0.0, "accounts": 0})
+            agg[k]["debit"] += float(r["debit"] or 0)
+            agg[k]["credit"] += float(r["credit"] or 0)
+            agg[k]["accounts"] += 1
+        return {
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "first_digit_filter": first_digit,
+            "by_category_prefix": [
+                {"prefix": k[0], "name": k[1], **v} for k, v in sorted(agg.items())
+            ],
+            "accounts": [dict(r) for r in rows],
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/recategorize-accounts")
+async def recategorize_accounts(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    dry_run: bool = Query(True),
+):
+    """accounts.code 첫 자리로 category 재매핑.
+    1=자산, 2=부채, 3=자본, 4=매출, 5=매출원가, 6=제조원가(원재료비등), 7=제조원가(노무비등), 8=판관비, 9=영업외.
+    code 첫 자리와 현재 category.code 불일치 계정 → 올바른 category로 update."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        cat_rows = await conn.fetch("SELECT id, code, name FROM account_categories")
+        prefix_to_cat_id = {}
+        for r in cat_rows:
+            p = r["code"]
+            if p and p not in prefix_to_cat_id:
+                prefix_to_cat_id[p] = int(r["id"])
+
+        mismatched = await conn.fetch("""
+            SELECT a.id, a.code, a.name,
+                   a.category_id AS old_cat_id,
+                   ac.code AS old_prefix,
+                   LEFT(a.code,1) AS expected_prefix
+            FROM accounts a
+            LEFT JOIN account_categories ac ON ac.id = a.category_id
+            WHERE LEFT(a.code,1) ~ '^[1-9]$'
+              AND (ac.code IS NULL OR ac.code != LEFT(a.code,1))
+        """)
+
+        changes = []
+        for r in mismatched:
+            expected = r["expected_prefix"]
+            new_cat = prefix_to_cat_id.get(expected)
+            if new_cat is None:
+                continue
+            changes.append({
+                "account_id": int(r["id"]),
+                "code": r["code"],
+                "name": r["name"],
+                "old_prefix": r["old_prefix"],
+                "new_prefix": expected,
+                "new_category_id": new_cat,
+            })
+
+        applied = 0
+        if not dry_run and changes:
+            async with conn.transaction():
+                for c in changes:
+                    await conn.execute(
+                        "UPDATE accounts SET category_id = $1 WHERE id = $2",
+                        c["new_category_id"], c["account_id"],
+                    )
+                    applied += 1
+        return {
+            "dry_run": dry_run,
+            "available_category_prefixes": prefix_to_cat_id,
+            "mismatched_count": len(changes),
+            "applied": applied,
+            "samples": changes[:30],
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/purge-granter-auto-vouchers")
+async def purge_granter_auto_vouchers(
+    confirm_token: str = Query(..., description="'DELETE_ALL' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """granter_auto source의 voucher를 기간 내 모두 삭제 (재분개용)."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "DELETE_ALL":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치 ('DELETE_ALL')")
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=300)
+    try:
+        before = await conn.fetchval("""
+            SELECT COUNT(*) FROM vouchers
+            WHERE source = 'granter_auto'
+              AND voucher_date BETWEEN $1 AND $2
+        """, start_date, end_date)
+        # 대상 voucher ID 미리 수집 (transaction 밖)
+        target_ids_rows = await conn.fetch("""
+            SELECT id FROM vouchers
+            WHERE source = 'granter_auto'
+              AND voucher_date BETWEEN $1 AND $2
+        """, start_date, end_date)
+        target_ids = [int(r["id"]) for r in target_ids_rows]
+
+        cands_reset = 0
+        if target_ids:
+            async with conn.transaction():
+                await conn.execute("SET LOCAL statement_timeout = '600s'")
+                # 1a) confirmed_voucher_id 해제 + status reset
+                r1 = await conn.execute("""
+                    UPDATE auto_voucher_candidates
+                    SET status = 'PENDING',
+                        confirmed_voucher_id = NULL,
+                        confirmed_at = NULL,
+                        confirmed_by = NULL
+                    WHERE confirmed_voucher_id = ANY($1::int[])
+                """, target_ids)
+                # 1b) duplicate_voucher_id 해제
+                r2 = await conn.execute("""
+                    UPDATE auto_voucher_candidates
+                    SET duplicate_voucher_id = NULL
+                    WHERE duplicate_voucher_id = ANY($1::int[])
+                """, target_ids)
+                # asyncpg execute 결과 형식: "UPDATE N"
+                try:
+                    cands_reset = int(r1.split()[-1]) + int(r2.split()[-1])
+                except Exception:
+                    cands_reset = 0
+        # 2) voucher_lines + vouchers 삭제 (FK 해제 commit 후)
+        lines_deleted = 0
+        v_deleted = 0
+        if target_ids:
+            async with conn.transaction():
+                await conn.execute("SET LOCAL statement_timeout = '600s'")
+                ld_str = await conn.execute(
+                    "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])",
+                    target_ids,
+                )
+                vd_str = await conn.execute(
+                    "DELETE FROM vouchers WHERE id = ANY($1::int[])",
+                    target_ids,
+                )
+                try:
+                    lines_deleted = int(ld_str.split()[-1])
+                    v_deleted = int(vd_str.split()[-1])
+                except Exception:
+                    pass
+        return {
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "vouchers_before": int(before or 0),
+            "vouchers_deleted": int(v_deleted or 0),
+            "lines_deleted": int(lines_deleted or 0),
+            "candidates_reset_to_pending": int(cands_reset or 0),
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/restore-rejected-candidates")
+async def restore_rejected_candidates(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    reason_contains: str = Query("자동 거절", description="이 문구 포함된 rejected_reason만 복원"),
+):
+    """REJECTED 후보 → PENDING 복원 (자동 거절 완화 후 재검수용)."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        restored = await conn.fetchval("""
+            WITH upd AS (
+                UPDATE auto_voucher_candidates
+                SET status = 'PENDING',
+                    rejected_reason = NULL
+                WHERE status = 'REJECTED'
+                  AND transaction_date BETWEEN $1 AND $2
+                  AND duplicate_voucher_id IS NULL
+                  AND ($3 = '' OR rejected_reason ILIKE '%' || $3 || '%')
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM upd
+        """, start_date, end_date, reason_contains)
+        return {
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "restored_to_pending": int(restored or 0),
+            "filter_reason_contains": reason_contains,
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/bulk-confirm-candidates")
+async def bulk_confirm_candidates(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    min_confidence: float = Query(0.6, description="이 신뢰도 이상의 PENDING 후보 모두 confirm"),
+    max_candidates: Optional[int] = Query(None, description="처리 상한 (테스트용, None=전부)"),
+    batch_size: int = Query(500),
+    background: bool = Query(True, description="True=백그라운드 + task_id 반환, False=동기 실행"),
+):
+    """Raw SQL bulk insert로 PENDING candidates → CONFIRMED voucher 일괄 변환.
+
+    ORM 기반 /admin/auto-confirm-high-confidence는 1건당 ~2.5초 (25K건 = 17시간).
+    이 endpoint는 batch INSERT로 ~50배 빠름 (25K건 ≈ 1~3분).
+
+    부가세 자동 보정 + 누락 계정 자동 생성 + 멱등 (ON CONFLICT external_ref).
+    """
+    from app.services.auto_voucher_service import (
+        bulk_confirm_candidates_raw,
+        bulk_confirm_candidates_background,
+    )
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    if background:
+        task_id = await bulk_confirm_candidates_background(
+            start_date=start_date, end_date=end_date,
+            min_confidence=min_confidence,
+            max_candidates=max_candidates,
+            batch_size=batch_size,
+        )
+        return {"task_id": task_id, "message": "백그라운드 시작 — /auto-voucher/progress/{task_id}로 폴링"}
+
+    result = await bulk_confirm_candidates_raw(
+        start_date=start_date, end_date=end_date,
+        min_confidence=min_confidence,
+        max_candidates=max_candidates,
+        batch_size=batch_size,
+    )
+    return result
+
+
+@router.post("/admin/auto-confirm-high-confidence")
+async def auto_confirm_high_confidence(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    min_confidence: float = Query(0.85),
+    batch_size: int = Query(500, description="한 번에 처리할 후보 수 — worker timeout 회피"),
+    max_seconds: int = Query(60, description="이 시간 안에 처리 후 반환 — 반복 호출용"),
+):
+    """PENDING 후보 중 신뢰도 >= min_confidence인 것을 자동으로 CONFIRMED + voucher 생성.
+    위하고 완전 대체 흐름에서 검수 자동화 (낮은 신뢰도는 사용자 수동 검수)."""
+    from app.core.database import async_session_factory
+    from sqlalchemy import select as _sel
+    from app.models.accounting import AutoVoucherCandidate, AutoVoucherStatus
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    import time as _t
+    confirmed_count = 0
+    error_count = 0
+    error_samples = []
+    started = _t.time()
+    total = 0
+    remaining = 0
+    timed_out = False
+    async with async_session_factory() as db:
+        cands_q = (_sel(AutoVoucherCandidate)
+                   .where(AutoVoucherCandidate.status == AutoVoucherStatus.PENDING)
+                   .where(AutoVoucherCandidate.transaction_date >= start_date)
+                   .where(AutoVoucherCandidate.transaction_date <= end_date)
+                   .where(AutoVoucherCandidate.confidence >= Decimal(str(min_confidence)))
+                   .order_by(AutoVoucherCandidate.id)
+                   .limit(batch_size))
+        cands = (await db.execute(cands_q)).scalars().all()
+        total = len(cands)
+        for c in cands:
+            if _t.time() - started > max_seconds:
+                timed_out = True
+                break
+            try:
+                await _confirm_candidate_inner(db, c, user_id=1)
+                confirmed_count += 1
+                if confirmed_count % 50 == 0:
+                    await db.commit()
+            except Exception as e:
+                error_count += 1
+                if len(error_samples) < 5:
+                    error_samples.append(f"id={c.id}: {str(e)[:150]}")
+                await db.rollback()
+        await db.commit()
+        # 남은 PENDING 수 별도 query
+        remaining = await db.scalar(_sel(func.count()).select_from(AutoVoucherCandidate)
+            .where(AutoVoucherCandidate.status == AutoVoucherStatus.PENDING)
+            .where(AutoVoucherCandidate.transaction_date >= start_date)
+            .where(AutoVoucherCandidate.transaction_date <= end_date)
+            .where(AutoVoucherCandidate.confidence >= Decimal(str(min_confidence))))
+    return {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "min_confidence": min_confidence,
+        "batch_size": batch_size,
+        "batch_total": total,
+        "confirmed": confirmed_count,
+        "errors": error_count,
+        "remaining_pending": int(remaining or 0),
+        "timed_out": timed_out,
+        "elapsed_seconds": round(_t.time() - started, 1),
+        "error_samples": error_samples,
+    }
+
+
+@router.post("/admin/run-month-end-closing")
+async def run_month_end_closing(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    dry_run: bool = Query(True),
+    consume_all_153: bool = Query(True, description="True: 153 당월 매입 전체를 사용분으로 인식 (기말재고=0 가정)"),
+):
+    """월말 자동 결산 분개 생성 (ERP 결산 모듈, 위하고 대체).
+
+    [Step 1] 원재료 소비 분개 (153 → 501):
+        (차) 501 원재료비(제)  / (대) 153 원재료
+        - consume_all_153=True: 당월 153 차변 합계 전체
+
+    [Step 2] 매출원가 집계 분개 (모든 원가요소 → 455):
+        (차) 455 제품매출원가  / (대) 5xx(제) 모든 계정 + 8xx(제) 모든 계정
+        - Step1 후 501 차변 합계 + 다른 5xx(제) 차변 + 8xx(제) 차변 → 455로 집계
+
+    멱등: ext_ref = closing:{YYYY-MM}:step{1,2} (중복 호출 시 UNIQUE constraint로 skip).
+    """
+    import asyncpg as _asyncpg
+    from calendar import monthrange
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    last_day = monthrange(year, month)[1]
+    period_start = date(year, month, 1)
+    period_end = date(year, month, last_day)
+    closing_date = period_end  # 결산 분개일자 = 월말일
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+    try:
+        # 부서/사용자 시드 (auto_closing source)
+        from app.services.journal_migration import _ensure_base_data, _journal_voucher_number
+        eff_dept_id, eff_user_id = await _ensure_base_data()
+
+        # 계정 ID 매핑
+        acc_rows = await conn.fetch("SELECT id, code, name FROM accounts WHERE is_active = true")
+        acc_by_code = {r["code"]: {"id": int(r["id"]), "name": r["name"]} for r in acc_rows}
+        if "501" not in acc_by_code:
+            raise HTTPException(status_code=400, detail="501 원재료비(제) 계정 없음")
+        if "455" not in acc_by_code:
+            raise HTTPException(status_code=400, detail="455 제품매출원가 계정 없음")
+        if "153" not in acc_by_code:
+            raise HTTPException(status_code=400, detail="153 원재료 계정 없음")
+
+        report = {
+            "year": year, "month": month, "closing_date": str(closing_date),
+            "dry_run": dry_run,
+            "step1_153_consumption": None,
+            "step2_cogs_aggregation": None,
+            "applied": [],
+            "skipped": [],
+        }
+
+        # ===== STEP 1: 153 원재료 소비 분개 =====
+        step1_ext_ref = f"closing:{year:04d}-{month:02d}:step1_153"
+        existing1 = await conn.fetchval(
+            "SELECT 1 FROM vouchers WHERE external_ref = $1", step1_ext_ref
+        )
+        if existing1:
+            report["skipped"].append(f"step1 already exists: {step1_ext_ref}")
+            consumed_153 = 0.0
+        else:
+            # 당월 153 차변/대변 (auto_closing 본인 제외)
+            r153 = await conn.fetchrow("""
+                SELECT
+                  COALESCE(SUM(vl.debit_amount), 0)::float8 AS d,
+                  COALESCE(SUM(vl.credit_amount), 0)::float8 AS c
+                FROM voucher_lines vl
+                JOIN vouchers v ON v.id = vl.voucher_id
+                JOIN accounts a ON a.id = vl.account_id
+                WHERE a.code = '153'
+                  AND v.voucher_date BETWEEN $1 AND $2
+                  AND v.status IN ('CONFIRMED','APPROVED')
+                  AND (v.source IS NULL OR v.source != 'auto_closing')
+            """, period_start, period_end)
+            d153 = float(r153["d"])
+            c153 = float(r153["c"])
+            consumed_153 = d153 - c153 if consume_all_153 else 0.0  # 잔여 = 사용분
+
+            report["step1_153_consumption"] = {
+                "153_debit_in_month": d153,
+                "153_credit_in_month": c153,
+                "consumed (= D - C, consume_all_153)": consumed_153,
+                "voucher_planned": consumed_153 > 0,
+            }
+
+            if not dry_run and consumed_153 > 0:
+                async with conn.transaction():
+                    vid = int(await conn.fetchval("SELECT nextval('vouchers_id_seq')"))
+                    vnum = _journal_voucher_number(closing_date)
+                    desc1 = f"{year}년 {month}월 원재료 소비 자동결산"
+                    await conn.execute("""
+                        INSERT INTO vouchers
+                          (id, voucher_number, voucher_date, transaction_date, description,
+                           transaction_type, external_ref, source, department_id, created_by,
+                           total_debit, total_credit, status, merchant_name,
+                           confirmed_at, confirmed_by, created_at, updated_at)
+                        VALUES ($1,$2,$3,$3,$4,'GENERAL',$5,'auto_closing',$6,$7,$8,$8,'CONFIRMED',$9,NOW(),$7,NOW(),NOW())
+                    """, vid, vnum, closing_date, desc1, step1_ext_ref, eff_dept_id, eff_user_id,
+                        Decimal(str(consumed_153)), "월말결산_원재료소비")
+                    await conn.execute("""
+                        INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                            debit_amount, credit_amount, vat_amount, supply_amount,
+                            description, counterparty_name, created_at)
+                        VALUES
+                          ($1, 1, $2, $3, 0, 0, $3, $4, '월말결산', NOW()),
+                          ($1, 2, $5, 0, $3, 0, $3, $4, '월말결산', NOW())
+                    """, vid, acc_by_code["501"]["id"], Decimal(str(consumed_153)),
+                        f"{year}.{month:02d} 원재료 소비 자동결산", acc_by_code["153"]["id"])
+                    report["applied"].append({"step": 1, "voucher_id": vid, "amount": consumed_153})
+
+        # ===== STEP 2: 매출원가 집계 분개 =====
+        step2_ext_ref = f"closing:{year:04d}-{month:02d}:step2_cogs"
+        existing2 = await conn.fetchval(
+            "SELECT 1 FROM vouchers WHERE external_ref = $1", step2_ext_ref
+        )
+        if existing2:
+            report["skipped"].append(f"step2 already exists: {step2_ext_ref}")
+        else:
+            # 당월 5xx (제) + 8xx (제) 차변 잔액 (Step1 인서트 포함 — 501에 consumed_153 들어갔음)
+            cost_rows = await conn.fetch("""
+                SELECT a.code, a.name,
+                  COALESCE(SUM(vl.debit_amount), 0)::float8 AS d,
+                  COALESCE(SUM(vl.credit_amount), 0)::float8 AS c
+                FROM voucher_lines vl
+                JOIN vouchers v ON v.id = vl.voucher_id
+                JOIN accounts a ON a.id = vl.account_id
+                WHERE v.voucher_date BETWEEN $1 AND $2
+                  AND v.status IN ('CONFIRMED','APPROVED')
+                  AND (LEFT(a.code,1) IN ('5','6','7') OR (LEFT(a.code,1)='8' AND a.name LIKE '%(제)%'))
+                GROUP BY a.code, a.name
+                HAVING (COALESCE(SUM(vl.debit_amount),0) - COALESCE(SUM(vl.credit_amount),0)) > 0
+            """, period_start, period_end)
+            cost_summary = []
+            total_cogs = 0.0
+            for r in cost_rows:
+                net = float(r["d"]) - float(r["c"])
+                cost_summary.append({"code": r["code"], "name": r["name"], "net_debit": net})
+                total_cogs += net
+
+            report["step2_cogs_aggregation"] = {
+                "components": cost_summary,
+                "total_cogs": total_cogs,
+                "voucher_planned": total_cogs > 0,
+            }
+
+            if not dry_run and total_cogs > 0:
+                async with conn.transaction():
+                    vid2 = int(await conn.fetchval("SELECT nextval('vouchers_id_seq')"))
+                    vnum2 = _journal_voucher_number(closing_date)
+                    desc2 = f"{year}년 {month}월 매출원가 집계 자동결산"
+                    await conn.execute("""
+                        INSERT INTO vouchers
+                          (id, voucher_number, voucher_date, transaction_date, description,
+                           transaction_type, external_ref, source, department_id, created_by,
+                           total_debit, total_credit, status, merchant_name,
+                           confirmed_at, confirmed_by, created_at, updated_at)
+                        VALUES ($1,$2,$3,$3,$4,'GENERAL',$5,'auto_closing',$6,$7,$8,$8,'CONFIRMED',$9,NOW(),$7,NOW(),NOW())
+                    """, vid2, vnum2, closing_date, desc2, step2_ext_ref, eff_dept_id, eff_user_id,
+                        Decimal(str(total_cogs)), "월말결산_매출원가집계")
+                    # (차) 455
+                    await conn.execute("""
+                        INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                            debit_amount, credit_amount, vat_amount, supply_amount,
+                            description, counterparty_name, created_at)
+                        VALUES ($1, 1, $2, $3, 0, 0, $3, $4, '월말결산', NOW())
+                    """, vid2, acc_by_code["455"]["id"], Decimal(str(total_cogs)),
+                        f"{year}.{month:02d} 매출원가 집계")
+                    # (대) 5xx/6xx/7xx/8xx(제) 각 계정
+                    ln = 2
+                    for c in cost_summary:
+                        if c["code"] not in acc_by_code:
+                            continue
+                        await conn.execute("""
+                            INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                                debit_amount, credit_amount, vat_amount, supply_amount,
+                                description, counterparty_name, created_at)
+                            VALUES ($1, $2, $3, 0, $4, 0, $4, $5, '월말결산', NOW())
+                        """, vid2, ln, acc_by_code[c["code"]]["id"], Decimal(str(c["net_debit"])),
+                            f"{c['name']} → 매출원가")
+                        ln += 1
+                    report["applied"].append({"step": 2, "voucher_id": vid2, "amount": total_cogs})
+
+        return report
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/purge-month-end-closing")
+async def purge_month_end_closing(
+    confirm_token: str = Query(..., description="'DELETE_ALL' 필수"),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+):
+    """특정 월 자동결산 분개 삭제 (재실행용)."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "DELETE_ALL":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치 ('DELETE_ALL')")
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        prefix = f"closing:{year:04d}-{month:02d}:%"
+        deleted_lines = await conn.fetchval("""
+            WITH d AS (
+                DELETE FROM voucher_lines
+                WHERE voucher_id IN (SELECT id FROM vouchers WHERE external_ref LIKE $1)
+                RETURNING 1
+            ) SELECT COUNT(*) FROM d
+        """, prefix)
+        deleted_v = await conn.fetchval("""
+            WITH d AS (
+                DELETE FROM vouchers WHERE external_ref LIKE $1 RETURNING 1
+            ) SELECT COUNT(*) FROM d
+        """, prefix)
+        return {"year": year, "month": month, "vouchers_deleted": int(deleted_v or 0),
+                "lines_deleted": int(deleted_lines or 0)}
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/purge-journal-vouchers")
+async def purge_journal_vouchers(
+    confirm_token: str = Query(..., description="'DELETE_ALL' 필수"),
+    upload_id: int = Query(..., description="ai_raw_uploads.id"),
+    source_label: str = Query("wehago_import"),
+):
+    """upload_id에서 만들어진 모든 voucher/voucher_lines 삭제 (raw SQL, direct connection).
+    중복 마이그레이션 오염 정리용. 멱등 — 두 번 호출해도 안전."""
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "DELETE_ALL":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치 ('DELETE_ALL' 필요)")
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+    try:
+        prefix = f"journal:upload:{upload_id}:%"
+        # 1) 대상 voucher_id 수집
+        vouchers_before = await conn.fetchval(
+            "SELECT COUNT(*) FROM vouchers WHERE source = $1 AND external_ref LIKE $2",
+            source_label, prefix,
+        )
+        # 2) voucher_lines 먼저 삭제
+        async with conn.transaction():
+            await conn.execute("SET LOCAL statement_timeout = '600s'")
+            lines_deleted = await conn.fetchval("""
+                WITH del AS (
+                    DELETE FROM voucher_lines
+                    WHERE voucher_id IN (
+                        SELECT id FROM vouchers
+                        WHERE source = $1 AND external_ref LIKE $2
+                    )
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM del
+            """, source_label, prefix)
+            v_deleted = await conn.fetchval("""
+                WITH del AS (
+                    DELETE FROM vouchers
+                    WHERE source = $1 AND external_ref LIKE $2
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM del
+            """, source_label, prefix)
+        vouchers_after = await conn.fetchval(
+            "SELECT COUNT(*) FROM vouchers WHERE source = $1 AND external_ref LIKE $2",
+            source_label, prefix,
+        )
+        # purge 후 UNIQUE INDEX 보장 (이전 startup 시 중복으로 실패했을 수 있음)
+        unique_index_status = "skipped"
+        try:
+            await conn.execute("SET statement_timeout = '600s'")
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_vouchers_external_ref "
+                "ON vouchers(external_ref) WHERE external_ref IS NOT NULL"
+            )
+            unique_index_status = "ensured"
+        except Exception as e:
+            unique_index_status = f"failed: {str(e)[:200]}"
+        return {
+            "upload_id": upload_id,
+            "source_label": source_label,
+            "vouchers_before": int(vouchers_before or 0),
+            "vouchers_deleted": int(v_deleted or 0),
+            "lines_deleted": int(lines_deleted or 0),
+            "vouchers_after": int(vouchers_after or 0),
+            "unique_index_status": unique_index_status,
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/refile-sales-tax-invoices")
+async def refile_sales_tax_invoices(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+    background: bool = Query(False, description="True=즉시 task_id 반환, False=동기"),
+):
+    """그랜터에서 직접 매출 세금계산서를 가져와 voucher_lines를 매출 분개로 재생성.
+
+    배경: generate_candidates가 supplier=우리회사 ticket을 매입으로 잘못 분류한 케이스 복구.
+
+    각 매출 ticket에 대해:
+      1) source_id (= ticket.id) 로 기존 voucher/candidate 찾기
+      2) 기존 voucher_lines 모두 DELETE
+      3) 매출 분개 라인 INSERT: (차) 108 외상매출금 / (대) 404 제품매출 + 255 부가세예수금
+      4) voucher.total, transaction_type, description 업데이트
+      5) candidate.source_type = SALES_TAX_INVOICE 업데이트
+
+    그랜터에 있지만 기존에 candidate가 없는 ticket은 새로 voucher + candidate 둘 다 생성.
+    """
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    if background:
+        import asyncio as _asyncio
+        from app.services.auto_voucher_service import _new_task, _update
+        task_id = _new_task("매출 세금계산서 재분개 시작…")
+
+        async def _bg():
+            try:
+                # 호출 자체를 동기 모드로 실행 (background=False 우회)
+                result = await _refile_sales_tax_invoices_impl(
+                    start_date, end_date, dry_run,
+                    progress=lambda p, m: _update(task_id, percent=p, message=m),
+                )
+                _update(task_id, status="completed", percent=100,
+                        message=f"완료 — 업데이트 {result.get('updated_existing',0)} / 신규 {result.get('created_new',0)} / 오류 {result.get('errors',0)}",
+                        result=result, finished_at=__import__('time').time())
+            except Exception as ex:
+                logger.exception("refile sales tax 백그라운드 실패")
+                _update(task_id, status="failed",
+                        message=f"실패: {str(ex)[:300]}",
+                        finished_at=__import__('time').time())
+
+        _asyncio.create_task(_bg())
+        return {"task_id": task_id, "message": "백그라운드 시작 — /auto-voucher/progress/{task_id}로 폴링"}
+
+    return await _refile_sales_tax_invoices_impl(start_date, end_date, dry_run)
+
+
+async def _refile_sales_tax_invoices_impl(
+    start_date, end_date, dry_run, progress=None,
+):
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+    from app.services.granter_client import GranterClient as _GC
+    from app.services.auto_voucher_service import (
+        _is_sales_tax_invoice, _split_supply_vat, _safe_float, _parse_date,
+    )
+    from app.services.journal_migration import _ensure_base_data
+
+    if progress is None:
+        progress = lambda p, m: None
+
+    progress(2, "그랜터 호출 중…")
+
+    # 1) 그랜터에서 TAX_INVOICE_TICKET 직접 호출
+    gc = _GC()
+    if not gc.is_configured:
+        raise HTTPException(status_code=500, detail="GRANTER_API_KEY 미설정")
+
+    # 31일 chunks
+    from datetime import timedelta as _td
+    chunks = []
+    cur = start_date
+    while cur <= end_date:
+        nxt = min(cur + _td(days=30), end_date)
+        chunks.append((cur, nxt))
+        cur = nxt + _td(days=1)
+
+    all_tickets: List[Dict[str, Any]] = []
+    for s, e in chunks:
+        try:
+            r = await gc.list_tickets({
+                "ticketType": "TAX_INVOICE_TICKET",
+                "startDate": s.isoformat(),
+                "endDate": e.isoformat(),
+            })
+            items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+            all_tickets.extend(items)
+        except Exception as ex:
+            logger.exception(f"그랜터 TAX_INVOICE 호출 실패 {s}~{e}")
+            raise HTTPException(status_code=502, detail=f"그랜터 호출 실패: {str(ex)[:200]}")
+
+    # 2) 매출만 추출
+    sales_tickets = [t for t in all_tickets if _is_sales_tax_invoice(t)]
+    progress(15, f"그랜터 ticket {len(all_tickets)}건 중 매출 {len(sales_tickets)}건 식별")
+
+    if not sales_tickets:
+        return {"message": "매출 세금계산서 없음", "total_in_period": len(all_tickets)}
+
+    # 3) DB 작업
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    eff_dept_id, eff_user_id = await _ensure_base_data()
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+    try:
+        # 계정 ID 매핑 (없으면 생성)
+        async def _ensure_acc(code: str, name: str) -> int:
+            existing = await conn.fetchval("SELECT id FROM accounts WHERE code = $1", code)
+            if existing:
+                return int(existing)
+            first = code[:1]
+            cat_code = {'1':'1','2':'2','3':'3','4':'4'}.get(first, '5')
+            cat_id = await conn.fetchval("SELECT id FROM account_categories WHERE code = $1", cat_code)
+            if not cat_id:
+                cat_id = await conn.fetchval("SELECT id FROM account_categories ORDER BY id LIMIT 1")
+            new_id = await conn.fetchval("""
+                INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                VALUES ($1, $2, $3, 1, true, true, 10.00, true, NOW(), NOW())
+                ON CONFLICT (code) DO UPDATE SET updated_at = NOW()
+                RETURNING id
+            """, code, name, cat_id)
+            return int(new_id)
+
+        acc_108 = await _ensure_acc("108", "외상매출금")
+        acc_404 = await _ensure_acc("404", "제품매출")
+        acc_255 = await _ensure_acc("255", "부가세예수금")
+
+        report = {
+            "dry_run": dry_run,
+            "total_granter_tickets": len(all_tickets),
+            "sales_tickets": len(sales_tickets),
+            "updated_existing": 0,
+            "created_new": 0,
+            "errors": 0,
+            "error_samples": [],
+            "total_sales_amount": 0.0,
+        }
+
+        for _idx_t, t in enumerate(sales_tickets):
+            try:
+                if _idx_t % 25 == 0:
+                    pct = 20 + int(70 * _idx_t / max(len(sales_tickets), 1))
+                    progress(min(pct, 90), f"진행 {_idx_t}/{len(sales_tickets)} · 업데이트 {report['updated_existing']} · 신규 {report['created_new']}")
+                source_id = str(t.get("id", ""))
+                if not source_id:
+                    continue
+                total = _safe_float(t.get("amount"))
+                tax_amount_raw = t.get("taxAmount")
+                is_taxable = tax_amount_raw is None or float(tax_amount_raw) > 0
+                supply, vat = _split_supply_vat(total, tax_amount_raw if is_taxable else 0)
+                txn_date = _parse_date(t.get("transactAt"))
+                ti = t.get("taxInvoice") or {}
+                contractor = (ti.get("contractor") or {}).get("companyName", "")
+                rich_desc = f"매출 세금계산서 · {contractor}"
+
+                # source_type for candidate
+                cand_source_type = "SALES_TAX_INVOICE" if is_taxable else "SALES_INVOICE"
+
+                report["total_sales_amount"] += float(total)
+
+                if dry_run:
+                    continue
+
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL statement_timeout = '60s'")
+
+                    # 기존 voucher 찾기
+                    v_row = await conn.fetchrow(
+                        "SELECT id FROM vouchers WHERE external_ref = $1 AND source = 'granter_auto'",
+                        source_id,
+                    )
+                    if v_row:
+                        vid = int(v_row["id"])
+                        # 기존 라인 삭제
+                        await conn.execute(
+                            "DELETE FROM voucher_lines WHERE voucher_id = $1", vid,
+                        )
+                        # voucher 메타 업데이트
+                        await conn.execute("""
+                            UPDATE vouchers
+                            SET total_debit = $1, total_credit = $1,
+                                transaction_type = 'TAX_INVOICE',
+                                description = $2,
+                                merchant_name = $3,
+                                voucher_date = $4, transaction_date = $4,
+                                updated_at = NOW()
+                            WHERE id = $5
+                        """, total, rich_desc[:500], contractor[:200] or None, txn_date, vid)
+                        report["updated_existing"] += 1
+                    else:
+                        # 신규 voucher 생성
+                        vnum = f"{txn_date.strftime('%Y%m%d')}-G{_uuid.uuid4().hex[:8]}"
+                        vid = int(await conn.fetchval("SELECT nextval('vouchers_id_seq')"))
+                        await conn.execute("""
+                            INSERT INTO vouchers
+                              (id, voucher_number, voucher_date, transaction_date, description,
+                               transaction_type, external_ref, source, department_id, created_by,
+                               total_debit, total_credit, status, merchant_name,
+                               confirmed_at, confirmed_by, created_at, updated_at)
+                            VALUES ($1,$2,$3,$3,$4,'TAX_INVOICE',$5,'granter_auto',$6,$7,$8,$8,'CONFIRMED',$9,NOW(),$7,NOW(),NOW())
+                        """, vid, vnum, txn_date, rich_desc[:500], source_id,
+                            eff_dept_id, eff_user_id, total, contractor[:200] or None)
+                        report["created_new"] += 1
+
+                    # 매출 분개 라인 INSERT
+                    # (차) 108 외상매출금 = total
+                    # (대) 404 제품매출 = supply
+                    # (대) 255 부가세예수금 = vat (있을 때만)
+                    await conn.execute("""
+                        INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                            debit_amount, credit_amount, vat_amount, supply_amount,
+                            description, counterparty_name, created_at)
+                        VALUES ($1, 1, $2, $3, 0, 0, $4, $5, $6, NOW())
+                    """, vid, acc_108, total, total, rich_desc[:500], contractor[:200] or None)
+                    await conn.execute("""
+                        INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                            debit_amount, credit_amount, vat_amount, supply_amount,
+                            description, counterparty_name, created_at)
+                        VALUES ($1, 2, $2, 0, $3, 0, $4, $5, $6, NOW())
+                    """, vid, acc_404, supply, supply, rich_desc[:500], contractor[:200] or None)
+                    if vat > 0:
+                        await conn.execute("""
+                            INSERT INTO voucher_lines (voucher_id, line_number, account_id,
+                                debit_amount, credit_amount, vat_amount, supply_amount,
+                                description, counterparty_name, created_at)
+                            VALUES ($1, 3, $2, 0, $3, $3, 0, $4, $5, NOW())
+                        """, vid, acc_255, vat, rich_desc[:500], contractor[:200] or None)
+
+                    # candidate source_type 업데이트 (updated_at 컬럼 없음 — 빼야 함)
+                    await conn.execute("""
+                        UPDATE auto_voucher_candidates
+                        SET source_type = $1::auto_voucher_source_type,
+                            confirmed_voucher_id = $2
+                        WHERE source_id = $3
+                    """, cand_source_type, vid, source_id)
+
+            except Exception as ex:
+                report["errors"] += 1
+                if len(report["error_samples"]) < 10:
+                    report["error_samples"].append(f"ticket={t.get('id')}: {str(ex)[:200]}")
+                logger.exception(f"refile sales tax invoice 실패 ticket={t.get('id')}")
+
+        return report
+    finally:
+        await conn.close()
+        await gc.aclose()
+
+
+@router.get("/admin/closing-verification")
+async def closing_verification(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    expected_sales: Optional[float] = Query(None, description="정답 매출 (위하고 손익) — 비교용"),
+    expected_cogs: Optional[float] = Query(None),
+    expected_sga: Optional[float] = Query(None),
+    warn_threshold_pct: float = Query(15.0, description="이 %를 넘으면 warning 플래그"),
+):
+    """월말 결산 후 자동 검증 + 그랜터 raw vs 시스템 sync %.
+
+    체크 항목:
+      A. 시스템 매출/매출원가/판관비 합계 (sales-breakdown 활용)
+      B. 그랜터 raw vs 시스템 sync 비율 (TAX_INVOICE/CASH_RECEIPT)
+      C. 매출/매입 mismatch candidate 카운트
+      D. PENDING 잔여
+      E. expected 입력 시 diff% 계산 + warn 플래그
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+    from app.services.granter_client import GranterClient as _GC
+    from app.services.auto_voucher_service import _is_sales_tax_invoice
+    import httpx as _httpx
+
+    result: Dict[str, Any] = {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "system_pl": {},
+        "granter_raw": {},
+        "sync_ratio": {},
+        "anomalies": [],
+        "warnings": [],
+    }
+
+    # A. 시스템 P/L (sales-breakdown)
+    async with _httpx.AsyncClient(timeout=120.0) as cli:
+        sb = await cli.get(
+            "http://localhost:8000/api/v1/auto-voucher/admin/sales-breakdown",
+            params={"start_date": str(start_date), "end_date": str(end_date)},
+        )
+        if sb.status_code == 200:
+            data = sb.json()
+            s = data.get("summary", {})
+            sys_sales = next((v for k, v in s.items() if "매출" in k and "원가" not in k), 0) or 0
+            sys_cogs = next((v for k, v in s.items() if "매출원가" in k), 0) or 0
+            sys_sga = next((v for k, v in s.items() if "판관비" in k), 0) or 0
+            result["system_pl"] = {
+                "sales": float(sys_sales), "cogs": float(sys_cogs), "sga": float(sys_sga),
+            }
+
+    # B. 그랜터 raw (TAX_INVOICE만 — count 빠르고 대표성)
+    gc = _GC()
+    granter_sales_ti = 0
+    granter_purchase_ti = 0
+    granter_sales_amount = 0.0
+    if gc.is_configured:
+        try:
+            from datetime import timedelta as _td
+            chunks = []
+            cur = start_date
+            while cur <= end_date:
+                nxt = min(cur + _td(days=30), end_date)
+                chunks.append((cur, nxt))
+                cur = nxt + _td(days=1)
+            tickets = []
+            for s, e in chunks:
+                r = await gc.list_tickets({
+                    "ticketType": "TAX_INVOICE_TICKET",
+                    "startDate": s.isoformat(), "endDate": e.isoformat(),
+                })
+                items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+                tickets.extend(items)
+            for t in tickets:
+                if _is_sales_tax_invoice(t):
+                    granter_sales_ti += 1
+                    granter_sales_amount += float(t.get("amount") or 0)
+                else:
+                    granter_purchase_ti += 1
+            result["granter_raw"] = {
+                "tax_invoice_total": len(tickets),
+                "sales_count": granter_sales_ti,
+                "purchase_count": granter_purchase_ti,
+                "sales_amount": granter_sales_amount,
+            }
+        except Exception as ex:
+            result["granter_raw"] = {"error": str(ex)[:200]}
+        finally:
+            await gc.aclose()
+
+    # C. 시스템 candidate 카운트
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=60)
+    try:
+        cand_rows = await conn.fetch("""
+            SELECT source_type::text AS st, status::text AS sts, COUNT(*) AS cnt
+            FROM auto_voucher_candidates
+            WHERE transaction_date BETWEEN $1 AND $2
+            GROUP BY source_type, status
+        """, start_date, end_date)
+        candidate_breakdown = {}
+        for r in cand_rows:
+            candidate_breakdown.setdefault(r["st"], {})[r["sts"]] = int(r["cnt"])
+        result["candidate_breakdown"] = candidate_breakdown
+
+        sys_sales_ti = sum(
+            candidate_breakdown.get("SALES_TAX_INVOICE", {}).values()
+        )
+        sys_purchase_ti = sum(
+            candidate_breakdown.get("PURCHASE_TAX_INVOICE", {}).values()
+        )
+
+        # D. PENDING 잔여
+        pending_total = await conn.fetchval("""
+            SELECT COUNT(*) FROM auto_voucher_candidates
+            WHERE status = 'PENDING' AND transaction_date BETWEEN $1 AND $2
+        """, start_date, end_date)
+        result["pending_remaining"] = int(pending_total or 0)
+    finally:
+        await conn.close()
+
+    # B-2. sync ratio
+    if granter_sales_ti > 0:
+        ratio = sys_sales_ti / granter_sales_ti * 100
+        result["sync_ratio"]["sales_tax_invoice_pct"] = round(ratio, 1)
+        if ratio < 90:
+            result["anomalies"].append(
+                f"매출 세금계산서 sync 부족: 시스템 {sys_sales_ti} / 그랜터 {granter_sales_ti} ({ratio:.1f}%)"
+            )
+    if granter_purchase_ti > 0:
+        ratio_p = sys_purchase_ti / granter_purchase_ti * 100
+        result["sync_ratio"]["purchase_tax_invoice_pct"] = round(ratio_p, 1)
+
+    # E. expected 비교
+    sys_pl = result["system_pl"]
+    diffs = {}
+    if expected_sales and sys_pl.get("sales"):
+        diff = (sys_pl["sales"] - expected_sales) / expected_sales * 100
+        diffs["sales_diff_pct"] = round(diff, 1)
+        if abs(diff) > warn_threshold_pct:
+            result["warnings"].append(f"매출 diff {diff:+.1f}% — 정답 {expected_sales/1e8:.2f}억 / 시스템 {sys_pl['sales']/1e8:.2f}억")
+    if expected_cogs and sys_pl.get("cogs"):
+        diff = (sys_pl["cogs"] - expected_cogs) / expected_cogs * 100
+        diffs["cogs_diff_pct"] = round(diff, 1)
+        if abs(diff) > warn_threshold_pct:
+            result["warnings"].append(f"매출원가 diff {diff:+.1f}% — 정답 {expected_cogs/1e8:.2f}억 / 시스템 {sys_pl['cogs']/1e8:.2f}억")
+    if expected_sga and sys_pl.get("sga"):
+        diff = (sys_pl["sga"] - expected_sga) / expected_sga * 100
+        diffs["sga_diff_pct"] = round(diff, 1)
+        if abs(diff) > warn_threshold_pct:
+            result["warnings"].append(f"판관비 diff {diff:+.1f}% — 정답 {expected_sga/1e8:.2f}억 / 시스템 {sys_pl['sga']/1e8:.2f}억")
+    if diffs:
+        result["expected_vs_actual"] = diffs
+
+    # F. 매출 세금계산서 부족 (sync_ratio < 90%) — 자동 refile 안내
+    if result["sync_ratio"].get("sales_tax_invoice_pct", 100) < 90:
+        result["recommendations"] = result.get("recommendations", [])
+        result["recommendations"].append({
+            "action": "refile_sales_tax_invoices",
+            "endpoint": f"/auto-voucher/admin/refile-sales-tax-invoices?confirm_token=I_UNDERSTAND&start_date={start_date}&end_date={end_date}&dry_run=false&background=true",
+            "reason": "매출 세금계산서가 매입으로 잘못 분류된 가능성 — refile로 복구",
+        })
+
+    return result
+
+
+@router.post("/admin/run-monthly-close")
+async def run_monthly_close(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    skip_grant_sync: bool = Query(False, description="True: 이미 sync된 경우 그랜터 호출 건너뜀"),
+    skip_refile_sales: bool = Query(False, description="True: 매출 세금계산서 refile 건너뜀"),
+):
+    """월말 결산 전체 워크플로우 — 3월부터 매월 한 번 호출만으로 끝.
+
+    단계:
+      1) 그랜터 sync (TAX_INVOICE/EXPENSE/BANK/CASH_RECEIPT) — generate_candidates_for_period
+      2) cache rebuild + duplicate match
+      3) bulk confirm (모든 PENDING)
+      4) 매출 세금계산서 refile (mismatch 자동 복구)
+      5) 153 misclassified patch (자가/한전/물류 + 카드/통장 fallback)
+      6) month-end closing (153→501, 5xx/8xx(제)→455)
+      7) 검증 리포트
+
+    백그라운드 task로 실행. task_id 즉시 반환.
+    """
+    from app.services.auto_voucher_service import (
+        _new_task, _update,
+        generate_candidates_for_period, match_voucher_duplicates_core,
+        bulk_confirm_candidates_raw,
+    )
+    from app.core.database import async_session_factory
+    from calendar import monthrange
+    import asyncio as _asyncio
+    import time as _t
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    last_day = monthrange(year, month)[1]
+    period_start = date(year, month, 1)
+    period_end = date(year, month, last_day)
+
+    task_id = _new_task(f"{year}/{month} 월말 결산 시작…")
+
+    async def _runner():
+        try:
+            steps_result: Dict[str, Any] = {
+                "year": year, "month": month,
+                "period": {"start": str(period_start), "end": str(period_end)},
+                "steps": [],
+            }
+
+            # 1) 그랜터 sync
+            if not skip_grant_sync:
+                _update(task_id, percent=5, message=f"[1/7] 그랜터 sync ({period_start}~{period_end})")
+                async with async_session_factory() as db:
+                    sync_res = await generate_candidates_for_period(db, period_start, period_end)
+                steps_result["steps"].append({"step": "1.granter_sync", "result": sync_res})
+            else:
+                steps_result["steps"].append({"step": "1.granter_sync", "result": "skipped"})
+
+            # 2) cache rebuild + duplicate match
+            _update(task_id, percent=15, message="[2/7] cache rebuild + duplicate match")
+            async with async_session_factory() as db:
+                dup_res = await match_voucher_duplicates_core(db, period_start, period_end)
+            steps_result["steps"].append({"step": "2.duplicate_match", "result": dup_res})
+
+            # 3) bulk confirm
+            _update(task_id, percent=30, message="[3/7] bulk confirm PENDING")
+            conf_res = await bulk_confirm_candidates_raw(
+                start_date=period_start, end_date=period_end,
+                min_confidence=0.0, batch_size=500,
+                progress_cb=lambda p, m: _update(task_id, message=f"[3/7] {m}"),
+            )
+            steps_result["steps"].append({"step": "3.bulk_confirm", "result": conf_res})
+
+            # 4) 매출 세금계산서 refile
+            if not skip_refile_sales:
+                _update(task_id, percent=55, message="[4/7] 매출 세금계산서 refile")
+                refile_res = await _refile_sales_tax_invoices_impl(
+                    period_start, period_end, dry_run=False,
+                    progress=lambda p, m: _update(task_id, message=f"[4/7] {m}"),
+                )
+                steps_result["steps"].append({"step": "4.refile_sales_ti", "result": refile_res})
+            else:
+                steps_result["steps"].append({"step": "4.refile_sales_ti", "result": "skipped"})
+
+            # 5) 153 misclassified patch
+            _update(task_id, percent=75, message="[5/7] 153 misclassified patch")
+            # 5a) 자가/한전/물류
+            from fastapi import Request as _Req  # noqa
+            # 내부 함수 직접 호출 — endpoint 함수를 그대로 부르면 안 됨 (Query 검증 우회)
+            import asyncpg as _asyncpg
+            from app.core.config import settings as _settings
+            raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+            url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+            conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+            try:
+                acc_153 = await conn.fetchval("SELECT id FROM accounts WHERE code = '153'")
+                async def _ensure_acc(code, name, cat):
+                    eid = await conn.fetchval("SELECT id FROM accounts WHERE code=$1", code)
+                    if eid: return int(eid)
+                    cid = await conn.fetchval("SELECT id FROM account_categories WHERE code=$1", cat)
+                    if not cid:
+                        cid = await conn.fetchval("SELECT id FROM account_categories ORDER BY id LIMIT 1")
+                    return int(await conn.fetchval("""
+                        INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                        VALUES ($1,$2,$3,1,true,true,10.00,true,NOW(),NOW())
+                        ON CONFLICT (code) DO UPDATE SET updated_at=NOW() RETURNING id
+                    """, code, name, cid))
+                acc_169 = await _ensure_acc("169", "가지급금", "1")
+                acc_515 = await _ensure_acc("515", "수도광열비(제)", "5")
+                acc_524 = await _ensure_acc("524", "운반비(제)", "5")
+                acc_830 = await _ensure_acc("830", "소모품비(판)", "5")
+
+                patch_results = []
+                for label, new_acc, where_clause in [
+                    ("자가거래", acc_169, "(v.merchant_name ~ '조인.{0,2}앤.{0,2}조인' OR vl.counterparty_name ~ '조인.{0,2}앤.{0,2}조인')"),
+                    ("한국전력", acc_515, "(v.merchant_name ~ '한국전력|전력공사' OR vl.counterparty_name ~ '한국전력|전력공사')"),
+                    ("운반_물류", acc_524, "(v.merchant_name ~ '롯데글로벌로지스|CJ대한통운|쿠팡|로지스|택배' OR vl.counterparty_name ~ '롯데글로벌로지스|CJ대한통운|쿠팡|로지스|택배')"),
+                ]:
+                    cnt = await conn.fetchval(f"""
+                        UPDATE voucher_lines vl SET account_id = $1
+                        FROM vouchers v
+                        WHERE vl.voucher_id = v.id AND vl.account_id = $2 AND vl.debit_amount > 0
+                          AND v.voucher_date BETWEEN $3 AND $4 AND v.status IN ('CONFIRMED','APPROVED')
+                          AND {where_clause}
+                        RETURNING 1
+                    """, new_acc, acc_153, period_start, period_end)
+                    patch_results.append({"pattern": label, "applied": "OK"})
+                # 5b) 카드/통장 fallback
+                applied_830 = await conn.execute("""
+                    UPDATE voucher_lines vl SET account_id = $1
+                    FROM vouchers v, auto_voucher_candidates c
+                    WHERE vl.voucher_id = v.id AND c.confirmed_voucher_id = v.id
+                      AND vl.account_id = $2 AND vl.debit_amount > 0
+                      AND v.voucher_date BETWEEN $3 AND $4
+                      AND v.status IN ('CONFIRMED','APPROVED')
+                      AND c.source_type IN ('CARD','BANK','CASH_RECEIPT')
+                """, acc_830, acc_153, period_start, period_end)
+                patch_results.append({"pattern": "card_bank_153_to_830", "applied": str(applied_830)})
+                steps_result["steps"].append({"step": "5.patch_misclassified", "result": patch_results})
+            finally:
+                await conn.close()
+
+            # 6) month-end closing
+            _update(task_id, percent=85, message="[6/7] month-end closing")
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=180.0) as cli:
+                # purge 후 재실행 (idempotent)
+                base = "http://localhost:8000/api/v1/auto-voucher/admin"
+                try:
+                    await cli.post(f"{base}/purge-month-end-closing",
+                                   params={"confirm_token": "DELETE_ALL", "year": year, "month": month})
+                except Exception:
+                    pass
+                close_r = await cli.post(f"{base}/run-month-end-closing",
+                                         params={"confirm_token": "I_UNDERSTAND",
+                                                 "year": year, "month": month,
+                                                 "dry_run": "false", "consume_all_153": "true"})
+                steps_result["steps"].append({"step": "6.month_end_closing",
+                                              "result": close_r.json() if close_r.status_code == 200 else {"error": close_r.text[:300]}})
+
+            # 7) 검증 — sales-breakdown
+            _update(task_id, percent=95, message="[7/7] 검증 리포트")
+            async with _httpx.AsyncClient(timeout=120.0) as cli:
+                verify_r = await cli.get(
+                    "http://localhost:8000/api/v1/auto-voucher/admin/sales-breakdown",
+                    params={"start_date": str(period_start), "end_date": str(period_end)},
+                )
+                verify = verify_r.json() if verify_r.status_code == 200 else {"error": verify_r.text[:300]}
+            steps_result["steps"].append({"step": "7.verification",
+                                          "summary": verify.get("summary") if isinstance(verify, dict) else None})
+
+            _update(task_id, status="completed", percent=100,
+                    message=f"완료 — {year}/{month} 결산",
+                    result=steps_result, finished_at=_t.time())
+        except Exception as ex:
+            logger.exception("월말 결산 워크플로우 실패")
+            _update(task_id, status="failed",
+                    message=f"실패: {str(ex)[:300]}",
+                    finished_at=_t.time())
+
+    _asyncio.create_task(_runner())
+    return {"task_id": task_id, "message": f"{year}/{month} 결산 백그라운드 시작 — /auto-voucher/progress/{task_id}"}
+
+
+@router.post("/admin/patch-card-bank-153-to-830")
+async def patch_card_bank_153_to_830(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    target_code: str = Query("830", description="옮길 계정코드 (830 소모품비-판 기본)"),
+    target_name: str = Query("소모품비(판)"),
+    dry_run: bool = Query(True),
+):
+    """카드/통장/현금영수증 매입 중 153(원재료)로 잘못 분류된 line을 830(소모품비-판)으로 변경.
+
+    매입세금계산서는 그대로 (대부분 진짜 원재료). 카드/통장은 키워드 매칭 안 되면 모두 153 fallback이라
+    매출원가 과대계상 원인.
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+    try:
+        # 대상 계정 자동 생성
+        existing = await conn.fetchval("SELECT id FROM accounts WHERE code = $1", target_code)
+        if not existing:
+            cat_id = await conn.fetchval("SELECT id FROM account_categories WHERE code = '5'")
+            if not cat_id:
+                cat_id = await conn.fetchval("SELECT id FROM account_categories ORDER BY id LIMIT 1")
+            existing = await conn.fetchval("""
+                INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                VALUES ($1, $2, $3, 1, true, true, 10.00, true, NOW(), NOW())
+                ON CONFLICT (code) DO UPDATE SET updated_at = NOW()
+                RETURNING id
+            """, target_code, target_name, cat_id)
+        target_acc_id = int(existing)
+        acc_153 = await conn.fetchval("SELECT id FROM accounts WHERE code = '153'")
+
+        # 대상 voucher_lines: candidate.source_type이 카드/통장/현금영수증인 것
+        stat = await conn.fetchrow("""
+            SELECT COUNT(*) AS cnt, COALESCE(SUM(vl.debit_amount), 0)::float8 AS amt
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN auto_voucher_candidates c ON c.confirmed_voucher_id = v.id
+            WHERE vl.account_id = $1
+              AND vl.debit_amount > 0
+              AND v.voucher_date BETWEEN $2 AND $3
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND c.source_type IN ('CARD','BANK','CASH_RECEIPT')
+        """, acc_153, start_date, end_date)
+        cnt = int(stat["cnt"])
+        amt = float(stat["amt"])
+
+        applied = 0
+        if not dry_run and cnt > 0:
+            result_str = await conn.execute("""
+                UPDATE voucher_lines vl
+                SET account_id = $1
+                FROM vouchers v, auto_voucher_candidates c
+                WHERE vl.voucher_id = v.id
+                  AND c.confirmed_voucher_id = v.id
+                  AND vl.account_id = $2
+                  AND vl.debit_amount > 0
+                  AND v.voucher_date BETWEEN $3 AND $4
+                  AND v.status IN ('CONFIRMED','APPROVED')
+                  AND c.source_type IN ('CARD','BANK','CASH_RECEIPT')
+            """, target_acc_id, acc_153, start_date, end_date)
+            try:
+                applied = int(result_str.split()[-1])
+            except Exception:
+                applied = cnt
+
+        return {
+            "dry_run": dry_run,
+            "period": {"start": str(start_date), "end": str(end_date)},
+            "target_code": target_code,
+            "target_account_id": target_acc_id,
+            "matched_lines": cnt,
+            "matched_amount": amt,
+            "applied": applied,
+        }
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/patch-153-misclassified")
+async def patch_153_misclassified(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+):
+    """153(원재료) 차변 중 명백히 잘못 분류된 패턴을 다른 계정으로 재배치.
+
+    패턴:
+      - 자가 거래 (조인앤조인 ↔ 조인앤조인): 153 → 169(가지급금) ; 회계상 가공 (실제 매입 아님)
+      - 한국전력공사: 153 → 515(수도광열비-제)
+      - 운반·물류 (롯데글로벌로지스, CJ대한통운, 쿠팡, 로지스/물류/운반/택배 키워드): 153 → 524(운반비-제)
+
+    voucher_lines.account_id만 교체 (transaction 분개는 그대로). 결산 재실행 시 매출원가에서 자동 제외.
+    """
+    import asyncpg as _asyncpg
+    from app.core.config import settings as _settings
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+    conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=120)
+    try:
+        # 1) 필요한 계정 자동 생성
+        async def _ensure_account(code: str, name: str, cat_code: str) -> int:
+            existing = await conn.fetchval("SELECT id FROM accounts WHERE code = $1", code)
+            if existing:
+                return int(existing)
+            cat_id = await conn.fetchval("SELECT id FROM account_categories WHERE code = $1", cat_code)
+            if not cat_id:
+                cat_id = await conn.fetchval("SELECT id FROM account_categories ORDER BY id LIMIT 1")
+            new_id = await conn.fetchval("""
+                INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                VALUES ($1, $2, $3, 1, true, true, 10.00, true, NOW(), NOW())
+                ON CONFLICT (code) DO UPDATE SET updated_at = NOW()
+                RETURNING id
+            """, code, name, cat_id)
+            return int(new_id)
+
+        acc_169 = await _ensure_account("169", "가지급금", "1")  # 자산
+        acc_515 = await _ensure_account("515", "수도광열비(제)", "5")  # 비용
+        acc_524 = await _ensure_account("524", "운반비(제)", "5")  # 비용
+        acc_153 = await conn.fetchval("SELECT id FROM accounts WHERE code = '153'")
+
+        # 2) 패턴별로 voucher_lines.account_id 교체
+        patterns = [
+            {
+                "name": "자가거래(조인앤조인)",
+                "new_acc_id": acc_169,
+                "where": "(v.merchant_name ~ '조인.{0,2}앤.{0,2}조인' OR vl.counterparty_name ~ '조인.{0,2}앤.{0,2}조인')",
+            },
+            {
+                "name": "한국전력공사",
+                "new_acc_id": acc_515,
+                "where": "(v.merchant_name ~ '한국전력|전력공사' OR vl.counterparty_name ~ '한국전력|전력공사')",
+            },
+            {
+                "name": "운반_물류",
+                "new_acc_id": acc_524,
+                "where": "(v.merchant_name ~ '롯데글로벌로지스|CJ대한통운|쿠팡|로지스|택배' OR vl.counterparty_name ~ '롯데글로벌로지스|CJ대한통운|쿠팡|로지스|택배')",
+            },
+        ]
+
+        report = {"dry_run": dry_run, "start": str(start_date), "end": str(end_date), "patches": []}
+
+        for p in patterns:
+            # 매칭 대상 카운트/합계
+            stat_sql = f"""
+                SELECT COUNT(*) AS cnt, COALESCE(SUM(vl.debit_amount), 0)::float8 AS amt
+                FROM voucher_lines vl
+                JOIN vouchers v ON v.id = vl.voucher_id
+                WHERE vl.account_id = $1
+                  AND v.voucher_date BETWEEN $2 AND $3
+                  AND v.status IN ('CONFIRMED', 'APPROVED')
+                  AND vl.debit_amount > 0
+                  AND {p['where']}
+            """
+            stat = await conn.fetchrow(stat_sql, acc_153, start_date, end_date)
+            cnt = int(stat["cnt"])
+            amt = float(stat["amt"])
+            applied = 0
+            if not dry_run and cnt > 0:
+                upd_sql = f"""
+                    UPDATE voucher_lines vl
+                    SET account_id = $1
+                    FROM vouchers v
+                    WHERE vl.voucher_id = v.id
+                      AND vl.account_id = $2
+                      AND v.voucher_date BETWEEN $3 AND $4
+                      AND v.status IN ('CONFIRMED', 'APPROVED')
+                      AND vl.debit_amount > 0
+                      AND {p['where']}
+                """
+                result_str = await conn.execute(upd_sql, p["new_acc_id"], acc_153, start_date, end_date)
+                # asyncpg execute returns "UPDATE n"
+                try:
+                    applied = int(result_str.split()[-1])
+                except Exception:
+                    applied = cnt
+            report["patches"].append({
+                "pattern": p["name"],
+                "new_account_id": p["new_acc_id"],
+                "matched_lines": cnt,
+                "matched_amount": amt,
+                "applied": applied,
+            })
+
+        return report
+    finally:
+        await conn.close()
+
+
+@router.post("/admin/seed-missing-accounts")
+async def seed_missing_accounts(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    upload_id: int = Query(...),
+):
+    """마이그레이션 시 매핑 실패한 계정을 accounts 테이블에 자동 추가.
+    ai_raw에서 source_account_code/name이 accounts에 없는 것 → 자동 등록.
+    계정 카테고리는 code 첫 자리로 자동 추론 (1자산/2부채/3자본/4매출/5매출원가/6,7제조/8판관비/9영업외)."""
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as _text
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    CAT_MAP = {
+        "1": ("1", "자산"), "2": ("2", "부채"), "3": ("3", "자본"),
+        "4": ("4", "수익"), "5": ("5", "비용"), "6": ("5", "비용"),
+        "7": ("5", "비용"), "8": ("5", "비용"), "9": ("5", "비용"),
+    }
+
+    added = []
+    skipped = []
+    async with async_session_factory() as db:
+        rows = (await db.execute(_text("""
+            SELECT DISTINCT r.source_account_code, r.source_account_name
+            FROM ai_raw_transaction_data r
+            WHERE r.upload_id = :uid
+              AND r.source_account_code IS NOT NULL
+              AND r.source_account_code != ''
+              AND NOT (r.source_account_code ~ '^[0-9]{5,}$')
+              AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.code = r.source_account_code)
+        """), {"uid": upload_id})).all()
+
+        if not rows:
+            return {"added": 0, "message": "누락 계정 없음"}
+
+        # 카테고리 ID 매핑 (account_categories.code → id)
+        cat_rows = (await db.execute(_text("SELECT code, id FROM account_categories"))).all()
+        cat_id_map = {str(r[0]): int(r[1]) for r in cat_rows}
+
+        for code, name in rows:
+            first = (code or "")[:1]
+            cat_info = CAT_MAP.get(first)
+            if not cat_info:
+                skipped.append({"code": code, "name": name, "reason": "카테고리 추론 실패"})
+                continue
+            cat_code = cat_info[0]
+            cat_id = cat_id_map.get(cat_code)
+            if not cat_id:
+                skipped.append({"code": code, "name": name, "reason": f"category {cat_code} 없음"})
+                continue
+            try:
+                await db.execute(_text("""
+                    INSERT INTO accounts (code, name, category_id, level, is_detail, is_vat_applicable, vat_rate, is_active, created_at, updated_at)
+                    VALUES (:code, :name, :cid, 1, true, true, 10.00, true, NOW(), NOW())
+                    ON CONFLICT (code) DO NOTHING
+                """), {"code": code, "name": (name or code)[:100], "cid": cat_id})
+                added.append({"code": code, "name": name, "category": cat_info[1]})
+            except Exception as e:
+                skipped.append({"code": code, "name": name, "reason": str(e)[:100]})
+        await db.commit()
+    return {"added": len(added), "added_list": added, "skipped": skipped}
+
+
+@router.post("/admin/bulk-migrate-journal")
+async def bulk_migrate_journal(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    upload_id: int = Query(...),
+    batch_size: int = Query(500),
+):
+    """Raw SQL bulk insert로 분개장 마이그레이션 — direct connection + ORM 우회.
+    동기 실행 — 끝나면 결과 반환. timeout 안 나게 frontend는 300s+ 설정.
+    idempotent: 이미 변환된 그룹 skip."""
+    from app.services.journal_migration import bulk_migrate_journal_raw
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    result = await bulk_migrate_journal_raw(
+        upload_id=upload_id,
+        batch_size=batch_size,
+    )
+    return result
+
+
+@router.post("/admin/migrate-journal-chunk")
+async def migrate_journal_chunk(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    upload_id: int = Query(...),
+    max_seconds: int = Query(60, description="이 시간 안에 끝나는 만큼만 처리"),
+):
+    """동기 청크 마이그레이션 — background task가 죽어도 누적 진행 보장.
+    한 호출에 max_seconds 동안 처리 후 응답. 클라이언트가 반복 호출해서 끝까지.
+    idempotent (SHA256 ext_ref) — 이미 변환된 그룹은 skip."""
+    from app.services.journal_migration import migrate_journal_uploads_to_vouchers
+    from app.core.database import async_session_factory
+    import asyncio as _asyncio
+    import time as _time
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    started = _time.time()
+    async with async_session_factory() as db:
+        try:
+            # max_seconds 안에 끝나는 만큼만 처리 (timeout으로 중단)
+            result = await _asyncio.wait_for(
+                migrate_journal_uploads_to_vouchers(
+                    db,
+                    upload_ids=[upload_id],
+                    commit_every=100,
+                    yield_every=20,
+                ),
+                timeout=max_seconds,
+            )
+            elapsed = _time.time() - started
+            return {"status": "completed", "elapsed_seconds": elapsed, **result}
+        except _asyncio.TimeoutError:
+            elapsed = _time.time() - started
+            return {"status": "timeout_partial",
+                    "elapsed_seconds": elapsed,
+                    "message": "max_seconds 도달 — 다시 호출하여 이어서 처리"}
+
+
+@router.get("/admin/migration-verification")
+async def migration_verification(
+    upload_id: int = Query(...),
+    sample: int = Query(20),
+):
+    """분개장 마이그레이션 검증 — 변환된 voucher 샘플 + 계정 매핑 실패 + upload_id 간 중복 진단."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+
+    result = {
+        "upload_id": upload_id,
+        "summary": {},
+        "duplicate_with_existing": {},
+        "sample_vouchers": [],
+        "unmatched_accounts": [],
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '120s'"))
+        except Exception:
+            pass
+
+        # 1) 이번 upload_id 변환 요약 (vouchers, lines, 기간)
+        row = (await db.execute(_text("""
+            SELECT COUNT(DISTINCT v.id) AS vouchers,
+                   COUNT(vl.id) AS lines,
+                   MIN(v.voucher_date) AS min_d,
+                   MAX(v.voucher_date) AS max_d,
+                   SUM(vl.debit_amount) AS total_debit,
+                   SUM(vl.credit_amount) AS total_credit
+            FROM vouchers v
+            LEFT JOIN voucher_lines vl ON vl.voucher_id = v.id
+            WHERE v.external_ref LIKE :pat
+        """), {"pat": f"journal:upload:{upload_id}:%"})).first()
+        if row:
+            result["summary"] = {
+                "vouchers": int(row[0] or 0),
+                "lines": int(row[1] or 0),
+                "first_date": str(row[2]) if row[2] else None,
+                "last_date": str(row[3]) if row[3] else None,
+                "total_debit": float(row[4] or 0),
+                "total_credit": float(row[5] or 0),
+            }
+
+        # 2) 같은 날짜 다른 upload_id voucher와의 중복 여부
+        dup_rows = (await db.execute(_text("""
+            SELECT v.voucher_date,
+                   COUNT(*) FILTER (WHERE v.external_ref LIKE :pat_this) AS this_v,
+                   COUNT(*) FILTER (WHERE v.external_ref NOT LIKE :pat_this
+                                    AND v.external_ref LIKE 'journal:upload:%') AS other_v
+            FROM vouchers v
+            WHERE v.source LIKE 'wehago%'
+              AND v.voucher_date BETWEEN
+                  (SELECT MIN(v2.voucher_date) FROM vouchers v2 WHERE v2.external_ref LIKE :pat_this)
+                  AND
+                  (SELECT MAX(v2.voucher_date) FROM vouchers v2 WHERE v2.external_ref LIKE :pat_this)
+            GROUP BY v.voucher_date
+            HAVING COUNT(*) FILTER (WHERE v.external_ref LIKE :pat_this) > 0
+               AND COUNT(*) FILTER (WHERE v.external_ref NOT LIKE :pat_this
+                                    AND v.external_ref LIKE 'journal:upload:%') > 0
+            ORDER BY v.voucher_date
+            LIMIT 30
+        """), {"pat_this": f"journal:upload:{upload_id}:%"})).all()
+        result["duplicate_with_existing"] = {
+            "overlap_dates_sample": [
+                {"date": str(r[0]), "this_upload_vouchers": int(r[1]), "other_upload_vouchers": int(r[2])}
+                for r in dup_rows
+            ],
+            "note": "this_upload_vouchers와 other_upload_vouchers 둘 다 양수면 같은 날짜 중복 voucher 존재 = 매출/매입 부풀림 위험",
+        }
+
+        # 3) sample voucher (상위 매출 또는 매입)
+        sv_rows = (await db.execute(_text("""
+            SELECT v.id, v.voucher_number, v.voucher_date, v.description, v.merchant_name,
+                   v.total_debit, v.total_credit
+            FROM vouchers v
+            WHERE v.external_ref LIKE :pat
+            ORDER BY (v.total_debit + v.total_credit) DESC
+            LIMIT :lim
+        """), {"pat": f"journal:upload:{upload_id}:%", "lim": sample})).all()
+
+        for sv in sv_rows:
+            vid = int(sv[0])
+            lines = (await db.execute(_text("""
+                SELECT a.code, a.name, vl.debit_amount, vl.credit_amount, vl.counterparty_name
+                FROM voucher_lines vl JOIN accounts a ON a.id = vl.account_id
+                WHERE vl.voucher_id = :vid
+                ORDER BY vl.line_number
+            """), {"vid": vid})).all()
+            result["sample_vouchers"].append({
+                "voucher_id": vid,
+                "voucher_number": sv[1],
+                "date": str(sv[2]),
+                "description": (sv[3] or "")[:120],
+                "merchant": sv[4],
+                "total_debit": float(sv[5] or 0),
+                "total_credit": float(sv[6] or 0),
+                "lines": [
+                    {"acc_code": l[0], "acc_name": l[1],
+                     "debit": float(l[2] or 0), "credit": float(l[3] or 0),
+                     "counterparty": l[4]}
+                    for l in lines
+                ],
+            })
+
+        # 4) ai_raw에서 자주 등장한 계정 코드 중 accounts 테이블에 없는 것 (매핑 실패 가능성)
+        ua_rows = (await db.execute(_text("""
+            SELECT DISTINCT r.source_account_code, r.source_account_name, COUNT(*) AS cnt
+            FROM ai_raw_transaction_data r
+            WHERE r.upload_id = :uid
+              AND r.source_account_code IS NOT NULL
+              AND r.source_account_code != ''
+              AND NOT (r.source_account_code ~ '^[0-9]{5,}$')  -- 거래처 코드 제외
+              AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.code = r.source_account_code)
+            GROUP BY r.source_account_code, r.source_account_name
+            ORDER BY cnt DESC
+            LIMIT 30
+        """), {"uid": upload_id})).all()
+        result["unmatched_accounts"] = [
+            {"code": r[0], "name": r[1], "rows": int(r[2] or 0)} for r in ua_rows
+        ]
+
+    return result
+
+
+@router.get("/admin/bank-counterparty-samples")
+async def bank_counterparty_samples(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    limit: int = Query(100),
+):
+    """그랜터 bank 거래의 counterparty 어떻게 들어오는지 샘플 + 분류 결과."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+    from app.services.auto_voucher_service import (
+        _classify_counterparty, _build_counterparty_cache,
+    )
+    import json as _json
+
+    await _build_counterparty_cache(force=False)
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '60s'"))
+        except Exception:
+            pass
+        rows = (await db.execute(_text("""
+            SELECT c.counterparty, c.total_amount, c.raw_data
+            FROM auto_voucher_candidates c
+            WHERE c.source_type = 'BANK'
+              AND c.status = 'CONFIRMED'
+              AND c.transaction_date BETWEEN :s AND :e
+            ORDER BY c.total_amount DESC
+            LIMIT :lim
+        """), {"s": start_date, "e": end_date, "lim": limit})).all()
+
+    samples = []
+    cls_counts = {"OUR_ACCOUNT": 0, "SALES_CUSTOMER": 0, "PURCHASE_VENDOR": 0, "UNKNOWN": 0}
+    for r in rows:
+        try:
+            raw = _json.loads(r[2]) if r[2] else {}
+        except Exception:
+            raw = {}
+        bt = raw.get("bankTransaction") or {}
+        cp_stored = r[0]
+        cp_raw_field = bt.get("counterparty") or bt.get("opponent") or ""
+        content = bt.get("content") or ""
+        # 새 정책: cp가 비면 content를 거래처로 사용
+        cp_effective = cp_raw_field or content
+        direction = (raw.get("transactionType") or "").upper()
+        is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in str(direction)
+        cls = _classify_counterparty(cp_effective, direction=("inbound" if is_in else "outbound"))
+        cls_counts[cls] = cls_counts.get(cls, 0) + 1
+        samples.append({
+            "amount": float(r[1] or 0),
+            "direction": "입금" if is_in else "출금",
+            "counterparty_stored": cp_stored,
+            "counterparty_raw_field": cp_raw_field,
+            "content": content[:80],
+            "effective_cp": cp_effective[:80],
+            "classification": cls,
+        })
+
+    return {
+        "period": {"start": str(start_date), "end": str(end_date)},
+        "classification_counts": cls_counts,
+        "samples": samples,
+    }
+
+
+@router.get("/admin/counterparty-cache-stats")
+async def counterparty_cache_stats(rebuild: bool = Query(False)):
+    """현재 거래처 마스터 캐시 상태 — 매출처/매입처/우리계좌 수, 샘플."""
+    from app.services.auto_voucher_service import _build_counterparty_cache, _CP_CACHE
+    if rebuild:
+        await _build_counterparty_cache(force=True)
+    sales = list(_CP_CACHE["sales_customers"])[:50]
+    purch = list(_CP_CACHE["purchase_vendors"])[:50]
+    ours = list(_CP_CACHE["our_bank_accounts"])
+    hints = list(_CP_CACHE["vendor_account_hints"].items())[:30]
+    return {
+        "built_at": _CP_CACHE["ts"],
+        "counts": {
+            "sales_customers": len(_CP_CACHE["sales_customers"]),
+            "purchase_vendors": len(_CP_CACHE["purchase_vendors"]),
+            "our_bank_accounts": len(_CP_CACHE["our_bank_accounts"]),
+            "vendor_account_hints": len(_CP_CACHE["vendor_account_hints"]),
+        },
+        "sample_sales_customers": sales,
+        "sample_purchase_vendors": purch,
+        "our_bank_accounts": ours,
+        "sample_account_hints": [{"vendor": k, "code": v} for k, v in hints],
+    }
+
+
+@router.post("/admin/reclassify-misfiled-sales-tax")
+async def reclassify_misfiled_sales_tax(
+    confirm_token: str = Query(..., description="'I_UNDERSTAND' 필수"),
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    dry_run: bool = Query(True),
+):
+    """매출세금계산서로 잘못 분류된 매입세금계산서 정리 (한 번에).
+    1) confirmed SALES_TAX_INVOICE 후보 중 contractor=우리회사인 것 식별
+    2) 연결된 voucher (voucher_lines + voucher) 삭제
+    3) candidate.source_type → PURCHASE_TAX_INVOICE 변경
+    4) debit_lines/credit_lines 매입 분개로 재생성 (차변 153 원재료 + 135 부가세대급금 / 대변 251 외상매입금)
+    5) status PENDING reset, confirmed_voucher_id null
+    이후 사용자가 검수 큐에서 일괄 확정 → 매입 voucher 재생성."""
+    from app.services.auto_voucher_service import (
+        _new_task, _update, OUR_BUSINESS_NUMBER, _normalize_biznum,
+        _build_tax_invoice_candidate,
+    )
+    from app.core.database import async_session_factory
+    from sqlalchemy import text as _text
+    import asyncio as _asyncio
+    import asyncpg as _asyncpg
+    import time as _time
+    import json as _json
+
+    if confirm_token != "I_UNDERSTAND":
+        raise HTTPException(status_code=400, detail="confirm_token 불일치")
+
+    from app.core.config import settings as _settings
+    raw_url = _settings.DATABASE_URL_DIRECT or _settings.DATABASE_URL
+    url = raw_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    task_id = _new_task("reclassify-misfiled-sales-tax 시작…")
+
+    async def _runner():
+        try:
+            _update(task_id, percent=2, message="확정된 매출세금계산서 후보 식별…")
+
+            # 1) candidate 식별 — confirmed SALES_TAX_INVOICE 기간 내
+            async with async_session_factory() as db:
+                rows = (await db.execute(_text("""
+                    SELECT c.id, c.confirmed_voucher_id, c.raw_data, c.source_id,
+                           c.total_amount, c.supply_amount, c.vat_amount
+                    FROM auto_voucher_candidates c
+                    WHERE c.source_type = 'SALES_TAX_INVOICE'
+                      AND c.status = 'CONFIRMED'
+                      AND c.transaction_date BETWEEN :s AND :e
+                """), {"s": start_date, "e": end_date})).all()
+
+            total_candidates = len(rows)
+            _update(task_id, percent=5,
+                    message=f"확정 매출세금계산서 {total_candidates}건 식별")
+
+            misfiled = []  # (candidate_id, voucher_id, ticket_dict)
+            correct_sales = 0
+            unknown = 0
+            for r in rows:
+                try:
+                    raw = _json.loads(r[2]) if r[2] else {}
+                except Exception:
+                    raw = {}
+                ti = raw.get("taxInvoice") or {}
+                sup = _normalize_biznum((ti.get("supplier") or {}).get("registrationNumber"))
+                con = _normalize_biznum((ti.get("contractor") or {}).get("registrationNumber"))
+                if con == OUR_BUSINESS_NUMBER and sup != OUR_BUSINESS_NUMBER:
+                    misfiled.append((int(r[0]), int(r[1]) if r[1] else None, raw))
+                elif sup == OUR_BUSINESS_NUMBER and con != OUR_BUSINESS_NUMBER:
+                    correct_sales += 1
+                else:
+                    unknown += 1
+
+            _update(task_id, percent=15,
+                    message=f"매입오분류 {len(misfiled)}건 식별 (정상 매출 {correct_sales}, 미상 {unknown})",
+                    misfiled=len(misfiled), correct_sales=correct_sales, unknown=unknown)
+
+            if dry_run:
+                _update(task_id, status="completed", percent=100,
+                        message=f"DRY RUN — 오분류 {len(misfiled)}건 식별만 (실제 변경 X)",
+                        result={
+                            "total_confirmed_sales_tax": total_candidates,
+                            "misfiled_purchases": len(misfiled),
+                            "correct_sales": correct_sales,
+                            "unknown": unknown,
+                        },
+                        finished_at=_time.time())
+                return
+
+            if not misfiled:
+                _update(task_id, status="completed", percent=100,
+                        message="오분류된 항목 없음",
+                        result={"misfiled_purchases": 0},
+                        finished_at=_time.time())
+                return
+
+            # 2) voucher_ids 청크 단위 삭제 (direct connection, SET LOCAL timeout)
+            voucher_ids = [vid for (_cid, vid, _t) in misfiled if vid]
+            _update(task_id, percent=20,
+                    message=f"voucher {len(voucher_ids)}건 삭제 시작…")
+
+            conn = await _asyncpg.connect(url, statement_cache_size=0, command_timeout=600)
+            try:
+                CHUNK = 200
+                deleted_v, deleted_l = 0, 0
+                total_batches = max(1, (len(voucher_ids) + CHUNK - 1) // CHUNK)
+                for i in range(0, len(voucher_ids), CHUNK):
+                    batch = voucher_ids[i:i+CHUNK]
+                    try:
+                        async with conn.transaction():
+                            await conn.execute("SET LOCAL statement_timeout = '60s'")
+                            # candidate.confirmed_voucher_id 끊기 (FK 위반 회피)
+                            await conn.execute(
+                                "UPDATE auto_voucher_candidates SET confirmed_voucher_id = NULL "
+                                "WHERE confirmed_voucher_id = ANY($1::int[])",
+                                batch,
+                            )
+                            r1 = await conn.execute(
+                                "DELETE FROM voucher_lines WHERE voucher_id = ANY($1::int[])",
+                                batch,
+                            )
+                            r2 = await conn.execute(
+                                "DELETE FROM vouchers WHERE id = ANY($1::int[])",
+                                batch,
+                            )
+                        try: deleted_l += int(r1.split()[-1])
+                        except Exception: pass
+                        try: deleted_v += int(r2.split()[-1])
+                        except Exception: pass
+                    except Exception as ex:
+                        logger.warning(f"reclassify chunk {i} 실패: {ex}")
+                    done = (i // CHUNK) + 1
+                    pct = 20 + int(40 * done / total_batches)
+                    _update(task_id, percent=min(60, pct),
+                            message=f"voucher 삭제 진행 {done}/{total_batches} · "
+                                    f"voucher {deleted_v} / lines {deleted_l}",
+                            deleted_vouchers=deleted_v, deleted_lines=deleted_l)
+            finally:
+                await conn.close()
+
+            # 3) candidate 재분개 (PURCHASE_TAX_INVOICE) — 청크 단위 commit
+            _update(task_id, percent=65, message="candidate 매입 재분개 시작…")
+            updated = 0
+            UPD_CHUNK = 500
+            for i in range(0, len(misfiled), UPD_CHUNK):
+                batch = misfiled[i:i+UPD_CHUNK]
+                try:
+                    async with async_session_factory() as db:
+                        for cid, _vid, ticket in batch:
+                            # _build_tax_invoice_candidate를 매입(is_sales=False)으로 호출하여
+                            # 필드 dict 추출 → 기존 candidate 업데이트
+                            try:
+                                new_cand = _build_tax_invoice_candidate(ticket, is_sales=False)
+                            except Exception:
+                                continue
+                            await db.execute(_text("""
+                                UPDATE auto_voucher_candidates
+                                SET source_type = 'PURCHASE_TAX_INVOICE',
+                                    status = 'PENDING',
+                                    confirmed_voucher_id = NULL,
+                                    confirmed_at = NULL,
+                                    confirmed_by = NULL,
+                                    counterparty = :cp,
+                                    description = :desc,
+                                    supply_amount = :sup,
+                                    vat_amount = :vat,
+                                    total_amount = :tot,
+                                    suggested_account_code = :sac,
+                                    suggested_account_name = :san,
+                                    debit_lines = :dl,
+                                    credit_lines = :cl
+                                WHERE id = :id
+                            """), {
+                                "cp": new_cand.counterparty,
+                                "desc": new_cand.description,
+                                "sup": new_cand.supply_amount,
+                                "vat": new_cand.vat_amount,
+                                "tot": new_cand.total_amount,
+                                "sac": new_cand.suggested_account_code,
+                                "san": new_cand.suggested_account_name,
+                                "dl": new_cand.debit_lines,
+                                "cl": new_cand.credit_lines,
+                                "id": cid,
+                            })
+                            updated += 1
+                        await db.commit()
+                except Exception as ex:
+                    logger.warning(f"reclassify update chunk {i} 실패: {ex}")
+                done = (i // UPD_CHUNK) + 1
+                tb = max(1, (len(misfiled) + UPD_CHUNK - 1) // UPD_CHUNK)
+                pct = 65 + int(30 * done / tb)
+                _update(task_id, percent=min(95, pct),
+                        message=f"재분개 {updated}/{len(misfiled)}",
+                        reclassified=updated)
+
+            _update(task_id, status="completed", percent=100,
+                    message=f"완료 — voucher {deleted_v}건 삭제 / "
+                            f"candidate {updated}건 매입 재분개 (PENDING)",
+                    result={
+                        "total_confirmed_sales_tax": total_candidates,
+                        "misfiled_purchases": len(misfiled),
+                        "correct_sales": correct_sales,
+                        "unknown": unknown,
+                        "deleted_vouchers": deleted_v,
+                        "deleted_lines": deleted_l,
+                        "reclassified_to_purchase": updated,
+                        "next_step": "검수 큐에서 PURCHASE_TAX_INVOICE PENDING 일괄 확정",
+                    },
+                    finished_at=_time.time())
+
+        except Exception as e:
+            logger.exception("reclassify-misfiled-sales-tax 실패")
+            _update(task_id, status="failed",
+                    message=f"실패: {str(e)[:300]}",
+                    finished_at=_time.time())
+
+    _asyncio.create_task(_runner())
+    return {"task_id": task_id, "status": "queued",
+            "progress_url": f"/api/v1/auto-voucher/progress/{task_id}"}
+
+
+@router.get("/admin/inspect-tax-invoice")
+async def inspect_tax_invoice(
+    target_date: date = Query(...),
+    sample: int = Query(20),
+):
+    """확정된 SALES_TAX_INVOICE 후보의 raw_data 분석 — 발행자/수취자 사업자번호로 매출/매입 판정 검증.
+    조인앤조인 사업자번호: 503-87-01038 (정규화: 5038701038)."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+    import json as _json
+
+    OUR_BIZ = "5038701038"
+    result = {
+        "target_date": str(target_date),
+        "our_business_number": OUR_BIZ,
+        "samples": [],
+        "verdict": {"likely_correct_sales": 0, "likely_misclassified_purchase": 0,
+                    "internal_or_unknown": 0, "no_raw_data": 0},
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '60s'"))
+        except Exception:
+            pass
+
+        rows = (await db.execute(_text("""
+            SELECT c.id, c.source_id, c.counterparty, c.total_amount, c.raw_data,
+                   v.id AS vid, v.voucher_number
+            FROM auto_voucher_candidates c
+            LEFT JOIN vouchers v ON v.id = c.confirmed_voucher_id
+            WHERE c.source_type = 'SALES_TAX_INVOICE'
+              AND c.status = 'CONFIRMED'
+              AND c.transaction_date = :d
+            ORDER BY c.total_amount DESC
+            LIMIT :lim
+        """), {"d": target_date, "lim": sample})).all()
+
+        for r in rows:
+            try:
+                raw = _json.loads(r[4]) if r[4] else {}
+            except Exception:
+                raw = {}
+            ti = raw.get("taxInvoice") or {}
+            supplier = ti.get("supplier") or {}
+            contractor = ti.get("contractor") or {}
+            sup_reg = (supplier.get("registrationNumber") or "").replace("-", "")
+            con_reg = (contractor.get("registrationNumber") or "").replace("-", "")
+            txn_type = (raw.get("transactionType") or "")
+
+            if sup_reg == OUR_BIZ and con_reg != OUR_BIZ:
+                verdict = "likely_correct_sales"
+            elif con_reg == OUR_BIZ and sup_reg != OUR_BIZ:
+                verdict = "likely_misclassified_purchase"
+            elif sup_reg == OUR_BIZ and con_reg == OUR_BIZ:
+                verdict = "internal_or_unknown"
+            else:
+                verdict = "internal_or_unknown"
+            result["verdict"][verdict] += 1
+
+            result["samples"].append({
+                "candidate_id": int(r[0]),
+                "voucher_id": int(r[5]) if r[5] else None,
+                "voucher_number": r[6],
+                "ticket_id": r[1],
+                "counterparty(stored)": r[2],
+                "amount": float(r[3] or 0),
+                "transactionType(raw)": txn_type,
+                "supplier_name": supplier.get("companyName"),
+                "supplier_regnum": sup_reg,
+                "contractor_name": contractor.get("companyName"),
+                "contractor_regnum": con_reg,
+                "verdict": verdict,
+            })
+
+    return result
+
+
+@router.get("/admin/sales-month-end-detail")
+async def sales_month_end_detail(
+    target_date: date = Query(..., description="확인할 날짜 (예: 2026-01-31, 2026-02-28)"),
+):
+    """특정 날짜 매출 voucher 상세 — 1.31, 2.28 폭증 원인 파악.
+    voucher × source_type 분포 + 상위 voucher 30건의 분개 라인."""
+    from app.core.database import get_db_direct
+    from sqlalchemy import text as _text
+
+    result = {
+        "target_date": str(target_date),
+        "voucher_summary": {},
+        "by_candidate_source_type": [],
+        "top_vouchers": [],
+        "wehago_top_lines": [],
+    }
+
+    async with get_db_direct() as db:
+        try:
+            await db.execute(_text("SET LOCAL statement_timeout = '120s'"))
+        except Exception:
+            pass
+
+        # 1) 해당일 매출 voucher 총합 (source별)
+        rows = (await db.execute(_text("""
+            SELECT
+              COALESCE(v.source, '(null)') AS src,
+              COUNT(DISTINCT v.id) AS vouchers,
+              SUM(vl.credit_amount) AS sales,
+              SUM(vl.debit_amount) AS reverse_debit
+            FROM voucher_lines vl
+            JOIN vouchers v ON v.id = vl.voucher_id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date = :d
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code, 1) = '4'
+            GROUP BY COALESCE(v.source, '(null)')
+        """), {"d": target_date})).all()
+        result["voucher_summary"] = [
+            {"source": r[0], "vouchers": int(r[1] or 0),
+             "sales_credit": float(r[2] or 0), "sales_debit_reverse": float(r[3] or 0)}
+            for r in rows
+        ]
+
+        # 2) granter_auto 매출 voucher × candidate source_type 분해
+        rows2 = (await db.execute(_text("""
+            SELECT
+              c.source_type AS st,
+              COUNT(DISTINCT v.id) AS vouchers,
+              SUM(vl.credit_amount) AS sales
+            FROM vouchers v
+            JOIN auto_voucher_candidates c ON c.confirmed_voucher_id = v.id
+            JOIN voucher_lines vl ON vl.voucher_id = v.id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date = :d
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND v.source = 'granter_auto'
+              AND LEFT(a.code, 1) = '4'
+            GROUP BY c.source_type
+            ORDER BY SUM(vl.credit_amount) DESC
+        """), {"d": target_date})).all()
+        for r in rows2:
+            st = r[0]
+            result["by_candidate_source_type"].append({
+                "source_type": getattr(st, "value", str(st)) if st else "(none)",
+                "vouchers": int(r[1] or 0),
+                "sales": float(r[2] or 0),
+            })
+
+        # 3) 상위 매출 voucher 30건 (날짜·source 무관, 해당일 기준)
+        rows3 = (await db.execute(_text("""
+            SELECT
+              v.id, v.voucher_number, COALESCE(v.source,'') AS src,
+              v.transaction_type::text AS ttype,
+              v.description, v.merchant_name, v.external_ref,
+              SUM(CASE WHEN LEFT(a.code,1)='4' THEN vl.credit_amount ELSE 0 END) AS sales
+            FROM vouchers v
+            JOIN voucher_lines vl ON vl.voucher_id = v.id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date = :d
+              AND v.status IN ('CONFIRMED','APPROVED')
+            GROUP BY v.id, v.voucher_number, v.source, v.transaction_type,
+                     v.description, v.merchant_name, v.external_ref
+            HAVING SUM(CASE WHEN LEFT(a.code,1)='4' THEN vl.credit_amount ELSE 0 END) > 0
+            ORDER BY SUM(CASE WHEN LEFT(a.code,1)='4' THEN vl.credit_amount ELSE 0 END) DESC
+            LIMIT 30
+        """), {"d": target_date})).all()
+        for r in rows3:
+            result["top_vouchers"].append({
+                "voucher_id": int(r[0]),
+                "voucher_number": r[1],
+                "source": r[2],
+                "transaction_type": r[3],
+                "description": (r[4] or "")[:120],
+                "merchant_name": r[5],
+                "external_ref": r[6],
+                "sales": float(r[7] or 0),
+            })
+
+        # 4) wehago_import 상위 매출 voucher 의 첫 줄 분개 (계정/거래처)
+        rows4 = (await db.execute(_text("""
+            SELECT
+              v.id, v.voucher_number, v.description, v.external_ref,
+              a.code AS acc_code, a.name AS acc_name,
+              vl.debit_amount, vl.credit_amount,
+              vl.counterparty_name
+            FROM vouchers v
+            JOIN voucher_lines vl ON vl.voucher_id = v.id
+            JOIN accounts a ON a.id = vl.account_id
+            WHERE v.voucher_date = :d
+              AND v.source = 'wehago_import'
+              AND v.status IN ('CONFIRMED','APPROVED')
+              AND LEFT(a.code,1) = '4'
+              AND vl.credit_amount > 0
+            ORDER BY vl.credit_amount DESC
+            LIMIT 20
+        """), {"d": target_date})).all()
+        for r in rows4:
+            result["wehago_top_lines"].append({
+                "voucher_id": int(r[0]),
+                "voucher_number": r[1],
+                "description": (r[2] or "")[:120],
+                "external_ref": r[3],
+                "account_code": r[4],
+                "account_name": r[5],
+                "debit": float(r[6] or 0),
+                "credit": float(r[7] or 0),
+                "counterparty": r[8],
+            })
+
+    return result

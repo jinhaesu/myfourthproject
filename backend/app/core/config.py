@@ -22,12 +22,19 @@ class Settings(BaseSettings):
     PORT: int = 8000
     WORKERS: int = 4
 
-    # Database (SQLite를 기본값으로 사용, 프로덕션에서는 PostgreSQL 설정 필요)
+    # Database (Supabase PostgreSQL 권장, SQLite는 로컬 개발용)
+    # Supabase: postgresql://user:pass@db.xxx.supabase.co:5432/postgres
     DATABASE_URL: str = Field(
         default="sqlite+aiosqlite:///./smartfinance.db",
-        description="Database connection string"
+        description="Database connection string (Supabase PostgreSQL recommended)"
     )
-    DATABASE_POOL_SIZE: int = 20
+    # Direct (non-pooled) Supabase connection — 큰 보고서/관리 작업용. IPv4 add-on 또는 IPv6 필요.
+    # 예: postgresql://postgres:PASS@db.<ref>.supabase.co:5432/postgres?sslmode=require
+    DATABASE_URL_DIRECT: Optional[str] = Field(
+        default=None,
+        description="Supabase direct connection (5432, non-pooled). Used for heavy queries that exceed pooler 8s timeout."
+    )
+    DATABASE_POOL_SIZE: int = 5
     DATABASE_MAX_OVERFLOW: int = 10
 
     # Redis
@@ -95,6 +102,10 @@ class Settings(BaseSettings):
     RESEND_API_KEY: Optional[str] = None
     RESEND_FROM_EMAIL: str = "Smart Finance <onboarding@resend.dev>"
     ALLOWED_EMAILS: List[str] = []  # 빈 리스트면 모든 이메일 허용, 값이 있으면 화이트리스트
+
+    # AI Analysis (LLM) - Claude
+    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_MODEL: str = "claude-opus-4-8"
 
     # Douzone Integration
     DOUZONE_API_URL: Optional[str] = None

@@ -3,6 +3,7 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { treasuryApi } from '@/services/api'
 import { BanknotesIcon, ArrowUpIcon, ArrowDownIcon, ArrowPathIcon } from '@heroicons/react/24/outline'
+import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 import {
   BarChart,
   Bar,
@@ -25,6 +26,8 @@ function formatCurrency(value: number) {
 type TabType = 'overview' | 'aging'
 
 export default function TreasuryPage() {
+  const currentYear = new Date().getFullYear()
+  const [fiscalYear, setFiscalYear] = useState(currentYear)
   const [activeTab, setActiveTab] = useState<TabType>('overview')
   const [arStatusFilter, setArStatusFilter] = useState<string | undefined>(undefined)
   const [apStatusFilter, setApStatusFilter] = useState<string | undefined>(undefined)
@@ -94,19 +97,25 @@ export default function TreasuryPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">자금 관리</h1>
           <p className="text-gray-500 mt-1">현금, 채권, 채무를 관리합니다.</p>
         </div>
-        <button
-          onClick={() => reconcileMutation.mutate()}
-          disabled={reconcileMutation.isPending}
-          className="btn-secondary"
-        >
-          <ArrowPathIcon className="h-5 w-5 mr-2" />
-          {reconcileMutation.isPending ? '매칭 중...' : '자동 매칭'}
-        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <FiscalYearTabs
+            year={fiscalYear}
+            onChange={setFiscalYear}
+          />
+          <button
+            onClick={() => reconcileMutation.mutate()}
+            disabled={reconcileMutation.isPending}
+            className="btn-secondary"
+          >
+            <ArrowPathIcon className="h-5 w-5 mr-2" />
+            {reconcileMutation.isPending ? '매칭 중...' : '자동 매칭'}
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}

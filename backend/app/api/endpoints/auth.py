@@ -109,6 +109,8 @@ async def verify_email_otp(
     - 사용자가 DB에 없으면 자동 생성 (화이트리스트에 있는 이메일)
     """
     email = otp_data.email.lower()
+    import logging as _log
+    _logger = _log.getLogger(__name__)
 
     # OTP 검증
     success, message = verify_otp_code(email, otp_data.otp_code)
@@ -118,38 +120,48 @@ async def verify_email_otp(
             detail=message
         )
 
-    # 사용자 조회 (없으면 자동 생성)
-    result = await db.execute(
-        select(User)
-        .options(selectinload(User.department), selectinload(User.role))
-        .where(User.email == email)
-    )
-    user = result.scalar_one_or_none()
-
-    if not user:
-        user = await _auto_create_user(db, email)
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="비활성화된 계정입니다. 관리자에게 문의하세요."
+    try:
+        # 사용자 조회 (없으면 자동 생성)
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.email == email)
         )
+        user = result.scalar_one_or_none()
 
-    # 마지막 로그인 업데이트
-    user.last_login = datetime.utcnow()
-    await db.commit()
+        if not user:
+            _logger.info(f"Creating new user for {email}")
+            user = await _auto_create_user(db, email)
 
-    # 토큰 발급
-    access_token = create_access_token({"sub": str(user.id)})
-    refresh_token = create_refresh_token({"sub": str(user.id)})
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="비활성화된 계정입니다. 관리자에게 문의하세요."
+            )
 
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        "user": user_to_response(user),
-    }
+        # 마지막 로그인 업데이트
+        user.last_login = datetime.utcnow()
+        await db.commit()
+
+        # 토큰 발급
+        access_token = create_access_token({"sub": str(user.id)})
+        refresh_token = create_refresh_token({"sub": str(user.id)})
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            "user": user_to_response(user),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.error(f"verify-otp DB error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"로그인 처리 오류: {str(e)}"
+        )
 
 
 @router.post("/resend-otp")
@@ -225,17 +237,36 @@ async def get_current_user_info(
 
 
 async def _auto_create_user(db: AsyncSession, email: str) -> User:
-    """화이트리스트 이메일로 사용자 자동 생성"""
+    """이메일 OTP 로그인 시 사용자 자동 생성 (역할 없으면 함께 생성)"""
     import uuid
-    from app.core.security import get_password_hash
+    import hashlib
 
-    # 기본 역할 조회
+    # 비밀번호 미사용 (OTP 전용) - bcrypt 우회하여 더미 해시 직접 생성
+    dummy_hash = "$2b$12$" + hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:53]
+
+    # 기본 역할 조회 (없으면 자동 생성)
     role_result = await db.execute(
         select(Role).where(Role.role_type == RoleType.EMPLOYEE)
     )
     role = role_result.scalar_one_or_none()
 
-    # 이메일에서 이름 추출
+    if not role:
+        admin_role = Role(
+            name="관리자", role_type=RoleType.ADMIN, description="시스템 전체 관리 권한",
+            can_create_voucher=True, can_approve_voucher=True, can_finalize_voucher=True,
+            can_manage_budget=True, can_view_all_departments=True, can_manage_users=True,
+            can_configure_ai=True, can_export_data=True, can_view_reports=True,
+            can_manage_accounts=True, approval_limit=999999999,
+        )
+        employee_role = Role(
+            name="일반직원", role_type=RoleType.EMPLOYEE, description="기본 사용자 권한",
+            can_create_voucher=True, can_export_data=True, can_view_reports=True, approval_limit=0,
+        )
+        db.add(admin_role)
+        db.add(employee_role)
+        await db.flush()
+        role = admin_role  # 첫 번째 사용자는 관리자
+
     local_part = email.split("@")[0]
     display_name = local_part.replace(".", " ").replace("_", " ").title()
 
@@ -243,11 +274,11 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
         employee_id=f"AUTO-{uuid.uuid4().hex[:8].upper()}",
         email=email,
         username=local_part,
-        hashed_password=get_password_hash(uuid.uuid4().hex),  # 랜덤 패스워드 (사용 안 함)
+        hashed_password=dummy_hash,
         full_name=display_name,
-        role_id=role.id if role else None,
+        role_id=role.id,
         is_active=True,
-        is_superuser=False,
+        is_superuser=True if role.role_type == RoleType.ADMIN else False,
         two_factor_enabled=False,
         failed_login_attempts=0,
         password_changed_at=datetime.utcnow(),
@@ -255,9 +286,13 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
 
     db.add(user)
     await db.commit()
-    await db.refresh(user, attribute_names=["department", "role"])
 
-    return user
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.department), selectinload(User.role))
+        .where(User.id == user.id)
+    )
+    return result.scalar_one()
 
 
 def _mask_email(email: str) -> str:

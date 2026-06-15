@@ -2,13 +2,19 @@
 Smart Finance Core - Main Application
 AI 기반 회계 자동화 및 재무 예측 플랫폼
 """
+import sys
+import os
+
+# 가장 먼저 stdout으로 출력 (로깅 설정 전)
+print(f"[STARTUP] Python {sys.version}", flush=True)
+print(f"[STARTUP] CWD={os.getcwd()} PORT={os.environ.get('PORT', 'not set')}", flush=True)
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 import logging
-import sys
-import os
 
 # Logging setup - 먼저 설정
 logging.basicConfig(
@@ -38,21 +44,129 @@ except Exception as e:
     close_db = None
 
 
+async def _background_init_db():
+    """Run init_db in background so healthcheck can respond immediately"""
+    try:
+        await init_db()
+        logger.info("Database initialized (background)")
+    except Exception as e:
+        logger.warning(f"Database initialization failed: {e}")
+        logger.warning("Application running without database init")
+
+
+async def _ai_retrain_scheduler():
+    """
+    24시간마다 깨어나 AI 모델 재학습 조건을 확인하고 충족 시 retrain_model 호출.
+
+    조건:
+      1) 마지막 재학습(AIModelVersion.created_at) 후 30일 이상 경과
+      2) user_feedback 타입 AITrainingData가 50건 이상 신규 존재
+
+    실패해도 앱에 영향 없도록 전체 try/except로 감쌈.
+    앱 종료 시 lifespan에서 task.cancel() 처리.
+    """
+    import asyncio
+    from datetime import timedelta
+
+    INTERVAL_HOURS = 24
+    MIN_FEEDBACK_COUNT = 50
+    RETRAIN_INTERVAL_DAYS = 30
+
+    logger.info("[AI Scheduler] 재학습 스케줄러 시작 (24h 간격)")
+
+    while True:
+        try:
+            await asyncio.sleep(INTERVAL_HOURS * 3600)
+        except asyncio.CancelledError:
+            logger.info("[AI Scheduler] 종료 신호 수신 — 스케줄러 종료")
+            return
+
+        try:
+            from sqlalchemy import select, func as sa_func
+            from app.core.database import async_session_factory
+            from app.models.ai import AIModelVersion, AITrainingData
+            from app.services.ai_classifier import AIClassifierService
+            from datetime import datetime as _dt
+
+            async with async_session_factory() as db:
+                # 마지막 학습 시점 조회
+                last_version = (await db.execute(
+                    select(AIModelVersion)
+                    .order_by(AIModelVersion.created_at.desc())
+                    .limit(1)
+                )).scalar_one_or_none()
+
+                now = _dt.utcnow()
+                if last_version:
+                    days_since = (now - last_version.created_at).days
+                    if days_since < RETRAIN_INTERVAL_DAYS:
+                        logger.info(
+                            f"[AI Scheduler] 마지막 학습 {days_since}일 경과 "
+                            f"(기준 {RETRAIN_INTERVAL_DAYS}일) — 재학습 생략"
+                        )
+                        continue
+                    since_dt = last_version.created_at
+                else:
+                    since_dt = _dt(2000, 1, 1)  # 버전 없으면 전체 대상
+
+                # user_feedback 신규 건수 확인
+                feedback_count = await db.scalar(
+                    select(sa_func.count(AITrainingData.id)).where(
+                        AITrainingData.source_type == "user_feedback",
+                        AITrainingData.is_active == True,
+                        AITrainingData.created_at >= since_dt,
+                    )
+                ) or 0
+
+                if feedback_count < MIN_FEEDBACK_COUNT:
+                    logger.info(
+                        f"[AI Scheduler] user_feedback {feedback_count}건 "
+                        f"(기준 {MIN_FEEDBACK_COUNT}건) — 재학습 생략"
+                    )
+                    continue
+
+                logger.info(
+                    f"[AI Scheduler] 재학습 조건 충족 "
+                    f"(경과일={days_since if last_version else 'N/A'}, "
+                    f"피드백={feedback_count}건) — retrain_model 호출"
+                )
+                classifier = AIClassifierService()
+                success, msg = await classifier.retrain_model(db)
+                if success:
+                    logger.info(f"[AI Scheduler] 재학습 완료: {msg}")
+                else:
+                    logger.warning(f"[AI Scheduler] 재학습 실패: {msg}")
+
+        except asyncio.CancelledError:
+            logger.info("[AI Scheduler] 종료 신호 수신 — 스케줄러 종료")
+            return
+        except Exception as e:
+            logger.exception(f"[AI Scheduler] 재학습 스케줄 오류 (앱 영향 없음): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
+    import asyncio
     # Startup
     logger.info("Starting Smart Finance Core...")
     if init_db:
-        try:
-            await init_db()
-            logger.info("Database initialized")
-        except Exception as e:
-            logger.warning(f"Database initialization failed: {e}")
-            logger.warning("Application will start without database")
+        # Run init_db in background - don't block app startup
+        asyncio.create_task(_background_init_db())
+
+    # AI 재학습 자동 스케줄러 — 24h 간격, 조건 미충족 시 생략
+    _retrain_task = asyncio.create_task(_ai_retrain_scheduler())
+
     yield
+
     # Shutdown
     logger.info("Shutting down Smart Finance Core...")
+    # AI 스케줄러 태스크 취소
+    _retrain_task.cancel()
+    try:
+        await _retrain_task
+    except asyncio.CancelledError:
+        pass
     if close_db:
         try:
             await close_db()
@@ -88,22 +202,17 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware - wildcard 패턴 지원
-def get_cors_origins():
-    """CORS origins 처리 - wildcard 패턴 지원"""
-    origins = []
-    for origin in settings.CORS_ORIGINS:
-        if "*" in origin:
-            # wildcard는 allow_origin_regex로 처리
-            continue
-        origins.append(origin)
-    return origins
+# GZip 압축 — 큰 응답(특히 캐시플로우 6개월 ~50MB → ~5MB) 전송 시간 대폭 단축
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
-# CORS 설정
-cors_origins = get_cors_origins()
+# CORS 설정 - Vercel + localhost 허용
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins if cors_origins else ["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "https://myfourthproject-nine.vercel.app",
+    ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
@@ -115,16 +224,24 @@ if not settings.DEBUG:
     logger.info("Running in production mode")
 
 
-# Global exception handler
+# Global exception handler - CORS 헤더 포함
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    origin = request.headers.get("origin", "")
+    headers = {}
+    if "vercel.app" in origin or "localhost" in origin:
+        headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        }
     return JSONResponse(
         status_code=500,
         content={
-            "detail": "Internal server error",
-            "message": str(exc) if settings.DEBUG else "An unexpected error occurred"
-        }
+            "detail": str(exc) if settings.DEBUG else "Internal server error",
+            "message": str(exc),
+        },
+        headers=headers,
     )
 
 
@@ -138,14 +255,44 @@ except Exception as e:
     logger.error("API endpoints will not be available")
 
 
-# Health check endpoint
+# Health check endpoint - DB 쿼리 없이 즉시 응답 (Railway 헬스체크용)
 @app.get("/health")
 async def health_check():
     """Health check endpoint for load balancers"""
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
-        "version": settings.APP_VERSION
+        "version": settings.APP_VERSION,
+    }
+
+
+# 상세 헬스체크 (DB 상태 포함) - 디버깅용
+@app.get("/health/detailed")
+async def health_check_detailed():
+    """Detailed health check with database status"""
+    db_status = "unknown"
+    raw_data_count = 0
+    upload_history_count = 0
+    try:
+        from app.core.database import async_session_factory, DATABASE_URL
+        if async_session_factory:
+            from sqlalchemy import text as sa_text
+            async with async_session_factory() as session:
+                result = await session.execute(sa_text("SELECT COUNT(*) FROM ai_raw_transaction_data"))
+                raw_data_count = result.scalar() or 0
+                result2 = await session.execute(sa_text("SELECT COUNT(*) FROM ai_data_upload_history"))
+                upload_history_count = result2.scalar() or 0
+                db_status = "supabase" if "supabase" in DATABASE_URL else "postgresql" if "postgresql" in DATABASE_URL else "sqlite"
+    except Exception as e:
+        db_status = f"error: {str(e)[:50]}"
+
+    return {
+        "status": "healthy",
+        "app": settings.APP_NAME,
+        "version": settings.APP_VERSION,
+        "database": db_status,
+        "raw_data_rows": raw_data_count,
+        "upload_history_rows": upload_history_count,
     }
 
 
@@ -155,7 +302,8 @@ async def api_health_check():
     return {
         "status": "healthy",
         "app": settings.APP_NAME,
-        "version": settings.APP_VERSION
+        "version": settings.APP_VERSION,
+        "deploy": "ultra-light-v5"
     }
 
 

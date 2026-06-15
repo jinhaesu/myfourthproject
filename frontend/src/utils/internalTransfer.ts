@@ -1,0 +1,165 @@
+/**
+ * 법인 계좌 간 이체(internal transfer) 식별 헬퍼
+ *
+ * A통장→B통장 이체는 회계상 매출도 비용도 아니다.
+ * 이 헬퍼를 사용해 분석 전에 해당 거래를 필터링한다.
+ */
+
+/**
+ * 본인 소유 은행 계좌 정보를 그랜터 자산 응답에서 추출.
+ * granterApi.listAllAssets() 응답 형태:
+ *   { CARD: [...], BANK_ACCOUNT: [...], HOME_TAX_ACCOUNT: [...], ... }
+ * 각 자산: { bankAccount: { nickName, accountName, accountNumber, ... }, organizationName, ... }
+ */
+export interface OwnAccountSet {
+  /** 정규화된 계좌명/별칭 (소문자, 공백 제거) */
+  names: Set<string>
+  /** 숫자만 남긴 계좌번호 */
+  numbers: Set<string>
+  /** 디버깅용 raw 항목 */
+  raw: Array<{ name: string; number: string }>
+}
+
+export function buildOwnAccountSet(allAssets: any): OwnAccountSet {
+  const names = new Set<string>()
+  const numbers = new Set<string>()
+  const raw: Array<{ name: string; number: string }> = []
+  const banks = (allAssets?.BANK_ACCOUNT as any[]) || []
+
+  const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase()
+
+  // 너무 일반적인 계좌명(보통예금/저축예금 등)은 false positive 다발 → 제외
+  const GENERIC_NAMES = new Set([
+    '보통예금', '저축예금', '당좌예금', '기업자유예금', '자유예금',
+    '입출금통장', '저축통장', '당좌통장',
+  ].map(norm))
+
+  for (const a of banks) {
+    const ba = a?.bankAccount || {}
+    const nickName      = String(ba.nickName    || '').trim()
+    const accountName   = String(ba.accountName || '').trim()
+    const accountNumber = String(ba.accountNumber || '').replace(/[^0-9]/g, '')
+    const orgName       = String(a.organizationName || '').trim()
+
+    // 이름 추가 — 일반 단어/너무 짧은 이름(<3자) 제외
+    const addName = (s: string) => {
+      const n = norm(s)
+      if (!n || n.length < 3) return
+      if (GENERIC_NAMES.has(n)) return
+      names.add(n)
+    }
+    if (nickName)    addName(nickName)
+    if (accountName) addName(accountName)
+    if (accountNumber) numbers.add(accountNumber)
+
+    // 회사명+계좌번호 조합 (정확 매칭이 안전)
+    if (orgName && accountNumber) {
+      names.add(norm(`${orgName}${accountNumber}`))
+    }
+
+    raw.push({ name: nickName || accountName, number: accountNumber })
+  }
+
+  return { names, numbers, raw }
+}
+
+/**
+ * 한 ticket이 본인 계좌 간 이체인지 판정.
+ * BANK_TRANSACTION_TICKET 외에는 무조건 false.
+ */
+export function isInternalTransfer(ticket: any, own: OwnAccountSet): boolean {
+  const bt = ticket?.bankTransaction
+  if (!bt) return false
+
+  // own이 비어있으면 필터 불가 → 그대로 통과
+  if (own.names.size === 0 && own.numbers.size === 0) return false
+
+  const norm = (s: string) => String(s || '').replace(/\s+/g, '').toLowerCase()
+
+  // 1. 거래상대방 이름 매칭 (counterparty / opponent / counterpartyName)
+  const cpNameRaw = String(bt.counterparty || bt.opponent || bt.counterpartyName || '').trim()
+  if (cpNameRaw && own.names.has(norm(cpNameRaw))) return true
+
+  // 2. 거래상대방 계좌번호 매칭 (전체)
+  const cpNum = String(bt.counterpartyAccountNumber || bt.opponentAccountNumber || '').replace(/[^0-9]/g, '')
+  if (cpNum && own.numbers.has(cpNum)) return true
+
+  // 3. 마지막 8자리 매칭 (마스킹된 계좌번호 대응)
+  if (cpNum && cpNum.length >= 8) {
+    const last8 = cpNum.slice(-8)
+    for (const ownNum of own.numbers) {
+      if (ownNum.length >= 8 && ownNum.slice(-8) === last8) return true
+    }
+  }
+
+  // 4. 본인회사명이 counterparty 또는 content에 포함 — "조인앤조인" 등 변형 모두 검사
+  //    (그랜터가 통장 내역에 "(주)조인앤조인", "조인앤조인" 등 다양하게 기록)
+  const cpNameNorm = norm(cpNameRaw)
+  const contentNorm = norm(bt.content || '')
+  for (const variant of SELF_COMPANY.nameVariants) {
+    const v = norm(variant)
+    if (!v) continue
+    if (cpNameNorm && cpNameNorm.includes(v)) return true
+    if (contentNorm && contentNorm.includes(v)) return true
+  }
+
+  return false
+}
+
+/**
+ * tickets 배열에서 internal transfer를 제외한 새 배열을 반환.
+ * own이 비어있으면 원본 배열을 그대로 반환(자산 쿼리 실패 시 안전 처리).
+ */
+export function filterOutInternalTransfers(tickets: any[], own: OwnAccountSet): any[] {
+  if (!tickets?.length) return tickets ?? []
+  if (own.names.size === 0 && own.numbers.size === 0) return tickets
+  return tickets.filter((t) => !isInternalTransfer(t, own))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 본인 회사 식별 (거래처 스코어링 등에서 자기 자신을 거래처로 잡는 것 방지)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 본인 회사 식별용 고정 정보 (조인앤조인 사업자등록증 기준) */
+export const SELF_COMPANY = {
+  businessNumbers: ['503-87-01038', '5038701038'],
+  nameVariants: [
+    '주식회사조인앤조인',
+    '(주)조인앤조인',
+    '㈜조인앤조인',
+    '조인앤조인',
+    'joinandjoin',
+    'join&join',
+  ],
+}
+
+const _selfBNSet = new Set(SELF_COMPANY.businessNumbers.map((s) => s.replace(/[^0-9]/g, '')))
+const _selfNameSet = new Set(
+  SELF_COMPANY.nameVariants.map((s) => s.replace(/\s+/g, '').toLowerCase())
+)
+
+/**
+ * 사업자번호 또는 회사명이 본인 회사인지 판정.
+ * - 사업자번호는 하이픈/공백 제거 후 정확 매칭 (10자리)
+ * - 회사명은 공백 제거·소문자 후 정확 매칭
+ *
+ * 부분 일치는 false positive가 많아 제외 (예: '조인사' 같은 다른 거래처).
+ * 사업자번호가 있으면 그것만으로 충분, 없으면 회사명 정확 매칭만.
+ */
+export function isSelfCompany(opts: {
+  businessNumber?: string | null
+  companyName?: string | null
+}): boolean {
+  const bn = String(opts.businessNumber || '').replace(/[^0-9]/g, '')
+  if (bn && _selfBNSet.has(bn)) return true
+
+  const name = String(opts.companyName || '').replace(/\s+/g, '').toLowerCase()
+  if (name && _selfNameSet.has(name)) return true
+
+  return false
+}
+
+/** 거래처(contact) 문자열 자체가 본인 회사인지 판정 */
+export function isSelfContact(contact: string | null | undefined): boolean {
+  return isSelfCompany({ companyName: contact })
+}

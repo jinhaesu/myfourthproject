@@ -4,102 +4,142 @@
 
 @layer base {
   html {
-    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+    font-family: 'Inter Variable', 'Inter', 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+    color: #18181b;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   body {
-    @apply bg-gray-50 text-gray-900;
+    @apply bg-canvas-50 text-ink-900 text-sm;
+  }
+
+  h1 {
+    @apply text-xl font-semibold tracking-crisp text-ink-900;
+  }
+
+  h2 {
+    @apply text-base font-semibold tracking-tightish text-ink-900;
+  }
+
+  h3 {
+    @apply text-sm font-semibold tracking-tightish text-ink-900;
+  }
+
+  /* Tighter table number rendering */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum', 'cv11';
   }
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium transition-colors duration-150;
+    @apply inline-flex items-center justify-center px-2.5 py-1 border border-transparent rounded-md text-xs font-medium transition-colors duration-100;
   }
 
   .btn-primary {
-    @apply btn bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500;
+    @apply btn bg-ink-900 text-white hover:bg-ink-800 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-ink-900;
   }
 
   .btn-secondary {
-    @apply btn bg-white text-gray-700 border-gray-300 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500;
+    @apply btn bg-white text-ink-700 border-ink-200 hover:bg-ink-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-ink-300;
+  }
+
+  .btn-accent {
+    @apply btn bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-primary-500;
   }
 
   .btn-danger {
-    @apply btn bg-red-600 text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500;
+    @apply btn bg-rose-600 text-white hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-rose-500;
   }
 
   .btn-success {
-    @apply btn bg-green-600 text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500;
+    @apply btn bg-emerald-600 text-white hover:bg-emerald-700;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center px-2 py-1 rounded text-xs text-ink-500 hover:text-ink-900 hover:bg-ink-100 transition;
   }
 
   .input {
-    @apply block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm;
+    @apply block w-full rounded-md border-ink-200 bg-white shadow-soft text-xs text-ink-900 placeholder:text-ink-400 focus:border-ink-400 focus:ring-1 focus:ring-ink-300 px-2.5 py-1.5;
   }
 
   .label {
-    @apply block text-sm font-medium text-gray-700;
+    @apply block text-2xs font-medium text-ink-600 mb-1 uppercase tracking-wider;
   }
 
   .card {
-    @apply bg-white rounded-lg shadow-sm border border-gray-200 p-6;
+    @apply bg-white rounded-lg shadow-soft border border-ink-200/80 p-3.5;
+  }
+
+  .card-tight {
+    @apply bg-white rounded-lg shadow-soft border border-ink-200/80 p-2.5;
   }
 
   .card-header {
-    @apply text-lg font-semibold text-gray-900 mb-4;
+    @apply text-sm font-semibold text-ink-900 mb-2.5 tracking-tightish;
   }
 
+  .panel {
+    @apply bg-white rounded-lg border border-ink-200/80;
+  }
+
+  /* Linear-style chip/badge — small, subtle */
   .badge {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+    @apply inline-flex items-center px-1.5 py-0.5 rounded text-2xs font-medium border;
   }
 
   .badge-success {
-    @apply badge bg-green-100 text-green-800;
+    @apply badge bg-emerald-50 text-emerald-700 border-emerald-200;
   }
 
   .badge-warning {
-    @apply badge bg-yellow-100 text-yellow-800;
+    @apply badge bg-amber-50 text-amber-700 border-amber-200;
   }
 
   .badge-danger {
-    @apply badge bg-red-100 text-red-800;
+    @apply badge bg-rose-50 text-rose-700 border-rose-200;
   }
 
   .badge-info {
-    @apply badge bg-blue-100 text-blue-800;
+    @apply badge bg-primary-50 text-primary-700 border-primary-200;
   }
 
   .badge-gray {
-    @apply badge bg-gray-100 text-gray-800;
+    @apply badge bg-ink-50 text-ink-700 border-ink-200;
   }
 
-  /* Table styles */
+  /* Tables */
   .table-container {
-    @apply overflow-x-auto rounded-lg border border-gray-200;
+    @apply overflow-x-auto rounded-lg border border-ink-200;
   }
 
   .table {
-    @apply min-w-full divide-y divide-gray-200;
+    @apply min-w-full divide-y divide-ink-100;
   }
 
   .table-header {
-    @apply bg-gray-50;
+    @apply bg-canvas-50;
   }
 
   .table-header th {
-    @apply px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider;
+    @apply px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider;
   }
 
   .table-body {
-    @apply bg-white divide-y divide-gray-200;
+    @apply bg-white divide-y divide-ink-100;
   }
 
   .table-body td {
-    @apply px-6 py-4 whitespace-nowrap text-sm text-gray-900;
+    @apply px-2.5 py-1.5 whitespace-nowrap text-xs text-ink-900;
   }
 
   .table-body tr:hover {
-    @apply bg-gray-50;
+    @apply bg-canvas-50;
   }
 
   /* Financial numbers */
@@ -117,42 +157,77 @@
 
   /* Status badges */
   .status-draft {
-    @apply badge bg-gray-100 text-gray-800;
+    @apply badge bg-ink-50 text-ink-700 border-ink-200;
   }
 
   .status-pending {
-    @apply badge bg-yellow-100 text-yellow-800;
+    @apply badge bg-amber-50 text-amber-700 border-amber-200;
   }
 
   .status-approved {
-    @apply badge bg-green-100 text-green-800;
+    @apply badge bg-emerald-50 text-emerald-700 border-emerald-200;
   }
 
   .status-rejected {
-    @apply badge bg-red-100 text-red-800;
+    @apply badge bg-rose-50 text-rose-700 border-rose-200;
   }
 
   .status-confirmed {
-    @apply badge bg-blue-100 text-blue-800;
+    @apply badge bg-primary-50 text-primary-700 border-primary-200;
   }
 
-  /* AI confidence indicator */
-  .confidence-high {
-    @apply text-green-600;
+  /* AI confidence */
+  .confidence-high { @apply text-emerald-600; }
+  .confidence-medium { @apply text-amber-600; }
+  .confidence-low { @apply text-rose-600; }
+
+  /* Master-detail layout */
+  .ledger-shell {
+    @apply flex h-[calc(100vh-7rem)] bg-white rounded-lg border border-ink-200/80 overflow-hidden;
   }
 
-  .confidence-medium {
-    @apply text-yellow-600;
+  .ledger-sidebar {
+    @apply w-64 flex-shrink-0 border-r border-ink-200 flex flex-col bg-canvas-50;
   }
 
-  .confidence-low {
-    @apply text-red-600;
+  .ledger-main {
+    @apply flex-1 flex flex-col min-w-0;
+  }
+
+  .ledger-account-row {
+    @apply w-full text-left px-3 py-1.5 flex items-center justify-between gap-2 hover:bg-white transition cursor-pointer border-l-2 border-transparent;
+  }
+
+  .ledger-account-row.active {
+    @apply bg-white border-l-ink-900 shadow-soft;
+  }
+
+  /* Linear-style section divider in sidebars */
+  .nav-section {
+    @apply px-3 mt-3 mb-1 text-2xs font-semibold text-ink-400 uppercase tracking-wider;
   }
 }
 
-/* AG Grid custom styles */
+/* AG Grid — tighter pro density */
 .ag-theme-alpine {
-  --ag-header-background-color: #f9fafb;
-  --ag-border-color: #e5e7eb;
-  --ag-row-hover-color: #f3f4f6;
+  --ag-header-background-color: #fafafa;
+  --ag-border-color: #e4e4e7;
+  --ag-row-hover-color: #f4f4f5;
+  --ag-selected-row-background-color: #f4f4f5;
+  --ag-font-family: 'Inter Variable', 'Inter', 'Pretendard', system-ui, sans-serif;
+  --ag-font-size: 12px;
+  --ag-header-foreground-color: #71717a;
+  --ag-cell-horizontal-padding: 8px;
+  --ag-grid-size: 4px;
+  --ag-row-height: 28px;
+  --ag-header-height: 30px;
+}
+
+/* Print */
+@media print {
+  nav, header, aside, .print\:hidden, button {
+    display: none !important;
+  }
+  body { background: white !important; }
+  .card { box-shadow: none !important; border: none !important; padding: 0 !important; }
 }

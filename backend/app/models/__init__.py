@@ -6,6 +6,7 @@ from app.models.user import User, Role, Department, UserSession
 from app.models.accounting import (
     Account,
     AccountCategory,
+    AccountCodeMapping,
     Voucher,
     VoucherLine,
     VoucherAttachment,
@@ -30,9 +31,17 @@ from app.models.ai import (
     AIClassificationLog,
     AITrainingData,
     AIModelVersion,
-    CustomTag
+    CustomTag,
+    AIDataUploadHistory,
+    AIRawTransactionData,
 )
 from app.models.audit import AuditLog, DataSnapshot
+from app.models.sales import (
+    SalesChannel,
+    SalesRecord,
+    SalesAutomationSchedule,
+)
+from app.models.payroll import PayrollBatch, PayrollRecord
 
 __all__ = [
     # User
@@ -43,6 +52,7 @@ __all__ = [
     # Accounting
     "Account",
     "AccountCategory",
+    "AccountCodeMapping",
     "Voucher",
     "VoucherLine",
     "VoucherAttachment",
@@ -68,7 +78,16 @@ __all__ = [
     "AITrainingData",
     "AIModelVersion",
     "CustomTag",
+    "AIDataUploadHistory",
+    "AIRawTransactionData",
     # Audit
     "AuditLog",
-    "DataSnapshot"
+    "DataSnapshot",
+    # Sales
+    "SalesChannel",
+    "SalesRecord",
+    "SalesAutomationSchedule",
+    # Payroll
+    "PayrollBatch",
+    "PayrollRecord",
 ]
