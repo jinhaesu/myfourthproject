@@ -400,33 +400,90 @@ SECTION_GENERATORS = {
 
 # ============ 정기 발송 (스케줄러가 매분 호출) ============
 
+def _won(v: Any) -> str:
+    return _format_won(v)
+
+
 def _digest_to_html(content: Dict[str, Any]) -> str:
-    """자금일보 콘텐츠 → 이메일 HTML."""
+    """자금일보 콘텐츠 → 이메일 HTML (화면과 동일한 상세 내용)."""
     target = content.get("target_date") or content.get("report_date") or ""
-    parts = [
-        '<div style="font-family:\'Apple SD Gothic Neo\',sans-serif;max-width:560px;margin:0 auto;padding:24px 16px;">',
+    P = [
+        '<div style="font-family:\'Apple SD Gothic Neo\',sans-serif;max-width:600px;margin:0 auto;padding:24px 16px;background:#f8fafc;">',
         '<div style="background:linear-gradient(135deg,#2563eb,#4f46e5);border-radius:12px;padding:24px;color:#fff;">',
         '<h1 style="margin:0 0 4px;font-size:20px;">AI 자금 다이제스트</h1>',
         f'<p style="margin:0;opacity:.9;font-size:13px;">기준일 {target}</p></div>',
     ]
+
+    def card_open(title, color="#1f2937"):
+        return ('<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;margin-top:12px;padding:18px;">'
+                f'<h2 style="margin:0 0 10px;font-size:15px;color:{color};">{title}</h2>')
+
+    def row(label, value, vcolor="#111827"):
+        return ('<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f3f4f6;">'
+                f'<span style="font-size:13px;color:#6b7280;">{label}</span>'
+                f'<span style="font-size:13px;color:{vcolor};font-weight:600;">{value}</span></div>')
+
     sections = content.get("content", {}) or {}
     order = content.get("sections_order") or list(sections.keys())
+    disabled = set(content.get("disabled_sections", []) or [])
+
     for key in order:
+        if key in disabled:
+            continue
         sec = sections.get(key)
         if not sec or not isinstance(sec, dict):
             continue
         title = sec.get("title") or key
-        summary = sec.get("summary") or sec.get("error") or ""
-        parts.append(
-            '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;margin-top:12px;padding:20px;">'
-            f'<h2 style="margin:0 0 8px;font-size:15px;color:#1f2937;">{title}</h2>'
-            f'<p style="margin:0;font-size:13px;color:#374151;line-height:1.6;">{summary}</p></div>'
-        )
-    parts.append(
-        '<p style="margin:16px 0 0;font-size:11px;color:#9ca3af;text-align:center;">'
-        'Smart Finance Core — 자금일보 자동 발송</p></div>'
-    )
-    return "".join(parts)
+
+        if key == "cash_status":
+            P.append(card_open(title, "#2563eb"))
+            P.append(f'<p style="margin:0 0 10px;font-size:13px;color:#374151;line-height:1.6;">{sec.get("summary","")}</p>')
+            P.append(row("입금", _won(sec.get("inflow")), "#059669"))
+            P.append(row("출금", _won(sec.get("outflow")), "#dc2626"))
+            P.append(row("순변동", _won(sec.get("net"))))
+            P.append(row("현재 잔액", _won(sec.get("balance"))))
+            P.append("</div>")
+
+        elif key == "ai_cashflow":
+            P.append(card_open(title, "#059669"))
+            bt = sec.get("balance_trend") or {}
+            if bt.get("summary"):
+                P.append(f'<p style="margin:0 0 8px;font-size:13px;color:#374151;line-height:1.6;">{bt.get("summary")}</p>')
+            tm = sec.get("top_movements") or {}
+            for m in (tm.get("outflows") or [])[:5]:
+                cp = m.get("counterparty") or m.get("description") or "출금"
+                P.append(row(f"↑ {cp}", _won(m.get("amount")), "#dc2626"))
+            for m in (tm.get("inflows") or [])[:5]:
+                cp = m.get("counterparty") or m.get("description") or "입금"
+                P.append(row(f"↓ {cp}", _won(m.get("amount")), "#059669"))
+            P.append("</div>")
+
+        elif key == "card_spending":
+            P.append(card_open(title, "#d97706"))
+            tr = sec.get("trend") or {}
+            if tr.get("summary"):
+                P.append(f'<p style="margin:0 0 8px;font-size:13px;color:#374151;line-height:1.6;">{tr.get("summary")}</p>')
+            for p in (sec.get("top_payments") or [])[:8]:
+                cp = p.get("counterparty") or "결제"
+                desc = f" ({p.get('description')})" if p.get("description") else ""
+                P.append(row(f"{cp}{desc}", _won(p.get("amount")), "#d97706"))
+            P.append("</div>")
+
+        elif key == "card_usage":
+            P.append(card_open(title, "#7c3aed"))
+            if sec.get("summary"):
+                P.append(f'<p style="margin:0 0 8px;font-size:13px;color:#374151;line-height:1.6;">{sec.get("summary")}</p>')
+            for it in (sec.get("items") or [])[:8]:
+                cp = it.get("counterparty") or "사용"
+                P.append(row(cp, _won(it.get("amount")), "#7c3aed"))
+            P.append("</div>")
+
+        else:
+            P.append(card_open(title))
+            P.append(f'<p style="margin:0;font-size:13px;color:#374151;line-height:1.6;">{sec.get("summary") or sec.get("error") or ""}</p></div>')
+
+    P.append('<p style="margin:16px 0 0;font-size:11px;color:#9ca3af;text-align:center;">Smart Finance Core — 자금일보 자동 발송</p></div>')
+    return "".join(P)
 
 
 async def deliver_scheduled_digests() -> int:

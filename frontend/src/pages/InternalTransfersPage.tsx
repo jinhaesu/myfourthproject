@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowsRightLeftIcon, CalendarDaysIcon, BuildingLibraryIcon,
-  ArrowRightIcon, Cog6ToothIcon, BanknotesIcon, ArrowTrendingDownIcon,
+  ArrowRightIcon, Cog6ToothIcon, BanknotesIcon,
 } from '@heroicons/react/24/outline'
 import { treasuryApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
@@ -120,37 +120,63 @@ export default function InternalTransfersPage() {
             </div>
           </div>
 
-          {/* 간접 현금흐름 관점 */}
-          {cf && (
+          {/* 은행 잔액 기반 현금흐름 (핵심 지표) */}
+          {data.period_balance && (
             <div className="panel p-3 bg-gradient-to-br from-blue-50/40 to-white">
               <div className="text-2xs font-semibold text-ink-600 mb-2 flex items-center gap-1">
-                <BanknotesIcon className="h-3 w-3" />간접 현금흐름 (매출풀 → 운영계좌)
+                <BanknotesIcon className="h-3 w-3" />은행 잔액 기반 현금흐름 (기간 시작 vs 마감)
               </div>
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-                <div className="bg-white rounded-md border border-amber-200 p-2.5">
-                  <div className="text-2xs text-amber-700 flex items-center gap-1">
-                    <ArrowTrendingDownIcon className="h-3 w-3" />매출풀→운영 순메꿈
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <div className="text-center">
+                    <div className="text-2xs text-ink-500">시작 잔액</div>
+                    <div className="text-sm font-bold font-mono text-ink-700">{formatCurrency(data.period_balance.start_balance, false)}</div>
                   </div>
-                  <div className="text-lg font-bold text-amber-700 mt-0.5">{formatCurrency(cf.net_topup, false)}</div>
-                  <div className="text-2xs text-ink-400">기간 실질 운영현금 소진</div>
+                  <ArrowRightIcon className="h-4 w-4 text-ink-300" />
+                  <div className="text-center">
+                    <div className="text-2xs text-ink-500">마감 잔액</div>
+                    <div className="text-sm font-bold font-mono text-ink-900">{formatCurrency(data.period_balance.end_balance, false)}</div>
+                  </div>
                 </div>
-                <div className="bg-white rounded-md border border-ink-200 p-2.5">
-                  <div className="text-2xs text-ink-500">매출풀→운영 (총)</div>
+                <div className={`ml-auto px-3 py-1.5 rounded-md ${data.period_balance.net_change >= 0 ? 'bg-emerald-50 border border-emerald-200' : 'bg-rose-50 border border-rose-200'}`}>
+                  <div className="text-2xs text-ink-500">기간 순현금흐름</div>
+                  <div className={`text-lg font-bold font-mono ${data.period_balance.net_change >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {data.period_balance.net_change >= 0 ? '+' : ''}{formatCurrency(data.period_balance.net_change, false)}
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <div className="text-2xs text-ink-500">기간 총 유입 <b className="text-emerald-700 font-mono">{formatCurrency(data.period_balance.inflow, false)}</b></div>
+                <div className="text-2xs text-ink-500">기간 총 유출 <b className="text-rose-700 font-mono">{formatCurrency(data.period_balance.outflow, false)}</b></div>
+              </div>
+              <div className="text-2xs text-ink-400 mt-1.5 leading-relaxed">
+                전 계좌 합산 잔액의 시작→마감 변동입니다. 플러스면 기간 중 현금이 늘었고, 마이너스면 카드·이자 등으로 순유출된 것입니다.
+              </div>
+            </div>
+          )}
+
+          {/* 계좌간 자금 이동(참고) — 매출풀↔운영 메꿈 흐름 */}
+          {cf && (cf.reservoir_to_operating > 0 || cf.savings_move > 0) && (
+            <div className="panel p-3">
+              <div className="text-2xs font-semibold text-ink-600 mb-2">계좌간 자금 이동 내역 (참고 — 회사 전체 잔액엔 영향 없음)</div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                <div className="bg-canvas-50 rounded-md p-2">
+                  <div className="text-2xs text-amber-700">매출풀→운영 메꿈</div>
                   <div className="text-sm font-bold text-ink-900 mt-0.5">{formatCurrency(cf.reservoir_to_operating, false)}</div>
+                  <div className="text-2xs text-ink-400">카드·이자 결제용 이체</div>
                 </div>
-                <div className="bg-white rounded-md border border-ink-200 p-2.5">
-                  <div className="text-2xs text-ink-500">운영→매출풀 회수</div>
+                <div className="bg-canvas-50 rounded-md p-2">
+                  <div className="text-2xs text-emerald-700">운영→매출풀 회수</div>
                   <div className="text-sm font-bold text-ink-900 mt-0.5">{formatCurrency(cf.operating_to_reservoir, false)}</div>
                 </div>
-                <div className="bg-white rounded-md border border-violet-200 p-2.5">
-                  <div className="text-2xs text-violet-600">적립 이동(퇴직연금 등)</div>
-                  <div className="text-sm font-bold text-violet-700 mt-0.5">{formatCurrency(cf.savings_move, false)}</div>
-                  <div className="text-2xs text-ink-400">회사 잔액 감소 아님</div>
+                <div className="bg-canvas-50 rounded-md p-2">
+                  <div className="text-2xs text-violet-600">적립 이동(퇴직연금)</div>
+                  <div className="text-sm font-bold text-ink-900 mt-0.5">{formatCurrency(cf.savings_move, false)}</div>
                 </div>
-              </div>
-              <div className="text-2xs text-ink-500 mt-2 leading-relaxed">
-                매출은 <b className="text-emerald-700">매출 보관 계좌</b>에 쌓이고, 이자·카드값은 <b className="text-amber-700">운영 계좌</b>에서 빠져나가 매출풀이 메꿔줍니다.
-                위 <b>순메꿈액</b>이 클수록 기간 중 매출풀에서 운영비로 실제 빠져나간 현금이 큽니다. (동일계좌·적립 이동은 제외)
+                <div className="bg-canvas-50 rounded-md p-2">
+                  <div className="text-2xs text-ink-500">기타 이동</div>
+                  <div className="text-sm font-bold text-ink-900 mt-0.5">{formatCurrency(cf.other_move, false)}</div>
+                </div>
               </div>
             </div>
           )}
@@ -213,35 +239,6 @@ export default function InternalTransfersPage() {
             )}
           </div>
 
-          {/* 계좌쌍 순차액 정산 — 신한↔기업 양방향 상계 후 못받은 금액 */}
-          {(data.pair_settlements || []).filter((p: any) => p.net > 0).length > 0 && (
-            <div className="panel overflow-hidden">
-              <div className="px-3 py-2 border-b border-ink-200 text-2xs font-semibold text-ink-500 uppercase flex items-center gap-1">
-                <ArrowsRightLeftIcon className="h-3 w-3" />
-                계좌간 순정산 (양방향 상계 후 남은 차액)
-              </div>
-              <div className="divide-y divide-ink-50">
-                {data.pair_settlements.filter((p: any) => p.net > 0).map((p: any, i: number) => (
-                  <div key={i} className="px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 text-xs">
-                        <span className="font-medium text-ink-800">{p.account_a}</span>
-                        <ArrowsRightLeftIcon className="h-3 w-3 text-ink-400" />
-                        <span className="font-medium text-ink-800">{p.account_b}</span>
-                      </div>
-                      <span className="text-sm font-bold font-mono text-amber-700">순 {formatCurrency(p.net, false)}</span>
-                    </div>
-                    <div className="flex items-center gap-3 text-2xs text-ink-500 mt-1">
-                      <span>{p.account_a}→{p.account_b} {formatCurrency(p.a_to_b, false)}</span>
-                      <span>·</span>
-                      <span>{p.account_b}→{p.account_a} {formatCurrency(p.b_to_a, false)}</span>
-                    </div>
-                    <div className="text-2xs text-amber-700 mt-0.5 font-medium">{p.note}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* 이체 내역 */}
           <div className="panel overflow-hidden">

@@ -24,9 +24,11 @@ _CACHE_TTL = 300.0
 
 _COMPANY_ALIASES = ("조인앤조인", "joinandjoin")
 
-# 은행명 → 기본 역할 (대표 설명: 신한=매출보관, 기업=운영지출)
+# 은행명 → 기본 역할 (대표 설명: 신한=매출보관 최종풀, 국민·우리=매출 유입 경유, 기업=운영지출)
 _DEFAULT_ROLE_BY_BANK = {
     "신한은행": "reservoir",
+    "국민은행": "reservoir",
+    "우리은행": "reservoir",
     "기업은행": "operating",
 }
 # 계좌명에 이 키워드가 있으면 적립(퇴직연금 등) — 이동해도 잔액감소 아님
@@ -203,6 +205,29 @@ async def build_internal_transfers(
     label_role = {a.label: a.role for a in accounts}
     tickets = await _fetch_bank_tickets(start_date, end_date)
 
+    # 은행 잔액 기반 현금흐름 — 그랜터 일일리포트 (기간 전체)
+    period_balance = None
+    try:
+        from app.services.granter_client import get_granter_client
+        client = get_granter_client()
+        rep = await client.get_daily_financial_report({
+            "startDate": start_date.isoformat(),
+            "endDate": end_date.isoformat(),
+            "useCurrentExchangeRate": False,
+        }) or {}
+        tot = rep.get("total", {}) if isinstance(rep, dict) else {}
+        start_bal = float(tot.get("previousBalance") or 0)
+        end_bal = float(tot.get("currentBalance") or 0)
+        period_balance = {
+            "start_balance": start_bal,
+            "end_balance": end_bal,
+            "net_change": end_bal - start_bal,   # 은행 잔액 기반 순현금흐름
+            "inflow": float(tot.get("inAmount") or 0),
+            "outflow": abs(float(tot.get("outAmount") or 0)),
+        }
+    except Exception:
+        logger.exception("기간 잔액 조회 실패")
+
     # 1단계: 내부이체 후보 추출 (상대가 우리 계좌/회사로 해석되는 건)
     legs: List[Dict[str, Any]] = []
     for t in tickets:
@@ -321,39 +346,7 @@ async def build_internal_transfers(
     for s in summary.values():
         s["net"] = s["received"] - s["sent"]
 
-    # 4단계: 계좌쌍(A↔B) 순차액 — 양방향 상계 후 순 채권/채무
-    #   예: 신한→기업 1억, 기업→신한 1.2억 → 기업이 신한에 순 0.2억 더 보냄(못받음)
-    pair: Dict[tuple, Dict[str, float]] = {}
-    for tr in transfers:
-        a, b = tr["from_label"], tr["to_label"]
-        if a == "계좌 미상" or b == "계좌 미상":
-            continue
-        key = tuple(sorted([a, b]))
-        p = pair.setdefault(key, {key[0] + "→" + key[1]: 0.0, key[1] + "→" + key[0]: 0.0})
-        p[f"{a}→{b}"] = p.get(f"{a}→{b}", 0.0) + tr["amount"]
-
-    pair_settlements = []
-    for (x, y), flows in pair.items():
-        xy = flows.get(f"{x}→{y}", 0.0)
-        yx = flows.get(f"{y}→{x}", 0.0)
-        net = xy - yx  # 양수면 x가 y에게 순으로 더 보냄
-        if net > 0:
-            creditor, debtor, amt = y, x, net   # y가 x에게 순 amt를 덜 돌려줌 → x가 못받음
-        elif net < 0:
-            creditor, debtor, amt = x, y, -net
-        else:
-            creditor, debtor, amt = x, y, 0.0
-        pair_settlements.append({
-            "account_a": x, "account_b": y,
-            "a_to_b": xy, "b_to_a": yx,
-            "net": abs(net),
-            "net_direction": f"{debtor} → {creditor}" if amt else "상계 완료",
-            "note": (f"{debtor}이(가) {creditor}에게서 {abs(net):,.0f}원 아직 못 돌려받음"
-                     if amt else "기간 내 상호 이체 상계 완료"),
-        })
-    pair_settlements.sort(key=lambda p: p["net"], reverse=True)
-
-    # 4.5단계: 각 이체에 현금흐름 유형 태깅
+    # 각 이체에 현금흐름 유형 태깅
     def _role(label: str) -> str:
         return label_role.get(label, "other")
 
@@ -397,7 +390,7 @@ async def build_internal_transfers(
             "total_received": sum(s["received"] for s in summary.values()),
             "net_sum": net_sum,
         },
-        "pair_settlements": pair_settlements,
+        "period_balance": period_balance,
         "cash_flow": cf,
         "account_roles": [
             {"label": a.label, "role": a.role, "role_label": ROLE_LABELS.get(a.role, a.role), "bank": a.bank, "name": a.name}

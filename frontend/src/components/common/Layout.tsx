@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { authApi } from '@/services/api'
+import { useAdminPrefetch } from '@/hooks/useAdminPrefetch'
 import {
   HomeIcon,
   DocumentTextIcon,
@@ -182,6 +183,9 @@ export default function Layout() {
   const navigate = useNavigate()
   const { user, logout, menuMode, updateUser, setMenuMode } = useAuthStore()
   const isAdmin = !!user?.isAdmin
+
+  // 관리자 진입 시 주요 메뉴 백그라운드 선조회 (실제 클릭 시 빠른 열람)
+  useAdminPrefetch(isAdmin && menuMode === 'admin')
 
   // 관리자 여부는 항상 서버 기준으로 동기화 (구버전 세션·배포 시점 캐시로 고착 방지)
   useEffect(() => {
