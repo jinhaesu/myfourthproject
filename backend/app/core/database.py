@@ -294,6 +294,14 @@ async def init_db():
         # id를 명시 지정하던 구코드로 시퀀스가 안 밀렸을 수 있음 → MAX(id)+안전값으로 재설정
         "SELECT setval(pg_get_serial_sequence('payroll_tax_settings','id'), GREATEST(COALESCE((SELECT MAX(id) FROM payroll_tax_settings), 0), 1))",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_payroll_tax_settings_profile ON payroll_tax_settings(profile)",
+        # 계좌 역할 (매출보관/운영지출/적립) — 간접 현금흐름 관리
+        """CREATE TABLE IF NOT EXISTS bank_account_roles (
+            id SERIAL PRIMARY KEY,
+            account_label VARCHAR(80) UNIQUE NOT NULL,
+            role VARCHAR(20) DEFAULT 'other',
+            memo VARCHAR(200),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )""",
         # voucher_lines.voucher_id 인덱스 — DELETE/SELECT 성능 (없으면 full scan)
         "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
         # vouchers.source 인덱스 — wehago_import 등 source 기반 조회 성능

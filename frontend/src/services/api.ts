@@ -184,6 +184,8 @@ export const treasuryApi = {
     api.get('/treasury/internal-transfers', {
       params: { start_date, end_date }, timeout: 120_000,
     }),
+  setAccountRole: (data: { account_label: string; role: string; memo?: string }) =>
+    api.put('/treasury/account-role', data),
 
   getBankAccounts: () => api.get('/treasury/accounts/'),
 

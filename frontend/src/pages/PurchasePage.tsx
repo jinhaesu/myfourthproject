@@ -194,70 +194,78 @@ function CatalogTab() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-3">
       <div className="space-y-3">
-        {/* 링크 붙여넣기 */}
+        {/* 상품명 검색 (기본) */}
         <div className="panel p-3 space-y-2">
           <div className="text-2xs font-semibold text-ink-600 flex items-center gap-1">
-            <LinkIcon className="h-3 w-3" />
-            상품 링크 붙여넣기 — 상품명·가격·판매자 자동 인식
+            <SparklesIcon className="h-3 w-3" />
+            상품명으로 검색 — 네이버 쇼핑 (스마트스토어·쿠팡 링크는 차단되므로 이름으로 검색하세요)
           </div>
           <div className="flex gap-1.5">
             <input
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleParse()}
-              placeholder="https://smartstore.naver.com/... 또는 https://www.coupang.com/..."
+              type="text"
+              value={naverQuery}
+              onChange={(e) => setNaverQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleNaverSearch()}
+              placeholder="예: 제로콜라 24캔, A4용지 500매, 프린터 토너"
               className="flex-1 px-2.5 py-1.5 text-xs rounded-md border border-ink-300 focus:border-blue-400 focus:outline-none"
+              autoFocus
             />
             <button
-              onClick={handleParse}
-              disabled={parsing || !url.trim()}
-              className="px-3 py-1.5 text-xs rounded-md bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
+              onClick={handleNaverSearch}
+              disabled={naverSearching || !naverQuery.trim()}
+              className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
             >
-              <SparklesIcon className="h-3.5 w-3.5" />
-              {parsing ? '인식 중…' : '인식'}
+              {naverSearching ? '검색 중…' : '검색'}
             </button>
           </div>
 
-          {preview && !preview.parsed && !naverUnavailable && (
-            <div className="p-2.5 rounded-md bg-amber-50/60 border border-amber-200 space-y-1.5">
-              <div className="text-2xs font-semibold text-amber-800">
-                자동 인식이 차단된 사이트입니다 — 네이버 쇼핑에서 상품명으로 검색해 정보를 채우거나, 아래에 직접 입력해주세요
-              </div>
-              <div className="flex gap-1.5">
-                <input
-                  type="text"
-                  value={naverQuery}
-                  onChange={(e) => setNaverQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleNaverSearch()}
-                  placeholder="상품명으로 검색 (예: 제로콜라 24캔)"
-                  className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
-                />
-                <button
-                  onClick={handleNaverSearch}
-                  disabled={naverSearching || !naverQuery.trim()}
-                  className="px-2.5 py-1 text-2xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {naverSearching ? '검색 중…' : '네이버 쇼핑 검색'}
+          {naverResults.length > 0 && (
+            <div className="max-h-72 overflow-y-auto divide-y divide-ink-100 bg-white rounded border border-ink-200">
+              {naverResults.map((it, i) => (
+                <button key={i} onClick={() => pickNaverResult(it)}
+                  className="w-full p-2 flex items-center gap-2 text-left hover:bg-emerald-50">
+                  {it.image_url && <img src={it.image_url} alt="" className="w-10 h-10 rounded object-cover flex-shrink-0" />}
+                  <span className="flex-1 text-2xs text-ink-800 truncate">{it.title}</span>
+                  <span className="text-2xs text-ink-500 flex-shrink-0">{it.seller}</span>
+                  <span className="text-2xs font-mono font-semibold flex-shrink-0">
+                    {it.price != null ? formatCurrency(it.price, false) : '-'}
+                  </span>
                 </button>
-              </div>
-              {naverResults.length > 0 && (
-                <div className="max-h-56 overflow-y-auto divide-y divide-amber-100 bg-white rounded border border-amber-200">
-                  {naverResults.map((it, i) => (
-                    <button key={i} onClick={() => pickNaverResult(it)}
-                      className="w-full p-1.5 flex items-center gap-2 text-left hover:bg-amber-50">
-                      {it.image_url && <img src={it.image_url} alt="" className="w-8 h-8 rounded object-cover" />}
-                      <span className="flex-1 text-2xs text-ink-800 truncate">{it.title}</span>
-                      <span className="text-2xs text-ink-500">{it.seller}</span>
-                      <span className="text-2xs font-mono font-semibold">
-                        {it.price != null ? formatCurrency(it.price, false) : '-'}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
+              ))}
+              <div className="px-2 py-1 text-2xs text-ink-400">상품을 클릭하면 아래에 정보가 채워집니다 → 카탈로그 등록</div>
             </div>
           )}
+          {naverUnavailable && (
+            <div className="text-2xs text-amber-700">
+              네이버 검색 API가 아직 설정되지 않았습니다. 아래 '직접 입력'을 이용하거나 관리자에게 문의하세요.
+            </div>
+          )}
+
+          {/* 링크 직접 입력 (부가 — og 파싱 가능한 사이트: 11번가·지마켓 등) */}
+          <details className="text-2xs">
+            <summary className="cursor-pointer text-ink-500 hover:text-ink-800 select-none flex items-center gap-1">
+              <LinkIcon className="h-3 w-3" />또는 링크로 추가 (11번가·지마켓 등 · 네이버/쿠팡은 차단됨)
+            </summary>
+            <div className="flex gap-1.5 mt-1.5">
+              <input
+                type="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleParse()}
+                placeholder="https://www.11st.co.kr/... 등"
+                className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+              />
+              <button onClick={handleParse} disabled={parsing || !url.trim()}
+                className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
+                {parsing ? '인식 중…' : '링크 인식'}
+              </button>
+            </div>
+            {preview && !preview.parsed && (
+              <div className="text-2xs text-amber-700 mt-1">
+                이 사이트는 링크 자동 인식이 안 됩니다. 위에서 상품명으로 검색하거나 아래에 직접 입력해주세요.
+              </div>
+            )}
+          </details>
 
           {preview && (
             <div className="p-2.5 rounded-md bg-canvas-50 border border-ink-200 space-y-1.5">

@@ -5,6 +5,7 @@ Smart Finance Core - Treasury API
 from datetime import date
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -378,15 +379,44 @@ async def get_upcoming_payments(
 async def internal_transfers(
     start_date: date = Query(...),
     end_date: date = Query(...),
+    db: AsyncSession = Depends(get_db),
 ):
-    """은행간 내부거래 (회사 계좌 ↔ 회사 계좌) 정리 + 계좌별 누적 대차.
+    """은행간 내부거래 + 계좌별 순대차 + 간접 현금흐름 관점.
 
-    그랜터 통장거래에서 같은 금액의 출금·입금을 근접 시각으로 페어링해 내부이체를 감지.
-    페어를 못 찾았지만 상대명이 회사명/계좌주명인 건은 '내부이체 추정'으로 별도 반환.
+    계좌 역할(매출보관/운영지출/적립)에 따라 매출풀→운영 메꿈, 적립 이동 분리.
     """
     if end_date < start_date:
         raise HTTPException(status_code=400, detail="기간이 올바르지 않습니다.")
     if (end_date - start_date).days > 190:
         raise HTTPException(status_code=400, detail="조회 기간은 최대 6개월입니다.")
     from app.services.internal_transfers import build_internal_transfers
-    return await build_internal_transfers(start_date, end_date)
+    from app.models.account_role import BankAccountRole
+    from sqlalchemy import select as _select
+    rows = (await db.execute(_select(BankAccountRole))).scalars().all()
+    overrides = {r.account_label: r.role for r in rows}
+    return await build_internal_transfers(start_date, end_date, role_overrides=overrides)
+
+
+class AccountRoleBody(BaseModel):
+    account_label: str
+    role: str  # reservoir/operating/savings/other
+    memo: Optional[str] = None
+
+
+@router.put("/account-role")
+async def set_account_role(body: AccountRoleBody, db: AsyncSession = Depends(get_db)):
+    """계좌 역할 지정 (매출보관/운영지출/적립/기타)."""
+    from app.models.account_role import BankAccountRole
+    from sqlalchemy import select as _select
+    if body.role not in ("reservoir", "operating", "savings", "other"):
+        raise HTTPException(status_code=400, detail="잘못된 역할값입니다.")
+    r = (await db.execute(
+        _select(BankAccountRole).where(BankAccountRole.account_label == body.account_label)
+    )).scalar_one_or_none()
+    if not r:
+        r = BankAccountRole(account_label=body.account_label)
+        db.add(r)
+    r.role = body.role
+    r.memo = body.memo
+    await db.commit()
+    return {"ok": True}

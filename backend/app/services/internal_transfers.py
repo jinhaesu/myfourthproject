@@ -24,6 +24,21 @@ _CACHE_TTL = 300.0
 
 _COMPANY_ALIASES = ("조인앤조인", "joinandjoin")
 
+# 은행명 → 기본 역할 (대표 설명: 신한=매출보관, 기업=운영지출)
+_DEFAULT_ROLE_BY_BANK = {
+    "신한은행": "reservoir",
+    "기업은행": "operating",
+}
+# 계좌명에 이 키워드가 있으면 적립(퇴직연금 등) — 이동해도 잔액감소 아님
+_SAVINGS_NAME_HINTS = ("퇴직연금", "적립", "정기예금", "정기적금", "펀드")
+
+ROLE_LABELS = {
+    "reservoir": "매출 보관",
+    "operating": "운영·지출",
+    "savings": "적립(퇴직연금 등)",
+    "other": "기타",
+}
+
 # 은행명 → 짧은 별칭(적요에 등장하는 형태)
 _BANK_SHORT = {
     "기업은행": ["기업", "ibk"],
@@ -48,11 +63,12 @@ def _norm(s: Optional[str]) -> str:
 
 
 class Account:
-    __slots__ = ("asset_id", "bank", "number", "last4", "last3", "shorts", "label")
+    __slots__ = ("asset_id", "bank", "number", "last4", "last3", "shorts", "label", "name", "role")
 
-    def __init__(self, asset_id, bank, number):
+    def __init__(self, asset_id, bank, number, name=""):
         self.asset_id = int(asset_id) if asset_id is not None else None
         self.bank = (bank or "").strip()
+        self.name = (name or "").strip()
         num = _digits(number)
         self.number = num
         self.last4 = num[-4:] if len(num) >= 4 else num
@@ -60,9 +76,14 @@ class Account:
         self.shorts = _BANK_SHORT.get(self.bank, [self.bank[:2]] if self.bank else [])
         # 라벨: 은행명 + 뒷4자리
         self.label = f"{self.bank} {self.last4}".strip() if self.bank else f"계좌 {self.last4}"
+        # 기본 역할: 계좌명에 적립 힌트 있으면 savings, 아니면 은행명 기준
+        if any(h in self.name for h in _SAVINGS_NAME_HINTS):
+            self.role = "savings"
+        else:
+            self.role = _DEFAULT_ROLE_BY_BANK.get(self.bank, "other")
 
 
-async def _fetch_accounts() -> List[Account]:
+async def _fetch_accounts(role_overrides: Optional[Dict[str, str]] = None) -> List[Account]:
     from app.services.granter_client import get_granter_client
     client = get_granter_client()
     assets = await client.list_all_assets(only_active=False)
@@ -73,7 +94,12 @@ async def _fetch_accounts() -> List[Account]:
         ba = a.get("bankAccount") or {}
         bank = ba.get("bankName") or a.get("bankName") or a.get("organizationName") or ""
         number = ba.get("number") or a.get("number") or ""
-        accts.append(Account(a.get("id"), bank, number))
+        name = a.get("name") or a.get("nickname") or ba.get("nickname") or ""
+        acc = Account(a.get("id"), bank, number, name)
+        # 관리자 지정 역할 override (라벨 기준)
+        if role_overrides and acc.label in role_overrides:
+            acc.role = role_overrides[acc.label]
+        accts.append(acc)
     return accts
 
 
@@ -161,10 +187,20 @@ def _parse_dt(t: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
-async def build_internal_transfers(start_date: date, end_date: date) -> Dict[str, Any]:
-    """은행간 내부거래 정리 + 계좌별 순대차."""
-    accounts = await _fetch_accounts()
+async def build_internal_transfers(
+    start_date: date, end_date: date,
+    role_overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """은행간 내부거래 정리 + 계좌별 순대차 + 간접 현금흐름 관점.
+
+    현금흐름 관점(대표 운영 방식):
+    - 매출 보관(reservoir, 예:신한)에 외부 매출이 쌓임
+    - 운영·지출(operating, 예:기업)에서 이자·카드값이 빠짐 → 매출풀이 메꿔줌
+    - 적립(savings, 퇴직연금 등) 이동은 회사 잔액 감소 아님
+    """
+    accounts = await _fetch_accounts(role_overrides)
     by_asset = {a.asset_id: a for a in accounts if a.asset_id is not None}
+    label_role = {a.label: a.role for a in accounts}
     tickets = await _fetch_bank_tickets(start_date, end_date)
 
     # 1단계: 내부이체 후보 추출 (상대가 우리 계좌/회사로 해석되는 건)
@@ -317,6 +353,36 @@ async def build_internal_transfers(start_date: date, end_date: date) -> Dict[str
         })
     pair_settlements.sort(key=lambda p: p["net"], reverse=True)
 
+    # 4.5단계: 각 이체에 현금흐름 유형 태깅
+    def _role(label: str) -> str:
+        return label_role.get(label, "other")
+
+    cf = {
+        "reservoir_to_operating": 0.0,  # 매출풀→운영 메꿈 (실질 운영현금 소진)
+        "operating_to_reservoir": 0.0,  # 운영→매출풀 회수
+        "savings_move": 0.0,            # 적립 이동 (잔액감소 아님)
+        "other_move": 0.0,
+    }
+    for tr in transfers:
+        fr, to = _role(tr["from_label"]), _role(tr["to_label"])
+        if fr == "savings" or to == "savings":
+            ftype = "savings"
+            cf["savings_move"] += tr["amount"]
+        elif fr == "reservoir" and to == "operating":
+            ftype = "topup"
+            cf["reservoir_to_operating"] += tr["amount"]
+        elif fr == "operating" and to == "reservoir":
+            ftype = "sweep"
+            cf["operating_to_reservoir"] += tr["amount"]
+        else:
+            ftype = "other"
+            cf["other_move"] += tr["amount"]
+        tr["flow_type"] = ftype
+        tr["from_role"] = fr
+        tr["to_role"] = to
+
+    cf["net_topup"] = cf["reservoir_to_operating"] - cf["operating_to_reservoir"]
+
     transfers.sort(key=lambda x: (x["date"], x["time"]), reverse=True)
     resolved_cnt = sum(1 for t in transfers if t["resolved"])
     # 순대차 합계 (검증용 — 이론상 0에 수렴, 미상 건 때문에 잔차 가능)
@@ -332,6 +398,12 @@ async def build_internal_transfers(start_date: date, end_date: date) -> Dict[str
             "net_sum": net_sum,
         },
         "pair_settlements": pair_settlements,
+        "cash_flow": cf,
+        "account_roles": [
+            {"label": a.label, "role": a.role, "role_label": ROLE_LABELS.get(a.role, a.role), "bank": a.bank, "name": a.name}
+            for lbl, a in sorted({a.label: a for a in accounts}.items())
+        ],
+        "role_options": [{"key": k, "label": v} for k, v in ROLE_LABELS.items()],
         "total_amount": sum(t["amount"] for t in transfers),
         "transfer_count": len(transfers),
         "resolved_count": resolved_cnt,

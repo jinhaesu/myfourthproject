@@ -45,6 +45,7 @@ from app.models.payroll import PayrollBatch, PayrollRecord
 from app.models.card_alias import CardAlias
 from app.models.card_classification import CardUsageClassification, CardMonthlyClosing
 from app.models.payroll_tax import PayrollTaxSetting, PayrollTaxOverride
+from app.models.account_role import BankAccountRole
 from app.models.purchase import (
     CatalogItem,
     CatalogPriceHistory,
@@ -106,6 +107,7 @@ __all__ = [
     "CardMonthlyClosing",
     "PayrollTaxSetting",
     "PayrollTaxOverride",
+    "BankAccountRole",
     # Purchase
     "CatalogItem",
     "CatalogPriceHistory",

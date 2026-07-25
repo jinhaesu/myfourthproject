@@ -1,11 +1,19 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowsRightLeftIcon, CalendarDaysIcon, BuildingLibraryIcon,
-  ArrowRightIcon,
+  ArrowRightIcon, Cog6ToothIcon, BanknotesIcon, ArrowTrendingDownIcon,
 } from '@heroicons/react/24/outline'
 import { treasuryApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
+import toast from 'react-hot-toast'
+
+const FLOW_LABEL: Record<string, { label: string; cls: string }> = {
+  topup: { label: '매출풀→운영 메꿈', cls: 'text-amber-700' },
+  sweep: { label: '운영→매출풀 회수', cls: 'text-emerald-700' },
+  savings: { label: '적립 이동(잔액유지)', cls: 'text-violet-600' },
+  other: { label: '기타 이동', cls: 'text-ink-400' },
+}
 
 function todayISO() { return isoLocal(new Date()) }
 function daysAgoISO(n: number) {
@@ -13,17 +21,25 @@ function daysAgoISO(n: number) {
 }
 
 export default function InternalTransfersPage() {
+  const qc = useQueryClient()
   const [from, setFrom] = useState(daysAgoISO(30))
   const [to, setTo] = useState(todayISO())
+  const [showRoles, setShowRoles] = useState(false)
 
   const query = useQuery({
     queryKey: ['internal-transfers', from, to],
     queryFn: () => treasuryApi.internalTransfers(from, to).then((r) => r.data),
   })
 
+  const roleMut = useMutation({
+    mutationFn: (v: { account_label: string; role: string }) => treasuryApi.setAccountRole(v),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['internal-transfers'] }); toast.success('계좌 역할이 반영되었습니다') },
+  })
+
   const data = query.data
   const accounts = data?.accounts || []
   const transfers = data?.transfers || []
+  const cf = data?.cash_flow
 
   return (
     <div className="space-y-3">
@@ -37,15 +53,46 @@ export default function InternalTransfersPage() {
             회사 계좌끼리의 이체만 모아 기간 누적 대차(계좌별 보냄/받음/순액)를 보여줍니다 — 매출·비용과 섞이지 않게 분리 관리
           </p>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
-          <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-            className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
-          <span className="text-ink-300">→</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-            className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
+        <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
+            <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+              className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
+            <span className="text-ink-300">→</span>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+              className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
+          </div>
+          <button onClick={() => setShowRoles(!showRoles)}
+            className="px-2 py-1.5 text-xs rounded-md border border-ink-200 text-ink-600 hover:bg-ink-50 flex items-center gap-1">
+            <Cog6ToothIcon className="h-3.5 w-3.5" />계좌 역할
+          </button>
         </div>
       </div>
+
+      {/* 계좌 역할 설정 */}
+      {showRoles && data?.account_roles && (
+        <div className="panel p-3">
+          <div className="text-2xs font-semibold text-ink-600 mb-2">
+            계좌 역할 지정 — 매출 보관(신한 등)·운영지출(기업 등)·적립(퇴직연금)
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+            {data.account_roles.map((a: any) => (
+              <div key={a.label} className="flex items-center gap-2 text-xs">
+                <span className="flex-1 truncate text-ink-800">{a.label}
+                  {a.name && <span className="text-2xs text-ink-400 ml-1">{a.name}</span>}
+                </span>
+                <select value={a.role}
+                  onChange={(e) => roleMut.mutate({ account_label: a.label, role: e.target.value })}
+                  className="px-1.5 py-0.5 text-2xs rounded border border-ink-200 focus:outline-none">
+                  {(data.role_options || []).map((o: any) => (
+                    <option key={o.key} value={o.key}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {query.isLoading ? (
         <div className="panel p-10 text-center text-2xs text-ink-400">
@@ -72,6 +119,41 @@ export default function InternalTransfersPage() {
               <div className="text-lg font-bold text-ink-900">{accounts.length}개</div>
             </div>
           </div>
+
+          {/* 간접 현금흐름 관점 */}
+          {cf && (
+            <div className="panel p-3 bg-gradient-to-br from-blue-50/40 to-white">
+              <div className="text-2xs font-semibold text-ink-600 mb-2 flex items-center gap-1">
+                <BanknotesIcon className="h-3 w-3" />간접 현금흐름 (매출풀 → 운영계좌)
+              </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                <div className="bg-white rounded-md border border-amber-200 p-2.5">
+                  <div className="text-2xs text-amber-700 flex items-center gap-1">
+                    <ArrowTrendingDownIcon className="h-3 w-3" />매출풀→운영 순메꿈
+                  </div>
+                  <div className="text-lg font-bold text-amber-700 mt-0.5">{formatCurrency(cf.net_topup, false)}</div>
+                  <div className="text-2xs text-ink-400">기간 실질 운영현금 소진</div>
+                </div>
+                <div className="bg-white rounded-md border border-ink-200 p-2.5">
+                  <div className="text-2xs text-ink-500">매출풀→운영 (총)</div>
+                  <div className="text-sm font-bold text-ink-900 mt-0.5">{formatCurrency(cf.reservoir_to_operating, false)}</div>
+                </div>
+                <div className="bg-white rounded-md border border-ink-200 p-2.5">
+                  <div className="text-2xs text-ink-500">운영→매출풀 회수</div>
+                  <div className="text-sm font-bold text-ink-900 mt-0.5">{formatCurrency(cf.operating_to_reservoir, false)}</div>
+                </div>
+                <div className="bg-white rounded-md border border-violet-200 p-2.5">
+                  <div className="text-2xs text-violet-600">적립 이동(퇴직연금 등)</div>
+                  <div className="text-sm font-bold text-violet-700 mt-0.5">{formatCurrency(cf.savings_move, false)}</div>
+                  <div className="text-2xs text-ink-400">회사 잔액 감소 아님</div>
+                </div>
+              </div>
+              <div className="text-2xs text-ink-500 mt-2 leading-relaxed">
+                매출은 <b className="text-emerald-700">매출 보관 계좌</b>에 쌓이고, 이자·카드값은 <b className="text-amber-700">운영 계좌</b>에서 빠져나가 매출풀이 메꿔줍니다.
+                위 <b>순메꿈액</b>이 클수록 기간 중 매출풀에서 운영비로 실제 빠져나간 현금이 큽니다. (동일계좌·적립 이동은 제외)
+              </div>
+            </div>
+          )}
 
           {/* 계좌별 누적 대차 */}
           <div className="panel overflow-hidden">
@@ -186,7 +268,11 @@ export default function InternalTransfersPage() {
                       <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${t.to_label === '계좌 미상' ? 'bg-ink-50 text-ink-400' : 'bg-emerald-50 text-emerald-700'}`}>
                         {t.to_label}
                       </span>
-                      {t.memo && <span className="text-2xs text-ink-400 truncate hidden sm:inline">· {t.memo}</span>}
+                      {t.flow_type && FLOW_LABEL[t.flow_type] && (
+                        <span className={`text-2xs ${FLOW_LABEL[t.flow_type].cls} hidden sm:inline`}>
+                          · {FLOW_LABEL[t.flow_type].label}
+                        </span>
+                      )}
                     </div>
                     <span className="text-sm font-bold font-mono text-ink-900 flex-shrink-0">
                       {formatCurrency(t.amount, false)}
