@@ -162,3 +162,34 @@ def verify_otp_code(email: str, code: str) -> tuple[bool, str]:
 def clear_otp(email: str):
     """OTP 항목 삭제"""
     _otp_store.pop(email.lower(), None)
+
+
+async def send_email(to_email: str, subject: str, html_body: str) -> bool:
+    """범용 이메일 발송 (Resend) — 자금일보 등 시스템 메일용."""
+    if not settings.RESEND_API_KEY:
+        logger.warning(f"RESEND_API_KEY 미설정 — 이메일 발송 생략: {subject}")
+        return False
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": settings.RESEND_FROM_EMAIL,
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": html_body,
+                },
+                timeout=15.0,
+            )
+        if response.status_code in (200, 201):
+            logger.info(f"이메일 발송 완료: {to_email} / {subject}")
+            return True
+        logger.error(f"Resend API 오류: {response.status_code} {response.text[:200]}")
+        return False
+    except Exception as e:
+        logger.error(f"이메일 발송 실패 ({subject}): {e}")
+        return False

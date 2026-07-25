@@ -71,53 +71,88 @@ def _format_won(amount: Decimal | float | int) -> str:
 
 # ============ 그랜터 호출 + 캐싱 ============
 
+import time as _time
+
+# 단일 타입 티켓 캐시 — (type, start, end) → (items, ts). 5분 TTL.
+_SINGLE_TYPE_CACHE: Dict[tuple, tuple] = {}
+# daily-financial-report 캐시 — date → (report, ts). 5분 TTL.
+_DAILY_REPORT_CACHE: Dict[str, tuple] = {}
+_CACHE_TTL = 300.0
+
+
 async def _granter_daily_report(target_date: date) -> Dict[str, Any]:
-    """target_date 단일 일자 daily-financial-report 호출."""
+    """target_date 단일 일자 daily-financial-report 호출 (5분 캐시)."""
+    key = target_date.isoformat()
+    now = _time.time()
+    cached = _DAILY_REPORT_CACHE.get(key)
+    if cached and (now - cached[1]) < _CACHE_TTL:
+        return cached[0]
+
     client = get_granter_client()
     try:
-        return await client.get_daily_financial_report({
-            "startDate": target_date.isoformat(),
-            "endDate": target_date.isoformat(),
+        report = await client.get_daily_financial_report({
+            "startDate": key,
+            "endDate": key,
             "useCurrentExchangeRate": False,
         }) or {}
+        _DAILY_REPORT_CACHE[key] = (report, now)
+        return report
     except Exception as e:
         logger.exception(f"그랜터 daily-report 호출 실패 (date={target_date})")
         return {"_error": str(e)[:200]}
 
 
-async def _granter_expense_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
-    """카드(EXPENSE_TICKET) 거래 — 31일 제한 안에서만 호출."""
-    client = get_granter_client()
+async def _granter_tickets_single(
+    ticket_type: str, start_date: date, end_date: date,
+) -> List[Dict[str, Any]]:
+    """단일 타입 티켓 조회 — 필요한 타입만 1회 호출 (기존 all_types는 4타입×4회 낭비).
+
+    5분 캐시로 같은 기간 재조회 절약. 다이제스트 생성 속도의 핵심.
+    """
     if (end_date - start_date).days > 30:
         start_date = end_date - timedelta(days=30)
+
+    key = (ticket_type, start_date.isoformat(), end_date.isoformat())
+    now = _time.time()
+    cached = _SINGLE_TYPE_CACHE.get(key)
+    if cached and (now - cached[1]) < _CACHE_TTL:
+        return cached[0]
+
+    client = get_granter_client()
     try:
-        tickets = await client.list_tickets_all_types(
-            start_date.isoformat(), end_date.isoformat(),
-        )
-        # 취소/거절 카드거래 제외 — 자금일보 카드지출 부풀림 방지
-        from app.services.granter_client import filter_normal_card_tickets
-        return filter_normal_card_tickets(
-            tickets.get("EXPENSE_TICKET", []) or [],
-            f"daily_cash_report {start_date}~{end_date}",
-        )
+        resp = await client.list_tickets({
+            "ticketType": ticket_type,
+            "startDate": start_date.isoformat(),
+            "endDate": end_date.isoformat(),
+        })
+        if isinstance(resp, list):
+            items = resp
+        elif isinstance(resp, dict):
+            items = resp.get("data") or resp.get("items") or []
+        else:
+            items = []
+        _SINGLE_TYPE_CACHE[key] = (items, now)
+        # 오래된 캐시 정리
+        for k in list(_SINGLE_TYPE_CACHE.keys()):
+            if now - _SINGLE_TYPE_CACHE[k][1] > _CACHE_TTL:
+                _SINGLE_TYPE_CACHE.pop(k, None)
+        return items
     except Exception:
-        logger.exception(f"그랜터 expense_tickets 호출 실패 ({start_date}~{end_date})")
+        logger.exception(f"그랜터 {ticket_type} 호출 실패 ({start_date}~{end_date})")
         return []
+
+
+async def _granter_expense_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
+    """카드(EXPENSE_TICKET) 거래 — 31일 제한 안에서만 호출."""
+    items = await _granter_tickets_single("EXPENSE_TICKET", start_date, end_date)
+    # 취소/거절 카드거래 제외 — 자금일보 카드지출 부풀림 방지
+    from app.services.granter_client import filter_normal_card_tickets
+    return filter_normal_card_tickets(items, f"daily_cash_report {start_date}~{end_date}")
 
 
 async def _granter_bank_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """통장 거래(BANK_TRANSACTION_TICKET) — 입출금 상세."""
-    client = get_granter_client()
-    if (end_date - start_date).days > 30:
-        start_date = end_date - timedelta(days=30)
-    try:
-        tickets = await client.list_tickets_all_types(
-            start_date.isoformat(), end_date.isoformat(),
-        )
-        return tickets.get("BANK_TRANSACTION_TICKET", []) or []
-    except Exception:
-        logger.exception(f"그랜터 bank_tickets 호출 실패 ({start_date}~{end_date})")
-        return []
+    return await _granter_tickets_single("BANK_TRANSACTION_TICKET", start_date, end_date)
 
 
 def _split_inflow_outflow(bank_tickets: List[Dict[str, Any]]) -> tuple:
@@ -361,6 +396,141 @@ SECTION_GENERATORS = {
     "card_spending": _section_card_spending,
     "card_usage": _section_card_usage,
 }
+
+
+# ============ 정기 발송 (스케줄러가 매분 호출) ============
+
+def _digest_to_html(content: Dict[str, Any]) -> str:
+    """자금일보 콘텐츠 → 이메일 HTML."""
+    target = content.get("target_date") or content.get("report_date") or ""
+    parts = [
+        '<div style="font-family:\'Apple SD Gothic Neo\',sans-serif;max-width:560px;margin:0 auto;padding:24px 16px;">',
+        '<div style="background:linear-gradient(135deg,#2563eb,#4f46e5);border-radius:12px;padding:24px;color:#fff;">',
+        '<h1 style="margin:0 0 4px;font-size:20px;">AI 자금 다이제스트</h1>',
+        f'<p style="margin:0;opacity:.9;font-size:13px;">기준일 {target}</p></div>',
+    ]
+    sections = content.get("content", {}) or {}
+    order = content.get("sections_order") or list(sections.keys())
+    for key in order:
+        sec = sections.get(key)
+        if not sec or not isinstance(sec, dict):
+            continue
+        title = sec.get("title") or key
+        summary = sec.get("summary") or sec.get("error") or ""
+        parts.append(
+            '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;margin-top:12px;padding:20px;">'
+            f'<h2 style="margin:0 0 8px;font-size:15px;color:#1f2937;">{title}</h2>'
+            f'<p style="margin:0;font-size:13px;color:#374151;line-height:1.6;">{summary}</p></div>'
+        )
+    parts.append(
+        '<p style="margin:16px 0 0;font-size:11px;color:#9ca3af;text-align:center;">'
+        'Smart Finance Core — 자금일보 자동 발송</p></div>'
+    )
+    return "".join(parts)
+
+
+async def deliver_scheduled_digests() -> int:
+    """정기 발송 실행 — enabled 설정 중 delivery_time(KST)이 지났고
+    오늘 아직 발송 안 된 사용자에게 생성→스냅샷→이메일 발송.
+
+    다중 인스턴스 중복 발송은 스냅샷(user_id+report_date unique)의
+    sent_at IS NULL 조건부 UPDATE 클레임으로 방지.
+    Returns: 발송 건수
+    """
+    from sqlalchemy import update
+    from app.core.database import async_session_factory
+    from app.models.user import User
+    from app.services.email_service import send_email
+
+    if async_session_factory is None:
+        return 0
+
+    now_kst = datetime.utcnow() + timedelta(hours=9)
+    today_kst = now_kst.date()
+    hhmm = now_kst.strftime("%H:%M")
+    sent_count = 0
+
+    async with async_session_factory() as db:
+        rows = (await db.execute(
+            select(DailyCashReportConfig, User.email)
+            .join(User, User.id == DailyCashReportConfig.user_id)
+            .where(DailyCashReportConfig.enabled == True)  # noqa: E712
+        )).all()
+
+        for cfg, email in rows:
+            delivery_time = (cfg.delivery_time or "09:00")[:5]
+            if hhmm < delivery_time:
+                continue  # 아직 발송 시각 전
+
+            channels = []
+            try:
+                channels = json.loads(cfg.delivery_channels or '["email"]')
+            except (ValueError, TypeError):
+                channels = ["email"]
+            if "email" not in channels:
+                continue  # 현재 이메일 채널만 지원
+
+            # 오늘 스냅샷 조회/생성 (클레임 대상 행 확보)
+            snap = (await db.execute(
+                select(DailyCashReportSnapshot).where(
+                    DailyCashReportSnapshot.user_id == cfg.user_id,
+                    DailyCashReportSnapshot.report_date == today_kst,
+                )
+            )).scalar_one_or_none()
+
+            if snap and snap.sent_at:
+                continue  # 오늘 이미 발송됨
+
+            if snap is None:
+                try:
+                    snap = DailyCashReportSnapshot(
+                        user_id=cfg.user_id,
+                        report_date=today_kst,
+                        content="{}",
+                        sent_channels=None,
+                        sent_at=None,
+                    )
+                    db.add(snap)
+                    await db.commit()
+                    await db.refresh(snap)
+                except Exception:
+                    # unique 충돌 — 다른 인스턴스가 먼저 생성
+                    await db.rollback()
+                    continue
+
+            # 원자적 클레임 — 이긴 인스턴스만 발송
+            claimed = await db.execute(
+                update(DailyCashReportSnapshot)
+                .where(
+                    DailyCashReportSnapshot.id == snap.id,
+                    DailyCashReportSnapshot.sent_at.is_(None),
+                )
+                .values(sent_at=datetime.utcnow(), sent_channels=json.dumps(["email"]))
+            )
+            await db.commit()
+            if claimed.rowcount == 0:
+                continue  # 다른 인스턴스가 선점
+
+            try:
+                target = today_kst - timedelta(days=1)
+                content = await generate_report_content(db, cfg.user_id, target, cfg)
+                snap.content = json.dumps(content, default=str, ensure_ascii=False)
+                await db.commit()
+
+                ok = await send_email(
+                    email,
+                    f"[Smart Finance] {target.isoformat()} 자금 다이제스트",
+                    _digest_to_html(content),
+                )
+                if ok:
+                    sent_count += 1
+                    logger.info(f"[Digest] {email} 자금일보 발송 완료 (기준일 {target})")
+                else:
+                    logger.warning(f"[Digest] {email} 이메일 발송 실패 — 스냅샷은 저장됨")
+            except Exception:
+                logger.exception(f"[Digest] user_id={cfg.user_id} 발송 처리 실패")
+
+    return sent_count
 
 
 async def generate_report_content(

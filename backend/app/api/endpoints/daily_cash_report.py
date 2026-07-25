@@ -121,9 +121,10 @@ async def update_config(
 async def preview_report(
     date_str: Optional[str] = Query(None, alias="date", description="기준일자 (없으면 어제)"),
     user_id: int = Query(1),
+    refresh: bool = Query(False, description="true면 스냅샷 무시하고 새로 생성"),
     db: AsyncSession = Depends(get_db),
 ):
-    """자금일보 실시간 미리보기 — DB에 저장하지 않음."""
+    """자금일보 미리보기 — 당일 스냅샷이 있으면 즉시 반환(빠름), 없으면 생성."""
     if date_str:
         try:
             target = date.fromisoformat(date_str)
@@ -132,8 +133,23 @@ async def preview_report(
     else:
         target = date.today() - timedelta(days=1)
 
+    # 스냅샷 우선 (특정 날짜 지정·강제 새로고침이 아닐 때) — 페이지 진입 즉시 표시
+    if not date_str and not refresh:
+        snap = (await db.execute(
+            select(DailyCashReportSnapshot).where(
+                DailyCashReportSnapshot.user_id == user_id,
+                DailyCashReportSnapshot.report_date == date.today(),
+            )
+        )).scalar_one_or_none()
+        if snap:
+            try:
+                return {"from_snapshot": True, **json.loads(snap.content)}
+            except (ValueError, TypeError):
+                pass
+
     cfg = await get_or_create_config(db, user_id)
     content = await generate_report_content(db, user_id, target, cfg)
+    content["from_snapshot"] = False
     return content
 
 

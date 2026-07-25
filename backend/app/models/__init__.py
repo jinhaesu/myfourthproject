@@ -43,7 +43,7 @@ from app.models.sales import (
 )
 from app.models.payroll import PayrollBatch, PayrollRecord
 from app.models.card_alias import CardAlias
-from app.models.card_classification import CardUsageClassification
+from app.models.card_classification import CardUsageClassification, CardMonthlyClosing
 from app.models.purchase import (
     CatalogItem,
     CatalogPriceHistory,
@@ -102,6 +102,7 @@ __all__ = [
     # Card
     "CardAlias",
     "CardUsageClassification",
+    "CardMonthlyClosing",
     # Purchase
     "CatalogItem",
     "CatalogPriceHistory",
