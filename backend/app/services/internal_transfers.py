@@ -297,7 +297,7 @@ async def build_internal_transfers(start_date: date, end_date: date) -> Dict[str
         "resolved_count": resolved_cnt,
         "unresolved_count": len(transfers) - resolved_cnt,
         "known_accounts": [
-            {"label": a.label, "bank": a.bank, "last4": a.last4}
-            for a in accounts
+            {"label": lbl, "bank": bank, "last4": l4}
+            for lbl, bank, l4 in sorted({(a.label, a.bank, a.last4) for a in accounts})
         ],
     }

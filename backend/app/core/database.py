@@ -289,7 +289,10 @@ async def init_db():
         # 세율 프로필(고용형태·직군별) 컬럼 추가
         "ALTER TABLE payroll_tax_settings ADD COLUMN IF NOT EXISTS profile VARCHAR(40)",
         "ALTER TABLE payroll_tax_settings ADD COLUMN IF NOT EXISTS label VARCHAR(60)",
-        "UPDATE payroll_tax_settings SET profile='default' WHERE profile IS NULL",
+        # 구 단일행(profile 없거나 'default') 정리 — 새 프로필 insert 시 PK 충돌 방지
+        "DELETE FROM payroll_tax_settings WHERE profile IS NULL OR profile = 'default'",
+        # id를 명시 지정하던 구코드로 시퀀스가 안 밀렸을 수 있음 → MAX(id)+안전값으로 재설정
+        "SELECT setval(pg_get_serial_sequence('payroll_tax_settings','id'), GREATEST(COALESCE((SELECT MAX(id) FROM payroll_tax_settings), 0), 1))",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_payroll_tax_settings_profile ON payroll_tax_settings(profile)",
         # voucher_lines.voucher_id 인덱스 — DELETE/SELECT 성능 (없으면 full scan)
         "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
