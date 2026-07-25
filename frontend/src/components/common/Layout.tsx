@@ -104,7 +104,7 @@ function NavList({
   onItemClick?: () => void
 }) {
   return (
-    <nav className="flex-1 overflow-y-auto py-2 px-2">
+    <nav className="flex-1 min-h-0 overflow-y-auto py-2 px-2">
       {navigation.map((item, idx) => {
         if ('section' in item && item.section) {
           return (
@@ -212,7 +212,7 @@ export default function Layout() {
       {/* Mobile sidebar */}
       <div className={`fixed inset-0 z-50 lg:hidden ${sidebarOpen ? '' : 'hidden'}`}>
         <div className="fixed inset-0 bg-ink-900/40" onClick={() => setSidebarOpen(false)} />
-        <div className="fixed inset-y-0 left-0 flex w-56 flex-col bg-white">
+        <div className="fixed inset-y-0 left-0 flex w-56 flex-col bg-white min-h-0">
           <div className="flex h-12 items-center justify-between px-3 border-b border-ink-200">
             <span className="text-sm font-bold text-ink-900 tracking-tightish">Smart Finance</span>
             <button
@@ -233,7 +233,7 @@ export default function Layout() {
 
       {/* Desktop sidebar */}
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-56 lg:flex-col">
-        <div className="flex flex-col flex-1 bg-white border-r border-ink-200">
+        <div className="flex flex-col flex-1 min-h-0 bg-white border-r border-ink-200">
           <div className="flex h-12 items-center px-3 border-b border-ink-200">
             <div className="flex items-center gap-2">
               <div className="w-5 h-5 rounded bg-ink-900 flex items-center justify-center">
