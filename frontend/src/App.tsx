@@ -54,6 +54,7 @@ const AuditReportPage = lazyRetry(() => import('@/pages/AuditReportPage'))
 const ExchangeRatesPage = lazyRetry(() => import('@/pages/ExchangeRatesPage'))
 const ArApPage = lazyRetry(() => import('@/pages/ArApPage'))
 const PayrollPage = lazyRetry(() => import('@/pages/PayrollPage'))
+const PayrollImportPage = lazyRetry(() => import('@/pages/PayrollImportPage'))
 const MyCardsPage = lazyRetry(() => import('@/pages/MyCardsPage'))
 const PurchasePage = lazyRetry(() => import('@/pages/PurchasePage'))
 const InternalTransfersPage = lazyRetry(() => import('@/pages/InternalTransfersPage'))
@@ -134,6 +135,7 @@ function App() {
           <Route path="audit-report" element={<AdminRoute><AuditReportPage /></AdminRoute>} />
           <Route path="ar-ap" element={<AdminRoute><ArApPage /></AdminRoute>} />
           <Route path="payroll" element={<AdminRoute><PayrollPage /></AdminRoute>} />
+          <Route path="payroll-import" element={<AdminRoute><PayrollImportPage /></AdminRoute>} />
           <Route path="settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
           <Route path="admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
         </Route>

@@ -262,6 +262,30 @@ async def init_db():
         # card_aliases.assigned_email — 카드 배정 (관리자가 이메일 기준 배정, 직원은 본인 카드만 조회)
         "ALTER TABLE card_aliases ADD COLUMN IF NOT EXISTS assigned_email VARCHAR(255)",
         "CREATE INDEX IF NOT EXISTS ix_card_aliases_assigned_email ON card_aliases(assigned_email) WHERE assigned_email IS NOT NULL",
+        # 급여 세금 설정/오버라이드 (외부 확정값 입력)
+        """CREATE TABLE IF NOT EXISTS payroll_tax_settings (
+            id SERIAL PRIMARY KEY,
+            national_pension_rate DOUBLE PRECISION DEFAULT 4.5,
+            health_insurance_rate DOUBLE PRECISION DEFAULT 3.545,
+            long_term_care_rate DOUBLE PRECISION DEFAULT 12.95,
+            employment_insurance_rate DOUBLE PRECISION DEFAULT 0.9,
+            freelance_withholding_rate DOUBLE PRECISION DEFAULT 3.3,
+            local_tax_rate DOUBLE PRECISION DEFAULT 10.0,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )""",
+        """CREATE TABLE IF NOT EXISTS payroll_tax_overrides (
+            id SERIAL PRIMARY KEY,
+            month VARCHAR(7) NOT NULL,
+            worker_name VARCHAR(100) NOT NULL,
+            income_tax DOUBLE PRECISION,
+            local_tax DOUBLE PRECISION,
+            insurance DOUBLE PRECISION,
+            memo TEXT,
+            updated_by VARCHAR(255),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            CONSTRAINT uq_payroll_tax_override UNIQUE (month, worker_name)
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_payroll_tax_overrides_month ON payroll_tax_overrides(month)",
         # voucher_lines.voucher_id 인덱스 — DELETE/SELECT 성능 (없으면 full scan)
         "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
         # vouchers.source 인덱스 — wehago_import 등 source 기반 조회 성능

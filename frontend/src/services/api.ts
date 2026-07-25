@@ -1354,6 +1354,46 @@ export const purchaseApi = {
 }
 
 // ==================== 급여(인건비) 관리 ====================
+export interface PayrollImportRecord {
+  source: string
+  worker_type: string
+  cost_type: 'COGS' | 'SGA'
+  name: string
+  department: string
+  gross_pay: number
+  income_tax: number
+  local_tax: number
+  insurance: number
+  total_deduction: number
+  net_pay: number
+  tax_source: string
+  hours?: number
+  hourly_rate?: number
+}
+
+export interface PayrollImportSummary {
+  month: string
+  payday: string
+  records: PayrollImportRecord[]
+  by_department: { department: string; gross: number; net: number; tax: number; insurance: number; count: number; cogs: number; sga: number }[]
+  by_cost_type: { cost_type: string; label: string; gross: number; count: number }[]
+  totals: { gross: number; net: number; tax: number; insurance: number; count: number }
+  sources: Record<string, number>
+}
+
+export const payrollImportApi = {
+  confirmedMonth: (asOf?: string) =>
+    api.get<{ confirmed_month: string }>('/payroll/import/confirmed-month', { params: { as_of: asOf } }),
+  summary: (month?: string) =>
+    api.get<PayrollImportSummary>('/payroll/import/summary', { params: { month }, timeout: 60_000 }),
+  getTaxSettings: () => api.get('/payroll/tax/settings'),
+  updateTaxSettings: (patch: Record<string, number>) => api.put('/payroll/tax/settings', patch),
+  setOverride: (data: { month: string; worker_name: string; income_tax?: number; local_tax?: number; insurance?: number; memo?: string }) =>
+    api.put('/payroll/tax/override', data),
+  deleteOverride: (month: string, worker_name: string) =>
+    api.delete('/payroll/tax/override', { params: { month, worker_name } }),
+}
+
 export const payrollApi = {
   listBatches: (year?: number) =>
     api.get('/payroll/batches', { params: { year } }),

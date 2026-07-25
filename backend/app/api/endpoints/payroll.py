@@ -765,3 +765,154 @@ async def unpost_batch(
     batch.updated_at = datetime.utcnow()
 
     return {"batch_id": batch_id, "status": "DRAFT", "message": "분개 전표가 취소되었습니다."}
+
+
+# ==================== 외부 HR 확정급여 임포트 + 세금 ====================
+
+@router.get("/import/confirmed-month")
+async def get_confirmed_month(as_of: Optional[str] = Query(None, description="기준일 YYYY-MM-DD")):
+    """조회일 기준 확정 급여월(매달 10일 급여일 기준) 계산."""
+    from app.services.payroll_import import confirmed_payroll_month
+    ref = date.fromisoformat(as_of) if as_of else None
+    return {"confirmed_month": confirmed_payroll_month(ref)}
+
+
+@router.get("/import/summary")
+async def import_payroll_summary(
+    month: Optional[str] = Query(None, description="YYYY-MM (없으면 확정월 자동)"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """외부 HR/노무 시스템에서 확정 급여를 가져와 전체 리스트 + 부서별/원가판관비 분류.
+
+    세금 오버라이드(외부 확인값)가 있으면 반영.
+    """
+    from app.services.payroll_import import build_payroll_summary
+    from app.models.payroll_tax import PayrollTaxOverride
+
+    data = await build_payroll_summary(month)
+
+    # 오버라이드 적용
+    ovrs = (await db.execute(
+        select(PayrollTaxOverride).where(PayrollTaxOverride.month == data["month"])
+    )).scalars().all()
+    ovr_map = {o.worker_name: o for o in ovrs}
+    for r in data["records"]:
+        o = ovr_map.get(r["name"])
+        if not o:
+            continue
+        if o.income_tax is not None:
+            r["income_tax"] = o.income_tax
+        if o.local_tax is not None:
+            r["local_tax"] = o.local_tax
+        if o.insurance is not None:
+            r["insurance"] = o.insurance
+        r["total_deduction"] = r["income_tax"] + r["local_tax"] + r["insurance"]
+        r["net_pay"] = r["gross_pay"] - r["total_deduction"]
+        r["tax_source"] = "override"
+
+    # 오버라이드 반영 후 합계 재계산
+    if ovrs:
+        tg = tn = tt = ti = 0.0
+        for r in data["records"]:
+            tg += r["gross_pay"]; tn += r["net_pay"]
+            tt += r["income_tax"] + r["local_tax"]; ti += r["insurance"]
+        data["totals"] = {"gross": tg, "net": tn, "tax": tt, "insurance": ti, "count": len(data["records"])}
+
+    return data
+
+
+class TaxSettingBody(BaseModel):
+    national_pension_rate: Optional[float] = None
+    health_insurance_rate: Optional[float] = None
+    long_term_care_rate: Optional[float] = None
+    employment_insurance_rate: Optional[float] = None
+    freelance_withholding_rate: Optional[float] = None
+    local_tax_rate: Optional[float] = None
+
+
+@router.get("/tax/settings")
+async def get_tax_settings(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """급여 세금/보험 요율 설정 조회."""
+    from app.models.payroll_tax import PayrollTaxSetting
+    s = (await db.execute(select(PayrollTaxSetting).where(PayrollTaxSetting.id == 1))).scalar_one_or_none()
+    if not s:
+        s = PayrollTaxSetting(id=1)
+        db.add(s)
+        await db.commit()
+        await db.refresh(s)
+    return {
+        "national_pension_rate": s.national_pension_rate,
+        "health_insurance_rate": s.health_insurance_rate,
+        "long_term_care_rate": s.long_term_care_rate,
+        "employment_insurance_rate": s.employment_insurance_rate,
+        "freelance_withholding_rate": s.freelance_withholding_rate,
+        "local_tax_rate": s.local_tax_rate,
+    }
+
+
+@router.put("/tax/settings")
+async def update_tax_settings(
+    body: TaxSettingBody, db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
+):
+    """급여 세금/보험 요율 설정 저장."""
+    from app.models.payroll_tax import PayrollTaxSetting
+    s = (await db.execute(select(PayrollTaxSetting).where(PayrollTaxSetting.id == 1))).scalar_one_or_none()
+    if not s:
+        s = PayrollTaxSetting(id=1)
+        db.add(s)
+    for k, v in body.model_dump(exclude_none=True).items():
+        setattr(s, k, v)
+    await db.commit()
+    await db.refresh(s)
+    return {"ok": True}
+
+
+class TaxOverrideBody(BaseModel):
+    month: str
+    worker_name: str
+    income_tax: Optional[float] = None
+    local_tax: Optional[float] = None
+    insurance: Optional[float] = None
+    memo: Optional[str] = None
+
+
+@router.put("/tax/override")
+async def upsert_tax_override(
+    body: TaxOverrideBody, db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
+):
+    """직원별 세금 외부 확인값 입력 (세무사 확정값 등)."""
+    from app.models.payroll_tax import PayrollTaxOverride
+    o = (await db.execute(
+        select(PayrollTaxOverride).where(
+            PayrollTaxOverride.month == body.month,
+            PayrollTaxOverride.worker_name == body.worker_name,
+        )
+    )).scalar_one_or_none()
+    if not o:
+        o = PayrollTaxOverride(month=body.month, worker_name=body.worker_name)
+        db.add(o)
+    o.income_tax = body.income_tax
+    o.local_tax = body.local_tax
+    o.insurance = body.insurance
+    o.memo = body.memo
+    o.updated_by = user.email
+    await db.commit()
+    return {"ok": True}
+
+
+@router.delete("/tax/override")
+async def delete_tax_override(
+    month: str = Query(...), worker_name: str = Query(...),
+    db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
+):
+    """세금 오버라이드 삭제 (원래 계산값으로 복귀)."""
+    from app.models.payroll_tax import PayrollTaxOverride
+    await db.execute(
+        delete(PayrollTaxOverride).where(
+            PayrollTaxOverride.month == month,
+            PayrollTaxOverride.worker_name == worker_name,
+        )
+    )
+    await db.commit()
+    return {"ok": True}
