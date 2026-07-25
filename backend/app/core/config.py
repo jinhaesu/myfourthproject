@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     DOUZONE_API_URL: Optional[str] = None
     DOUZONE_API_KEY: Optional[str] = None
 
+    # 네이버 쇼핑 검색 OpenAPI (구매 카탈로그 — 스마트스토어 직접 크롤링 차단 우회용)
+    # https://developers.naver.com 에서 애플리케이션 등록 후 발급
+    NAVER_CLIENT_ID: Optional[str] = None
+    NAVER_CLIENT_SECRET: Optional[str] = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

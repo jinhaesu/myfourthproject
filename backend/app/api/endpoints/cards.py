@@ -59,11 +59,15 @@ async def _ensure_card_access(db: AsyncSession, user, card_key: str):
 async def list_cards_api(
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
+    mine_only: bool = Query(False, description="본인 배정 카드만 (직원용 화면 — 관리자도 적용)"),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """카드 목록 — 관리자: 전체 / 직원: 본인 배정 카드만."""
-    only = None if is_accounting_admin(user) else user.email
+    """카드 목록 — 관리자: 전체 / 직원: 본인 배정 카드만. mine_only=true면 관리자도 본인 카드만."""
+    if mine_only or not is_accounting_admin(user):
+        only = user.email
+    else:
+        only = None
     return {
         "cards": await list_cards(db, start_date, end_date, only_assigned_to=only),
         "is_admin": is_accounting_admin(user),

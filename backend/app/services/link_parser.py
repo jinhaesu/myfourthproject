@@ -129,6 +129,18 @@ async def parse_product_link(url: str) -> Dict[str, Any]:
         "error": None,
     }
 
+    # 네이버·쿠팡은 서버측 자동 조회를 차단(429/403/로그인 리다이렉트) →
+    # 시도하지 않고 바로 검색/수동입력 폴백 안내
+    host_blocked = platform and any(
+        k in (platform or "") for k in ("네이버", "쿠팡")
+    )
+    if host_blocked:
+        base["error"] = (
+            f"{platform}은(는) 자동 조회를 차단합니다. "
+            "아래 '상품명으로 검색'을 이용하거나 정보를 직접 입력해주세요."
+        )
+        return base
+
     try:
         async with httpx.AsyncClient(
             follow_redirects=True,

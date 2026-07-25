@@ -274,10 +274,18 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
     local_part = email.split("@")[0]
     display_name = local_part.replace(".", " ").replace("_", " ").title()
 
+    # username 유일성 보장 — 같은 local part의 다른 도메인 이메일 (예: gmail/회사메일 동시 사용)
+    username = local_part
+    existing_username = await db.execute(
+        select(User.id).where(User.username == username)
+    )
+    if existing_username.scalar_one_or_none() is not None:
+        username = f"{local_part}-{uuid.uuid4().hex[:4]}"
+
     user = User(
         employee_id=f"AUTO-{uuid.uuid4().hex[:8].upper()}",
         email=email,
-        username=local_part,
+        username=username,
         hashed_password=dummy_hash,
         full_name=display_name,
         role_id=role.id,

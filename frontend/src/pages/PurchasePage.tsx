@@ -70,6 +70,10 @@ function CatalogTab() {
   const [url, setUrl] = useState('')
   const [parsing, setParsing] = useState(false)
   const [preview, setPreview] = useState<any | null>(null)
+  const [naverQuery, setNaverQuery] = useState('')
+  const [naverResults, setNaverResults] = useState<any[]>([])
+  const [naverSearching, setNaverSearching] = useState(false)
+  const [naverUnavailable, setNaverUnavailable] = useState(false)
   const [cart, setCart] = useState<CartLine[]>([])
   const [reqTitle, setReqTitle] = useState('')
   const [reqReason, setReqReason] = useState('')
@@ -126,6 +130,7 @@ function CatalogTab() {
     if (!url.trim()) return
     setParsing(true)
     setPreview(null)
+    setNaverResults([])
     try {
       const r = await purchaseApi.parseLink(url.trim())
       setPreview({ ...r.data, url: url.trim() })
@@ -136,6 +141,39 @@ function CatalogTab() {
     } finally {
       setParsing(false)
     }
+  }
+
+  async function handleNaverSearch() {
+    if (!naverQuery.trim()) return
+    setNaverSearching(true)
+    try {
+      const r = await purchaseApi.searchNaver(naverQuery.trim())
+      setNaverResults(r.data.items)
+      if (!r.data.items.length) toast('검색 결과가 없습니다', { icon: 'ℹ️' })
+    } catch (e: any) {
+      if (e.response?.status === 501) {
+        setNaverUnavailable(true)
+        toast.error('네이버 검색 API가 아직 설정되지 않았습니다. 정보를 직접 입력해주세요.')
+      } else {
+        toast.error(e.response?.data?.detail || '검색 실패')
+      }
+    } finally {
+      setNaverSearching(false)
+    }
+  }
+
+  function pickNaverResult(item: any) {
+    // 붙여넣은 원본 링크는 유지하고 상품 정보만 채움
+    setPreview((prev: any) => ({
+      ...(prev || { url: url.trim() }),
+      url: prev?.url || url.trim() || item.url,
+      title: item.title,
+      price: item.price,
+      seller: item.seller,
+      image_url: item.image_url,
+      platform: prev?.platform || item.platform,
+    }))
+    setNaverResults([])
   }
 
   function addToCart(item: CatalogItem) {
@@ -180,6 +218,46 @@ function CatalogTab() {
               {parsing ? '인식 중…' : '인식'}
             </button>
           </div>
+
+          {preview && !preview.parsed && !naverUnavailable && (
+            <div className="p-2.5 rounded-md bg-amber-50/60 border border-amber-200 space-y-1.5">
+              <div className="text-2xs font-semibold text-amber-800">
+                자동 인식이 차단된 사이트입니다 — 네이버 쇼핑에서 상품명으로 검색해 정보를 채우거나, 아래에 직접 입력해주세요
+              </div>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  value={naverQuery}
+                  onChange={(e) => setNaverQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleNaverSearch()}
+                  placeholder="상품명으로 검색 (예: 제로콜라 24캔)"
+                  className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                />
+                <button
+                  onClick={handleNaverSearch}
+                  disabled={naverSearching || !naverQuery.trim()}
+                  className="px-2.5 py-1 text-2xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {naverSearching ? '검색 중…' : '네이버 쇼핑 검색'}
+                </button>
+              </div>
+              {naverResults.length > 0 && (
+                <div className="max-h-56 overflow-y-auto divide-y divide-amber-100 bg-white rounded border border-amber-200">
+                  {naverResults.map((it, i) => (
+                    <button key={i} onClick={() => pickNaverResult(it)}
+                      className="w-full p-1.5 flex items-center gap-2 text-left hover:bg-amber-50">
+                      {it.image_url && <img src={it.image_url} alt="" className="w-8 h-8 rounded object-cover" />}
+                      <span className="flex-1 text-2xs text-ink-800 truncate">{it.title}</span>
+                      <span className="text-2xs text-ink-500">{it.seller}</span>
+                      <span className="text-2xs font-mono font-semibold">
+                        {it.price != null ? formatCurrency(it.price, false) : '-'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {preview && (
             <div className="p-2.5 rounded-md bg-canvas-50 border border-ink-200 space-y-1.5">
