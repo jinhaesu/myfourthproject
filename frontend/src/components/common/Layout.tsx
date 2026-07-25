@@ -181,17 +181,17 @@ export default function Layout() {
   const { user, logout, menuMode, updateUser, setMenuMode } = useAuthStore()
   const isAdmin = !!user?.isAdmin
 
-  // 구버전 세션(localStorage)에 isAdmin이 없으면 서버에서 갱신
+  // 관리자 여부는 항상 서버 기준으로 동기화 (구버전 세션·배포 시점 캐시로 고착 방지)
   useEffect(() => {
-    if (user && user.isAdmin === undefined) {
-      authApi.getMe()
-        .then((r) => {
-          const admin = !!r.data.is_admin
+    authApi.getMe()
+      .then((r) => {
+        const admin = !!r.data.is_admin
+        if (admin !== user?.isAdmin) {
           updateUser({ isAdmin: admin })
-          if (admin) setMenuMode('admin')
-        })
-        .catch(() => { /* 토큰 만료 등 — 인터셉터가 처리 */ })
-    }
+          if (admin && user?.isAdmin === undefined) setMenuMode('admin')
+        }
+      })
+      .catch(() => { /* 토큰 만료 등 — 인터셉터가 처리 */ })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   // 관리자만 관리자 메뉴 사용 가능. 직원은 항상 직원용 메뉴.

@@ -29,7 +29,8 @@ export default function MyCardsPage() {
 
   const listQuery = useQuery({
     queryKey: ['my-cards', from, to],
-    queryFn: () => cardsApi.list(from, to).then((r) => r.data.cards),
+    // mine_only=true — 관리자여도 본인에게 배정된 카드만 (직원용 화면)
+    queryFn: () => cardsApi.list(from, to, true).then((r) => r.data.cards),
   })
 
   const txQuery = useQuery({
@@ -109,7 +110,8 @@ export default function MyCardsPage() {
           <CreditCardIcon className="h-8 w-8 text-ink-300 mx-auto mb-2" />
           <div className="text-xs text-ink-600 font-medium">배정된 카드가 없습니다</div>
           <div className="text-2xs text-ink-400 mt-1">
-            법인카드가 필요하면 회계 담당자에게 배정을 요청해주세요
+            법인카드가 필요하면 회계 담당자에게 배정을 요청해주세요.<br />
+            (관리자는 회계 관리자용 → 카드 관리에서 본인 이메일로 배정하면 여기에 표시됩니다)
           </div>
         </div>
       ) : (
@@ -159,6 +161,13 @@ export default function MyCardsPage() {
           </div>
           {txQuery.isLoading ? (
             <div className="p-8 text-center text-2xs text-ink-400">불러오는 중…</div>
+          ) : txQuery.isError ? (
+            <div className="p-8 text-center text-2xs text-red-500">
+              사용 내역을 불러오지 못했습니다: {(txQuery.error as any)?.response?.data?.detail || '네트워크 오류'}
+              <button onClick={() => txQuery.refetch()} className="block mx-auto mt-2 px-2 py-1 rounded border border-ink-200 text-ink-600">
+                다시 시도
+              </button>
+            </div>
           ) : txs.length === 0 ? (
             <div className="p-8 text-center text-2xs text-ink-400">기간 내 사용 내역 없음</div>
           ) : (

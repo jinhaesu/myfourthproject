@@ -1220,9 +1220,9 @@ export interface CardTransaction {
 }
 
 export const cardsApi = {
-  list: (start_date?: string, end_date?: string) =>
+  list: (start_date?: string, end_date?: string, mine_only?: boolean) =>
     api.get<{ cards: CardInfo[]; is_admin: boolean }>('/cards/list', {
-      params: { start_date, end_date }, timeout: 60_000,
+      params: { start_date, end_date, mine_only }, timeout: 60_000,
     }),
   updateAlias: (card_key: string, patch: { nickname?: string; color?: string; memo?: string; is_active?: boolean }) =>
     api.put('/cards/alias', patch, { params: { card_key } }),
@@ -1290,6 +1290,9 @@ export interface PurchaseRequestInfo {
 export const purchaseApi = {
   parseLink: (url: string) =>
     api.post('/purchase/catalog/parse', { url }, { timeout: 30_000 }),
+  searchNaver: (query: string) =>
+    api.get<{ items: { title: string; price: number | null; seller: string | null; image_url: string | null; url: string; platform: string | null }[] }>(
+      '/purchase/catalog/search-naver', { params: { query }, timeout: 20_000 }),
   createCatalogItem: (data: {
     url: string; title: string; price?: number | null; seller?: string | null
     image_url?: string | null; platform?: string | null; tags?: string | null

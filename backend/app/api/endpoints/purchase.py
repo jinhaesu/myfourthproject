@@ -142,6 +142,48 @@ async def parse_link(
     return await parse_product_link(str(body.url))
 
 
+@router.get("/catalog/search-naver")
+async def search_naver_shopping(
+    query: str = Query(..., min_length=1),
+    user=Depends(get_current_user),
+):
+    """네이버 쇼핑 검색 OpenAPI — 스마트스토어/쿠팡이 직접 크롤링을 차단하므로
+    상품명 검색으로 상품 정보(제목·가격·이미지·판매처)를 가져오는 폴백."""
+    from app.core.config import settings
+    import httpx as _httpx
+
+    if not settings.NAVER_CLIENT_ID or not settings.NAVER_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=501,
+            detail="네이버 검색 API 미설정 — NAVER_CLIENT_ID/SECRET 환경변수를 등록해주세요. (developers.naver.com)",
+        )
+
+    async with _httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            "https://openapi.naver.com/v1/search/shop.json",
+            params={"query": query, "display": 10, "sort": "sim"},
+            headers={
+                "X-Naver-Client-Id": settings.NAVER_CLIENT_ID,
+                "X-Naver-Client-Secret": settings.NAVER_CLIENT_SECRET,
+            },
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"네이버 검색 API 오류: {resp.status_code}")
+
+    import re as _re
+    items = []
+    for it in resp.json().get("items", []):
+        items.append({
+            "title": _re.sub(r"</?b>", "", it.get("title") or ""),
+            "price": float(it["lprice"]) if it.get("lprice") else None,
+            "seller": it.get("mallName"),
+            "image_url": it.get("image"),
+            "url": it.get("link"),
+            "platform": it.get("mallName"),
+        })
+    return {"items": items}
+
+
 @router.post("/catalog")
 async def create_catalog_item(
     body: CatalogCreateBody,
