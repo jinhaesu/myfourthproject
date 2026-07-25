@@ -285,6 +285,39 @@ def require_admin():
     return require_role(RoleType.ADMIN)
 
 
+def is_accounting_admin(user) -> bool:
+    """회계 관리자 여부 — 지정된 관리자 이메일(ADMIN_EMAILS) 또는 superuser/ADMIN 역할.
+
+    회계 메뉴(전표·원장·자금·세금계산서 등) 전체 접근 권한 판별에 사용.
+    일반 직원(회사 도메인 로그인)은 False.
+    """
+    if user is None:
+        return False
+    email = (user.email or "").lower()
+    if email in [e.lower() for e in settings.ADMIN_EMAILS]:
+        return True
+    if getattr(user, "is_superuser", False):
+        return True
+    from app.models.user import RoleType
+    return bool(user.role and user.role.role_type == RoleType.ADMIN)
+
+
+def require_accounting_admin():
+    """회계 관리자 전용 의존성 — 회계 메뉴 관련 라우터 전체에 적용.
+
+    Usage:
+        api_router.include_router(x.router, dependencies=[Depends(require_accounting_admin())])
+    """
+    async def _check(user=Depends(get_current_user)):
+        if not is_accounting_admin(user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="회계 관리자 권한이 필요합니다.",
+            )
+        return user
+    return _check
+
+
 def require_finance():
     """재무팀 이상"""
     from app.models.user import RoleType

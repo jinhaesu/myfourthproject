@@ -259,6 +259,9 @@ async def init_db():
             updated_at TIMESTAMP DEFAULT NOW()
         )""",
         "CREATE INDEX IF NOT EXISTS ix_card_aliases_card_key ON card_aliases(card_key)",
+        # card_aliases.assigned_email — 카드 배정 (관리자가 이메일 기준 배정, 직원은 본인 카드만 조회)
+        "ALTER TABLE card_aliases ADD COLUMN IF NOT EXISTS assigned_email VARCHAR(255)",
+        "CREATE INDEX IF NOT EXISTS ix_card_aliases_assigned_email ON card_aliases(assigned_email) WHERE assigned_email IS NOT NULL",
         # voucher_lines.voucher_id 인덱스 — DELETE/SELECT 성능 (없으면 full scan)
         "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
         # vouchers.source 인덱스 — wehago_import 등 source 기반 조회 성능

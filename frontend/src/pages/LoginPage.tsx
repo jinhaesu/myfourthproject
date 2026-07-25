@@ -72,13 +72,14 @@ export default function LoginPage() {
           roleId: result.user.role_id,
           roleName: result.user.role_name,
           position: result.user.position,
+          isAdmin: !!result.user.is_admin,
         },
         result.access_token,
         result.refresh_token
       )
 
       toast.success('로그인 성공')
-      navigate('/dashboard')
+      navigate(result.user.is_admin ? '/dashboard' : '/my-cards')
     } catch (error: any) {
       const message = error.response?.data?.detail || 'OTP 인증에 실패했습니다'
       toast.error(message)

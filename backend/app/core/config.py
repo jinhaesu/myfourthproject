@@ -101,7 +101,11 @@ class Settings(BaseSettings):
     # Resend Email (OTP 인증)
     RESEND_API_KEY: Optional[str] = None
     RESEND_FROM_EMAIL: str = "Smart Finance <onboarding@resend.dev>"
-    ALLOWED_EMAILS: List[str] = []  # 빈 리스트면 모든 이메일 허용, 값이 있으면 화이트리스트
+    ALLOWED_EMAILS: List[str] = []  # 개별 허용 이메일 (도메인 외 추가 허용용)
+    # 회사 도메인 — 이 도메인 이메일은 OTP 로그인 허용 (일반 직원 권한)
+    ALLOWED_EMAIL_DOMAINS: List[str] = ["joinandjoin.com"]
+    # 회계 관리자 이메일 — 회계 메뉴 전체 접근 가능한 지정 이메일
+    ADMIN_EMAILS: List[str] = ["lion9080@gmail.com", "lion9080@joinandjoin.com"]
 
     # AI Analysis (LLM) - Claude
     ANTHROPIC_API_KEY: Optional[str] = None

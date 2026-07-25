@@ -28,6 +28,8 @@ class CardAlias(Base):
     # 용도 메모 (예: '직원 식대용')
     memo: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 카드 배정 — 관리자가 이메일 기준으로 배정, 직원은 본인 배정 카드만 조회 가능
+    assigned_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

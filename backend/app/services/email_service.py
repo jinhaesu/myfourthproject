@@ -29,10 +29,26 @@ def generate_otp_code() -> str:
 
 
 def is_email_allowed(email: str) -> bool:
-    """화이트리스트에 있는 이메일인지 확인"""
-    if not settings.ALLOWED_EMAILS:
-        return True  # 화이트리스트가 비어있으면 모든 이메일 허용
-    return email.lower() in [e.lower() for e in settings.ALLOWED_EMAILS]
+    """로그인 허용 이메일인지 확인.
+
+    허용 조건 (하나라도 만족하면 허용):
+    1. 회계 관리자 이메일 (ADMIN_EMAILS)
+    2. 회사 도메인 (ALLOWED_EMAIL_DOMAINS, 예: @joinandjoin.com)
+    3. 개별 화이트리스트 (ALLOWED_EMAILS)
+    세 목록이 전부 비어 있으면 (설정 미구성) 전체 허용 — 기존 동작 유지.
+    """
+    email_lower = email.lower().strip()
+    admins = [e.lower() for e in settings.ADMIN_EMAILS]
+    allowed = [e.lower() for e in settings.ALLOWED_EMAILS]
+    domains = [d.lower().lstrip("@") for d in settings.ALLOWED_EMAIL_DOMAINS]
+
+    if not admins and not allowed and not domains:
+        return True
+
+    if email_lower in admins or email_lower in allowed:
+        return True
+    domain = email_lower.rsplit("@", 1)[-1] if "@" in email_lower else ""
+    return domain in domains
 
 
 async def send_otp_email(email: str) -> bool:
