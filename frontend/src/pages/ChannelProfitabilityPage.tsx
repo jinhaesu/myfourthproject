@@ -46,7 +46,7 @@ export const CHANNEL_RULES: { key: string; label: string; keywords: string[]; co
   { key: 'pg',          label: 'PG/카드 정산', keywords: ['나이스페이', '나이스정보', 'KG이니시스', '이니시스', '토스페이', '토스', 'KCP', '페이먼츠', '헥토파이낸셜', '다날', '스마일페이', '페이코', 'PAYCO', '카드정산', '여신금융'], color: '#8B5CF6' },
   // 법인/도매 거래처 (B2B) — 이름에 법인 접미가 있으면 여기로
   { key: 'b2b',         label: 'B2B/도매',     keywords: [],                                          color: '#0EA5E9' },
-  { key: 'others',      label: '기타',         keywords: [],                                          color: '#71717a' },
+  { key: 'others',      label: '기타(소액·미상)', keywords: [],                                       color: '#71717a' },
 ]
 
 // B2B(법인) 판별 — 키워드 미매칭 시 2차 분류
@@ -100,7 +100,32 @@ function classifyChannel(contactName: string): string {
   return 'others'
 }
 
+// 매출 분류 — 소매 키워드 매칭 안 되면 거래처(회사명)별로 세분화 (party:<이름>)
+function classifyRevenueChannel(contactName: string): string {
+  for (const rule of CHANNEL_RULES) {
+    if (rule.keywords.some((kw) => contactName.includes(kw))) return rule.key
+  }
+  const name = (contactName || '').trim()
+  if (!name || name === '(미지정)') return 'others'
+  return `party:${name}`
+}
+
+// party 채널용 색상 팔레트 (거래처명 해시 → 안정적 색)
+const PARTY_COLORS = [
+  '#0EA5E9', '#14B8A6', '#8B5CF6', '#F59E0B', '#EC4899', '#10B981',
+  '#6366F1', '#EF4444', '#84CC16', '#06B6D4', '#A855F7', '#F97316',
+]
+function partyColor(name: string): string {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffffffff
+  return PARTY_COLORS[Math.abs(h) % PARTY_COLORS.length]
+}
+
 function channelMeta(key: string) {
+  if (key.startsWith('party:')) {
+    const label = key.slice(6)
+    return { key, label, keywords: [] as string[], color: partyColor(label) }
+  }
   return CHANNEL_RULES.find((r) => r.key === key) ?? CHANNEL_RULES[CHANNEL_RULES.length - 1]
 }
 
@@ -322,11 +347,30 @@ export default function ChannelProfitabilityPage() {
       const contact = extractContact(t)
       // 본인 회사(조인앤조인) 매출 제외
       if (isSelfContact(contact)) continue
-      const key = classifyChannel(contact)
+      const key = classifyRevenueChannel(contact)  // 소매 키워드 or 거래처별(party:)
       if (!revenueMap[key]) revenueMap[key] = { tickets: [], dailyMap: {} }
       revenueMap[key].tickets.push(t)
       const date = str(t, 'transactAt', 'date').slice(0, 10) || 'unknown'
       revenueMap[key].dailyMap[date] = (revenueMap[key].dailyMap[date] || 0) + num(t, 'amount')
+    }
+
+    // 거래처(party:) 채널이 너무 많으면 상위 12개만 남기고 나머지는 '기타(소액 다수)'로 병합
+    const partyKeys = Object.keys(revenueMap).filter((k) => k.startsWith('party:'))
+    if (partyKeys.length > 12) {
+      const ranked = partyKeys
+        .map((k) => ({ k, rev: revenueMap[k].tickets.reduce((s: number, t) => s + num(t, 'amount'), 0) }))
+        .sort((a, b) => b.rev - a.rev)
+      const drop = ranked.slice(12).map((x) => x.k)
+      if (drop.length) {
+        if (!revenueMap['others']) revenueMap['others'] = { tickets: [], dailyMap: {} }
+        for (const k of drop) {
+          revenueMap['others'].tickets.push(...revenueMap[k].tickets)
+          for (const [d, v] of Object.entries(revenueMap[k].dailyMap)) {
+            revenueMap['others'].dailyMap[d] = (revenueMap['others'].dailyMap[d] || 0) + v
+          }
+          delete revenueMap[k]
+        }
+      }
     }
 
     const directCostMap: Record<string, { tickets: unknown[]; total: number }> = {}
