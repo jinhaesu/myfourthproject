@@ -74,6 +74,7 @@ const baseNavigation: NavItem[] = [
   { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
   { name: 'AI 분류·학습', href: '/ai-classification', icon: CpuChipIcon },
   { name: '급여 관리', href: '/payroll', icon: BanknotesIcon },
+  { name: '급여·노무비 통합', href: '/payroll-import', icon: BanknotesIcon },
 
   { name: '회계 / 분석', section: true },
   { name: '계정별 원장', href: '/ledger', icon: BookOpenIcon },
