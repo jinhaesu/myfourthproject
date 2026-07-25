@@ -6,6 +6,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { treasuryApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
+import DateRangePresets from '@/components/common/DateRangePresets'
 import toast from 'react-hot-toast'
 
 const FLOW_LABEL: Record<string, { label: string; cls: string }> = {
@@ -68,6 +69,8 @@ export default function InternalTransfersPage() {
           </button>
         </div>
       </div>
+
+      <DateRangePresets from={from} to={to} onChange={(f, t) => { setFrom(f); setTo(t) }} />
 
       {/* 계좌 역할 설정 */}
       {showRoles && data?.account_roles && (

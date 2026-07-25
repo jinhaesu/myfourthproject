@@ -181,6 +181,72 @@ async def _fetch_bank_tickets(start_date: date, end_date: date) -> List[Dict[str
     return items
 
 
+_BALANCE_CACHE: Dict[str, tuple] = {}
+
+
+async def _fetch_period_balance(start_date: date, end_date: date) -> Optional[Dict[str, Any]]:
+    """은행 잔액 기반 현금흐름 — 그랜터 일일리포트.
+
+    그랜터는 31일 초과 범위에서 실패하므로:
+    - 31일 이하: 단일 호출 (previousBalance/currentBalance/in/out 한 번에)
+    - 31일 초과: 시작·마감 잔액은 단일일 호출, 유입·유출은 31일씩 분할 합산
+    5분 캐시 + 실패 시 None.
+    """
+    key = f"{start_date.isoformat()}~{end_date.isoformat()}"
+    now = _time.time()
+    cached = _BALANCE_CACHE.get(key)
+    if cached and (now - cached[1]) < _CACHE_TTL:
+        return cached[0]
+
+    from app.services.granter_client import get_granter_client
+    client = get_granter_client()
+
+    async def _daily(d1: date, d2: date) -> Dict[str, Any]:
+        rep = await client.get_daily_financial_report({
+            "startDate": d1.isoformat(),
+            "endDate": d2.isoformat(),
+            "useCurrentExchangeRate": False,
+        }) or {}
+        return rep.get("total", {}) if isinstance(rep, dict) else {}
+
+    try:
+        if (end_date - start_date).days <= 30:
+            # 단일 호출로 전부
+            t = await _daily(start_date, end_date)
+            start_bal = float(t.get("previousBalance") or 0)
+            end_bal = float(t.get("currentBalance") or 0)
+            inflow = float(t.get("inAmount") or 0)
+            outflow = abs(float(t.get("outAmount") or 0))
+        else:
+            start_tot = await _daily(start_date, start_date)
+            end_tot = await _daily(end_date, end_date)
+            start_bal = float(start_tot.get("previousBalance") or 0)
+            end_bal = float(end_tot.get("currentBalance") or 0)
+            inflow = outflow = 0.0
+            cur = start_date
+            while cur <= end_date:
+                chunk_end = min(cur + timedelta(days=30), end_date)
+                tt = await _daily(cur, chunk_end)
+                inflow += float(tt.get("inAmount") or 0)
+                outflow += abs(float(tt.get("outAmount") or 0))
+                cur = chunk_end + timedelta(days=1)
+
+        if not (start_bal or end_bal):
+            return None
+        result = {
+            "start_balance": start_bal,
+            "end_balance": end_bal,
+            "net_change": end_bal - start_bal,
+            "inflow": inflow,
+            "outflow": outflow,
+        }
+        _BALANCE_CACHE[key] = (result, now)
+        return result
+    except Exception:
+        logger.exception(f"기간 잔액 조회 실패 ({key})")
+        return None
+
+
 def _parse_dt(t: Dict[str, Any]) -> Optional[datetime]:
     s = str(t.get("transactAt") or t.get("createdAt") or "")[:19]
     try:
@@ -205,49 +271,7 @@ async def build_internal_transfers(
     label_role = {a.label: a.role for a in accounts}
     tickets = await _fetch_bank_tickets(start_date, end_date)
 
-    # 은행 잔액 기반 현금흐름 — 그랜터 일일리포트.
-    # 그랜터는 31일 초과 범위에서 실패하므로, 시작/마감 잔액은 단일일 호출로,
-    # 유입·유출 합계는 31일씩 분할 합산.
-    period_balance = None
-    try:
-        from app.services.granter_client import get_granter_client
-        client = get_granter_client()
-
-        async def _daily(d1: date, d2: date) -> Dict[str, Any]:
-            rep = await client.get_daily_financial_report({
-                "startDate": d1.isoformat(),
-                "endDate": d2.isoformat(),
-                "useCurrentExchangeRate": False,
-            }) or {}
-            return rep.get("total", {}) if isinstance(rep, dict) else {}
-
-        # 시작 잔액 = 시작일 단일 호출의 previousBalance(그 날 시작 시점 잔액)
-        start_tot = await _daily(start_date, start_date)
-        # 마감 잔액 = 마감일 단일 호출의 currentBalance
-        end_tot = await _daily(end_date, end_date)
-        start_bal = float(start_tot.get("previousBalance") or 0)
-        end_bal = float(end_tot.get("currentBalance") or 0)
-
-        # 유입·유출 = 31일씩 분할 합산
-        inflow = outflow = 0.0
-        cur = start_date
-        while cur <= end_date:
-            chunk_end = min(cur + timedelta(days=30), end_date)
-            t = await _daily(cur, chunk_end)
-            inflow += float(t.get("inAmount") or 0)
-            outflow += abs(float(t.get("outAmount") or 0))
-            cur = chunk_end + timedelta(days=1)
-
-        if start_bal or end_bal:
-            period_balance = {
-                "start_balance": start_bal,
-                "end_balance": end_bal,
-                "net_change": end_bal - start_bal,   # 은행 잔액 기반 순현금흐름
-                "inflow": inflow,
-                "outflow": outflow,
-            }
-    except Exception:
-        logger.exception("기간 잔액 조회 실패")
+    period_balance = await _fetch_period_balance(start_date, end_date)
 
     # 1단계: 내부이체 후보 추출 (상대가 우리 계좌/회사로 해석되는 건)
     legs: List[Dict[str, Any]] = []

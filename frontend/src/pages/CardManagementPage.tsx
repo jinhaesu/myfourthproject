@@ -7,6 +7,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { cardsApi, CardInfo, CardClosing } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
+import DateRangePresets from '@/components/common/DateRangePresets'
 
 const COLOR_PRESETS = [
   '#3B82F6', '#10B981', '#F59E0B', '#EF4444',
@@ -102,6 +103,8 @@ export default function CardManagementPage() {
             className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
         </div>
       </div>
+
+      <DateRangePresets from={from} to={to} onChange={(f, t) => { setFrom(f); setTo(t) }} />
 
       {/* KPI */}
       <div className="grid grid-cols-3 gap-2">
