@@ -209,42 +209,38 @@ async def _fetch_period_balance(start_date: date, end_date: date) -> Optional[Di
         }) or {}
         return rep.get("total", {}) if isinstance(rep, dict) else {}
 
+    # 필수(시작/마감 잔액)와 부가(유입/유출)를 분리 — 부가 실패해도 잔액은 표시.
+    inflow = outflow = None
     try:
         if (end_date - start_date).days <= 30:
-            # 단일 호출로 전부
+            # 단일 호출로 전부 (잔액+유입/유출)
             t = await _daily(start_date, end_date)
             start_bal = float(t.get("previousBalance") or 0)
             end_bal = float(t.get("currentBalance") or 0)
             inflow = float(t.get("inAmount") or 0)
             outflow = abs(float(t.get("outAmount") or 0))
         else:
+            # 31일 초과: 잔액만 단일일 2회 호출(그랜터 rate-limit 최소화)
             start_tot = await _daily(start_date, start_date)
             end_tot = await _daily(end_date, end_date)
             start_bal = float(start_tot.get("previousBalance") or 0)
             end_bal = float(end_tot.get("currentBalance") or 0)
-            inflow = outflow = 0.0
-            cur = start_date
-            while cur <= end_date:
-                chunk_end = min(cur + timedelta(days=30), end_date)
-                tt = await _daily(cur, chunk_end)
-                inflow += float(tt.get("inAmount") or 0)
-                outflow += abs(float(tt.get("outAmount") or 0))
-                cur = chunk_end + timedelta(days=1)
-
-        if not (start_bal or end_bal):
-            return None
-        result = {
-            "start_balance": start_bal,
-            "end_balance": end_bal,
-            "net_change": end_bal - start_bal,
-            "inflow": inflow,
-            "outflow": outflow,
-        }
-        _BALANCE_CACHE[key] = (result, now)
-        return result
     except Exception:
-        logger.exception(f"기간 잔액 조회 실패 ({key})")
+        logger.exception(f"기간 잔액(필수) 조회 실패 ({key})")
         return None
+
+    if not (start_bal or end_bal):
+        return None
+
+    result = {
+        "start_balance": start_bal,
+        "end_balance": end_bal,
+        "net_change": end_bal - start_bal,
+        "inflow": inflow,      # 31일 초과면 None (프론트에서 '-' 표시)
+        "outflow": outflow,
+    }
+    _BALANCE_CACHE[key] = (result, now)
+    return result
 
 
 def _parse_dt(t: Dict[str, Any]) -> Optional[datetime]:

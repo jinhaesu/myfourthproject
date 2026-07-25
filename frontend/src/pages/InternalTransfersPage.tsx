@@ -149,8 +149,8 @@ export default function InternalTransfersPage() {
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 mt-2">
-                <div className="text-2xs text-ink-500">기간 총 유입 <b className="text-emerald-700 font-mono">{formatCurrency(data.period_balance.inflow, false)}</b></div>
-                <div className="text-2xs text-ink-500">기간 총 유출 <b className="text-rose-700 font-mono">{formatCurrency(data.period_balance.outflow, false)}</b></div>
+                <div className="text-2xs text-ink-500">기간 총 유입 <b className="text-emerald-700 font-mono">{data.period_balance.inflow != null ? formatCurrency(data.period_balance.inflow, false) : '—'}</b></div>
+                <div className="text-2xs text-ink-500">기간 총 유출 <b className="text-rose-700 font-mono">{data.period_balance.outflow != null ? formatCurrency(data.period_balance.outflow, false) : '—'}</b></div>
               </div>
               <div className="text-2xs text-ink-400 mt-1.5 leading-relaxed">
                 전 계좌 합산 잔액의 시작→마감 변동입니다. 플러스면 기간 중 현금이 늘었고, 마이너스면 카드·이자 등으로 순유출된 것입니다.
