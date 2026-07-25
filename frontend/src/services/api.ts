@@ -1190,6 +1190,7 @@ export const cashDigestApi = {
   preview: (date?: string) =>
     api.get('/daily-cash-report/preview', { params: date ? { date } : {} }),
   today: () => api.get('/daily-cash-report/today'),
+  dashboardLive: () => api.get('/daily-cash-report/dashboard-live', { timeout: 60_000 }),
   sendNow: (targetDate?: string) =>
     api.post('/daily-cash-report/send-now', null, {
       params: targetDate ? { target_date: targetDate } : {},
@@ -1354,12 +1355,15 @@ export const purchaseApi = {
 }
 
 // ==================== 급여(인건비) 관리 ====================
+export interface PayrollDetailLine { label: string; amount: number }
 export interface PayrollImportRecord {
   source: string
   worker_type: string
+  job_type?: string
   cost_type: 'COGS' | 'SGA'
   name: string
   department: string
+  position?: string
   gross_pay: number
   income_tax: number
   local_tax: number
@@ -1369,6 +1373,14 @@ export interface PayrollImportRecord {
   tax_source: string
   hours?: number
   hourly_rate?: number
+  work_days?: number
+  non_taxable?: number
+  detail?: {
+    earnings: PayrollDetailLine[]
+    deductions: PayrollDetailLine[]
+    hours?: PayrollDetailLine[]
+    note?: string
+  }
 }
 
 export interface PayrollImportSummary {
@@ -1377,6 +1389,7 @@ export interface PayrollImportSummary {
   records: PayrollImportRecord[]
   by_department: { department: string; gross: number; net: number; tax: number; insurance: number; count: number; cogs: number; sga: number }[]
   by_cost_type: { cost_type: string; label: string; gross: number; count: number }[]
+  by_worker_type: { worker_type: string; cost_type: string; gross: number; net: number; count: number }[]
   totals: { gross: number; net: number; tax: number; insurance: number; count: number }
   sources: Record<string, number>
 }
@@ -1387,7 +1400,7 @@ export const payrollImportApi = {
   summary: (month?: string) =>
     api.get<PayrollImportSummary>('/payroll/import/summary', { params: { month }, timeout: 60_000 }),
   getTaxSettings: () => api.get('/payroll/tax/settings'),
-  updateTaxSettings: (patch: Record<string, number>) => api.put('/payroll/tax/settings', patch),
+  updateTaxSettings: (patch: { profile: string } & Record<string, number>) => api.put('/payroll/tax/settings', patch),
   setOverride: (data: { month: string; worker_name: string; income_tax?: number; local_tax?: number; insurance?: number; memo?: string }) =>
     api.put('/payroll/tax/override', data),
   deleteOverride: (month: string, worker_name: string) =>

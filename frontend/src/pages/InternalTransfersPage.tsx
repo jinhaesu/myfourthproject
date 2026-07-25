@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowsRightLeftIcon, CalendarDaysIcon, BuildingLibraryIcon,
-  ArrowRightIcon, QuestionMarkCircleIcon,
+  ArrowRightIcon,
 } from '@heroicons/react/24/outline'
 import { treasuryApi } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
@@ -24,7 +24,6 @@ export default function InternalTransfersPage() {
   const data = query.data
   const accounts = data?.accounts || []
   const transfers = data?.transfers || []
-  const suspects = data?.suspects || []
 
   return (
     <div className="space-y-3">
@@ -118,20 +117,31 @@ export default function InternalTransfersPage() {
 
           {/* 이체 내역 */}
           <div className="panel overflow-hidden">
-            <div className="px-3 py-2 border-b border-ink-200 text-2xs font-semibold text-ink-500 uppercase">
-              내부이체 내역 · 최신순 ({transfers.length}건)
+            <div className="px-3 py-2 border-b border-ink-200 text-2xs font-semibold text-ink-500 uppercase flex items-center justify-between">
+              <span>내부이체 내역 · 최신순 ({transfers.length}건)</span>
+              {data.unresolved_count > 0 && (
+                <span className="text-2xs text-ink-400 normal-case font-normal">
+                  상대 계좌 미확정 {data.unresolved_count}건 (상대 은행 미연동)
+                </span>
+              )}
             </div>
             {transfers.length === 0 ? (
               <div className="p-8 text-center text-2xs text-ink-400">기간 내 내부이체 없음</div>
             ) : (
-              <div className="divide-y divide-ink-50 max-h-[480px] overflow-y-auto">
-                {transfers.map((t: any) => (
-                  <div key={`${t.out_ticket_id}-${t.in_ticket_id}`} className="px-3 py-2 flex items-center gap-2 hover:bg-canvas-50">
+              <div className="divide-y divide-ink-50 max-h-[560px] overflow-y-auto">
+                {transfers.map((t: any, i: number) => (
+                  <div key={i} className="px-3 py-2 flex items-center gap-2 hover:bg-canvas-50">
                     <span className="text-2xs text-ink-500 w-24 flex-shrink-0">{t.date} {t.time}</span>
-                    <span className="text-xs text-ink-800 truncate flex-shrink min-w-0">{t.from_account}</span>
-                    <ArrowRightIcon className="h-3 w-3 text-blue-500 flex-shrink-0" />
-                    <span className="text-xs text-ink-800 truncate flex-shrink min-w-0">{t.to_account}</span>
-                    <span className="flex-1 text-2xs text-ink-400 truncate">{t.content}</span>
+                    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${t.from_label === '계좌 미상' ? 'bg-ink-50 text-ink-400' : 'bg-rose-50 text-rose-700'}`}>
+                        {t.from_label}
+                      </span>
+                      <ArrowRightIcon className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />
+                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${t.to_label === '계좌 미상' ? 'bg-ink-50 text-ink-400' : 'bg-emerald-50 text-emerald-700'}`}>
+                        {t.to_label}
+                      </span>
+                      {t.memo && <span className="text-2xs text-ink-400 truncate hidden sm:inline">· {t.memo}</span>}
+                    </div>
                     <span className="text-sm font-bold font-mono text-ink-900 flex-shrink-0">
                       {formatCurrency(t.amount, false)}
                     </span>
@@ -141,26 +151,15 @@ export default function InternalTransfersPage() {
             )}
           </div>
 
-          {/* 내부이체 추정 (짝 못 찾은 건) */}
-          {suspects.length > 0 && (
-            <div className="panel overflow-hidden">
-              <div className="px-3 py-2 border-b border-ink-200 text-2xs font-semibold text-amber-600 uppercase flex items-center gap-1">
-                <QuestionMarkCircleIcon className="h-3 w-3" />
-                내부이체 추정 (짝을 못 찾은 건 — 기간 경계·타행 수수료 차이 등) · {suspects.length}건
-              </div>
-              <div className="divide-y divide-ink-50 max-h-64 overflow-y-auto">
-                {suspects.map((s: any, i: number) => (
-                  <div key={i} className="px-3 py-1.5 flex items-center gap-2 text-2xs">
-                    <span className="text-ink-500 w-24 flex-shrink-0">{s.date} {s.time}</span>
-                    <span className={`w-8 flex-shrink-0 font-semibold ${s.direction === 'IN' ? 'text-emerald-600' : 'text-rose-600'}`}>
-                      {s.direction === 'IN' ? '입금' : '출금'}
-                    </span>
-                    <span className="text-ink-800 truncate flex-shrink min-w-0">{s.account}</span>
-                    <span className="flex-1 text-ink-400 truncate">{s.content}</span>
-                    <span className="font-mono font-semibold text-ink-900 flex-shrink-0">{formatCurrency(s.amount, false)}</span>
-                  </div>
-                ))}
-              </div>
+          {/* 연결된 계좌 안내 */}
+          {(data.known_accounts || []).length > 0 && (
+            <div className="text-2xs text-ink-400">
+              연결된 회사 계좌: {data.known_accounts.map((a: any) => a.label).join(' · ')}
+              {data.unresolved_count > 0 && (
+                <span className="block mt-0.5">
+                  ※ '계좌 미상'은 상대 계좌가 그랜터에 연동되지 않아 이름을 특정하지 못한 건입니다(금액·방향은 정확). 상대 계좌를 그랜터에 연결하면 자동으로 이름이 채워집니다.
+                </span>
+              )}
             </div>
           )}
         </>
