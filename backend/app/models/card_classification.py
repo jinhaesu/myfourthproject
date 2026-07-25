@@ -7,7 +7,7 @@
 """
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import Integer, String, Float, DateTime
+from sqlalchemy import Integer, String, Float, DateTime, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -37,3 +37,28 @@ class CardUsageClassification(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
     )
+
+
+class CardMonthlyClosing(Base):
+    """카드 월별 분류 마감 — 직원이 그 달 사용내역 전건 분류 후 제출.
+
+    마감되면 해당 카드·월의 분류는 잠금(관리자만 해제 가능),
+    관리자 카드관리 화면에 월별 분류 완료 자료로 표시된다.
+    """
+    __tablename__ = "card_monthly_closings"
+    __table_args__ = (
+        UniqueConstraint("card_key", "month", name="uq_card_monthly_closing"),
+        {"extend_existing": True},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    card_key: Mapped[str] = mapped_column(String(200), index=True)
+    month: Mapped[str] = mapped_column(String(7), index=True)  # 'YYYY-MM'
+
+    transaction_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    # 분류 카테고리별 합계 JSON (예: {"식대": 120000, "소모품": 43000})
+    category_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    closed_by: Mapped[str] = mapped_column(String(255))
+    closed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -144,6 +144,37 @@ async def _ai_retrain_scheduler():
             logger.exception(f"[AI Scheduler] 재학습 스케줄 오류 (앱 영향 없음): {e}")
 
 
+async def _digest_scheduler():
+    """자금 다이제스트 정기 발송 스케줄러 — 60초 간격으로 발송 대상 확인.
+
+    - delivery_time(KST) 경과 + 오늘 미발송 사용자에게 생성→스냅샷→이메일 발송
+    - 다중 인스턴스(Cloud Run + Railway 백업) 중복 발송은 DB 클레임으로 방지되지만,
+      백업 인스턴스에서는 ENABLE_DIGEST_SCHEDULER=false로 꺼두는 것을 권장
+    - 인스턴스가 발송 시각에 죽어 있었어도 다음 tick에 따라잡아 발송 (시각 일치가 아닌 경과 판정)
+    """
+    import asyncio
+    import os
+
+    if os.getenv("ENABLE_DIGEST_SCHEDULER", "true").lower() in ("false", "0", "no"):
+        logger.info("[Digest Scheduler] ENABLE_DIGEST_SCHEDULER=false — 비활성화")
+        return
+
+    await asyncio.sleep(30)  # 앱 기동/DB init 대기
+    logger.info("[Digest Scheduler] 시작 — 60초 간격 발송 확인")
+    while True:
+        try:
+            from app.services.daily_cash_report import deliver_scheduled_digests
+            sent = await deliver_scheduled_digests()
+            if sent:
+                logger.info(f"[Digest Scheduler] {sent}건 발송")
+        except asyncio.CancelledError:
+            logger.info("[Digest Scheduler] 종료")
+            return
+        except Exception as e:
+            logger.exception(f"[Digest Scheduler] 오류 (앱 영향 없음): {e}")
+        await asyncio.sleep(60)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
@@ -157,16 +188,21 @@ async def lifespan(app: FastAPI):
     # AI 재학습 자동 스케줄러 — 24h 간격, 조건 미충족 시 생략
     _retrain_task = asyncio.create_task(_ai_retrain_scheduler())
 
+    # 자금 다이제스트 정기 발송 스케줄러
+    _digest_task = asyncio.create_task(_digest_scheduler())
+
     yield
 
     # Shutdown
     logger.info("Shutting down Smart Finance Core...")
-    # AI 스케줄러 태스크 취소
+    # 스케줄러 태스크 취소
     _retrain_task.cancel()
-    try:
-        await _retrain_task
-    except asyncio.CancelledError:
-        pass
+    _digest_task.cancel()
+    for _t in (_retrain_task, _digest_task):
+        try:
+            await _t
+        except asyncio.CancelledError:
+            pass
     if close_db:
         try:
             await close_db()

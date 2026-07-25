@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.card_alias import CardAlias
-from app.models.card_classification import CardUsageClassification
+from app.models.card_classification import CardUsageClassification, CardMonthlyClosing
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +361,110 @@ async def classify_transaction(
     await db.commit()
     await db.refresh(cls)
     return cls
+
+
+# ==================== 월별 분류 마감 ====================
+
+def _month_range(month: str) -> tuple:
+    """'YYYY-MM' → (1일, 말일)"""
+    y, m = int(month[:4]), int(month[5:7])
+    start = date(y, m, 1)
+    end = (date(y + 1, 1, 1) if m == 12 else date(y, m + 1, 1)) - timedelta(days=1)
+    return start, min(end, date.today())
+
+
+async def get_closing(
+    db: AsyncSession, card_key: str, month: str,
+) -> Optional[CardMonthlyClosing]:
+    return (await db.execute(
+        select(CardMonthlyClosing).where(
+            CardMonthlyClosing.card_key == card_key,
+            CardMonthlyClosing.month == month,
+        )
+    )).scalar_one_or_none()
+
+
+async def close_month(
+    db: AsyncSession, card_key: str, month: str, closed_by: str,
+) -> CardMonthlyClosing:
+    """월 마감 — 그 달 사용내역이 전건 분류되어 있어야 함.
+
+    Raises:
+        ValueError: 미분류 건 존재 (메시지에 건수 포함)
+    """
+    import json as _json
+
+    existing = await get_closing(db, card_key, month)
+    if existing:
+        raise ValueError("이미 마감된 월입니다.")
+
+    start, end = _month_range(month)
+    txs = await list_transactions(db, card_key, start, end)
+    unclassified = [t for t in txs if t["ticket_id"] and not t["classification"]]
+    if unclassified:
+        raise ValueError(f"미분류 {len(unclassified)}건이 남아 있습니다. 전건 분류 후 마감할 수 있습니다.")
+
+    by_category: Dict[str, float] = defaultdict(float)
+    total = 0.0
+    for t in txs:
+        total += t["amount"] or 0
+        if t["classification"]:
+            by_category[t["classification"]["category"]] += t["amount"] or 0
+
+    closing = CardMonthlyClosing(
+        card_key=card_key,
+        month=month,
+        transaction_count=len(txs),
+        total_amount=total,
+        category_summary=_json.dumps(dict(by_category), ensure_ascii=False),
+        closed_by=closed_by,
+    )
+    db.add(closing)
+    await db.commit()
+    await db.refresh(closing)
+    return closing
+
+
+async def list_closings(
+    db: AsyncSession,
+    month: Optional[str] = None,
+    only_card_keys: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """마감 목록 — month 필터, 직원은 본인 카드만."""
+    import json as _json
+
+    stmt = select(CardMonthlyClosing)
+    if month:
+        stmt = stmt.where(CardMonthlyClosing.month == month)
+    if only_card_keys is not None:
+        stmt = stmt.where(CardMonthlyClosing.card_key.in_(only_card_keys or ["__none__"]))
+    stmt = stmt.order_by(CardMonthlyClosing.month.desc(), CardMonthlyClosing.card_key)
+    rows = (await db.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": c.id,
+            "card_key": c.card_key,
+            "month": c.month,
+            "transaction_count": c.transaction_count,
+            "total_amount": c.total_amount,
+            "category_summary": _json.loads(c.category_summary) if c.category_summary else {},
+            "closed_by": c.closed_by,
+            "closed_at": c.closed_at.isoformat() if c.closed_at else None,
+        }
+        for c in rows
+    ]
+
+
+async def reopen_closing(db: AsyncSession, closing_id: int) -> bool:
+    """마감 해제 (관리자 전용) — 직원이 분류를 수정할 수 있게 됨."""
+    c = (await db.execute(
+        select(CardMonthlyClosing).where(CardMonthlyClosing.id == closing_id)
+    )).scalar_one_or_none()
+    if not c:
+        return False
+    await db.delete(c)
+    await db.commit()
+    return True
 
 
 async def get_card_analysis(

@@ -2,10 +2,10 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   CreditCardIcon, CalendarDaysIcon, CheckCircleIcon,
-  ExclamationCircleIcon, PencilSquareIcon,
+  ExclamationCircleIcon, PencilSquareIcon, LockClosedIcon,
 } from '@heroicons/react/24/outline'
-import { cardsApi, CardInfo, CardTransaction } from '@/services/api'
-import { formatCurrency, isoLocal } from '@/utils/format'
+import { cardsApi, CardInfo, CardTransaction, CardClosing } from '@/services/api'
+import { formatCurrency } from '@/utils/format'
 import toast from 'react-hot-toast'
 
 // 직원 카드 사용 용도 분류 프리셋
@@ -14,27 +14,44 @@ const CATEGORY_PRESETS = [
   '구독/SW', '광고/마케팅', '배송/물류', '교육/도서', '기타',
 ]
 
-function todayISO() { return isoLocal(new Date()) }
-function daysAgoISO(n: number) {
-  const d = new Date(); d.setDate(d.getDate() - n); return isoLocal(d)
+function currentMonth() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function monthRange(month: string): { from: string; to: string } {
+  const [y, m] = month.split('-').map(Number)
+  const from = `${month}-01`
+  const last = new Date(y, m, 0).getDate()
+  const today = new Date()
+  const end = new Date(y, m - 1, last) > today ? today : new Date(y, m - 1, last)
+  const to = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`
+  return { from, to }
 }
 
 export default function MyCardsPage() {
   const qc = useQueryClient()
-  const [from, setFrom] = useState(daysAgoISO(30))
-  const [to, setTo] = useState(todayISO())
+  // 매 진입 시 이번 달 기준 (고정값 캐시 없음)
+  const [month, setMonth] = useState(currentMonth())
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
   const [editingTicket, setEditingTicket] = useState<string | null>(null)
   const [clsForm, setClsForm] = useState<{ category: string; memo: string }>({ category: '', memo: '' })
 
+  const { from, to } = monthRange(month)
+
   const listQuery = useQuery({
-    queryKey: ['my-cards', from, to],
+    queryKey: ['my-cards', month],
     // mine_only=true — 관리자여도 본인에게 배정된 카드만 (직원용 화면)
     queryFn: () => cardsApi.list(from, to, true).then((r) => r.data.cards),
   })
 
+  const closingsQuery = useQuery({
+    queryKey: ['my-card-closings', month],
+    queryFn: () => cardsApi.listClosings(month).then((r) => r.data.closings),
+  })
+
   const txQuery = useQuery({
-    queryKey: ['my-card-tx', selectedCard, from, to],
+    queryKey: ['my-card-tx', selectedCard, month],
     queryFn: () => cardsApi.transactions(selectedCard!, from, to).then((r) => r.data.transactions),
     enabled: !!selectedCard,
   })
@@ -60,11 +77,29 @@ export default function MyCardsPage() {
     },
   })
 
+  const closeMut = useMutation({
+    mutationFn: () => cardsApi.closeMonth(selectedCard!, month),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['my-card-closings'] })
+      toast.success(`${month}월 마감이 완료되었습니다. 관리자에게 전달됩니다.`)
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || '마감 실패'),
+  })
+
   const cards: CardInfo[] = listQuery.data || []
   const txs: CardTransaction[] = txQuery.data || []
-  const unclassified = txs.filter((t) => !t.classification).length
+  const closings: CardClosing[] = closingsQuery.data || []
+  const selectedClosing = closings.find((c) => c.card_key === selectedCard && c.month === month)
+  const isClosed = !!selectedClosing
+  const classifiable = txs.filter((t) => t.ticket_id)
+  const unclassified = classifiable.filter((t) => !t.classification).length
+  const progress = classifiable.length ? Math.round(((classifiable.length - unclassified) / classifiable.length) * 100) : 0
 
   function startClassify(tx: CardTransaction) {
+    if (isClosed) {
+      toast(`${month}월은 마감되어 수정할 수 없습니다`, { icon: '🔒' })
+      return
+    }
     setEditingTicket(tx.ticket_id)
     setClsForm({
       category: tx.classification?.category || '',
@@ -89,16 +124,13 @@ export default function MyCardsPage() {
             내 카드 관리
           </h1>
           <p className="text-xs text-ink-500 mt-1">
-            나에게 배정된 법인카드의 사용 내역을 확인하고, 건별 사용 용도를 분류해주세요
+            배정된 카드의 월 사용내역을 건별로 분류하고, 전건 분류 후 월 마감을 제출해주세요
           </p>
         </div>
         <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
           <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-            className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
-          <span className="text-ink-300">→</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-            className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
+          <input type="month" value={month} onChange={(e) => { setMonth(e.target.value); setEditingTicket(null) }}
+            className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none" />
         </div>
       </div>
 
@@ -119,10 +151,11 @@ export default function MyCardsPage() {
           {cards.map((card) => {
             const isSelected = selectedCard === card.card_key
             const accent = card.color || '#3B82F6'
+            const cardClosing = closings.find((c) => c.card_key === card.card_key && c.month === month)
             return (
               <button
                 key={card.card_key}
-                onClick={() => setSelectedCard(card.card_key)}
+                onClick={() => { setSelectedCard(card.card_key); setEditingTicket(null) }}
                 className={`panel p-3 text-left transition ${
                   isSelected ? 'ring-2 ring-blue-400' : 'hover:bg-canvas-50'
                 }`}
@@ -130,12 +163,17 @@ export default function MyCardsPage() {
                 <div className="flex items-center gap-2">
                   <div className="w-1 self-stretch rounded-full" style={{ background: accent }} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-ink-900 truncate">
+                    <div className="text-sm font-semibold text-ink-900 truncate flex items-center gap-1">
                       {card.nickname || card.issuer || card.card_key}
-                      {card.last4 && <span className="text-2xs font-mono text-ink-500 ml-1">····{card.last4}</span>}
+                      {card.last4 && <span className="text-2xs font-mono text-ink-500">····{card.last4}</span>}
+                      {cardClosing && (
+                        <span className="inline-flex items-center gap-0.5 text-2xs px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          <LockClosedIcon className="h-2.5 w-2.5" />마감
+                        </span>
+                      )}
                     </div>
                     <div className="text-2xs text-ink-500 mt-0.5">
-                      기간 사용 {formatCurrency(card.total_amount, false)} · {card.transaction_count.toLocaleString()}건
+                      {month} 사용 {formatCurrency(card.total_amount, false)} · {card.transaction_count.toLocaleString()}건
                     </div>
                     {card.memo && <div className="text-2xs text-blue-700 mt-0.5">{card.memo}</div>}
                   </div>
@@ -146,18 +184,42 @@ export default function MyCardsPage() {
         </div>
       )}
 
-      {/* 사용 내역 + 분류 */}
+      {/* 사용 내역 + 분류 + 마감 */}
       {selectedCard && (
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
+          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between flex-wrap gap-2">
             <span className="text-2xs font-semibold text-ink-500 uppercase">
-              사용 내역 · {cards.find((c) => c.card_key === selectedCard)?.nickname || selectedCard}
+              {month} 사용 내역 · {cards.find((c) => c.card_key === selectedCard)?.nickname || selectedCard}
             </span>
-            {txs.length > 0 && (
-              <span className={`text-2xs font-medium ${unclassified > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
-                {unclassified > 0 ? `미분류 ${unclassified}건 / 전체 ${txs.length}건` : `전체 ${txs.length}건 분류 완료`}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {classifiable.length > 0 && !isClosed && (
+                <>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+                      <div className={`h-full ${progress === 100 ? 'bg-emerald-500' : 'bg-amber-400'}`} style={{ width: `${progress}%` }} />
+                    </div>
+                    <span className={`text-2xs font-medium ${unclassified > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                      {classifiable.length - unclassified}/{classifiable.length} 분류
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => closeMut.mutate()}
+                    disabled={unclassified > 0 || closeMut.isPending}
+                    title={unclassified > 0 ? `미분류 ${unclassified}건 — 전건 분류 후 마감 가능` : ''}
+                    className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-40 flex items-center gap-1"
+                  >
+                    <LockClosedIcon className="h-3 w-3" />
+                    {month} 마감 제출
+                  </button>
+                </>
+              )}
+              {isClosed && (
+                <span className="text-2xs text-emerald-700 flex items-center gap-1">
+                  <CheckCircleIcon className="h-3.5 w-3.5" />
+                  {selectedClosing?.closed_at?.slice(0, 10)} 마감 완료 — 수정하려면 관리자에게 해제 요청
+                </span>
+              )}
+            </div>
           </div>
           {txQuery.isLoading ? (
             <div className="p-8 text-center text-2xs text-ink-400">불러오는 중…</div>
@@ -169,7 +231,7 @@ export default function MyCardsPage() {
               </button>
             </div>
           ) : txs.length === 0 ? (
-            <div className="p-8 text-center text-2xs text-ink-400">기간 내 사용 내역 없음</div>
+            <div className="p-8 text-center text-2xs text-ink-400">{month} 사용 내역 없음</div>
           ) : (
             <div className="divide-y divide-ink-100">
               {txs.map((tx) => {
@@ -205,7 +267,7 @@ export default function MyCardsPage() {
                         <span className="text-sm font-bold font-mono text-ink-900">
                           {formatCurrency(tx.amount, false)}
                         </span>
-                        {tx.ticket_id && !isEditing && (
+                        {tx.ticket_id && !isEditing && !isClosed && (
                           <button
                             onClick={() => startClassify(tx)}
                             className="px-2 py-1 text-2xs rounded border border-ink-200 text-ink-600 hover:bg-ink-50 flex items-center gap-0.5"

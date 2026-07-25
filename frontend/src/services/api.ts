@@ -1241,6 +1241,26 @@ export const cardsApi = {
     api.get('/cards/analysis', { params: { card_key, start_date, end_date }, timeout: 60_000 }),
   monthly: (card_key?: string, months: number = 6) =>
     api.get('/cards/monthly', { params: { card_key, months }, timeout: 120_000 }),
+  // 월별 분류 마감
+  listClosings: (month?: string) =>
+    api.get<{ closings: CardClosing[] }>('/cards/closings', { params: { month } }),
+  closeMonth: (card_key: string, month: string) =>
+    api.post('/cards/closings', { card_key, month }, { timeout: 60_000 }),
+  reopenClosing: (closingId: number) =>
+    api.delete(`/cards/closings/${closingId}`),
+  closingDetail: (card_key: string, month: string) =>
+    api.get('/cards/closings/detail', { params: { card_key, month }, timeout: 60_000 }),
+}
+
+export interface CardClosing {
+  id: number
+  card_key: string
+  month: string
+  transaction_count: number
+  total_amount: number
+  category_summary: Record<string, number>
+  closed_by: string
+  closed_at: string | null
 }
 
 // ==================== 구매·지출 통제 ====================

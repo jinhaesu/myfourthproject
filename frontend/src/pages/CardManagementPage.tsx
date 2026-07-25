@@ -3,8 +3,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   CreditCardIcon, PencilIcon, CheckIcon, XMarkIcon,
   ChartBarIcon, MapPinIcon, CalendarDaysIcon, UserIcon,
+  LockClosedIcon, LockOpenIcon, ChevronDownIcon, ChevronRightIcon,
 } from '@heroicons/react/24/outline'
-import { cardsApi, CardInfo } from '@/services/api'
+import { cardsApi, CardInfo, CardClosing } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
 
 const COLOR_PRESETS = [
@@ -312,6 +313,9 @@ export default function CardManagementPage() {
         </div>
       </div>
 
+      {/* 월별 분류 마감 현황 (직원 제출분) */}
+      <MonthlyClosingsPanel cards={cards} />
+
       {/* 월별 추이 */}
       <div className="panel p-3">
         <div className="text-2xs font-semibold text-ink-600 mb-2 flex items-center gap-1">
@@ -324,6 +328,140 @@ export default function CardManagementPage() {
           <MonthlyChart months={monthlyQuery.data || []} />
         )}
       </div>
+    </div>
+  )
+}
+
+function currentMonthStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
+  const qc = useQueryClient()
+  const [month, setMonth] = useState(currentMonthStr())
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+
+  const closingsQuery = useQuery({
+    queryKey: ['card-closings', month],
+    queryFn: () => cardsApi.listClosings(month).then((r) => r.data.closings),
+  })
+
+  const detailQuery = useQuery({
+    queryKey: ['card-closing-detail', expandedId, month],
+    queryFn: () => {
+      const c = (closingsQuery.data || []).find((x) => x.id === expandedId)!
+      return cardsApi.closingDetail(c.card_key, c.month).then((r) => r.data)
+    },
+    enabled: expandedId != null && !!closingsQuery.data,
+  })
+
+  const reopenMut = useMutation({
+    mutationFn: (id: number) => cardsApi.reopenClosing(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['card-closings'] })
+      setExpandedId(null)
+    },
+  })
+
+  const closings: CardClosing[] = closingsQuery.data || []
+  const cardName = (key: string) => {
+    const c = cards.find((x) => x.card_key === key)
+    return c?.nickname || key
+  }
+  const cardAssignee = (key: string) => cards.find((x) => x.card_key === key)?.assigned_email
+
+  return (
+    <div className="panel overflow-hidden">
+      <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
+        <span className="text-2xs font-semibold text-ink-500 uppercase flex items-center gap-1">
+          <LockClosedIcon className="h-3 w-3" />
+          월별 분류 마감 현황 (직원 제출분)
+        </span>
+        <input type="month" value={month} onChange={(e) => { setMonth(e.target.value); setExpandedId(null) }}
+          className="px-2 py-0.5 text-2xs rounded border border-ink-200 focus:border-blue-400 focus:outline-none" />
+      </div>
+      {closingsQuery.isLoading ? (
+        <div className="p-6 text-center text-2xs text-ink-400">불러오는 중…</div>
+      ) : closings.length === 0 ? (
+        <div className="p-6 text-center text-2xs text-ink-400">
+          {month} 마감 제출된 카드가 없습니다 — 직원이 내 카드 관리에서 전건 분류 후 마감을 제출하면 여기 표시됩니다
+        </div>
+      ) : (
+        <div className="divide-y divide-ink-100">
+          {closings.map((c) => {
+            const isExpanded = expandedId === c.id
+            return (
+              <div key={c.id}>
+                <button
+                  onClick={() => setExpandedId(isExpanded ? null : c.id)}
+                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-canvas-50"
+                >
+                  {isExpanded ? <ChevronDownIcon className="h-3 w-3 text-ink-400" /> : <ChevronRightIcon className="h-3 w-3 text-ink-400" />}
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs font-semibold text-ink-900">{cardName(c.card_key)}</span>
+                    <span className="text-2xs text-ink-500 ml-2">
+                      {cardAssignee(c.card_key) || c.closed_by} · {c.transaction_count}건 ·
+                      마감 {c.closed_at?.slice(0, 10)} ({c.closed_by.split('@')[0]})
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 flex-wrap justify-end max-w-[50%]">
+                    {Object.entries(c.category_summary || {}).slice(0, 4).map(([cat, amt]) => (
+                      <span key={cat} className="text-2xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                        {cat} {formatShortWon(amt)}
+                      </span>
+                    ))}
+                  </div>
+                  <span className="text-sm font-bold font-mono text-ink-900 flex-shrink-0">
+                    {formatCurrency(c.total_amount, false)}
+                  </span>
+                </button>
+                {isExpanded && (
+                  <div className="px-3 pb-3 bg-canvas-50/50 border-t border-ink-100">
+                    <div className="flex items-center justify-between py-2">
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {Object.entries(c.category_summary || {}).map(([cat, amt]) => (
+                          <span key={cat} className="text-2xs px-1.5 py-0.5 rounded-full bg-white text-ink-700 border border-ink-200">
+                            {cat}: <b className="font-mono">{formatCurrency(amt, false)}</b>
+                          </span>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => { if (window.confirm(`${c.month} 마감을 해제할까요? 직원이 분류를 다시 수정할 수 있게 됩니다.`)) reopenMut.mutate(c.id) }}
+                        disabled={reopenMut.isPending}
+                        className="px-2 py-1 text-2xs rounded border border-amber-300 text-amber-700 hover:bg-amber-50 flex items-center gap-0.5 flex-shrink-0"
+                      >
+                        <LockOpenIcon className="h-3 w-3" />
+                        마감 해제
+                      </button>
+                    </div>
+                    {detailQuery.isLoading ? (
+                      <div className="text-2xs text-ink-400 py-2 text-center">내역 불러오는 중…</div>
+                    ) : (
+                      <div className="max-h-72 overflow-y-auto space-y-0.5">
+                        {(detailQuery.data?.transactions || []).map((t: any) => (
+                          <div key={t.ticket_id || t.transact_at} className="flex items-center gap-2 text-2xs bg-white rounded px-2 py-1">
+                            <span className="text-ink-500 w-24 flex-shrink-0">{t.transact_at?.slice(5, 16).replace('T', ' ')}</span>
+                            <span className="flex-1 text-ink-800 truncate">{t.store_name || '(가맹점 미확인)'}</span>
+                            {t.classification && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 flex-shrink-0">
+                                {t.classification.category}{t.classification.memo ? ` · ${t.classification.memo}` : ''}
+                              </span>
+                            )}
+                            <span className="font-mono font-semibold text-ink-900 w-24 text-right flex-shrink-0">
+                              {formatCurrency(t.amount, false)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
