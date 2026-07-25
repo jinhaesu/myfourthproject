@@ -166,9 +166,33 @@ export default function CashDigestPage() {
         <div className="panel p-4 self-start sticky top-3">
           <div className="text-base font-bold text-ink-900 mb-1">매일 아침, 자금 현황을 보내드려요</div>
           <p className="text-2xs text-ink-500 mb-3 leading-relaxed">
-            알림톡에서 '자세히 보기'를 클릭하시면<br />
-            별도 로그인 없이 자금일보를 조회하실 수 있어요.
+            설정한 시각에 로그인 이메일로 자동 발송됩니다.
           </p>
+
+          {/* 수신 on/off + 발송 시각 */}
+          {localCfg && (
+            <div className="flex items-center gap-3 mb-3 p-2.5 rounded-md bg-canvas-50 border border-ink-200">
+              <button
+                onClick={() => { setLocalCfg({ ...localCfg, enabled: !localCfg.enabled }); setDirty(true) }}
+                className={`relative w-9 h-5 rounded-full transition flex-shrink-0 ${localCfg.enabled ? 'bg-emerald-500' : 'bg-ink-200'}`}
+                title="정기 발송 켜기/끄기"
+              >
+                <span className={`absolute top-0.5 ${localCfg.enabled ? 'right-0.5' : 'left-0.5'} w-4 h-4 rounded-full bg-white shadow transition-all`} />
+              </button>
+              <span className="text-xs font-medium text-ink-800 flex-1">
+                {localCfg.enabled ? '정기 발송 켜짐' : '정기 발송 꺼짐'}
+              </span>
+              <div className="flex items-center gap-1">
+                <span className="text-2xs text-ink-500">매일</span>
+                <input
+                  type="time"
+                  value={localCfg.delivery_time || '09:00'}
+                  onChange={(e) => { setLocalCfg({ ...localCfg, delivery_time: e.target.value }); setDirty(true) }}
+                  className="px-1.5 py-0.5 text-xs rounded border border-ink-200 focus:border-emerald-400 focus:outline-none"
+                />
+              </div>
+            </div>
+          )}
 
           <div className="text-2xs font-semibold text-ink-700 mb-2">
             항목과 순서를 원하는 대로 설정할 수 있어요
@@ -228,9 +252,6 @@ export default function CashDigestPage() {
             </div>
           )}
 
-          <p className="text-2xs text-ink-400 mt-3">
-            자금일보 수신 설정은 계정 설정에서 하실 수 있어요.
-          </p>
 
           <button
             disabled={!dirty || saveMut.isPending}
