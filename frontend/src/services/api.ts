@@ -180,6 +180,11 @@ export const approvalsApi = {
 export const treasuryApi = {
   getCashPosition: () => api.get('/treasury/cash-position'),
 
+  internalTransfers: (start_date: string, end_date: string) =>
+    api.get('/treasury/internal-transfers', {
+      params: { start_date, end_date }, timeout: 120_000,
+    }),
+
   getBankAccounts: () => api.get('/treasury/accounts/'),
 
   autoReconcile: (bankAccountId?: number, fromDate?: string, toDate?: string) =>

@@ -193,7 +193,7 @@ async def send_now(
     target_date: Optional[str] = Query(None, description="기준일자 (없으면 어제)"),
     db: AsyncSession = Depends(get_db),
 ):
-    """수동 발송 — 콘텐츠 생성 + snapshot 저장 (실제 채널 발송은 스케줄러에서)."""
+    """수동 발송 — 콘텐츠 생성 + snapshot 저장 + 이메일 즉시 발송."""
     if target_date:
         try:
             target = date.fromisoformat(target_date)
@@ -225,4 +225,24 @@ async def send_now(
             sent_at=datetime.utcnow(),
         ))
     await db.commit()
-    return {"ok": True, "report_date": target.isoformat()}
+
+    # 이메일 즉시 발송 (요청자 이메일)
+    email_sent = False
+    try:
+        from app.models.user import User
+        from app.services.email_service import send_email
+        from app.services.daily_cash_report import _digest_to_html
+
+        user_row = (await db.execute(
+            select(User.email).where(User.id == user_id)
+        )).scalar_one_or_none()
+        if user_row:
+            email_sent = await send_email(
+                user_row,
+                f"[Smart Finance] {target.isoformat()} 자금 다이제스트",
+                _digest_to_html(content),
+            )
+    except Exception:
+        logger.exception("send-now 이메일 발송 실패")
+
+    return {"ok": True, "report_date": target.isoformat(), "email_sent": email_sent}
