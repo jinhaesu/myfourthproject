@@ -25,11 +25,13 @@ logger = logging.getLogger(__name__)
 
 PAYDAY = 10  # 매달 급여일
 
-HR_BASE = os.getenv("HR_SALARY_BASE_URL", "https://hr.nuldam.com")
+# 주의: hr.nuldam.com·aisystem.nuldam.com은 프론트(Next.js)라 /api 없음.
+# 실제 백엔드 = Railway 도메인.
+HR_BASE = os.getenv("HR_SALARY_BASE_URL", "https://proud-charm-production-be52.up.railway.app")
 HR_JWT_SECRET = os.getenv("HR_JWT_SECRET", "")
 HR_JARVIS_API_KEY = os.getenv("HR_JARVIS_API_KEY", "")
 
-AISYSTEM_BASE = os.getenv("AISYSTEM_BASE_URL", "https://aisystem.nuldam.com")
+AISYSTEM_BASE = os.getenv("AISYSTEM_BASE_URL", "https://mysixthproject-production.up.railway.app")
 AISYSTEM_JWT_SECRET = os.getenv("AISYSTEM_JWT_SECRET", "")
 
 ADMIN_EMAIL = "lion9080@joinandjoin.com"
