@@ -1,14 +1,21 @@
-"""카드 관리 API"""
-from datetime import date, timedelta
-from typing import Optional, List
+"""카드 관리 API
 
-from fastapi import APIRouter, Depends, Body, Query
-from pydantic import BaseModel
+권한:
+- 회계 관리자(ADMIN_EMAILS): 전체 카드 조회/별명 수정/배정 관리
+- 일반 직원: 본인에게 배정된 카드만 조회 + 사용내역 분류 입력
+"""
+from datetime import date, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Body, Query, HTTPException, status
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import get_current_user, is_accounting_admin
 from app.services.card_management import (
     list_cards, upsert_alias, get_card_analysis, get_monthly_summary,
+    assign_card, list_transactions, classify_transaction, get_assigned_card_keys,
 )
 
 router = APIRouter()
@@ -21,14 +28,46 @@ class AliasUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class AssignBody(BaseModel):
+    card_key: str
+    email: Optional[EmailStr] = None  # None이면 배정 해제
+
+
+class ClassifyBody(BaseModel):
+    ticket_id: str
+    card_key: str
+    category: str
+    memo: Optional[str] = None
+    transact_at: Optional[str] = None
+    store_name: Optional[str] = None
+    amount: Optional[float] = None
+
+
+async def _ensure_card_access(db: AsyncSession, user, card_key: str):
+    """직원은 배정된 카드만 접근 가능. 관리자는 전체."""
+    if is_accounting_admin(user):
+        return
+    assigned = await get_assigned_card_keys(db, user.email)
+    if card_key not in assigned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="본인에게 배정된 카드가 아닙니다.",
+        )
+
+
 @router.get("/list")
 async def list_cards_api(
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
 ):
-    """카드 목록 — 그랜터 EXPENSE_TICKET distinct cardName + alias 정보."""
-    return {"cards": await list_cards(db, start_date, end_date)}
+    """카드 목록 — 관리자: 전체 / 직원: 본인 배정 카드만."""
+    only = None if is_accounting_admin(user) else user.email
+    return {
+        "cards": await list_cards(db, start_date, end_date, only_assigned_to=only),
+        "is_admin": is_accounting_admin(user),
+    }
 
 
 @router.put("/alias")
@@ -36,8 +75,11 @@ async def update_alias(
     card_key: str = Query(...),
     body: AliasUpdate = Body(...),
     db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
 ):
-    """카드 별명/색상/메모 저장."""
+    """카드 별명/색상/메모 저장 (관리자 전용)."""
+    if not is_accounting_admin(user):
+        raise HTTPException(status_code=403, detail="회계 관리자 권한이 필요합니다.")
     alias = await upsert_alias(
         db, card_key,
         nickname=body.nickname,
@@ -51,6 +93,70 @@ async def update_alias(
         "color": alias.color,
         "memo": alias.memo,
         "is_active": alias.is_active,
+        "assigned_email": alias.assigned_email,
+    }
+
+
+@router.put("/assign")
+async def assign_card_api(
+    body: AssignBody,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """카드를 이메일에 배정/해제 (관리자 전용)."""
+    if not is_accounting_admin(user):
+        raise HTTPException(status_code=403, detail="회계 관리자 권한이 필요합니다.")
+    alias = await assign_card(db, body.card_key, body.email)
+    return {
+        "card_key": alias.card_key,
+        "assigned_email": alias.assigned_email,
+    }
+
+
+@router.get("/transactions")
+async def card_transactions(
+    card_key: str = Query(...),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """카드 사용내역 건별 목록 + 분류 상태. 직원은 배정 카드만."""
+    await _ensure_card_access(db, user, card_key)
+    if not end_date:
+        end_date = date.today()
+    if not start_date:
+        start_date = end_date - timedelta(days=30)
+    return {
+        "card_key": card_key,
+        "transactions": await list_transactions(db, card_key, start_date, end_date),
+    }
+
+
+@router.put("/transactions/classify")
+async def classify_transaction_api(
+    body: ClassifyBody,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """카드 사용 건 분류 저장. 직원은 배정 카드 건만."""
+    await _ensure_card_access(db, user, body.card_key)
+    cls = await classify_transaction(
+        db,
+        ticket_id=body.ticket_id,
+        card_key=body.card_key,
+        category=body.category,
+        memo=body.memo,
+        classified_by=user.email,
+        transact_at=body.transact_at,
+        store_name=body.store_name,
+        amount=body.amount,
+    )
+    return {
+        "ticket_id": cls.ticket_id,
+        "category": cls.category,
+        "memo": cls.memo,
+        "classified_by": cls.classified_by,
     }
 
 
@@ -60,8 +166,10 @@ async def card_analysis(
     start_date: Optional[date] = Query(None),
     end_date: Optional[date] = Query(None),
     db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
 ):
-    """카드별 가맹점/카테고리/일별 분석."""
+    """카드별 가맹점/카테고리/일별 분석. 직원은 배정 카드만."""
+    await _ensure_card_access(db, user, card_key)
     if not end_date:
         end_date = date.today()
     if not start_date:
@@ -74,6 +182,11 @@ async def monthly_summary(
     card_key: Optional[str] = Query(None),
     months: int = Query(6, ge=1, le=12),
     db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
 ):
-    """월별 카드 사용액 — card_key=None면 전체 카드 합산."""
+    """월별 카드 사용액 — card_key=None면 전체 카드 합산 (전체 합산은 관리자 전용)."""
+    if card_key:
+        await _ensure_card_access(db, user, card_key)
+    elif not is_accounting_admin(user):
+        raise HTTPException(status_code=403, detail="회계 관리자 권한이 필요합니다.")
     return {"months": await get_monthly_summary(db, card_key, months)}

@@ -17,7 +17,7 @@ from app.services.user_service import UserService
 from app.services.email_service import (
     is_email_allowed, send_otp_email, verify_otp_code,
 )
-from app.core.security import create_access_token, create_refresh_token
+from app.core.security import create_access_token, create_refresh_token, is_accounting_admin
 
 router = APIRouter()
 
@@ -52,6 +52,8 @@ def user_to_response(user) -> dict:
         "department_name": user.department.name if user.department else None,
         "role_id": user.role_id,
         "role_name": user.role.name if user.role else None,
+        "role_type": user.role.role_type.value if user.role and user.role.role_type else None,
+        "is_admin": is_accounting_admin(user),
         "is_active": user.is_active,
         "two_factor_enabled": getattr(user, 'two_factor_enabled', False),
         "created_at": user.created_at,
@@ -244,9 +246,11 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
     # 비밀번호 미사용 (OTP 전용) - bcrypt 우회하여 더미 해시 직접 생성
     dummy_hash = "$2b$12$" + hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:53]
 
-    # 기본 역할 조회 (없으면 자동 생성)
+    # 관리자 이메일이면 ADMIN 역할, 아니면 EMPLOYEE 역할
+    is_admin_email = email.lower() in [e.lower() for e in settings.ADMIN_EMAILS]
+    target_role_type = RoleType.ADMIN if is_admin_email else RoleType.EMPLOYEE
     role_result = await db.execute(
-        select(Role).where(Role.role_type == RoleType.EMPLOYEE)
+        select(Role).where(Role.role_type == target_role_type)
     )
     role = role_result.scalar_one_or_none()
 
@@ -265,7 +269,7 @@ async def _auto_create_user(db: AsyncSession, email: str) -> User:
         db.add(admin_role)
         db.add(employee_role)
         await db.flush()
-        role = admin_role  # 첫 번째 사용자는 관리자
+        role = admin_role if is_admin_email else employee_role
 
     local_part = email.split("@")[0]
     display_name = local_part.replace(".", " ").replace("_", " ").title()

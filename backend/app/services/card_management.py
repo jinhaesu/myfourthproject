@@ -15,8 +15,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.card_alias import CardAlias
+from app.models.card_classification import CardUsageClassification
 
 logger = logging.getLogger(__name__)
+
+
+async def get_assigned_card_keys(db: AsyncSession, email: str) -> List[str]:
+    """이메일에 배정된 카드 key 목록."""
+    rows = (await db.execute(
+        select(CardAlias.card_key).where(CardAlias.assigned_email == email.lower())
+    )).scalars().all()
+    return list(rows)
 
 
 def _extract_card_meta(card_key: str) -> Dict[str, Optional[str]]:
@@ -113,10 +122,12 @@ async def list_cards(
     db: AsyncSession,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
+    only_assigned_to: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     카드 목록 — 그랜터 EXPENSE_TICKET에서 distinct cardName 추출 + alias join.
     기간 미지정 시 최근 31일.
+    only_assigned_to: 이메일 지정 시 해당 이메일에 배정된 카드만 반환 (직원용).
     """
     if not end_date:
         end_date = date.today()
@@ -155,6 +166,20 @@ async def list_cards(
     aliases = (await db.execute(select(CardAlias))).scalars().all()
     alias_map = {a.card_key: a for a in aliases}
 
+    # 직원용: 배정된 카드만 (사용내역 없어도 배정 카드는 표시)
+    if only_assigned_to:
+        email_lower = only_assigned_to.lower()
+        assigned_keys = {
+            a.card_key for a in aliases
+            if (a.assigned_email or "").lower() == email_lower
+        }
+        by_card = {k: v for k, v in by_card.items() if k in assigned_keys}
+        for k in assigned_keys:
+            by_card.setdefault(k, {
+                "card_key": k, "total_amount": 0.0,
+                "transaction_count": 0, "last_used": None,
+            })
+
     result = []
     for card_key, agg in by_card.items():
         alias = alias_map.get(card_key)
@@ -167,6 +192,7 @@ async def list_cards(
             "color": alias.color if alias else None,
             "memo": alias.memo if alias else None,
             "is_active": alias.is_active if alias else True,
+            "assigned_email": alias.assigned_email if alias else None,
             "total_amount": agg["total_amount"],
             "transaction_count": agg["transaction_count"],
             "last_used": agg["last_used"],
@@ -213,6 +239,128 @@ async def upsert_alias(
     await db.commit()
     await db.refresh(alias)
     return alias
+
+
+async def assign_card(
+    db: AsyncSession,
+    card_key: str,
+    email: Optional[str],
+) -> CardAlias:
+    """카드를 이메일에 배정 (email=None이면 배정 해제). 관리자 전용에서 호출."""
+    alias = (await db.execute(
+        select(CardAlias).where(CardAlias.card_key == card_key)
+    )).scalar_one_or_none()
+    if alias is None:
+        meta = _extract_card_meta(card_key)
+        alias = CardAlias(
+            card_key=card_key,
+            nickname=card_key,
+            issuer=meta["issuer"],
+            last4=meta["last4"],
+            is_active=True,
+        )
+        db.add(alias)
+    alias.assigned_email = email.lower().strip() if email else None
+    await db.commit()
+    await db.refresh(alias)
+    return alias
+
+
+async def list_transactions(
+    db: AsyncSession,
+    card_key: str,
+    start_date: date,
+    end_date: date,
+) -> List[Dict[str, Any]]:
+    """
+    카드 사용내역 건별 목록 + 분류(있으면) 조인.
+    그랜터 EXPENSE_TICKET 실시간 조회 기반. 최신순 정렬.
+    """
+    if (end_date - start_date).days > 30:
+        start_date = end_date - timedelta(days=30)
+
+    expense = await _fetch_expense_tickets(start_date, end_date)
+    tickets = [t for t in expense if _build_card_key(t) == card_key]
+
+    ticket_ids = [str(t.get("id")) for t in tickets if t.get("id") is not None]
+    cls_map: Dict[str, CardUsageClassification] = {}
+    if ticket_ids:
+        rows = (await db.execute(
+            select(CardUsageClassification).where(
+                CardUsageClassification.ticket_id.in_(ticket_ids)
+            )
+        )).scalars().all()
+        cls_map = {c.ticket_id: c for c in rows}
+
+    result = []
+    for t in tickets:
+        tid = str(t.get("id")) if t.get("id") is not None else None
+        cu = t.get("cardUsage") or {}
+        try:
+            amt = float(t.get("amount") or 0)
+        except (ValueError, TypeError):
+            amt = 0.0
+        cls = cls_map.get(tid) if tid else None
+        result.append({
+            "ticket_id": tid,
+            "transact_at": str(t.get("transactAt") or t.get("createdAt") or "")[:19],
+            "store_name": (cu.get("storeName") or "").strip() or None,
+            "granter_category": (cu.get("category") or "").strip() or None,
+            "amount": amt,
+            "classification": {
+                "category": cls.category,
+                "memo": cls.memo,
+                "classified_by": cls.classified_by,
+                "updated_at": cls.updated_at.isoformat() if cls.updated_at else None,
+            } if cls else None,
+        })
+
+    result.sort(key=lambda x: x["transact_at"] or "", reverse=True)
+    return result
+
+
+async def classify_transaction(
+    db: AsyncSession,
+    ticket_id: str,
+    card_key: str,
+    category: str,
+    memo: Optional[str],
+    classified_by: str,
+    transact_at: Optional[str] = None,
+    store_name: Optional[str] = None,
+    amount: Optional[float] = None,
+) -> CardUsageClassification:
+    """카드 사용 건 분류 저장 (upsert)."""
+    cls = (await db.execute(
+        select(CardUsageClassification).where(
+            CardUsageClassification.ticket_id == ticket_id
+        )
+    )).scalar_one_or_none()
+    if cls is None:
+        cls = CardUsageClassification(
+            ticket_id=ticket_id,
+            card_key=card_key,
+            category=category,
+            memo=memo,
+            classified_by=classified_by,
+            transact_at=transact_at,
+            store_name=store_name,
+            amount=amount,
+        )
+        db.add(cls)
+    else:
+        cls.category = category
+        cls.memo = memo
+        cls.classified_by = classified_by
+        if transact_at:
+            cls.transact_at = transact_at
+        if store_name:
+            cls.store_name = store_name
+        if amount is not None:
+            cls.amount = amount
+    await db.commit()
+    await db.refresh(cls)
+    return cls
 
 
 async def get_card_analysis(

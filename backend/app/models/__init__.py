@@ -42,6 +42,15 @@ from app.models.sales import (
     SalesAutomationSchedule,
 )
 from app.models.payroll import PayrollBatch, PayrollRecord
+from app.models.card_alias import CardAlias
+from app.models.card_classification import CardUsageClassification
+from app.models.purchase import (
+    CatalogItem,
+    CatalogPriceHistory,
+    PurchaseRequest,
+    PurchaseRequestItem,
+    PurchaseRequestStatus,
+)
 
 __all__ = [
     # User
@@ -90,4 +99,13 @@ __all__ = [
     # Payroll
     "PayrollBatch",
     "PayrollRecord",
+    # Card
+    "CardAlias",
+    "CardUsageClassification",
+    # Purchase
+    "CatalogItem",
+    "CatalogPriceHistory",
+    "PurchaseRequest",
+    "PurchaseRequestItem",
+    "PurchaseRequestStatus",
 ]

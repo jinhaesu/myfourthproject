@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   CreditCardIcon, PencilIcon, CheckIcon, XMarkIcon,
-  ChartBarIcon, MapPinIcon, CalendarDaysIcon,
+  ChartBarIcon, MapPinIcon, CalendarDaysIcon, UserIcon,
 } from '@heroicons/react/24/outline'
 import { cardsApi, CardInfo } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
@@ -23,8 +23,8 @@ export default function CardManagementPage() {
   const [to, setTo] = useState(todayISO())
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
   const [editingKey, setEditingKey] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState<{ nickname: string; color: string; memo: string }>({
-    nickname: '', color: '#3B82F6', memo: '',
+  const [editForm, setEditForm] = useState<{ nickname: string; color: string; memo: string; assignedEmail: string }>({
+    nickname: '', color: '#3B82F6', memo: '', assignedEmail: '',
   })
 
   const listQuery = useQuery({
@@ -44,8 +44,11 @@ export default function CardManagementPage() {
   })
 
   const saveAliasMut = useMutation({
-    mutationFn: (vars: { card_key: string; patch: any }) =>
-      cardsApi.updateAlias(vars.card_key, vars.patch),
+    mutationFn: async (vars: { card_key: string; patch: any; assignedEmail: string }) => {
+      await cardsApi.updateAlias(vars.card_key, vars.patch)
+      // 배정 이메일 반영 (빈 값이면 배정 해제)
+      await cardsApi.assign(vars.card_key, vars.assignedEmail.trim() || null)
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['cards-list'] })
       setEditingKey(null)
@@ -63,14 +66,17 @@ export default function CardManagementPage() {
       nickname: nick,
       color: card.color || COLOR_PRESETS[0],
       memo: card.memo || '',
+      assignedEmail: card.assigned_email || '',
     })
   }
 
   function saveEdit() {
     if (!editingKey) return
+    const { assignedEmail, ...patch } = editForm
     saveAliasMut.mutate({
       card_key: editingKey,
-      patch: editForm,
+      patch,
+      assignedEmail,
     })
   }
 
@@ -158,6 +164,13 @@ export default function CardManagementPage() {
                               placeholder="메모 (예: 직원 식대용)"
                               className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
                             />
+                            <input
+                              type="email"
+                              value={editForm.assignedEmail}
+                              onChange={(e) => setEditForm({ ...editForm, assignedEmail: e.target.value })}
+                              placeholder="배정 이메일 (예: hong@joinandjoin.com) — 비우면 배정 해제"
+                              className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                            />
                             <div className="flex items-center gap-1">
                               <span className="text-2xs text-ink-500 mr-1">색상</span>
                               {COLOR_PRESETS.map((c) => (
@@ -205,6 +218,16 @@ export default function CardManagementPage() {
                               <span>· {card.transaction_count.toLocaleString()}건</span>
                               {card.last_used && <span>· 최근 {card.last_used}</span>}
                               {card.memo && <span className="text-blue-700">· {card.memo}</span>}
+                              {card.assigned_email ? (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                  <UserIcon className="h-2.5 w-2.5" />
+                                  {card.assigned_email}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-ink-50 text-ink-400 border border-ink-200">
+                                  미배정
+                                </span>
+                              )}
                             </div>
                           </>
                         )}

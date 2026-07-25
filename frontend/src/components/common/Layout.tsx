@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
+import { authApi } from '@/services/api'
 import {
   HomeIcon,
   DocumentTextIcon,
@@ -37,6 +38,16 @@ type NavItem =
   | { name: string; href: string; icon: any; section?: never }
   | { name: string; section: true }
 
+// 일반 직원용 메뉴 — 회사 도메인 로그인 직원 (본인 카드·구매요청만)
+const employeeNavigation: NavItem[] = [
+  { name: '내 카드', section: true },
+  { name: '내 카드 관리', href: '/my-cards', icon: CreditCardIcon },
+
+  { name: '구매', section: true },
+  { name: '구매 요청', href: '/purchase', icon: ShoppingBagIcon },
+]
+
+// 회계 관리자용 메뉴 — 지정된 관리자 이메일 전용
 const baseNavigation: NavItem[] = [
   { name: '대시보드', href: '/dashboard', icon: HomeIcon },
 
@@ -45,6 +56,7 @@ const baseNavigation: NavItem[] = [
   { name: '자금일보', href: '/daily-report', icon: SunIcon },
   { name: 'AI 자금 다이제스트', href: '/cash-digest', icon: SparklesIcon },
   { name: '카드 관리', href: '/cards', icon: CreditCardIcon },
+  { name: '구매요청 관리', href: '/purchase', icon: ShoppingBagIcon },
   { name: '세금계산서', href: '/tax-invoices', icon: ReceiptPercentIcon },
   { name: '환율 흐름', href: '/exchange-rates', icon: GlobeAltIcon },
 
@@ -123,13 +135,70 @@ function NavList({
   )
 }
 
+function MenuModeToggle() {
+  const { user, menuMode, setMenuMode } = useAuthStore()
+  const navigate = useNavigate()
+  if (!user?.isAdmin) return null
+
+  const switchTo = (mode: 'employee' | 'admin') => {
+    if (mode === menuMode) return
+    setMenuMode(mode)
+    navigate(mode === 'admin' ? '/dashboard' : '/my-cards')
+  }
+
+  return (
+    <div className="px-2 pt-2">
+      <div className="flex rounded-md border border-ink-200 bg-canvas-50 p-0.5">
+        <button
+          onClick={() => switchTo('employee')}
+          className={`flex-1 rounded px-1 py-1 text-2xs font-medium transition ${
+            menuMode === 'employee'
+              ? 'bg-white text-ink-900 shadow-sm'
+              : 'text-ink-500 hover:text-ink-800'
+          }`}
+        >
+          일반 직원용
+        </button>
+        <button
+          onClick={() => switchTo('admin')}
+          className={`flex-1 rounded px-1 py-1 text-2xs font-medium transition ${
+            menuMode === 'admin'
+              ? 'bg-white text-ink-900 shadow-sm'
+              : 'text-ink-500 hover:text-ink-800'
+          }`}
+        >
+          회계 관리자용
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
   const navigate = useNavigate()
-  const { user, logout } = useAuthStore()
-  const isAdmin = user?.roleName === 'admin' || user?.roleName === 'super_admin'
-  const navigation: NavItem[] = isAdmin ? [...baseNavigation, adminNavItem] : baseNavigation
+  const { user, logout, menuMode, updateUser, setMenuMode } = useAuthStore()
+  const isAdmin = !!user?.isAdmin
+
+  // 구버전 세션(localStorage)에 isAdmin이 없으면 서버에서 갱신
+  useEffect(() => {
+    if (user && user.isAdmin === undefined) {
+      authApi.getMe()
+        .then((r) => {
+          const admin = !!r.data.is_admin
+          updateUser({ isAdmin: admin })
+          if (admin) setMenuMode('admin')
+        })
+        .catch(() => { /* 토큰 만료 등 — 인터셉터가 처리 */ })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  // 관리자만 관리자 메뉴 사용 가능. 직원은 항상 직원용 메뉴.
+  const navigation: NavItem[] =
+    isAdmin && menuMode === 'admin'
+      ? [...baseNavigation, adminNavItem]
+      : employeeNavigation
 
   const handleLogout = () => {
     logout()
@@ -153,6 +222,7 @@ export default function Layout() {
               <XMarkIcon className="h-4 w-4" />
             </button>
           </div>
+          <MenuModeToggle />
           <NavList
             navigation={navigation}
             pathname={location.pathname}
@@ -173,6 +243,7 @@ export default function Layout() {
             </div>
           </div>
 
+          <MenuModeToggle />
           <NavList navigation={navigation} pathname={location.pathname} />
 
           {/* User strip */}

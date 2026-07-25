@@ -1199,22 +1199,129 @@ export interface CardInfo {
   color: string | null
   memo: string | null
   is_active: boolean
+  assigned_email: string | null
   total_amount: number
   transaction_count: number
   last_used: string | null
 }
 
+export interface CardTransaction {
+  ticket_id: string | null
+  transact_at: string
+  store_name: string | null
+  granter_category: string | null
+  amount: number
+  classification: {
+    category: string
+    memo: string | null
+    classified_by: string
+    updated_at: string | null
+  } | null
+}
+
 export const cardsApi = {
   list: (start_date?: string, end_date?: string) =>
-    api.get<{ cards: CardInfo[] }>('/cards/list', {
+    api.get<{ cards: CardInfo[]; is_admin: boolean }>('/cards/list', {
       params: { start_date, end_date }, timeout: 60_000,
     }),
   updateAlias: (card_key: string, patch: { nickname?: string; color?: string; memo?: string; is_active?: boolean }) =>
     api.put('/cards/alias', patch, { params: { card_key } }),
+  assign: (card_key: string, email: string | null) =>
+    api.put('/cards/assign', { card_key, email }),
+  transactions: (card_key: string, start_date?: string, end_date?: string) =>
+    api.get<{ card_key: string; transactions: CardTransaction[] }>('/cards/transactions', {
+      params: { card_key, start_date, end_date }, timeout: 60_000,
+    }),
+  classify: (data: {
+    ticket_id: string; card_key: string; category: string; memo?: string
+    transact_at?: string; store_name?: string; amount?: number
+  }) => api.put('/cards/transactions/classify', data),
   analysis: (card_key: string, start_date?: string, end_date?: string) =>
     api.get('/cards/analysis', { params: { card_key, start_date, end_date }, timeout: 60_000 }),
   monthly: (card_key?: string, months: number = 6) =>
     api.get('/cards/monthly', { params: { card_key, months }, timeout: 120_000 }),
+}
+
+// ==================== 구매·지출 통제 ====================
+export interface CatalogItem {
+  id: number
+  url: string
+  platform: string | null
+  title: string
+  price: number | null
+  seller: string | null
+  image_url: string | null
+  tags: string | null
+  is_active: boolean
+  created_by: string
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface PurchaseRequestItem {
+  id: number
+  catalog_item_id: number | null
+  title: string
+  unit_price: number
+  quantity: number
+  line_total: number
+}
+
+export interface PurchaseRequestInfo {
+  id: number
+  requester_email: string
+  title: string
+  reason: string | null
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'PURCHASED' | 'MATCHED' | 'CANCELED'
+  total_amount: number
+  approved_by: string | null
+  approved_at: string | null
+  reject_reason: string | null
+  purchased_at: string | null
+  order_no: string | null
+  final_amount: number | null
+  card_key: string | null
+  matched_ticket_id: string | null
+  matched_at: string | null
+  created_at: string | null
+  items: PurchaseRequestItem[]
+}
+
+export const purchaseApi = {
+  parseLink: (url: string) =>
+    api.post('/purchase/catalog/parse', { url }, { timeout: 30_000 }),
+  createCatalogItem: (data: {
+    url: string; title: string; price?: number | null; seller?: string | null
+    image_url?: string | null; platform?: string | null; tags?: string | null
+  }) => api.post<CatalogItem>('/purchase/catalog', data),
+  listCatalog: (q?: string) =>
+    api.get<{ items: CatalogItem[] }>('/purchase/catalog', { params: { q } }),
+  refreshPrice: (itemId: number) =>
+    api.post(`/purchase/catalog/${itemId}/refresh`, undefined, { timeout: 30_000 }),
+  priceHistory: (itemId: number) =>
+    api.get(`/purchase/catalog/${itemId}/price-history`),
+  deleteCatalogItem: (itemId: number) =>
+    api.delete(`/purchase/catalog/${itemId}`),
+
+  createRequest: (data: {
+    title: string; reason?: string
+    items: { catalog_item_id?: number | null; title: string; unit_price: number; quantity: number }[]
+  }) => api.post<PurchaseRequestInfo>('/purchase/requests', data),
+  listRequests: (status?: string) =>
+    api.get<{ requests: PurchaseRequestInfo[]; is_admin: boolean }>('/purchase/requests', { params: { status } }),
+  getRequest: (id: number) =>
+    api.get<PurchaseRequestInfo>(`/purchase/requests/${id}`),
+  approve: (id: number) => api.post<PurchaseRequestInfo>(`/purchase/requests/${id}/approve`),
+  reject: (id: number, reason: string) =>
+    api.post<PurchaseRequestInfo>(`/purchase/requests/${id}/reject`, { reason }),
+  cancel: (id: number) => api.post<PurchaseRequestInfo>(`/purchase/requests/${id}/cancel`),
+  complete: (id: number, data: {
+    order_no?: string; final_amount: number; card_key?: string; purchased_at?: string
+  }) => api.post<PurchaseRequestInfo>(`/purchase/requests/${id}/complete`, data),
+  matchCandidates: (id: number) =>
+    api.get(`/purchase/requests/${id}/match-candidates`, { timeout: 60_000 }),
+  confirmMatch: (id: number, ticket_id: string) =>
+    api.post<PurchaseRequestInfo>(`/purchase/requests/${id}/match`, { ticket_id }),
 }
 
 // ==================== 급여(인건비) 관리 ====================
