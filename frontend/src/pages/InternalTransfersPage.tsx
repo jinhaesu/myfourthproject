@@ -110,10 +110,56 @@ export default function InternalTransfersPage() {
                       </tr>
                     ))}
                   </tbody>
+                  {data.account_totals && (
+                    <tfoot>
+                      <tr className="border-t-2 border-ink-200 bg-canvas-50 font-bold">
+                        <td className="px-3 py-1.5 text-ink-900">누적 합계</td>
+                        <td className="px-3 py-1.5 text-right font-mono text-rose-700">-{formatCurrency(data.account_totals.total_sent, false)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono text-emerald-700">+{formatCurrency(data.account_totals.total_received, false)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono text-ink-900">
+                          {formatCurrency(data.account_totals.net_sum, false)}
+                          <span className="text-2xs font-normal text-ink-400 ml-1">
+                            {Math.abs(data.account_totals.net_sum) < 1 ? '(상계 0)' : '(미상 잔차)'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-1.5"></td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             )}
           </div>
+
+          {/* 계좌쌍 순차액 정산 — 신한↔기업 양방향 상계 후 못받은 금액 */}
+          {(data.pair_settlements || []).filter((p: any) => p.net > 0).length > 0 && (
+            <div className="panel overflow-hidden">
+              <div className="px-3 py-2 border-b border-ink-200 text-2xs font-semibold text-ink-500 uppercase flex items-center gap-1">
+                <ArrowsRightLeftIcon className="h-3 w-3" />
+                계좌간 순정산 (양방향 상계 후 남은 차액)
+              </div>
+              <div className="divide-y divide-ink-50">
+                {data.pair_settlements.filter((p: any) => p.net > 0).map((p: any, i: number) => (
+                  <div key={i} className="px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <span className="font-medium text-ink-800">{p.account_a}</span>
+                        <ArrowsRightLeftIcon className="h-3 w-3 text-ink-400" />
+                        <span className="font-medium text-ink-800">{p.account_b}</span>
+                      </div>
+                      <span className="text-sm font-bold font-mono text-amber-700">순 {formatCurrency(p.net, false)}</span>
+                    </div>
+                    <div className="flex items-center gap-3 text-2xs text-ink-500 mt-1">
+                      <span>{p.account_a}→{p.account_b} {formatCurrency(p.a_to_b, false)}</span>
+                      <span>·</span>
+                      <span>{p.account_b}→{p.account_a} {formatCurrency(p.b_to_a, false)}</span>
+                    </div>
+                    <div className="text-2xs text-amber-700 mt-0.5 font-medium">{p.note}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* 이체 내역 */}
           <div className="panel overflow-hidden">

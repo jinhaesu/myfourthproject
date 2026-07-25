@@ -46,10 +46,19 @@ export default function PayrollImportPage() {
   })
 
   const [detailRec, setDetailRec] = useState<PayrollImportRecord | null>(null)
+  const [deptFilter, setDeptFilter] = useState<string>('')
+  const [typeFilter, setTypeFilter] = useState<string>('')
   const data = summaryQuery.data
-  const records = data?.records || []
+  const allRecords = data?.records || []
   const cogsTotal = data?.by_cost_type.find((c) => c.cost_type === 'COGS')?.gross || 0
   const sgaTotal = data?.by_cost_type.find((c) => c.cost_type === 'SGA')?.gross || 0
+
+  const deptOptions = Array.from(new Set(allRecords.map((r) => r.department))).sort()
+  const typeOptions = Array.from(new Set(allRecords.map((r) => r.worker_type))).sort()
+  const records = allRecords.filter((r) =>
+    (!deptFilter || r.department === deptFilter) && (!typeFilter || r.worker_type === typeFilter)
+  )
+  const filteredDepts = (data?.by_department || []).filter((d) => !deptFilter || d.department === deptFilter)
 
   function startEdit(rec: PayrollImportRecord) {
     setEditing(rec.name)
@@ -140,10 +149,32 @@ export default function PayrollImportPage() {
             </div>
           )}
 
+          {/* 필터 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-2xs text-ink-500">필터:</span>
+            <select value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}
+              className="px-2 py-1 text-2xs rounded border border-ink-200 focus:border-blue-400 focus:outline-none">
+              <option value="">전체 부서</option>
+              {deptOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}
+              className="px-2 py-1 text-2xs rounded border border-ink-200 focus:border-blue-400 focus:outline-none">
+              <option value="">전체 구분</option>
+              {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            {(deptFilter || typeFilter) && (
+              <button onClick={() => { setDeptFilter(''); setTypeFilter('') }}
+                className="text-2xs text-ink-500 hover:text-ink-800 underline">필터 해제</button>
+            )}
+            <span className="text-2xs text-ink-400 ml-auto">
+              {records.length}명 · 세전 {formatCurrency(records.reduce((s, r) => s + r.gross_pay, 0), false)}
+            </span>
+          </div>
+
           {/* 부서별 */}
           <div className="panel overflow-hidden">
             <div className="px-3 py-2 border-b border-ink-200 text-2xs font-semibold text-ink-500 uppercase flex items-center gap-1">
-              <BuildingOffice2Icon className="h-3 w-3" />부서별 급여액
+              <BuildingOffice2Icon className="h-3 w-3" />부서별 급여액{deptFilter ? ` · ${deptFilter}` : ''}
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -158,8 +189,10 @@ export default function PayrollImportPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-ink-50">
-                  {(data.by_department || []).map((d) => (
-                    <tr key={d.department} className="hover:bg-canvas-50">
+                  {filteredDepts.map((d) => (
+                    <tr key={d.department}
+                      onClick={() => setDeptFilter(deptFilter === d.department ? '' : d.department)}
+                      className={`hover:bg-canvas-50 cursor-pointer ${deptFilter === d.department ? 'bg-blue-50/40' : ''}`}>
                       <td className="px-3 py-1.5 font-medium text-ink-900">{d.department}</td>
                       <td className="px-3 py-1.5 text-right text-ink-500">{d.count}</td>
                       <td className="px-3 py-1.5 text-right font-mono text-orange-700">{d.cogs > 0 ? formatCurrency(d.cogs, false) : '-'}</td>

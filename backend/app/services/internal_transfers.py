@@ -285,13 +285,53 @@ async def build_internal_transfers(start_date: date, end_date: date) -> Dict[str
     for s in summary.values():
         s["net"] = s["received"] - s["sent"]
 
+    # 4단계: 계좌쌍(A↔B) 순차액 — 양방향 상계 후 순 채권/채무
+    #   예: 신한→기업 1억, 기업→신한 1.2억 → 기업이 신한에 순 0.2억 더 보냄(못받음)
+    pair: Dict[tuple, Dict[str, float]] = {}
+    for tr in transfers:
+        a, b = tr["from_label"], tr["to_label"]
+        if a == "계좌 미상" or b == "계좌 미상":
+            continue
+        key = tuple(sorted([a, b]))
+        p = pair.setdefault(key, {key[0] + "→" + key[1]: 0.0, key[1] + "→" + key[0]: 0.0})
+        p[f"{a}→{b}"] = p.get(f"{a}→{b}", 0.0) + tr["amount"]
+
+    pair_settlements = []
+    for (x, y), flows in pair.items():
+        xy = flows.get(f"{x}→{y}", 0.0)
+        yx = flows.get(f"{y}→{x}", 0.0)
+        net = xy - yx  # 양수면 x가 y에게 순으로 더 보냄
+        if net > 0:
+            creditor, debtor, amt = y, x, net   # y가 x에게 순 amt를 덜 돌려줌 → x가 못받음
+        elif net < 0:
+            creditor, debtor, amt = x, y, -net
+        else:
+            creditor, debtor, amt = x, y, 0.0
+        pair_settlements.append({
+            "account_a": x, "account_b": y,
+            "a_to_b": xy, "b_to_a": yx,
+            "net": abs(net),
+            "net_direction": f"{debtor} → {creditor}" if amt else "상계 완료",
+            "note": (f"{debtor}이(가) {creditor}에게서 {abs(net):,.0f}원 아직 못 돌려받음"
+                     if amt else "기간 내 상호 이체 상계 완료"),
+        })
+    pair_settlements.sort(key=lambda p: p["net"], reverse=True)
+
     transfers.sort(key=lambda x: (x["date"], x["time"]), reverse=True)
     resolved_cnt = sum(1 for t in transfers if t["resolved"])
+    # 순대차 합계 (검증용 — 이론상 0에 수렴, 미상 건 때문에 잔차 가능)
+    net_sum = sum(s["net"] for s in summary.values())
 
     return {
         "period": {"start": start_date.isoformat(), "end": end_date.isoformat()},
         "transfers": transfers,
         "accounts": sorted(summary.values(), key=lambda x: abs(x["net"]), reverse=True),
+        "account_totals": {
+            "total_sent": sum(s["sent"] for s in summary.values()),
+            "total_received": sum(s["received"] for s in summary.values()),
+            "net_sum": net_sum,
+        },
+        "pair_settlements": pair_settlements,
         "total_amount": sum(t["amount"] for t in transfers),
         "transfer_count": len(transfers),
         "resolved_count": resolved_cnt,
