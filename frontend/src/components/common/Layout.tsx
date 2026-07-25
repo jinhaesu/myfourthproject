@@ -32,6 +32,7 @@ import {
   PencilSquareIcon,
   SparklesIcon,
   CreditCardIcon,
+  BuildingLibraryIcon,
 } from '@heroicons/react/24/outline'
 
 type NavItem =
@@ -56,6 +57,7 @@ const baseNavigation: NavItem[] = [
   { name: '자금일보', href: '/daily-report', icon: SunIcon },
   { name: 'AI 자금 다이제스트', href: '/cash-digest', icon: SparklesIcon },
   { name: '카드 관리', href: '/cards', icon: CreditCardIcon },
+  { name: '은행간 내부거래', href: '/internal-transfers', icon: BuildingLibraryIcon },
   { name: '구매요청 관리', href: '/purchase', icon: ShoppingBagIcon },
   { name: '세금계산서', href: '/tax-invoices', icon: ReceiptPercentIcon },
   { name: '환율 흐름', href: '/exchange-rates', icon: GlobeAltIcon },

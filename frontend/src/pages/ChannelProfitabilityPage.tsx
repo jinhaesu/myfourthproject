@@ -39,9 +39,18 @@ export const CHANNEL_RULES: { key: string; label: string; keywords: string[]; co
   { key: 'cu',          label: 'CU',           keywords: ['CU', '비지에프', 'BGF'],                  color: '#7B2CBF' },
   { key: 'gs25',        label: 'GS25',         keywords: ['GS25', 'GS리테일'],                       color: '#0064FF' },
   { key: 'sevenelevn',  label: '세븐일레븐',   keywords: ['세븐일레븐', 'SEVEN'],                    color: '#FF7900' },
-  { key: 'delivery',    label: '배달앱',       keywords: ['쿠팡이츠', '배달의민족', '요기요'],       color: '#FF3D00' },
+  { key: 'delivery',    label: '배달앱',       keywords: ['쿠팡이츠', '배달의민족', '우아한형제', '요기요'], color: '#FF3D00' },
+  { key: 'openmarket',  label: '기타 오픈마켓', keywords: ['11번가', '지마켓', 'G마켓', '옥션', '티몬', '위메프', 'SSG', '신세계', '마켓컬리', '컬리', '오늘의집', '카카오'], color: '#14B8A6' },
+  { key: 'cafe24',      label: '자사몰(카페24)', keywords: ['카페24', 'cafe24', '눌담'],               color: '#2563EB' },
+  // PG/정산 대행 입금 — 어느 판매채널인지 PG만으로는 알 수 없어 별도 구분
+  { key: 'pg',          label: 'PG/카드 정산', keywords: ['나이스페이', '나이스정보', 'KG이니시스', '이니시스', '토스페이', '토스', 'KCP', '페이먼츠', '헥토파이낸셜', '다날', '스마일페이', '페이코', 'PAYCO', '카드정산', '여신금융'], color: '#8B5CF6' },
+  // 법인/도매 거래처 (B2B) — 이름에 법인 접미가 있으면 여기로
+  { key: 'b2b',         label: 'B2B/도매',     keywords: [],                                          color: '#0EA5E9' },
   { key: 'others',      label: '기타',         keywords: [],                                          color: '#71717a' },
 ]
+
+// B2B(법인) 판별 — 키워드 미매칭 시 2차 분류
+const B2B_PATTERNS = ['(주)', '㈜', '주식회사', '유한회사', '농업회사법인', '영농조합', '상사', '유통', '식자재', 'F&B', '푸드']
 
 // ─── 헬퍼 함수 ───────────────────────────────────────────────────────────────
 function num(obj: unknown, ...keys: string[]): number {
@@ -86,6 +95,8 @@ function classifyChannel(contactName: string): string {
   for (const rule of CHANNEL_RULES) {
     if (rule.keywords.some((kw) => contactName.includes(kw))) return rule.key
   }
+  // 2차: 법인 접미/도매 패턴 → B2B/도매 (거대한 '기타' 덩어리 분해)
+  if (B2B_PATTERNS.some((p) => contactName.includes(p))) return 'b2b'
   return 'others'
 }
 
@@ -174,6 +185,7 @@ export default function ChannelProfitabilityPage() {
   const to = usePeriodStore((s) => s.to)
   const setPeriod = usePeriodStore((s) => s.set)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [showAllContacts, setShowAllContacts] = useState(false)
   const [pieActiveIdx, setPieActiveIdx] = useState(0)
   const [detailPieActiveIdx, setDetailPieActiveIdx] = useState(0)
   // 빈 결과 자동 탐색 가드
@@ -999,9 +1011,9 @@ export default function ChannelProfitabilityPage() {
         <div className="panel overflow-hidden">
           <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
             <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
-              거래처별 매출 (상위 50)
+              거래처별 매출 {showAllContacts ? '(상위 50)' : '(상위 10)'}
             </span>
-            <span className="text-2xs text-ink-400">매출 큰 순</span>
+            <span className="text-2xs text-ink-400">매출 큰 순 — '기타'가 크면 여기서 어떤 거래처인지 확인하세요</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-2xs">
@@ -1016,7 +1028,7 @@ export default function ChannelProfitabilityPage() {
                 </tr>
               </thead>
               <tbody>
-                {contactRows.map((row, idx) => (
+                {(showAllContacts ? contactRows : contactRows.slice(0, 10)).map((row, idx) => (
                   <tr key={idx} className="border-b border-ink-50 hover:bg-canvas-50">
                     <td className="px-3 py-1.5 font-mono text-ink-400">{idx + 1}</td>
                     <td className="px-3 py-1.5 font-medium text-ink-800 max-w-[12rem] truncate">{row.name}</td>
@@ -1042,6 +1054,14 @@ export default function ChannelProfitabilityPage() {
                 ))}
               </tbody>
             </table>
+            {contactRows.length > 10 && (
+              <button
+                onClick={() => setShowAllContacts(!showAllContacts)}
+                className="w-full py-1.5 text-2xs border-t border-ink-100 text-ink-600 hover:bg-ink-50 font-medium"
+              >
+                {showAllContacts ? '접기' : `더 보기 (+${contactRows.length - 10}곳)`}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -1168,6 +1188,9 @@ function TxTable({
       ),
     [tickets]
   )
+  // 화면 길이 폭주 방지 — 기본 20건만, 나머지는 더 보기로
+  const [showAll, setShowAll] = useState(false)
+  const visible = showAll ? sorted : sorted.slice(0, 20)
 
   return (
     <div>
@@ -1175,7 +1198,7 @@ function TxTable({
         {title}
       </div>
       <div className="space-y-1">
-        {sorted.map((t, idx) => {
+        {visible.map((t, idx) => {
           const contact = extractContact(t)
           const date    = str(t, 'transactAt', 'date').slice(0, 10)
           const desc    = str(t, 'content', 'description')
@@ -1209,6 +1232,14 @@ function TxTable({
             </div>
           )
         })}
+        {sorted.length > 20 && (
+          <button
+            onClick={() => setShowAll(!showAll)}
+            className="w-full py-1.5 text-2xs rounded border border-ink-200 text-ink-600 hover:bg-ink-50 font-medium"
+          >
+            {showAll ? '접기' : `더 보기 (+${sorted.length - 20}건)`}
+          </button>
+        )}
       </div>
     </div>
   )

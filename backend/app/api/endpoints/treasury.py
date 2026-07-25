@@ -372,3 +372,21 @@ async def get_upcoming_payments(
     schedules = await manager.get_upcoming_payments(days_ahead, bank_account_id)
 
     return [PaymentScheduleResponse.model_validate(s) for s in schedules]
+
+
+@router.get("/internal-transfers")
+async def internal_transfers(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+):
+    """은행간 내부거래 (회사 계좌 ↔ 회사 계좌) 정리 + 계좌별 누적 대차.
+
+    그랜터 통장거래에서 같은 금액의 출금·입금을 근접 시각으로 페어링해 내부이체를 감지.
+    페어를 못 찾았지만 상대명이 회사명/계좌주명인 건은 '내부이체 추정'으로 별도 반환.
+    """
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="기간이 올바르지 않습니다.")
+    if (end_date - start_date).days > 190:
+        raise HTTPException(status_code=400, detail="조회 기간은 최대 6개월입니다.")
+    from app.services.internal_transfers import build_internal_transfers
+    return await build_internal_transfers(start_date, end_date)
