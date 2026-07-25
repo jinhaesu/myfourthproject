@@ -155,7 +155,8 @@ async def search_naver_shopping(
     if not settings.NAVER_CLIENT_ID or not settings.NAVER_CLIENT_SECRET:
         raise HTTPException(
             status_code=501,
-            detail="네이버 검색 API 미설정 — NAVER_CLIENT_ID/SECRET 환경변수를 등록해주세요. (developers.naver.com)",
+            detail=("네이버 검색 API 미설정 — developers.naver.com의 '검색' API 키가 필요합니다. "
+                    "(스마트스토어 커머스 API 키와는 다릅니다). 발급 후 NAVER_CLIENT_ID/SECRET을 등록하면 활성화됩니다."),
         )
 
     async with _httpx.AsyncClient(timeout=10.0) as client:

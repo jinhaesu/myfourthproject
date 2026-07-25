@@ -1,9 +1,13 @@
 """
 은행간 내부거래 (회사 계좌 ↔ 회사 계좌 이체) 정리 서비스
 
-데이터 소스: 그랜터 BANK_TRANSACTION_TICKET (assetId로 소속 계좌 식별)
-감지 방식: 같은 금액의 OUT(계좌 A)·IN(계좌 B) 티켓을 근접 시각으로 페어링.
-           페어를 못 찾아도 상대명이 우리 회사/계좌주면 '내부이체 추정'으로 별도 표시.
+데이터 소스: 그랜터 BANK_TRANSACTION_TICKET
+식별 방식: 각 통장거래의 상대방(적요/counterparty)을 '우리 계좌'로 해석.
+  - 상대가 특정 우리 계좌로 해석되면 → 그 방향(from→to)이 확정된 내부이체
+  - 상대가 회사명(조인앤조인)만 있으면 → 내부이체지만 상대 계좌 미상
+  - 상대가 외부 거래처면 → 내부이체 아님(제외)
+
+계좌 라벨: '은행명 계좌뒷4자리' (예: 기업은행 4019, 신한은행 5021)
 """
 from __future__ import annotations
 
@@ -11,53 +15,104 @@ import logging
 import re
 import time as _time
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 _CACHE: Dict[str, tuple] = {}
 _CACHE_TTL = 300.0
 
-# 페어링 허용 시간차 (은행 이체는 보통 수 초 내 반영, 여유있게)
-_PAIR_WINDOW = timedelta(hours=6)
+_COMPANY_ALIASES = ("조인앤조인", "joinandjoin")
 
-_OUR_NAME_PATTERNS = ("조인앤조인", "joinandjoin")
+# 은행명 → 짧은 별칭(적요에 등장하는 형태)
+_BANK_SHORT = {
+    "기업은행": ["기업", "ibk"],
+    "신한은행": ["신한"],
+    "하나은행": ["하나", "keb", "외환"],
+    "국민은행": ["국민", "kb"],
+    "우리은행": ["우리"],
+    "농협은행": ["농협", "nh"],
+    "농협": ["농협", "nh"],
+    "새마을금고": ["새마을", "mg"],
+    "카카오뱅크": ["카카오"],
+    "토스뱅크": ["토스"],
+}
+
+
+def _digits(s: Optional[str]) -> str:
+    return re.sub(r"\D", "", str(s or ""))
 
 
 def _norm(s: Optional[str]) -> str:
-    return re.sub(r"[\s\(\)\(주\)㈜주식회사]", "", str(s or "")).lower()
+    return re.sub(r"[\s\(\)（）㈜주식회사\-_.]", "", str(s or "")).lower()
 
 
-async def _fetch_assets_map() -> Dict[int, Dict[str, Any]]:
-    """assetId → 계좌 라벨 매핑."""
+class Account:
+    __slots__ = ("asset_id", "bank", "number", "last4", "last3", "shorts", "label")
+
+    def __init__(self, asset_id, bank, number):
+        self.asset_id = int(asset_id) if asset_id is not None else None
+        self.bank = (bank or "").strip()
+        num = _digits(number)
+        self.number = num
+        self.last4 = num[-4:] if len(num) >= 4 else num
+        self.last3 = num[-3:] if len(num) >= 3 else num
+        self.shorts = _BANK_SHORT.get(self.bank, [self.bank[:2]] if self.bank else [])
+        # 라벨: 은행명 + 뒷4자리
+        self.label = f"{self.bank} {self.last4}".strip() if self.bank else f"계좌 {self.last4}"
+
+
+async def _fetch_accounts() -> List[Account]:
     from app.services.granter_client import get_granter_client
     client = get_granter_client()
     assets = await client.list_all_assets(only_active=False)
-    out: Dict[int, Dict[str, Any]] = {}
+    accts: List[Account] = []
     for a in (assets.get("BANK_ACCOUNT") or []):
         if not isinstance(a, dict):
             continue
-        aid = a.get("id")
-        if aid is None:
-            continue
         ba = a.get("bankAccount") or {}
-        number = str(ba.get("number") or a.get("number") or "")
-        last4 = re.sub(r"\D", "", number)[-4:] if number else ""
-        bank = (ba.get("bankName") or a.get("bankName") or a.get("organizationName") or "").strip()
-        nick = (a.get("nickname") or a.get("name") or ba.get("nickname") or "").strip()
-        label = nick or (f"{bank} ({last4})" if bank or last4 else f"계좌#{aid}")
-        out[int(aid)] = {
-            "asset_id": int(aid),
-            "label": label,
-            "bank": bank,
-            "last4": last4,
-            "holder": (ba.get("accountHolderName") or ba.get("holderName") or "").strip(),
-        }
-    return out
+        bank = ba.get("bankName") or a.get("bankName") or a.get("organizationName") or ""
+        number = ba.get("number") or a.get("number") or ""
+        accts.append(Account(a.get("id"), bank, number))
+    return accts
+
+
+def _resolve_counterparty(memo: str, accounts: List[Account], my: Optional[Account]) -> Tuple[Optional[Account], bool]:
+    """적요 → (해석된 우리 계좌 or None, 회사명 매칭 여부).
+
+    반환:
+      (Account, _) — 특정 우리 계좌로 확정
+      (None, True) — 회사명만 매칭(내부이체지만 계좌 미상)
+      (None, False) — 외부 거래처(내부 아님)
+    """
+    n = _norm(memo)
+    if not n:
+        return None, False
+
+    # 은행 별칭 + 뒷자리(3~4)로 특정 계좌 매칭
+    best: Optional[Account] = None
+    for acc in accounts:
+        if my and acc.asset_id == my.asset_id:
+            continue
+        bank_hit = any(s and s in n for s in [_norm(x) for x in acc.shorts])
+        if not bank_hit:
+            continue
+        # 뒷자리 매칭 (4자리 우선, 없으면 3자리)
+        if acc.last4 and acc.last4 in n:
+            return acc, True
+        if acc.last3 and acc.last3 in n:
+            best = best or acc
+    if best:
+        return best, True
+
+    # 회사명만 있으면 내부(계좌 미상)
+    if any(_norm(a) in n for a in _COMPANY_ALIASES):
+        return None, True
+
+    return None, False
 
 
 async def _fetch_bank_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
-    """기간 내 BANK_TRANSACTION_TICKET — 31일 초과 시 분할 호출."""
     from app.services.granter_client import get_granter_client
     client = get_granter_client()
 
@@ -106,132 +161,132 @@ def _parse_dt(t: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
-def _looks_internal(t: Dict[str, Any], holders: List[str]) -> bool:
-    """상대명이 회사명/계좌주명이면 내부이체 신호."""
-    bt = t.get("bankTransaction") or {}
-    text = _norm((bt.get("counterparty") or "") + (bt.get("content") or ""))
-    if not text:
-        return False
-    for p in _OUR_NAME_PATTERNS:
-        if _norm(p) in text:
-            return True
-    for h in holders:
-        hn = _norm(h)
-        if hn and hn in text:
-            return True
-    return False
-
-
 async def build_internal_transfers(start_date: date, end_date: date) -> Dict[str, Any]:
-    """은행간 내부거래 정리 + 계좌별 누적 대차."""
-    assets = await _fetch_assets_map()
-    holders = list({a["holder"] for a in assets.values() if a["holder"]})
+    """은행간 내부거래 정리 + 계좌별 순대차."""
+    accounts = await _fetch_accounts()
+    by_asset = {a.asset_id: a for a in accounts if a.asset_id is not None}
     tickets = await _fetch_bank_tickets(start_date, end_date)
 
-    def _entry(t: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    # 1단계: 내부이체 후보 추출 (상대가 우리 계좌/회사로 해석되는 건)
+    legs: List[Dict[str, Any]] = []
+    for t in tickets:
         dt = _parse_dt(t)
         if dt is None:
-            return None
+            continue
         try:
             amt = abs(float(t.get("amount") or 0))
         except (ValueError, TypeError):
-            return None
+            continue
         if amt <= 0:
-            return None
+            continue
         direction = (t.get("transactionType") or "").upper()
         is_out = direction in ("OUT", "OUTBOUND", "WITHDRAW") or "출금" in direction
         is_in = direction in ("IN", "INBOUND", "DEPOSIT") or "입금" in direction
         if not is_out and not is_in:
-            return None
+            continue
+
         bt = t.get("bankTransaction") or {}
+        memo = (bt.get("content") or bt.get("counterparty") or bt.get("description") or "").strip()
         aid = t.get("assetId")
-        acct = assets.get(int(aid)) if aid is not None and int(aid) in assets else None
-        return {
+        my = by_asset.get(int(aid)) if aid is not None and int(aid) in by_asset else None
+
+        counter, is_internal = _resolve_counterparty(memo, accounts, my)
+        if not is_internal:
+            continue  # 외부 거래처 — 내부이체 아님
+
+        legs.append({
             "ticket_id": t.get("id"),
             "dt": dt,
             "amount": amt,
             "direction": "OUT" if is_out else "IN",
-            "asset_id": aid,
-            "account": acct["label"] if acct else f"계좌#{aid}",
-            "content": (bt.get("content") or bt.get("counterparty") or "").strip(),
-            "internal_hint": _looks_internal(t, holders),
-        }
+            "my": my,
+            "counter": counter,   # 해석된 상대 계좌 (없으면 None=계좌미상)
+            "memo": memo,
+        })
 
-    outs: List[Dict[str, Any]] = []
-    ins: List[Dict[str, Any]] = []
-    for t in tickets:
-        e = _entry(t)
-        if e is None:
-            continue
-        (outs if e["direction"] == "OUT" else ins).append(e)
-
-    # 금액별 그룹 → OUT-IN 근접 시각 페어링 (다른 계좌 간)
-    ins_by_amount: Dict[float, List[Dict[str, Any]]] = {}
-    for e in ins:
-        ins_by_amount.setdefault(e["amount"], []).append(e)
-    for lst in ins_by_amount.values():
-        lst.sort(key=lambda x: x["dt"])
-
+    # 2단계: 양다리(OUT/IN 둘 다 잡힌) 병합 — 같은 금액+근접시각+상호 계좌
+    used: set = set()
     transfers: List[Dict[str, Any]] = []
-    used_in_ids: set = set()
+
+    def _acc_label(a: Optional[Account]) -> str:
+        return a.label if a else "계좌 미상"
+
+    outs = [l for l in legs if l["direction"] == "OUT"]
+    ins = [l for l in legs if l["direction"] == "IN"]
+
     for o in sorted(outs, key=lambda x: x["dt"]):
-        candidates = ins_by_amount.get(o["amount"]) or []
-        best = None
-        best_gap = None
-        for c in candidates:
-            if c["ticket_id"] in used_in_ids:
-                continue
-            if c["asset_id"] == o["asset_id"]:
-                continue  # 같은 계좌면 이체 아님
-            gap = abs((c["dt"] - o["dt"]).total_seconds())
-            if gap > _PAIR_WINDOW.total_seconds():
-                continue
-            if best is None or gap < best_gap:
-                best, best_gap = c, gap
-        if best is None:
+        if o["ticket_id"] in used:
             continue
-        used_in_ids.add(best["ticket_id"])
-        o["_paired"] = True
+        # 짝 찾기: 같은 금액, 6시간 이내, in쪽 my == out쪽 counter(또는 반대)
+        match = None
+        for c in ins:
+            if c["ticket_id"] in used:
+                continue
+            if c["amount"] != o["amount"]:
+                continue
+            if abs((c["dt"] - o["dt"]).total_seconds()) > 6 * 3600:
+                continue
+            # 상호 계좌 일치성 확인 (느슨): out.counter==in.my 또는 in.counter==out.my
+            ok = True
+            if o["counter"] and c["my"] and o["counter"].asset_id != c["my"].asset_id:
+                ok = False
+            if c["counter"] and o["my"] and c["counter"].asset_id != o["my"].asset_id:
+                ok = False
+            if ok:
+                match = c
+                break
+        from_acc = o["my"]
+        to_acc = (match["my"] if match else None) or o["counter"]
+        used.add(o["ticket_id"])
+        if match:
+            used.add(match["ticket_id"])
         transfers.append({
             "date": o["dt"].date().isoformat(),
             "time": o["dt"].strftime("%H:%M"),
-            "from_account": o["account"],
-            "to_account": best["account"],
+            "from_label": _acc_label(from_acc),
+            "to_label": _acc_label(to_acc),
             "amount": o["amount"],
-            "content": o["content"] or best["content"],
-            "gap_seconds": int(best_gap or 0),
-            "out_ticket_id": o["ticket_id"],
-            "in_ticket_id": best["ticket_id"],
+            "memo": o["memo"],
+            "paired": bool(match),
+            "resolved": bool(to_acc),  # 상대 계좌 확정 여부
         })
 
-    # 페어는 못 찾았지만 상대명이 우리 회사인 건 — 내부이체 추정 (수동 확인용)
-    suspects = [
-        {
-            "date": e["dt"].date().isoformat(),
-            "time": e["dt"].strftime("%H:%M"),
-            "account": e["account"],
-            "direction": e["direction"],
-            "amount": e["amount"],
-            "content": e["content"],
-        }
-        for e in outs + ins
-        if e.get("internal_hint") and not e.get("_paired") and e["ticket_id"] not in used_in_ids
-    ]
-    suspects.sort(key=lambda x: (x["date"], x["time"]))
+    # 짝 없는 IN (출금측 미연동) — 입금만 잡힌 내부이체
+    for c in ins:
+        if c["ticket_id"] in used:
+            continue
+        used.add(c["ticket_id"])
+        from_acc = c["counter"]
+        to_acc = c["my"]
+        transfers.append({
+            "date": c["dt"].date().isoformat(),
+            "time": c["dt"].strftime("%H:%M"),
+            "from_label": _acc_label(from_acc),
+            "to_label": _acc_label(to_acc),
+            "amount": c["amount"],
+            "memo": c["memo"],
+            "paired": False,
+            "resolved": bool(from_acc),
+        })
 
-    # 계좌별 누적 대차 (보낸 금액 = 대변성, 받은 금액 = 차변성)
+    # 3단계: 계좌별 순대차
     summary: Dict[str, Dict[str, Any]] = {}
+
+    def _acc(label: str) -> Dict[str, Any]:
+        return summary.setdefault(label, {
+            "account": label, "sent": 0.0, "received": 0.0, "count": 0,
+        })
+
     for tr in transfers:
-        s = summary.setdefault(tr["from_account"], {"account": tr["from_account"], "sent": 0.0, "received": 0.0, "count": 0})
-        s["sent"] += tr["amount"]
-        s["count"] += 1
-        r = summary.setdefault(tr["to_account"], {"account": tr["to_account"], "sent": 0.0, "received": 0.0, "count": 0})
-        r["received"] += tr["amount"]
-        r["count"] += 1
+        if tr["from_label"] != "계좌 미상":
+            s = _acc(tr["from_label"]); s["sent"] += tr["amount"]; s["count"] += 1
+        if tr["to_label"] != "계좌 미상":
+            r = _acc(tr["to_label"]); r["received"] += tr["amount"]; r["count"] += 1
     for s in summary.values():
         s["net"] = s["received"] - s["sent"]
 
     transfers.sort(key=lambda x: (x["date"], x["time"]), reverse=True)
+    resolved_cnt = sum(1 for t in transfers if t["resolved"])
 
     return {
         "period": {"start": start_date.isoformat(), "end": end_date.isoformat()},
@@ -239,6 +294,10 @@ async def build_internal_transfers(start_date: date, end_date: date) -> Dict[str
         "accounts": sorted(summary.values(), key=lambda x: abs(x["net"]), reverse=True),
         "total_amount": sum(t["amount"] for t in transfers),
         "transfer_count": len(transfers),
-        "suspects": suspects[:50],
-        "accounts_known": len(assets),
+        "resolved_count": resolved_cnt,
+        "unresolved_count": len(transfers) - resolved_cnt,
+        "known_accounts": [
+            {"label": a.label, "bank": a.bank, "last4": a.last4}
+            for a in accounts
+        ],
     }

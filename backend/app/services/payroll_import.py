@@ -107,12 +107,32 @@ async def fetch_hr_salary(month: str) -> List[Dict[str, Any]]:
             _num(ded.get("national_pension")) + _num(ded.get("health_insurance"))
             + _num(ded.get("long_term_care")) + _num(ded.get("employment_insurance"))
         )
+        # 세전 급여 구성 상세 (드릴다운용)
+        earnings = [
+            ("기본급", _num(p.get("base_salary"))),
+            ("직책수당", _num(p.get("position_allowance"))),
+            ("연장수당", _num(p.get("overtime_allowance"))),
+            ("식대", _num(p.get("meal_allowance"))),
+            ("통신비", _num(p.get("communication_allowance"))),
+            ("차량유지", _num(p.get("vehicle_allowance"))),
+            ("상여", _num(p.get("bonus"))),
+            ("기타수당", _num(p.get("other_allowance"))),
+        ]
+        deductions = [
+            ("국민연금", _num(ded.get("national_pension"))),
+            ("건강보험", _num(ded.get("health_insurance"))),
+            ("장기요양", _num(ded.get("long_term_care"))),
+            ("고용보험", _num(ded.get("employment_insurance"))),
+            ("소득세", _num(ded.get("income_tax"))),
+            ("지방소득세", _num(ded.get("local_income_tax"))),
+        ]
         out.append({
             "source": "hr",
             "worker_type": "정규직",
             "cost_type": "SGA",  # 판관비
             "name": p.get("name"),
             "department": p.get("department_name") or "(부서없음)",
+            "position": p.get("position") or "",
             "gross_pay": _num(p.get("gross_pay")),
             "income_tax": _num(ded.get("income_tax")),
             "local_tax": _num(ded.get("local_income_tax")),
@@ -120,6 +140,12 @@ async def fetch_hr_salary(month: str) -> List[Dict[str, Any]]:
             "total_deduction": _num(ded.get("total")),
             "net_pay": _num(p.get("net_pay")),
             "tax_source": "hr_computed",  # 소스에서 이미 계산됨
+            "non_taxable": _num(p.get("non_taxable")),
+            "detail": {
+                "earnings": [{"label": k, "amount": v} for k, v in earnings if v],
+                "deductions": [{"label": k, "amount": v} for k, v in deductions if v],
+                "note": "정규직 급여(간이세액표 기준 원천징수). 소스 확정값.",
+            },
         })
     return out
 
@@ -161,9 +187,30 @@ async def fetch_aisystem_regular(month: str) -> List[Dict[str, Any]]:
             _num(p.get("national_pension")) + _num(p.get("health_insurance"))
             + _num(p.get("long_term_care")) + _num(p.get("employment_insurance"))
         )
+        earnings = [
+            ("기본급", _num(p.get("base_pay"))),
+            ("직책수당", _num(p.get("position_allowance"))),
+            ("연장수당", _num(p.get("overtime_pay"))),
+            ("휴일수당", _num(p.get("holiday_pay"))),
+            ("식대", _num(p.get("meal_allowance"))),
+            ("상여", _num(p.get("bonus"))),
+            ("기타수당", _num(p.get("other_allowance"))),
+            ("조정", _num(p.get("adjustment_amount"))),
+        ]
+        deductions = [
+            ("국민연금", _num(p.get("national_pension"))),
+            ("건강보험", _num(p.get("health_insurance"))),
+            ("장기요양", _num(p.get("long_term_care"))),
+            ("고용보험", _num(p.get("employment_insurance"))),
+            ("소득세", _num(p.get("income_tax"))),
+            ("지방소득세", _num(p.get("local_tax"))),
+        ]
+        ot_h = _num(p.get("overtime_hours"))
+        note = f"현장직 노무비. 근무 연장 {ot_h:.0f}h" if ot_h else "현장직 노무비."
         out.append({
             "source": "aisystem",
             "worker_type": "정규직(노무)",
+            "job_type": "현장직",
             "cost_type": "COGS",  # 노무비=원가
             "name": p.get("name"),
             "department": p.get("department") or "(부서없음)",
@@ -174,6 +221,11 @@ async def fetch_aisystem_regular(month: str) -> List[Dict[str, Any]]:
             "total_deduction": _num(p.get("total_deductions")),
             "net_pay": _num(p.get("net_pay")),
             "tax_source": "aisystem_computed",
+            "detail": {
+                "earnings": [{"label": k, "amount": v} for k, v in earnings if v],
+                "deductions": [{"label": k, "amount": v} for k, v in deductions if v],
+                "note": note,
+            },
         })
     return out
 
@@ -211,22 +263,50 @@ async def fetch_aisystem_settlement(month: str, worker_type: str) -> List[Dict[s
         )
         gross = round(rate * hours)
         is_freelance = worker_type != "파견"  # 사업소득만 3.3%
-        withhold = round(gross * 0.033) if is_freelance else 0
+        # 사업소득 3.3% = 소득세 3% + 지방소득세 0.3%
+        income_tax = round(gross * 0.03) if is_freelance else 0
+        local_tax = round(gross * 0.003) if is_freelance else 0
+        withhold = income_tax + local_tax
+        hour_parts = [
+            ("기본근무", _num(p.get("regular_hours"))),
+            ("연장(×1.5)", _num(p.get("overtime_hours"))),
+            ("야간(×0.5)", _num(p.get("night_hours"))),
+            ("주휴", _num(p.get("weekly_holiday_hours"))),
+            ("휴일(×1.5)", _num(p.get("holiday_pay_hours"))),
+        ]
+        if is_freelance:
+            note = (f"사업소득(우리가 3.3% 원천징수·신고). 시급 {rate:,.0f}원 × 환산 {hours:.0f}h. "
+                    f"근무 {_num(p.get('work_days')):.0f}일.")
+            wt = "사업소득(알바)"
+        else:
+            note = (f"파견 노무비(거래처에 지급 — 세금 원천징수 없음, 파견업체가 처리). "
+                    f"시급 {rate:,.0f}원 × 환산 {hours:.0f}h.")
+            wt = "파견(거래처지급)"
         out.append({
             "source": "aisystem",
-            "worker_type": "사업소득" if is_freelance else "파견",
+            "worker_type": wt,
+            "job_type": "현장직",
             "cost_type": "COGS",  # 노무비=원가
             "name": name,
             "department": p.get("department") or p.get("division") or "(부서없음)",
             "gross_pay": gross,
-            "income_tax": withhold,  # 3.3% 중 3%(소득세) — 편의상 합산 표기, 상세는 tax_note
-            "local_tax": round(withhold / 3.3 * 0.3) if withhold else 0,
+            "income_tax": income_tax,
+            "local_tax": local_tax,
             "insurance": 0.0,
             "total_deduction": withhold,
             "net_pay": gross - withhold,
             "hours": hours,
             "hourly_rate": rate,
-            "tax_source": "freelance_3.3" if is_freelance else "none",
+            "work_days": _num(p.get("work_days")),
+            "tax_source": "freelance_3.3" if is_freelance else "dispatch_vendor",
+            "detail": {
+                "earnings": [{"label": "노무비(시급×시간)", "amount": gross}],
+                "deductions": ([{"label": "소득세(3%)", "amount": income_tax},
+                                {"label": "지방소득세(0.3%)", "amount": local_tax}]
+                               if is_freelance else []),
+                "hours": [{"label": k, "amount": v} for k, v in hour_parts if v],
+                "note": note,
+            },
         })
     return out
 
@@ -252,8 +332,12 @@ async def build_payroll_summary(month: Optional[str] = None) -> Dict[str, Any]:
         "COGS": {"cost_type": "COGS", "label": "노무비(원가)", "gross": 0.0, "count": 0},
         "SGA": {"cost_type": "SGA", "label": "급여(판관비)", "gross": 0.0, "count": 0},
     }
+    by_type: Dict[str, Dict[str, Any]] = {}
     total_gross = total_net = total_tax = total_insurance = 0.0
     for r in records:
+        wt = r.get("worker_type", "기타")
+        bt = by_type.setdefault(wt, {"worker_type": wt, "cost_type": r["cost_type"], "gross": 0.0, "net": 0.0, "count": 0})
+        bt["gross"] += r["gross_pay"]; bt["net"] += r["net_pay"]; bt["count"] += 1
         d = by_dept.setdefault(r["department"], {
             "department": r["department"], "gross": 0.0, "net": 0.0,
             "tax": 0.0, "insurance": 0.0, "count": 0,
@@ -279,6 +363,7 @@ async def build_payroll_summary(month: Optional[str] = None) -> Dict[str, Any]:
         "records": records,
         "by_department": sorted(by_dept.values(), key=lambda x: x["gross"], reverse=True),
         "by_cost_type": list(by_cost.values()),
+        "by_worker_type": sorted(by_type.values(), key=lambda x: x["gross"], reverse=True),
         "totals": {
             "gross": total_gross, "net": total_net,
             "tax": total_tax, "insurance": total_insurance,

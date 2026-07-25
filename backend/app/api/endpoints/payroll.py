@@ -823,6 +823,7 @@ async def import_payroll_summary(
 
 
 class TaxSettingBody(BaseModel):
+    profile: str
     national_pension_rate: Optional[float] = None
     health_insurance_rate: Optional[float] = None
     long_term_care_rate: Optional[float] = None
@@ -831,23 +832,54 @@ class TaxSettingBody(BaseModel):
     local_tax_rate: Optional[float] = None
 
 
+# 고용형태별 기본 프로필 (없으면 자동 생성)
+_TAX_PROFILE_DEFAULTS = [
+    {"profile": "regular_office", "label": "정규직·사무직",
+     "national_pension_rate": 4.5, "health_insurance_rate": 3.545, "long_term_care_rate": 12.95,
+     "employment_insurance_rate": 0.9, "freelance_withholding_rate": 0.0, "local_tax_rate": 10.0},
+    {"profile": "regular_field", "label": "정규직·현장직",
+     "national_pension_rate": 4.5, "health_insurance_rate": 3.545, "long_term_care_rate": 12.95,
+     "employment_insurance_rate": 0.9, "freelance_withholding_rate": 0.0, "local_tax_rate": 10.0},
+    {"profile": "freelance", "label": "사업소득(알바)",
+     "national_pension_rate": 0.0, "health_insurance_rate": 0.0, "long_term_care_rate": 0.0,
+     "employment_insurance_rate": 0.0, "freelance_withholding_rate": 3.3, "local_tax_rate": 10.0},
+    {"profile": "dispatch", "label": "파견(거래처지급)",
+     "national_pension_rate": 0.0, "health_insurance_rate": 0.0, "long_term_care_rate": 0.0,
+     "employment_insurance_rate": 0.0, "freelance_withholding_rate": 0.0, "local_tax_rate": 10.0},
+]
+
+
+async def _ensure_tax_profiles(db: AsyncSession):
+    from app.models.payroll_tax import PayrollTaxSetting
+    existing = {s.profile for s in (await db.execute(select(PayrollTaxSetting))).scalars().all()}
+    created = False
+    for d in _TAX_PROFILE_DEFAULTS:
+        if d["profile"] not in existing:
+            db.add(PayrollTaxSetting(**d))
+            created = True
+    if created:
+        await db.commit()
+
+
 @router.get("/tax/settings")
 async def get_tax_settings(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
-    """급여 세금/보험 요율 설정 조회."""
+    """급여 세금/보험 요율 설정 조회 (고용형태·직군별)."""
     from app.models.payroll_tax import PayrollTaxSetting
-    s = (await db.execute(select(PayrollTaxSetting).where(PayrollTaxSetting.id == 1))).scalar_one_or_none()
-    if not s:
-        s = PayrollTaxSetting(id=1)
-        db.add(s)
-        await db.commit()
-        await db.refresh(s)
+    await _ensure_tax_profiles(db)
+    rows = (await db.execute(select(PayrollTaxSetting).order_by(PayrollTaxSetting.id))).scalars().all()
     return {
-        "national_pension_rate": s.national_pension_rate,
-        "health_insurance_rate": s.health_insurance_rate,
-        "long_term_care_rate": s.long_term_care_rate,
-        "employment_insurance_rate": s.employment_insurance_rate,
-        "freelance_withholding_rate": s.freelance_withholding_rate,
-        "local_tax_rate": s.local_tax_rate,
+        "profiles": [
+            {
+                "profile": s.profile, "label": s.label,
+                "national_pension_rate": s.national_pension_rate,
+                "health_insurance_rate": s.health_insurance_rate,
+                "long_term_care_rate": s.long_term_care_rate,
+                "employment_insurance_rate": s.employment_insurance_rate,
+                "freelance_withholding_rate": s.freelance_withholding_rate,
+                "local_tax_rate": s.local_tax_rate,
+            }
+            for s in rows
+        ]
     }
 
 
@@ -855,16 +887,18 @@ async def get_tax_settings(db: AsyncSession = Depends(get_db), user=Depends(get_
 async def update_tax_settings(
     body: TaxSettingBody, db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
 ):
-    """급여 세금/보험 요율 설정 저장."""
+    """급여 세금/보험 요율 설정 저장 (프로필 지정)."""
     from app.models.payroll_tax import PayrollTaxSetting
-    s = (await db.execute(select(PayrollTaxSetting).where(PayrollTaxSetting.id == 1))).scalar_one_or_none()
+    await _ensure_tax_profiles(db)
+    s = (await db.execute(
+        select(PayrollTaxSetting).where(PayrollTaxSetting.profile == body.profile)
+    )).scalar_one_or_none()
     if not s:
-        s = PayrollTaxSetting(id=1)
+        s = PayrollTaxSetting(profile=body.profile, label=body.profile)
         db.add(s)
-    for k, v in body.model_dump(exclude_none=True).items():
+    for k, v in body.model_dump(exclude_none=True, exclude={"profile"}).items():
         setattr(s, k, v)
     await db.commit()
-    await db.refresh(s)
     return {"ok": True}
 
 

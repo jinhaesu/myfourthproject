@@ -4,6 +4,7 @@ import {
   BanknotesIcon, BuildingOffice2Icon, Cog6ToothIcon,
   PencilSquareIcon, ArrowPathIcon, CheckIcon,
 } from '@heroicons/react/24/outline'
+import { XMarkIcon } from '@heroicons/react/24/outline'
 import { payrollImportApi, PayrollImportRecord } from '@/services/api'
 import { formatCurrency } from '@/utils/format'
 import toast from 'react-hot-toast'
@@ -44,6 +45,7 @@ export default function PayrollImportPage() {
     onError: (e: any) => toast.error(e.response?.data?.detail || '저장 실패'),
   })
 
+  const [detailRec, setDetailRec] = useState<PayrollImportRecord | null>(null)
   const data = summaryQuery.data
   const records = data?.records || []
   const cogsTotal = data?.by_cost_type.find((c) => c.cost_type === 'COGS')?.gross || 0
@@ -125,6 +127,19 @@ export default function PayrollImportPage() {
             </div>
           </div>
 
+          {/* 고용형태별 요약 */}
+          {(data.by_worker_type || []).length > 0 && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+              {data.by_worker_type.map((t) => (
+                <div key={t.worker_type} className={`panel p-2.5 border-l-2 ${t.cost_type === 'COGS' ? 'border-l-orange-400' : 'border-l-blue-400'}`}>
+                  <div className="text-2xs text-ink-500">{t.worker_type}</div>
+                  <div className="text-sm font-bold text-ink-900">{formatCurrency(t.gross, false)}</div>
+                  <div className="text-2xs text-ink-400">{t.count}명 · {t.cost_type === 'COGS' ? '원가' : '판관비'}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* 부서별 */}
           <div className="panel overflow-hidden">
             <div className="px-3 py-2 border-b border-ink-200 text-2xs font-semibold text-ink-500 uppercase flex items-center gap-1">
@@ -185,7 +200,11 @@ export default function PayrollImportPage() {
                     return (
                       <Fragment key={r.name}>
                         <tr className="hover:bg-canvas-50">
-                          <td className="px-3 py-1.5 font-medium text-ink-900">{r.name}</td>
+                          <td className="px-3 py-1.5 font-medium text-ink-900">
+                            <button onClick={() => setDetailRec(r)} className="hover:text-blue-600 hover:underline">
+                              {r.name}
+                            </button>
+                          </td>
                           <td className="px-2 py-1.5">
                             <span className={`text-2xs px-1.5 py-0.5 rounded-full border ${badge.cls}`}>{r.worker_type}</span>
                           </td>
@@ -239,65 +258,156 @@ export default function PayrollImportPage() {
           </div>
         </>
       )}
+
+      {detailRec && <PayrollDetailModal rec={detailRec} onClose={() => setDetailRec(null)} />}
     </div>
   )
 }
 
+function PayrollDetailModal({ rec, onClose }: { rec: PayrollImportRecord; onClose: () => void }) {
+  const d = rec.detail
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b border-ink-200 flex items-center justify-between sticky top-0 bg-white">
+          <div>
+            <div className="text-sm font-bold text-ink-900">{rec.name} <span className="text-2xs font-normal text-ink-500">{rec.worker_type} · {rec.department}{rec.position ? ` · ${rec.position}` : ''}</span></div>
+          </div>
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700"><XMarkIcon className="h-4 w-4" /></button>
+        </div>
+        <div className="p-4 space-y-3">
+          {d?.note && <div className="text-2xs text-ink-500 bg-canvas-50 rounded p-2">{d.note}</div>}
+
+          {d?.hours && d.hours.length > 0 && (
+            <div>
+              <div className="text-2xs font-semibold text-ink-600 mb-1">근무 시간 구성</div>
+              <div className="space-y-0.5">
+                {d.hours.map((h, i) => (
+                  <div key={i} className="flex justify-between text-2xs">
+                    <span className="text-ink-600">{h.label}</span>
+                    <span className="font-mono text-ink-800">{h.amount.toLocaleString()}h</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <div className="text-2xs font-semibold text-emerald-700 mb-1">세전 급여 구성</div>
+            <div className="space-y-0.5">
+              {(d?.earnings || [{ label: '세전 급여', amount: rec.gross_pay }]).map((e, i) => (
+                <div key={i} className="flex justify-between text-xs">
+                  <span className="text-ink-600">{e.label}</span>
+                  <span className="font-mono text-ink-800">{formatCurrency(e.amount, false)}</span>
+                </div>
+              ))}
+              <div className="flex justify-between text-xs font-bold border-t border-ink-100 pt-1 mt-1">
+                <span>세전 합계</span>
+                <span className="font-mono">{formatCurrency(rec.gross_pay, false)}</span>
+              </div>
+              {rec.non_taxable ? (
+                <div className="flex justify-between text-2xs text-ink-400">
+                  <span>(비과세 포함)</span>
+                  <span className="font-mono">{formatCurrency(rec.non_taxable, false)}</span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {(d?.deductions || []).length > 0 && (
+            <div>
+              <div className="text-2xs font-semibold text-rose-700 mb-1">공제 내역</div>
+              <div className="space-y-0.5">
+                {d!.deductions.map((e, i) => (
+                  <div key={i} className="flex justify-between text-xs">
+                    <span className="text-ink-600">{e.label}</span>
+                    <span className="font-mono text-ink-800">-{formatCurrency(e.amount, false)}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between text-xs font-bold border-t border-ink-100 pt-1 mt-1">
+                  <span>공제 합계</span>
+                  <span className="font-mono text-rose-700">-{formatCurrency(rec.total_deduction, false)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-between text-sm font-bold bg-blue-50 rounded p-2">
+            <span>실지급액</span>
+            <span className="font-mono text-blue-700">{formatCurrency(rec.net_pay, false)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const TAX_FIELDS: [string, string][] = [
+  ['national_pension_rate', '국민연금 (%)'],
+  ['health_insurance_rate', '건강보험 (%)'],
+  ['long_term_care_rate', '장기요양 (건보의 %)'],
+  ['employment_insurance_rate', '고용보험 (%)'],
+  ['freelance_withholding_rate', '사업소득 원천징수 (%)'],
+  ['local_tax_rate', '지방소득세 (소득세의 %)'],
+]
+
 function TaxSettingsPanel({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
-  const [form, setForm] = useState<Record<string, string> | null>(null)
+  const [profiles, setProfiles] = useState<any[] | null>(null)
 
-  const q = useQuery({
+  useQuery({
     queryKey: ['payroll-tax-settings'],
     queryFn: () => payrollImportApi.getTaxSettings().then((r) => {
-      const d = r.data as Record<string, number>
-      setForm(Object.fromEntries(Object.entries(d).map(([k, v]) => [k, String(v)])))
-      return d
+      setProfiles((r.data as any).profiles)
+      return r.data
     }),
   })
 
   const saveMut = useMutation({
-    mutationFn: () => payrollImportApi.updateTaxSettings(
-      Object.fromEntries(Object.entries(form!).map(([k, v]) => [k, Number(v)]))
-    ),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payroll-tax-settings'] }); toast.success('세율이 저장되었습니다'); onClose() },
+    mutationFn: (p: any) => payrollImportApi.updateTaxSettings({
+      profile: p.profile,
+      ...Object.fromEntries(TAX_FIELDS.map(([k]) => [k, Number(p[k])])),
+    } as any),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['payroll-tax-settings'] }); toast.success('세율이 저장되었습니다') },
   })
-
-  const FIELDS: [string, string][] = [
-    ['national_pension_rate', '국민연금 (%)'],
-    ['health_insurance_rate', '건강보험 (%)'],
-    ['long_term_care_rate', '장기요양 (건보의 %)'],
-    ['employment_insurance_rate', '고용보험 (%)'],
-    ['freelance_withholding_rate', '사업소득 원천징수 (%)'],
-    ['local_tax_rate', '지방소득세 (소득세의 %)'],
-  ]
 
   return (
     <div className="panel p-3">
-      <div className="text-2xs font-semibold text-ink-600 mb-2">세금·보험 요율 설정 (근로자 부담 기준)</div>
-      {q.isLoading || !form ? (
+      <div className="text-2xs font-semibold text-ink-600 mb-2">
+        세금·보험 요율 설정 — 고용형태·직군별 (근로자 부담 기준)
+      </div>
+      {!profiles ? (
         <div className="text-2xs text-ink-400">불러오는 중…</div>
       ) : (
-        <>
-          <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
-            {FIELDS.map(([k, label]) => (
-              <label key={k} className="text-2xs text-ink-600">
-                {label}
-                <input type="number" step="0.001" value={form[k] ?? ''}
-                  onChange={(e) => setForm({ ...form, [k]: e.target.value })}
-                  className="w-full mt-0.5 px-2 py-1 text-xs rounded border border-ink-300 font-mono" />
-              </label>
-            ))}
-          </div>
-          <div className="flex items-center gap-1 mt-2">
-            <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
-              className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700">저장</button>
+        <div className="space-y-2">
+          {profiles.map((p, pi) => (
+            <div key={p.profile} className="border border-ink-100 rounded-md p-2">
+              <div className="text-2xs font-semibold text-ink-800 mb-1">{p.label}</div>
+              <div className="grid grid-cols-2 lg:grid-cols-6 gap-1.5">
+                {TAX_FIELDS.map(([k, label]) => (
+                  <label key={k} className="text-2xs text-ink-500">
+                    {label}
+                    <input type="number" step="0.001" value={p[k] ?? ''}
+                      onChange={(e) => {
+                        const next = [...profiles]; next[pi] = { ...p, [k]: e.target.value }; setProfiles(next)
+                      }}
+                      className="w-full mt-0.5 px-1.5 py-0.5 text-2xs rounded border border-ink-300 font-mono" />
+                  </label>
+                ))}
+              </div>
+              <button onClick={() => saveMut.mutate(p)} disabled={saveMut.isPending}
+                className="mt-1.5 px-2 py-0.5 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700">
+                {p.label} 저장
+              </button>
+            </div>
+          ))}
+          <div className="flex items-center gap-2">
             <button onClick={onClose} className="px-2.5 py-1 text-2xs rounded border border-ink-200 text-ink-600">닫기</button>
-            <span className="text-2xs text-ink-400 ml-2">
-              참고: 정규직은 소스에서 이미 계산된 값을 사용하고, 이 요율은 신규 계산·검증 참고용입니다. 개별 확정값은 리스트에서 직접 입력하세요.
+            <span className="text-2xs text-ink-400">
+              정규직·현장직 노무비는 소스 계산값을 사용하고, 이 요율은 검증·신규계산 참고용입니다. 파견은 세금 원천징수 없음(거래처 지급), 사업소득은 3.3% 우리가 신고.
             </span>
           </div>
-        </>
+        </div>
       )}
     </div>
   )

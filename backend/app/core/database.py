@@ -286,6 +286,11 @@ async def init_db():
             CONSTRAINT uq_payroll_tax_override UNIQUE (month, worker_name)
         )""",
         "CREATE INDEX IF NOT EXISTS ix_payroll_tax_overrides_month ON payroll_tax_overrides(month)",
+        # 세율 프로필(고용형태·직군별) 컬럼 추가
+        "ALTER TABLE payroll_tax_settings ADD COLUMN IF NOT EXISTS profile VARCHAR(40)",
+        "ALTER TABLE payroll_tax_settings ADD COLUMN IF NOT EXISTS label VARCHAR(60)",
+        "UPDATE payroll_tax_settings SET profile='default' WHERE profile IS NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_payroll_tax_settings_profile ON payroll_tax_settings(profile)",
         # voucher_lines.voucher_id 인덱스 — DELETE/SELECT 성능 (없으면 full scan)
         "CREATE INDEX IF NOT EXISTS ix_voucher_lines_voucher_id ON voucher_lines(voucher_id)",
         # vouchers.source 인덱스 — wehago_import 등 source 기반 조회 성능

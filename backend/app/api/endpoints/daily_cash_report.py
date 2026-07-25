@@ -117,6 +117,13 @@ async def update_config(
     return _config_to_out(cfg)
 
 
+@router.get("/dashboard-live")
+async def dashboard_live():
+    """대시보드 실데이터 — 그랜터 기반 (잔액·최근 입출금·카드 월비교)."""
+    from app.services.dashboard_live import build_dashboard
+    return await build_dashboard()
+
+
 @router.get("/preview")
 async def preview_report(
     date_str: Optional[str] = Query(None, alias="date", description="기준일자 (없으면 어제)"),

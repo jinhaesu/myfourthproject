@@ -10,12 +10,18 @@ from app.core.database import Base
 
 
 class PayrollTaxSetting(Base):
-    """급여 세금/보험 요율 설정 (단일 행 — id=1 사용)."""
+    """급여 세금/보험 요율 설정 (고용형태별 행 — profile 키로 구분).
+
+    profile 예: 'regular_office'(정규직 사무), 'regular_field'(정규직 현장),
+                'freelance'(사업소득/알바), 'dispatch'(파견)
+    """
     __tablename__ = "payroll_tax_settings"
     __table_args__ = {"extend_existing": True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # 4대보험 근로자 부담 요율 (%)
+    profile: Mapped[str] = mapped_column(String(40), unique=True, default="default", index=True)
+    label: Mapped[str] = mapped_column(String(60), default="기본")
+    # 4대보험 근로자 부담 요율 (%) — 파견/사업소득은 0
     national_pension_rate: Mapped[float] = mapped_column(Float, default=4.5)
     health_insurance_rate: Mapped[float] = mapped_column(Float, default=3.545)
     long_term_care_rate: Mapped[float] = mapped_column(Float, default=12.95)  # 건강보험료의 %
