@@ -3,6 +3,7 @@ import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { authApi } from '@/services/api'
 import { useAdminPrefetch } from '@/hooks/useAdminPrefetch'
+import NuldamSystemBar from '@/components/NuldamSystemBar'
 import {
   HomeIcon,
   DocumentTextIcon,
@@ -214,7 +215,9 @@ export default function Layout() {
   const userInitial = user?.fullName?.[0] || user?.username?.[0] || '?'
 
   return (
-    <div className="min-h-screen bg-canvas-50">
+    <>
+      <NuldamSystemBar current="account" />
+      <div className="min-h-screen bg-canvas-50">
       {/* Mobile sidebar */}
       <div className={`fixed inset-0 z-50 lg:hidden ${sidebarOpen ? '' : 'hidden'}`}>
         <div className="fixed inset-0 bg-ink-900/40" onClick={() => setSidebarOpen(false)} />
@@ -300,6 +303,7 @@ export default function Layout() {
           </div>
         </main>
       </div>
-    </div>
+      </div>
+    </>
   )
 }
