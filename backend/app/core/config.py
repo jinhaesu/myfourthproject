@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     NAVER_CLIENT_ID: Optional[str] = None
     NAVER_CLIENT_SECRET: Optional[str] = None
 
+    # 중앙 SSO 허브 연동 (POST /auth/sso) — 기존 이메일 OTP 로그인과 별개, 추가 로그인 경로
+    # 허브가 RS256으로 서명한 app 토큰을 이 JWKS로 검증합니다. account 자체 세션 토큰(SECRET_KEY/HS256)과는 무관합니다.
+    SSO_HUB_JWKS_URL: str = "https://auth-api.nuldam.com/.well-known/jwks.json"
+    SSO_HUB_ISSUER: str = "https://auth.nuldam.com"
+    SSO_AUDIENCE: str = "account"
+    SSO_JWKS_CACHE_TTL_SECONDS: int = 600
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

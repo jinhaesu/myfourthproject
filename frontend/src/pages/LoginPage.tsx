@@ -89,6 +89,12 @@ export default function LoginPage() {
     }
   }
 
+  // 회사 계정 SSO 로그인 — 중앙 허브(auth.nuldam.com)로 실제 이동 (fetch 아님)
+  const handleSsoLogin = () => {
+    const returnUrl = encodeURIComponent('https://account.nuldam.com/sso')
+    window.location.href = `https://auth.nuldam.com/authorize?app=account&return=${returnUrl}`
+  }
+
   // OTP 재발송
   const handleResendOtp = async () => {
     try {
@@ -147,6 +153,20 @@ export default function LoginPage() {
                   className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-lg font-medium hover:from-blue-700 hover:to-indigo-700 transition-all disabled:opacity-50"
                 >
                   {isLoading ? '전송 중...' : '인증 코드 받기'}
+                </button>
+
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-px bg-gray-200" />
+                  <span className="text-xs text-gray-400">또는</span>
+                  <div className="flex-1 h-px bg-gray-200" />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSsoLogin}
+                  className="w-full border border-gray-300 text-gray-700 py-3 rounded-lg font-medium hover:bg-gray-50 transition-all"
+                >
+                  회사 계정으로 로그인 (SSO)
                 </button>
               </form>
             ) : (

@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import Layout from '@/components/common/Layout'
 import LoginPage from '@/pages/LoginPage'
+import SsoPage from '@/pages/SsoPage'
 
 // 재배포로 청크 해시가 바뀌면 열려있던 탭에서 lazy 로드가 404로 실패해
 // 메뉴 클릭 시 화면이 죽는다("튕김") — 실패 시 1회 자동 새로고침으로 복구.
@@ -89,6 +90,7 @@ function App() {
     <Suspense fallback={<PageFallback />}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/sso" element={<SsoPage />} />
 
         <Route
           path="/"

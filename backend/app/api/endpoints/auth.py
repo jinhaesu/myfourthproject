@@ -18,6 +18,7 @@ from app.services.email_service import (
     is_email_allowed, send_otp_email, verify_otp_code,
 )
 from app.core.security import create_access_token, create_refresh_token, is_accounting_admin
+from app.core.sso import verify_hub_token
 
 router = APIRouter()
 
@@ -36,6 +37,11 @@ class VerifyOTPRequest(BaseModel):
 class RefreshRequest(BaseModel):
     """토큰 갱신 요청"""
     refresh_token: str
+
+
+class SSOLoginRequest(BaseModel):
+    """중앙 SSO 허브(auth.nuldam.com) 로그인 요청 — 허브가 발급한 app 토큰"""
+    token: str
 
 
 def user_to_response(user) -> dict:
@@ -160,6 +166,78 @@ async def verify_email_otp(
         raise
     except Exception as e:
         _logger.error(f"verify-otp DB error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"로그인 처리 오류: {str(e)}"
+        )
+
+
+@router.post("/sso")
+async def sso_login(
+    request: Request,
+    sso_data: SSOLoginRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    중앙 SSO 허브(auth.nuldam.com) 로그인 — 이메일 OTP 로그인과 별개의 추가 로그인 경로.
+
+    - 프론트엔드가 SSO 허브 리다이렉트에서 받은 `#token=<jwt>` 값을 그대로 전달.
+    - 허브가 RS256으로 서명한 app 토큰을 JWKS로 검증 (iss/aud/exp 포함).
+    - 검증된 토큰의 이메일로 기존 이메일 OTP 로그인과 동일한 사용자 조회/자동생성
+      경로(_auto_create_user)를 재사용하고, account 자체 access/refresh 토큰을 발급.
+    - 응답 형식은 /verify-otp 와 동일.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    # 허브 토큰 검증 (서명/iss/aud/exp) — 실패 시 401
+    payload = await verify_hub_token(sso_data.token)
+
+    email = (payload.get("email") or "").lower().strip()
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO 토큰에 이메일 정보가 없습니다."
+        )
+
+    try:
+        # 사용자 조회 (없으면 OTP 로그인과 동일한 방식으로 자동 생성)
+        result = await db.execute(
+            select(User)
+            .options(selectinload(User.department), selectinload(User.role))
+            .where(User.email == email)
+        )
+        user = result.scalar_one_or_none()
+
+        if not user:
+            _logger.info(f"Creating new user via SSO for {email}")
+            user = await _auto_create_user(db, email)
+
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="비활성화된 계정입니다. 관리자에게 문의하세요."
+            )
+
+        # 마지막 로그인 업데이트
+        user.last_login = datetime.utcnow()
+        await db.commit()
+
+        # account 자체 세션 토큰 발급 (OTP 로그인과 동일한 헬퍼 재사용)
+        access_token = create_access_token({"sub": str(user.id)})
+        refresh_token = create_refresh_token({"sub": str(user.id)})
+
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            "user": user_to_response(user),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        _logger.error(f"sso login DB error: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"로그인 처리 오류: {str(e)}"

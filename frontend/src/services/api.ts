@@ -92,6 +92,10 @@ export const authApi = {
   resendOtp: (email: string) =>
     api.post('/auth/resend-otp', { email }),
 
+  // SSO 허브(auth.nuldam.com)에서 발급한 JWT를 이 앱의 자체 세션 토큰으로 교환
+  sso: (token: string) =>
+    api.post('/auth/sso', { token }),
+
   logout: () => api.post('/auth/logout'),
 
   refresh: (refreshToken: string) =>
