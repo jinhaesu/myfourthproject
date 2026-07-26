@@ -248,6 +248,9 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:8080",
         "https://myfourthproject-nine.vercel.app",
+        # 통합 SSO — account.nuldam.com 프론트 및 중앙 허브 auth.nuldam.com 교차출처 허용
+        "https://account.nuldam.com",
+        "https://auth.nuldam.com",
     ],
     allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
