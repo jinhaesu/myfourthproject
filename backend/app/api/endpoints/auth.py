@@ -219,6 +219,15 @@ async def sso_login(
                 detail="비활성화된 계정입니다. 관리자에게 문의하세요."
             )
 
+        # 허브가 account 관리자 권한의 정본(source of truth) — 허브 클레임을 반영해
+        # account 자체 역할(ADMIN/EMPLOYEE)/is_superuser 를 동기화한다.
+        # super == True 이거나 perms.admin 이 존재하면 관리자, 아니면 일반 직원.
+        perms = payload.get("perms")
+        if not isinstance(perms, dict):
+            perms = {}
+        hub_is_admin = (payload.get("super") is True) or (perms.get("admin") is not None)
+        await _sync_admin_from_hub(db, user, hub_is_admin)
+
         # 마지막 로그인 업데이트
         user.last_login = datetime.utcnow()
         await db.commit()
@@ -314,6 +323,58 @@ async def get_current_user_info(
         )
 
     return user_to_response(user)
+
+
+async def _get_or_create_role(db: AsyncSession, role_type: RoleType) -> Role:
+    """지정한 역할 유형을 조회하고, 기본 역할(ADMIN/EMPLOYEE)이 없으면 함께 생성.
+
+    _auto_create_user 의 역할 부트스트랩 로직과 동일한 시드 역할을 사용한다
+    (신규 DB 등에서 역할 테이블이 비어 있는 경우 대비).
+    """
+    role_result = await db.execute(
+        select(Role).where(Role.role_type == role_type)
+    )
+    role = role_result.scalar_one_or_none()
+    if role:
+        return role
+
+    admin_role = Role(
+        name="관리자", role_type=RoleType.ADMIN, description="시스템 전체 관리 권한",
+        can_create_voucher=True, can_approve_voucher=True, can_finalize_voucher=True,
+        can_manage_budget=True, can_view_all_departments=True, can_manage_users=True,
+        can_configure_ai=True, can_export_data=True, can_view_reports=True,
+        can_manage_accounts=True, approval_limit=999999999,
+    )
+    employee_role = Role(
+        name="일반직원", role_type=RoleType.EMPLOYEE, description="기본 사용자 권한",
+        can_create_voucher=True, can_export_data=True, can_view_reports=True, approval_limit=0,
+    )
+    db.add(admin_role)
+    db.add(employee_role)
+    await db.flush()
+    return admin_role if role_type == RoleType.ADMIN else employee_role
+
+
+async def _sync_admin_from_hub(db: AsyncSession, user: User, hub_is_admin: bool) -> None:
+    """허브가 부여한 account 관리자 여부를 account 자체 역할 모델에 반영.
+
+    account 는 is_accounting_admin() 이 DB 사용자 레코드(role_type / is_superuser)를
+    기준으로 관리자 여부를 판별하므로, 허브 권한을 사용자 레코드에 영속화한다.
+    - hub_is_admin True  → ADMIN 역할 + is_superuser=True (관리자 메뉴 접근)
+    - hub_is_admin False → EMPLOYEE 역할 + is_superuser=False (일반 로그인)
+
+    OTP 경로(_auto_create_user)의 ADMIN/EMPLOYEE 배정 규칙과 동일한 메커니즘을 사용.
+    """
+    target_role_type = RoleType.ADMIN if hub_is_admin else RoleType.EMPLOYEE
+    current_role_type = user.role.role_type if user.role else None
+
+    if current_role_type != target_role_type:
+        role = await _get_or_create_role(db, target_role_type)
+        user.role = role
+        user.role_id = role.id
+
+    if bool(user.is_superuser) != hub_is_admin:
+        user.is_superuser = hub_is_admin
 
 
 async def _auto_create_user(db: AsyncSession, email: str) -> User:
