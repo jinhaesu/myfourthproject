@@ -200,6 +200,18 @@ async def sso_login(
             detail="SSO 토큰에 이메일 정보가 없습니다."
         )
 
+    # 접근 게이트 — 허브가 account(회계) 접근을 부여한 사용자만 로그인 허용.
+    # 허브 사용자라도 account 메뉴 권한(perms)이 하나도 없고 슈퍼관리자도 아니면 차단.
+    # 사용자 조회/자동생성 이전에 검사하여 미승인 사용자는 생성조차 되지 않는다.
+    super = payload.get("super") is True
+    perms = payload.get("perms")
+    has_account_grant = super or (isinstance(perms, dict) and len(perms) > 0)
+    if not has_account_grant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이 시스템에 대한 접근 권한이 없습니다. 관리자에게 문의하세요."
+        )
+
     try:
         # 사용자 조회 (없으면 OTP 로그인과 동일한 방식으로 자동 생성)
         result = await db.execute(
