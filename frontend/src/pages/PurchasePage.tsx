@@ -139,6 +139,19 @@ function CatalogTab() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['purchase-catalog'] }),
   })
 
+  const [editItemId, setEditItemId] = useState<number | null>(null)
+  const [editItemForm, setEditItemForm] = useState<{ title: string; price: string }>({ title: '', price: '' })
+  const editItemMut = useMutation({
+    mutationFn: (v: { id: number; title: string; price: number | null }) =>
+      purchaseApi.updateCatalogItem(v.id, { title: v.title, price: v.price }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['purchase-catalog'] })
+      setEditItemId(null)
+      toast.success('상품 정보를 수정했습니다')
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || '수정 실패'),
+  })
+
   const refreshMut = useMutation({
     mutationFn: (id: number) => purchaseApi.refreshPrice(id),
     onSuccess: () => {
@@ -472,6 +485,25 @@ function CatalogTab() {
                       <ShoppingBagIcon className="h-4 w-4 text-ink-400" />
                     </div>
                   )}
+                  {editItemId === item.id ? (
+                    <div className="flex-1 flex items-center gap-1.5">
+                      <input type="text" value={editItemForm.title}
+                        onChange={(e) => setEditItemForm({ ...editItemForm, title: e.target.value })}
+                        placeholder="상품명"
+                        className="flex-1 px-2 py-1 text-xs rounded border border-blue-300 focus:outline-none" />
+                      <input type="number" value={editItemForm.price}
+                        onChange={(e) => setEditItemForm({ ...editItemForm, price: e.target.value })}
+                        placeholder="가격"
+                        className="w-24 px-2 py-1 text-xs rounded border border-blue-300 focus:outline-none font-mono" />
+                      <button
+                        onClick={() => editItemMut.mutate({ id: item.id, title: editItemForm.title, price: editItemForm.price ? Number(editItemForm.price) : null })}
+                        disabled={editItemMut.isPending || !editItemForm.title.trim()}
+                        className="px-2 py-1 text-2xs rounded bg-emerald-500 text-white font-semibold hover:bg-emerald-600 disabled:opacity-50">저장</button>
+                      <button onClick={() => setEditItemId(null)}
+                        className="px-2 py-1 text-2xs rounded border border-ink-200 text-ink-600">취소</button>
+                    </div>
+                  ) : (
+                    <>
                   <div className="flex-1 min-w-0">
                     {item.url ? (
                       <a href={item.url} target="_blank" rel="noreferrer"
@@ -501,16 +533,24 @@ function CatalogTab() {
                     <div className="text-xs font-bold font-mono text-ink-900">
                       {item.price != null ? formatCurrency(item.price, false) : '-'}
                     </div>
-                    <button
-                      onClick={() => refreshMut.mutate(item.id)}
-                      disabled={refreshMut.isPending}
-                      className="text-2xs text-ink-400 hover:text-blue-600 flex items-center gap-0.5 ml-auto"
-                      title="가격 재조회"
-                    >
-                      <ArrowPathIcon className="h-2.5 w-2.5" />
-                      갱신
-                    </button>
+                    <div className="flex items-center gap-1 ml-auto">
+                      <button
+                        onClick={() => { setEditItemId(item.id); setEditItemForm({ title: item.title, price: item.price != null ? String(item.price) : '' }) }}
+                        className="text-2xs text-ink-400 hover:text-blue-600"
+                        title="이름·가격 수정"
+                      >✏️ 수정</button>
+                      <button
+                        onClick={() => refreshMut.mutate(item.id)}
+                        disabled={refreshMut.isPending}
+                        className="text-2xs text-ink-400 hover:text-blue-600 flex items-center gap-0.5"
+                        title="가격 재조회 (링크 있는 경우)"
+                      >
+                        <ArrowPathIcon className="h-2.5 w-2.5" />갱신
+                      </button>
+                    </div>
                   </div>
+                    </>
+                  )}
                   <button
                     onClick={() => addToCart(item)}
                     className="px-2 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 flex-shrink-0 flex items-center gap-0.5"
@@ -637,10 +677,10 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
     queryKey: ['purchase-requests', statusFilter],
     queryFn: () => purchaseApi.listRequests(statusFilter || undefined).then((r) => r.data.requests),
   })
-  // 보유 카드 목록 — 결제완료 시 사용한 카드 지정용
+  // 보유 카드 목록 — 결제완료 시 사용한 카드 지정용 (본인에게 배정된 카드만)
   const cardsForCompleteQuery = useQuery({
-    queryKey: ['purchase-cards'],
-    queryFn: () => cardsApi.list().then((r) => r.data.cards),
+    queryKey: ['purchase-cards-mine'],
+    queryFn: () => cardsApi.list(undefined, undefined, true).then((r) => r.data.cards),
     staleTime: 5 * 60_000,
   })
   const heldCards = cardsForCompleteQuery.data || []
@@ -796,7 +836,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                         <select value={completeForm.card_key}
                           onChange={(e) => setCompleteForm({ ...completeForm, card_key: e.target.value })}
                           className="flex-1 min-w-[140px] px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none">
-                          <option value="">사용한 카드 선택…</option>
+                          <option value="">{heldCards.length ? '사용한 카드 선택…' : '배정된 카드 없음 (관리자에게 배정 요청)'}</option>
                           {heldCards.map((c) => (
                             <option key={c.card_key} value={c.card_key}>
                               {c.nickname || c.issuer || c.card_key}{c.last4 ? ` ····${c.last4}` : ''}

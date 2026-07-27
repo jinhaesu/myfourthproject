@@ -1341,6 +1341,8 @@ export const purchaseApi = {
   }) => api.post<CatalogItem>('/purchase/catalog', data),
   listCatalog: (q?: string, folder?: string) =>
     api.get<{ items: CatalogItem[]; folders: string[] }>('/purchase/catalog', { params: { q, folder } }),
+  updateCatalogItem: (itemId: number, patch: { title?: string; price?: number | null; seller?: string; folder?: string }) =>
+    api.put<CatalogItem>(`/purchase/catalog/${itemId}`, patch),
   setCatalogFolder: (itemId: number, folder: string | null) =>
     api.put(`/purchase/catalog/${itemId}/folder`, undefined, { params: { folder } }),
   channelAccounts: () =>

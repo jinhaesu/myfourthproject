@@ -270,6 +270,40 @@ async def list_catalog(
     return {"items": [_catalog_to_dict(i) for i in items], "folders": folders}
 
 
+class CatalogUpdateBody(BaseModel):
+    title: Optional[str] = None
+    price: Optional[float] = None
+    seller: Optional[str] = None
+    folder: Optional[str] = None
+
+
+@router.put("/catalog/{item_id}")
+async def update_catalog_item(
+    item_id: int,
+    body: CatalogUpdateBody,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """카탈로그 항목 수정 (상품명·가격·구매처·폴더). 가격 변경 시 추이 기록."""
+    item = (await db.execute(
+        select(CatalogItem).where(CatalogItem.id == item_id)
+    )).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="카탈로그 항목을 찾을 수 없습니다.")
+    if body.title is not None and body.title.strip():
+        item.title = body.title.strip()
+    if body.seller is not None:
+        item.seller = body.seller.strip() or None
+    if body.folder is not None:
+        item.folder = body.folder.strip() or None
+    if body.price is not None and body.price != item.price:
+        item.price = body.price
+        db.add(CatalogPriceHistory(item_id=item.id, price=body.price))
+    await db.commit()
+    await db.refresh(item)
+    return _catalog_to_dict(item)
+
+
 @router.put("/catalog/{item_id}/folder")
 async def set_catalog_folder(
     item_id: int,
