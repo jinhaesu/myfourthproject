@@ -1285,6 +1285,7 @@ export interface CatalogItem {
   seller: string | null
   image_url: string | null
   tags: string | null
+  folder: string | null
   is_active: boolean
   created_by: string
   created_at: string | null
@@ -1316,6 +1317,8 @@ export interface PurchaseRequestInfo {
   card_key: string | null
   matched_ticket_id: string | null
   matched_at: string | null
+  channel: string | null
+  channel_account_id: string | null
   created_at: string | null
   items: PurchaseRequestItem[]
 }
@@ -1328,10 +1331,14 @@ export const purchaseApi = {
       '/purchase/catalog/search-naver', { params: { query }, timeout: 20_000 }),
   createCatalogItem: (data: {
     url: string; title: string; price?: number | null; seller?: string | null
-    image_url?: string | null; platform?: string | null; tags?: string | null
+    image_url?: string | null; platform?: string | null; tags?: string | null; folder?: string | null
   }) => api.post<CatalogItem>('/purchase/catalog', data),
-  listCatalog: (q?: string) =>
-    api.get<{ items: CatalogItem[] }>('/purchase/catalog', { params: { q } }),
+  listCatalog: (q?: string, folder?: string) =>
+    api.get<{ items: CatalogItem[]; folders: string[] }>('/purchase/catalog', { params: { q, folder } }),
+  setCatalogFolder: (itemId: number, folder: string | null) =>
+    api.put(`/purchase/catalog/${itemId}/folder`, undefined, { params: { folder } }),
+  channelAccounts: () =>
+    api.get<{ accounts: { channel: string; account_id: string }[] }>('/purchase/channel-accounts'),
   refreshPrice: (itemId: number) =>
     api.post(`/purchase/catalog/${itemId}/refresh`, undefined, { timeout: 30_000 }),
   priceHistory: (itemId: number) =>
@@ -1340,7 +1347,7 @@ export const purchaseApi = {
     api.delete(`/purchase/catalog/${itemId}`),
 
   createRequest: (data: {
-    title: string; reason?: string
+    title: string; reason?: string; channel?: string; channel_account_id?: string
     items: { catalog_item_id?: number | null; title: string; unit_price: number; quantity: number }[]
   }) => api.post<PurchaseRequestInfo>('/purchase/requests', data),
   listRequests: (status?: string) =>

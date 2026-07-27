@@ -39,6 +39,7 @@ class CatalogCreateBody(BaseModel):
     image_url: Optional[str] = None
     platform: Optional[str] = None
     tags: Optional[str] = None
+    folder: Optional[str] = None
 
 
 class RequestItemBody(BaseModel):
@@ -51,6 +52,8 @@ class RequestItemBody(BaseModel):
 class RequestCreateBody(BaseModel):
     title: str
     reason: Optional[str] = None
+    channel: Optional[str] = None
+    channel_account_id: Optional[str] = None
     items: List[RequestItemBody]
 
 
@@ -81,6 +84,7 @@ def _catalog_to_dict(item: CatalogItem) -> dict:
         "seller": item.seller,
         "image_url": item.image_url,
         "tags": item.tags,
+        "folder": item.folder,
         "is_active": item.is_active,
         "created_by": item.created_by,
         "created_at": item.created_at.isoformat() if item.created_at else None,
@@ -96,6 +100,8 @@ def _request_to_dict(req: PurchaseRequest) -> dict:
         "reason": req.reason,
         "status": req.status,
         "total_amount": req.total_amount,
+        "channel": req.channel,
+        "channel_account_id": req.channel_account_id,
         "approved_by": req.approved_by,
         "approved_at": req.approved_at.isoformat() if req.approved_at else None,
         "reject_reason": req.reject_reason,
@@ -202,6 +208,8 @@ async def create_catalog_item(
         existing.image_url = body.image_url or existing.image_url
         existing.platform = body.platform or existing.platform
         existing.tags = body.tags or existing.tags
+        if body.folder is not None:
+            existing.folder = body.folder or None
         existing.is_active = True
         if body.price is not None and body.price != existing.price:
             existing.price = body.price
@@ -218,6 +226,7 @@ async def create_catalog_item(
         image_url=body.image_url,
         platform=body.platform,
         tags=body.tags,
+        folder=body.folder or None,
         created_by=user.email,
     )
     db.add(item)
@@ -232,17 +241,74 @@ async def create_catalog_item(
 @router.get("/catalog")
 async def list_catalog(
     q: Optional[str] = Query(None, description="상품명/판매자 검색"),
+    folder: Optional[str] = Query(None, description="폴더 필터"),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """카탈로그 목록 (회사 공용 — 전 직원 조회 가능)."""
+    """카탈로그 목록 (회사 공용 — 전 직원 조회 가능) + 폴더 목록."""
     stmt = select(CatalogItem).where(CatalogItem.is_active == True)  # noqa: E712
     if q:
         like = f"%{q}%"
         stmt = stmt.where(CatalogItem.title.ilike(like) | CatalogItem.seller.ilike(like))
-    stmt = stmt.order_by(desc(CatalogItem.updated_at)).limit(200)
+    if folder:
+        stmt = stmt.where(CatalogItem.folder == folder)
+    stmt = stmt.order_by(desc(CatalogItem.updated_at)).limit(300)
     items = (await db.execute(stmt)).scalars().all()
-    return {"items": [_catalog_to_dict(i) for i in items]}
+
+    # 폴더 목록 (활성 항목의 distinct folder)
+    folder_rows = (await db.execute(
+        select(CatalogItem.folder).where(
+            CatalogItem.is_active == True,  # noqa: E712
+            CatalogItem.folder.isnot(None),
+        ).distinct()
+    )).scalars().all()
+    folders = sorted([f for f in folder_rows if f])
+
+    return {"items": [_catalog_to_dict(i) for i in items], "folders": folders}
+
+
+@router.put("/catalog/{item_id}/folder")
+async def set_catalog_folder(
+    item_id: int,
+    folder: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """카탈로그 항목 폴더 이동."""
+    item = (await db.execute(
+        select(CatalogItem).where(CatalogItem.id == item_id)
+    )).scalar_one_or_none()
+    if not item:
+        raise HTTPException(status_code=404, detail="카탈로그 항목을 찾을 수 없습니다.")
+    item.folder = (folder or "").strip() or None
+    await db.commit()
+    return {"ok": True, "folder": item.folder}
+
+
+@router.get("/channel-accounts")
+async def list_channel_accounts(
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """이전에 사용한 구매 채널·계정 ID 목록 (재사용 자동완성용)."""
+    rows = (await db.execute(
+        select(PurchaseRequest.channel, PurchaseRequest.channel_account_id)
+        .where(PurchaseRequest.channel_account_id.isnot(None))
+        .distinct()
+    )).all()
+    accounts = [
+        {"channel": c or "", "account_id": a}
+        for c, a in rows if a
+    ]
+    # 채널+계정 중복 제거
+    seen = set()
+    uniq = []
+    for x in accounts:
+        k = (x["channel"], x["account_id"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(x)
+    return {"accounts": uniq}
 
 
 @router.post("/catalog/{item_id}/refresh")
@@ -322,6 +388,8 @@ async def create_request(
         requester_email=user.email,
         title=body.title,
         reason=body.reason,
+        channel=(body.channel or "").strip() or None,
+        channel_account_id=(body.channel_account_id or "").strip() or None,
         status=PurchaseRequestStatus.PENDING.value,
     )
     total = 0.0

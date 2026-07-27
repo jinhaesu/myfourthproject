@@ -37,6 +37,7 @@ class CatalogItem(Base):
     seller: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     tags: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)  # 쉼표 구분 태그
+    folder: Mapped[Optional[str]] = mapped_column(String(100), nullable=True, index=True)  # 폴더 분류(부서 등)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_by: Mapped[str] = mapped_column(String(255), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -82,6 +83,10 @@ class PurchaseRequest(Base):
     approved_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     reject_reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+
+    # 구매 진행 채널 + 계정 ID (예: 쿠팡 / company@id) — 재사용 위해 저장
+    channel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    channel_account_id: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     # 결제 완료 정보 (담당자 입력)
     purchased_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

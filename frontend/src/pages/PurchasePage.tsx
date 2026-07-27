@@ -78,10 +78,18 @@ function CatalogTab() {
   const [reqTitle, setReqTitle] = useState('')
   const [reqReason, setReqReason] = useState('')
   const [search, setSearch] = useState('')
+  const [folder, setFolder] = useState('')            // 폴더 필터
+  const [saveFolder, setSaveFolder] = useState('')    // 등록 시 폴더
+  const [channel, setChannel] = useState('')          // 구매 채널
+  const [accountId, setAccountId] = useState('')      // 채널 계정 ID
 
   const catalogQuery = useQuery({
-    queryKey: ['purchase-catalog', search],
-    queryFn: () => purchaseApi.listCatalog(search || undefined).then((r) => r.data.items),
+    queryKey: ['purchase-catalog', search, folder],
+    queryFn: () => purchaseApi.listCatalog(search || undefined, folder || undefined).then((r) => r.data),
+  })
+  const acctQuery = useQuery({
+    queryKey: ['purchase-channel-accounts'],
+    queryFn: () => purchaseApi.channelAccounts().then((r) => r.data.accounts),
   })
 
   const saveMut = useMutation({
@@ -93,6 +101,7 @@ function CatalogTab() {
         seller: preview.seller,
         image_url: preview.image_url,
         platform: preview.platform,
+        folder: saveFolder.trim() || null,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['purchase-catalog'] })
@@ -101,6 +110,11 @@ function CatalogTab() {
       toast.success('카탈로그에 등록되었습니다')
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || '등록 실패'),
+  })
+
+  const moveFolderMut = useMutation({
+    mutationFn: (v: { id: number; folder: string }) => purchaseApi.setCatalogFolder(v.id, v.folder || null),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['purchase-catalog'] }),
   })
 
   const refreshMut = useMutation({
@@ -116,11 +130,14 @@ function CatalogTab() {
       purchaseApi.createRequest({
         title: reqTitle || cart.map((c) => c.title).join(', ').slice(0, 200),
         reason: reqReason || undefined,
+        channel: channel.trim() || undefined,
+        channel_account_id: accountId.trim() || undefined,
         items: cart,
       }),
     onSuccess: () => {
       setCart([]); setReqTitle(''); setReqReason('')
       qc.invalidateQueries({ queryKey: ['purchase-requests'] })
+      qc.invalidateQueries({ queryKey: ['purchase-channel-accounts'] })
       toast.success('구매요청이 제출되었습니다 (승인 대기)')
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || '요청 실패'),
@@ -189,7 +206,9 @@ function CatalogTab() {
   }
 
   const cartTotal = cart.reduce((s, c) => s + c.unit_price * c.quantity, 0)
-  const items: CatalogItem[] = catalogQuery.data || []
+  const items: CatalogItem[] = catalogQuery.data?.items || []
+  const folders: string[] = catalogQuery.data?.folders || []
+  const accounts = acctQuery.data || []
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-3">
@@ -302,6 +321,21 @@ function CatalogTab() {
                   )}
                 </div>
               </div>
+              {/* 폴더 지정 */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-2xs text-ink-500">📁 폴더</span>
+                <input
+                  type="text"
+                  value={saveFolder}
+                  onChange={(e) => setSaveFolder(e.target.value)}
+                  list="catalog-folders"
+                  placeholder="부서/용도 (예: 생산부, 사무용품)"
+                  className="flex-1 px-2 py-1 text-2xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                />
+                <datalist id="catalog-folders">
+                  {folders.map((f) => <option key={f} value={f} />)}
+                </datalist>
+              </div>
               <div className="flex gap-1">
                 <button
                   onClick={() => saveMut.mutate()}
@@ -335,6 +369,21 @@ function CatalogTab() {
               className="px-2 py-1 text-2xs rounded border border-ink-200 focus:border-blue-400 focus:outline-none w-44"
             />
           </div>
+          {/* 폴더 필터 */}
+          {folders.length > 0 && (
+            <div className="px-3 py-1.5 border-b border-ink-100 flex items-center gap-1 flex-wrap">
+              <button onClick={() => setFolder('')}
+                className={`px-2 py-0.5 text-2xs rounded-full border ${folder === '' ? 'bg-ink-900 text-white border-ink-900' : 'bg-white text-ink-600 border-ink-200'}`}>
+                전체
+              </button>
+              {folders.map((f) => (
+                <button key={f} onClick={() => setFolder(f)}
+                  className={`px-2 py-0.5 text-2xs rounded-full border ${folder === f ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-ink-600 border-ink-200 hover:border-blue-300'}`}>
+                  📁 {f}
+                </button>
+              ))}
+            </div>
+          )}
           {catalogQuery.isLoading ? (
             <div className="p-8 text-center text-2xs text-ink-400">불러오는 중…</div>
           ) : items.length === 0 ? (
@@ -357,10 +406,20 @@ function CatalogTab() {
                       className="text-xs font-medium text-ink-900 truncate block hover:text-blue-600 hover:underline">
                       {item.title}
                     </a>
-                    <div className="text-2xs text-ink-500">
+                    <div className="text-2xs text-ink-500 flex items-center gap-1 flex-wrap">
                       {item.platform && <span>{item.platform} · </span>}
                       {item.seller && <span>{item.seller} · </span>}
                       등록 {item.created_by.split('@')[0]}
+                      <button
+                        onClick={() => {
+                          const f = window.prompt('폴더명 (비우면 폴더 없음)', item.folder || '')
+                          if (f !== null) moveFolderMut.mutate({ id: item.id, folder: f.trim() })
+                        }}
+                        className="px-1 py-0.5 rounded bg-ink-50 text-ink-500 hover:text-blue-600 border border-ink-200"
+                        title="폴더 지정/이동"
+                      >
+                        📁 {item.folder || '폴더'}
+                      </button>
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
@@ -444,6 +503,38 @@ function CatalogTab() {
               rows={2}
               className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none resize-none"
             />
+            {/* 구매 채널 + 계정 ID (이전 사용값 재사용) */}
+            <div className="flex gap-1.5">
+              <input
+                type="text"
+                value={channel}
+                onChange={(e) => setChannel(e.target.value)}
+                list="purchase-channels"
+                placeholder="구매 채널 (쿠팡/네이버 등)"
+                className="w-28 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+              />
+              <input
+                type="text"
+                value={accountId}
+                onChange={(e) => {
+                  setAccountId(e.target.value)
+                  const hit = accounts.find((a) => a.account_id === e.target.value)
+                  if (hit && hit.channel) setChannel(hit.channel)
+                }}
+                list="purchase-accounts"
+                placeholder="구매 계정 ID"
+                className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+              />
+              <datalist id="purchase-channels">
+                {Array.from(new Set(accounts.map((a) => a.channel).filter(Boolean))).map((c) => <option key={c} value={c} />)}
+              </datalist>
+              <datalist id="purchase-accounts">
+                {accounts.map((a) => <option key={a.account_id} value={a.account_id}>{a.channel ? `${a.channel} · ${a.account_id}` : a.account_id}</option>)}
+              </datalist>
+            </div>
+            {accounts.length > 0 && (
+              <div className="text-2xs text-ink-400">이전 사용 계정: {accounts.slice(0, 4).map((a) => a.account_id).join(', ')}{accounts.length > 4 ? ' …' : ''}</div>
+            )}
             <button
               onClick={() => createReqMut.mutate()}
               disabled={createReqMut.isPending}
@@ -579,6 +670,11 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                     ))}
                   </div>
                   {req.reason && <div className="text-2xs text-ink-600">사유: {req.reason}</div>}
+                  {(req.channel || req.channel_account_id) && (
+                    <div className="text-2xs text-ink-600">
+                      구매 채널: {req.channel || '-'}{req.channel_account_id ? ` · 계정 ${req.channel_account_id}` : ''}
+                    </div>
+                  )}
                   {req.reject_reason && <div className="text-2xs text-red-600">반려 사유: {req.reject_reason}</div>}
                   {req.approved_by && (
                     <div className="text-2xs text-ink-500">
