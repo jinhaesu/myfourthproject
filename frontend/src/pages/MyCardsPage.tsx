@@ -30,6 +30,7 @@ export default function MyCardsPage() {
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
   const [editingTicket, setEditingTicket] = useState<string | null>(null)
   const [clsForm, setClsForm] = useState<{ account_code: string; account_name: string; memo: string }>({ account_code: '', account_name: '', memo: '' })
+  const [acctSearch, setAcctSearch] = useState('')  // 계정 검색어
 
   const { from, to } = monthRange(month)
 
@@ -105,6 +106,7 @@ export default function MyCardsPage() {
       return
     }
     setEditingTicket(tx.ticket_id)
+    setAcctSearch('')
     setClsForm({
       account_code: tx.classification?.account_code || '',
       account_name: tx.classification?.account_name || tx.classification?.category || '',
@@ -287,20 +289,46 @@ export default function MyCardsPage() {
                     {isEditing && (
                       <div className="mt-2 p-2 rounded-md bg-canvas-50 border border-ink-200 space-y-1.5">
                         <div>
-                          <div className="text-2xs text-ink-500 mb-0.5">계정과목 (원장)</div>
-                          <select
-                            value={clsForm.account_code}
-                            onChange={(e) => {
-                              const acc = accounts.find((a) => a.code === e.target.value)
-                              setClsForm({ ...clsForm, account_code: e.target.value, account_name: acc?.name || '' })
-                            }}
-                            className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
-                          >
-                            <option value="">계정과목 선택…</option>
-                            {accounts.map((a) => (
-                              <option key={a.code} value={a.code}>{a.code} · {a.name}</option>
-                            ))}
-                          </select>
+                          <div className="text-2xs text-ink-500 mb-0.5">계정과목 (원장) — 검색해서 선택</div>
+                          {clsForm.account_code && !acctSearch && (
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <span className="text-xs font-medium px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                                {clsForm.account_code} · {clsForm.account_name}
+                              </span>
+                              <button onClick={() => setClsForm({ ...clsForm, account_code: '', account_name: '' })}
+                                className="text-2xs text-ink-400 hover:text-red-500">변경</button>
+                            </div>
+                          )}
+                          {(!clsForm.account_code || acctSearch) && (
+                            <div className="relative">
+                              <input
+                                type="text"
+                                value={acctSearch}
+                                onChange={(e) => setAcctSearch(e.target.value)}
+                                placeholder="계정 코드/명 검색 (예: 소모품, 여비, 830)"
+                                autoFocus
+                                className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                              />
+                              {acctSearch.trim() && (
+                                <div className="absolute z-20 mt-0.5 w-full max-h-48 overflow-y-auto bg-white border border-ink-200 rounded-md shadow-lg divide-y divide-ink-50">
+                                  {accounts
+                                    .filter((a) => a.code.includes(acctSearch.trim()) || a.name.includes(acctSearch.trim()))
+                                    .slice(0, 40)
+                                    .map((a) => (
+                                      <button key={a.code}
+                                        onClick={() => { setClsForm({ ...clsForm, account_code: a.code, account_name: a.name }); setAcctSearch('') }}
+                                        className="w-full text-left px-2 py-1 text-xs hover:bg-blue-50 flex items-center gap-1.5">
+                                        <span className="font-mono text-ink-500 w-10 flex-shrink-0">{a.code}</span>
+                                        <span className="text-ink-800">{a.name}</span>
+                                      </button>
+                                    ))}
+                                  {accounts.filter((a) => a.code.includes(acctSearch.trim()) || a.name.includes(acctSearch.trim())).length === 0 && (
+                                    <div className="px-2 py-1.5 text-2xs text-ink-400">검색 결과 없음</div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                         <input
                           type="text"
