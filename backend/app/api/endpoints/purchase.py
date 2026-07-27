@@ -32,7 +32,7 @@ class ParseLinkBody(BaseModel):
 
 
 class CatalogCreateBody(BaseModel):
-    url: str
+    url: Optional[str] = None   # 쿠팡 등 직접 등록은 링크 없이도 가능
     title: str
     price: Optional[float] = None
     seller: Optional[str] = None
@@ -197,10 +197,13 @@ async def create_catalog_item(
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """카탈로그 저장 — 같은 URL이 있으면 갱신 + 가격 추이 기록."""
-    existing = (await db.execute(
-        select(CatalogItem).where(CatalogItem.url == body.url)
-    )).scalar_one_or_none()
+    """카탈로그 저장 — URL 있으면 같은 URL 갱신 + 가격추이. URL 없으면 항상 새로 등록."""
+    clean_url = (body.url or "").strip()
+    existing = None
+    if clean_url:
+        existing = (await db.execute(
+            select(CatalogItem).where(CatalogItem.url == clean_url)
+        )).scalar_one_or_none()
 
     if existing:
         existing.title = body.title
@@ -219,7 +222,7 @@ async def create_catalog_item(
         return _catalog_to_dict(existing)
 
     item = CatalogItem(
-        url=body.url,
+        url=clean_url,
         title=body.title,
         price=body.price,
         seller=body.seller,

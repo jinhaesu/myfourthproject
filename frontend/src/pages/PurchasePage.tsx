@@ -274,6 +274,21 @@ function CatalogTab() {
             >
               {naverSearching ? '검색 중…' : '검색'}
             </button>
+            <button
+              onClick={() => {
+                // 쿠팡 등에서 직접 구매 — 검색/링크 없이 바로 입력 폼 열기
+                setNaverResults([])
+                setPreview({
+                  url: (naverQuery.match(/https?:\/\/\S+/) || [''])[0],
+                  title: extractFromPaste(naverQuery).name,
+                  price: null, seller: '', image_url: null, platform: null, parsed: true,
+                })
+              }}
+              className="px-3 py-1.5 text-xs rounded-md border border-ink-300 text-ink-700 font-semibold hover:bg-ink-50 flex items-center gap-1"
+              title="쿠팡 등 직접 구매 상품을 검색 없이 바로 등록"
+            >
+              직접 등록
+            </button>
           </div>
 
           {naverResults.length > 0 && (
@@ -350,10 +365,17 @@ function CatalogTab() {
                       type="text"
                       value={preview.seller || ''}
                       onChange={(e) => setPreview({ ...preview, seller: e.target.value })}
-                      placeholder="판매자"
+                      placeholder="구매처 (예: 쿠팡)"
                       className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
                     />
                   </div>
+                  <input
+                    type="url"
+                    value={preview.url || ''}
+                    onChange={(e) => setPreview({ ...preview, url: e.target.value })}
+                    placeholder="상품 링크 (선택 — 쿠팡 등 참조용, 없어도 등록 가능)"
+                    className="w-full px-2 py-1 text-2xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                  />
                   {preview.platform && (
                     <div className="text-2xs text-ink-500">플랫폼: {preview.platform}</div>
                   )}
@@ -440,10 +462,14 @@ function CatalogTab() {
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <a href={item.url} target="_blank" rel="noreferrer"
-                      className="text-xs font-medium text-ink-900 truncate block hover:text-blue-600 hover:underline">
-                      {item.title}
-                    </a>
+                    {item.url ? (
+                      <a href={item.url} target="_blank" rel="noreferrer"
+                        className="text-xs font-medium text-ink-900 truncate block hover:text-blue-600 hover:underline">
+                        {item.title}
+                      </a>
+                    ) : (
+                      <span className="text-xs font-medium text-ink-900 truncate block">{item.title}</span>
+                    )}
                     <div className="text-2xs text-ink-500 flex items-center gap-1 flex-wrap">
                       {item.platform && <span>{item.platform} · </span>}
                       {item.seller && <span>{item.seller} · </span>}
