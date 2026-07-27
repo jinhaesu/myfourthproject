@@ -12,6 +12,24 @@ import toast from 'react-hot-toast'
 
 type CartLine = { catalog_item_id: number | null; title: string; unit_price: number; quantity: number }
 
+// 쿠팡·기타 채널 공유(복사) 텍스트에서 상품명 + 원본링크 추출.
+// 예: "삼성 모니터 24형\nhttps://link.coupang.com/a/xxxx" 또는
+//     "쿠팡에서 이 상품 어때요? [삼성 모니터] https://..."
+function extractFromPaste(text: string): { name: string; url: string } {
+  const urlMatch = text.match(/https?:\/\/[^\s]+/)
+  const url = urlMatch ? urlMatch[0] : ''
+  let body = text.replace(/https?:\/\/[^\s]+/g, ' ')
+  // 공유 상투어·이모지 제거
+  body = body
+    .replace(/쿠팡에서|확인해보세요|만나보세요|지금\s*확인|이\s*상품|어때요\??|추천!?|바로가기|공유|무료배송/g, ' ')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, ' ')
+  // 여러 줄이면 가장 긴(=상품명일 가능성 높은) 줄
+  const lines = body.split(/[\n\r]+/).map((s) => s.trim()).filter(Boolean)
+  let name = lines.length ? lines.sort((a, b) => b.length - a.length)[0] : body
+  name = name.replace(/^[\[\("'`]+|[\]\)"'`]+$/g, '').replace(/\s+/g, ' ').trim()
+  return { name, url }
+}
+
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   PENDING: { label: '승인 대기', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
   APPROVED: { label: '승인됨 · 결제 대기', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
@@ -74,6 +92,7 @@ function CatalogTab() {
   const [naverResults, setNaverResults] = useState<any[]>([])
   const [naverSearching, setNaverSearching] = useState(false)
   const [naverUnavailable, setNaverUnavailable] = useState(false)
+  const [pastedUrl, setPastedUrl] = useState('')  // 쿠팡 등 붙여넣은 원본 링크(참조)
   const [cart, setCart] = useState<CartLine[]>([])
   const [reqTitle, setReqTitle] = useState('')
   const [reqReason, setReqReason] = useState('')
@@ -107,6 +126,9 @@ function CatalogTab() {
       qc.invalidateQueries({ queryKey: ['purchase-catalog'] })
       setPreview(null)
       setUrl('')
+      setNaverQuery('')
+      setPastedUrl('')
+      setNaverResults([])
       toast.success('카탈로그에 등록되었습니다')
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || '등록 실패'),
@@ -161,16 +183,29 @@ function CatalogTab() {
   }
 
   async function handleNaverSearch() {
-    if (!naverQuery.trim()) return
+    const raw = naverQuery.trim()
+    if (!raw) return
+    // 쿠팡 등 공유 텍스트/링크 붙여넣기 → 상품명·원본링크 자동 추출
+    const { name, url: extractedUrl } = extractFromPaste(raw)
+    const q = name || raw
+    if (extractedUrl) setPastedUrl(extractedUrl)
     setNaverSearching(true)
     try {
-      const r = await purchaseApi.searchNaver(naverQuery.trim())
+      const r = await purchaseApi.searchNaver(q)
       setNaverResults(r.data.items)
-      if (!r.data.items.length) toast('검색 결과가 없습니다', { icon: 'ℹ️' })
+      if (!r.data.items.length) {
+        // 검색결과 없어도 추출한 상품명+원본링크로 바로 등록 가능하게 프리뷰 채움
+        setPreview({
+          url: extractedUrl || '', title: name || raw, price: null,
+          seller: null, image_url: null, platform: null, parsed: false,
+        })
+        toast('검색 결과가 없어요. 상품명·가격을 확인 후 바로 등록하세요.', { icon: 'ℹ️' })
+      }
     } catch (e: any) {
       if (e.response?.status === 501) {
         setNaverUnavailable(true)
-        toast.error('네이버 검색 API가 아직 설정되지 않았습니다. 정보를 직접 입력해주세요.')
+        setPreview({ url: extractedUrl || '', title: name || raw, price: null, seller: null, image_url: null, platform: null, parsed: false })
+        toast.error('네이버 검색 API 미설정 — 붙여넣은 상품명으로 직접 등록해주세요.')
       } else {
         toast.error(e.response?.data?.detail || '검색 실패')
       }
@@ -180,10 +215,10 @@ function CatalogTab() {
   }
 
   function pickNaverResult(item: any) {
-    // 붙여넣은 원본 링크는 유지하고 상품 정보만 채움
+    // 원본 채널 링크(쿠팡 등 붙여넣은 것) 우선 유지, 상품 정보만 채움
     setPreview((prev: any) => ({
-      ...(prev || { url: url.trim() }),
-      url: prev?.url || url.trim() || item.url,
+      ...(prev || { url: pastedUrl || url.trim() }),
+      url: pastedUrl || prev?.url || url.trim() || item.url,
       title: item.title,
       price: item.price,
       seller: item.seller,
@@ -217,16 +252,19 @@ function CatalogTab() {
         <div className="panel p-3 space-y-2">
           <div className="text-2xs font-semibold text-ink-600 flex items-center gap-1">
             <SparklesIcon className="h-3 w-3" />
-            상품명으로 검색 — 네이버 쇼핑 (스마트스토어·쿠팡 링크는 차단되므로 이름으로 검색하세요)
+            상품명 검색 · 쿠팡 등 공유 텍스트 붙여넣기
+          </div>
+          <div className="text-2xs text-ink-400 -mt-1">
+            쿠팡/기타 채널: 앱에서 <b>상품 공유(링크 복사)</b>한 내용을 그대로 붙여넣으면 상품명을 자동 인식해 검색하고, 원본 링크는 참조로 저장돼요.
           </div>
           <div className="flex gap-1.5">
-            <input
-              type="text"
+            <textarea
               value={naverQuery}
               onChange={(e) => setNaverQuery(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleNaverSearch()}
-              placeholder="예: 제로콜라 24캔, A4용지 500매, 프린터 토너"
-              className="flex-1 px-2.5 py-1.5 text-xs rounded-md border border-ink-300 focus:border-blue-400 focus:outline-none"
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleNaverSearch() } }}
+              placeholder="예: 제로콜라 24캔  ·  또는 쿠팡 공유 텍스트 붙여넣기 (상품명+링크)"
+              rows={1}
+              className="flex-1 px-2.5 py-1.5 text-xs rounded-md border border-ink-300 focus:border-blue-400 focus:outline-none resize-none"
               autoFocus
             />
             <button
