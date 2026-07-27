@@ -20,7 +20,7 @@ GRANTER_BASE_URL로 베이스 호스트(prefix 포함) override 가능.
 """
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 
 logger = logging.getLogger(__name__)
