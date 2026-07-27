@@ -1,89 +1,63 @@
 import { useEffect, useRef } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import {
-  cashDigestApi, cardsApi, treasuryApi, granterApi,
-  forecastApi, vouchersApi, autoVoucherApi, ledgerApi, financialApi,
-} from '@/services/api'
+import { cashDigestApi, granterApi } from '@/services/api'
 import { usePeriodStore } from '@/store/periodStore'
-import { isoLocal } from '@/utils/format'
 
-function todayISO() { return isoLocal(new Date()) }
-function daysAgoISO(n: number) { const d = new Date(); d.setDate(d.getDate() - n); return isoLocal(d) }
-
-const STALE = 180_000  // 프리페치 데이터 fresh 유지 (전역 staleTime과 동일)
+const STALE = 180_000
 
 /**
- * 관리자 진입 시 좌측 메뉴 순서대로 기본 조회를 백그라운드 순차 선조회.
+ * 관리자 진입 시 '가벼운' 핵심 데이터만 백그라운드 선조회.
  *
- * 핵심: 각 페이지가 실제로 쓰는 쿼리키·queryFn과 '동일하게' 프리페치 →
- *       메뉴 클릭 시 캐시 즉시 표시(재조회 없음). 전역 staleTime 3분과 정합.
- * 순서: 실시간 자금관리 → 경영 인사이트 → 전표 처리 → 회계/분석
- * 렉 방지: 순차 실행 + 각 사이 requestIdleCallback 양보. 실패는 조용히 무시.
+ * 주의: 그랜터는 동시호출 금지(semaphore=1)라 모든 그랜터 호출이 전역 직렬 처리됨.
+ *       선조회를 많이 하면 오히려 사용자 클릭이 그 뒤에 줄 서 느려짐.
+ *       → 최소한(대시보드 + 통합/채널이 공유하는 티켓 캐시)만 데우고,
+ *         사용자가 메뉴를 클릭(경로 변경)하면 즉시 중단해서 레인을 양보.
+ *       나머지 메뉴는 최초 방문 시 로드되고 3분 캐시로 재방문은 즉시.
  */
 export function useAdminPrefetch(enabled: boolean) {
   const qc = useQueryClient()
+  const location = useLocation()
   const ran = useRef(false)
+  const startPath = useRef(location.pathname)
+  const cancelled = useRef(false)
+
+  // 사용자가 다른 메뉴로 이동하면 선조회 중단 (그랜터 레인 양보)
+  useEffect(() => {
+    if (location.pathname !== startPath.current) cancelled.current = true
+  }, [location.pathname])
 
   useEffect(() => {
     if (!enabled || ran.current) return
     ran.current = true
 
-    const to = todayISO()
-    const from30 = daysAgoISO(30)
-    const year = new Date().getFullYear()
-    // 통합조회·채널수익성은 글로벌 기간(periodStore) 사용 — 페이지와 동일한 날짜로 맞춤
     const st = usePeriodStore.getState()
     const pFrom = st.from
     const pTo = st.to
 
-    const pf = (queryKey: any[], queryFn: () => Promise<any>) =>
-      () => qc.prefetchQuery({ queryKey, queryFn, staleTime: STALE })
-
-    // 메뉴 위→아래 순서. 각 페이지의 실제 쿼리키에 맞춤.
+    // 가벼운 핵심만: 대시보드(랜딩) + 통합/채널이 공유하는 티켓 캐시 워밍
     const steps: Array<() => Promise<any>> = [
-      // ── 실시간 자금관리 ──
-      pf(['dashboard-live'], () => cashDigestApi.dashboardLive().then((r) => r.data)),               // 대시보드
-      pf(['granter-assets-all', false], () => granterApi.listAllAssets(false).then((r) => r.data)),  // 통합조회 자산
-      pf(['granter-tickets-usage', pFrom, pTo], () => granterApi.listTicketsAllTypes(pFrom, pTo).then((r) => r.data)), // 통합조회 티켓
-      pf(['unified-card-expenses', pFrom, pTo], () => granterApi.listTickets({ ticketType: 'EXPENSE_TICKET', startDate: pFrom, endDate: pTo }).then((r) => r.data)),
-      pf(['card-aliases-list'], () => cardsApi.list(pFrom, pTo).then((r) => r.data.cards)),
-      () => cashDigestApi.preview(),                                                                  // AI 자금 다이제스트(스냅샷 캐시)
-      pf(['cards-list', from30, to], () => cardsApi.list(from30, to).then((r) => r.data.cards)),      // 카드 관리
-      pf(['internal-transfers', from30, to], () => treasuryApi.internalTransfers(from30, to).then((r) => r.data)), // 은행간 내부거래
-
-      // ── 경영 인사이트 ──
-      pf(['channel-profitability', pFrom, pTo], async () => {                                         // 채널별 수익성
-        const bank = await granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: pFrom, endDate: pTo })
-        const tax = await granterApi.listTickets({ ticketType: 'TAX_INVOICE_TICKET', startDate: pFrom, endDate: pTo })
-        const expense = await granterApi.listTickets({ ticketType: 'EXPENSE_TICKET', startDate: pFrom, endDate: pTo })
-        const arr = (r: any) => (Array.isArray(r.data) ? r.data : r.data?.data || [])
-        return { bank: arr(bank), tax: arr(tax), expense: arr(expense) }
+      () => qc.prefetchQuery({
+        queryKey: ['dashboard-live'],
+        queryFn: () => cashDigestApi.dashboardLive().then((r) => r.data),
+        staleTime: STALE,
       }),
-      () => forecastApi.getCashFlow(28).catch(() => null),                                            // 캐시플로우 예측
-
-      // ── 전표 처리 ──
-      () => autoVoucherApi.list({ page: 1, size: 20 }).catch(() => null),                             // 자동 전표 검수
-      () => vouchersApi.list({ page: 1, size: 20 } as any).catch(() => null),                         // 전표관리
-
-      // ── 회계/분석 ──
-      () => ledgerApi.listAccounts({ fiscal_year: year, only_with_activity: true }).catch(() => null), // 계정별 원장
-      () => financialApi.getAvailableYears().catch(() => null),                                       // 재무보고서
+      // 통합조회 + 채널수익성이 공유하는 그랜터 티켓(같은 기간 캐시) — 한 번 데우면 둘 다 빨라짐
+      () => qc.prefetchQuery({
+        queryKey: ['granter-tickets-usage', pFrom, pTo],
+        queryFn: () => granterApi.listTicketsAllTypes(pFrom, pTo).then((r) => r.data),
+        staleTime: STALE,
+      }),
     ]
-
-    let cancelled = false
-    const idle = (fn: () => void) =>
-      (window as any).requestIdleCallback
-        ? (window as any).requestIdleCallback(fn, { timeout: 1500 })
-        : setTimeout(fn, 300)
 
     async function run() {
       for (const step of steps) {
-        if (cancelled) return
+        if (cancelled.current) return  // 사용자가 클릭하면 즉시 중단
         try { await step() } catch { /* 무시 */ }
-        await new Promise<void>((res) => idle(() => res()))  // 다음 조회 전 idle 양보
       }
     }
-    const t = setTimeout(run, 600)  // 첫 화면 렌더 후 시작
-    return () => { cancelled = true; clearTimeout(t) }
+    // 랜딩(대시보드) 첫 렌더가 끝난 뒤 시작 — 넉넉히 지연해 초기 렉 방지
+    const t = setTimeout(run, 1500)
+    return () => { cancelled.current = true; clearTimeout(t) }
   }, [enabled, qc])
 }

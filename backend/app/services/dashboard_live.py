@@ -36,8 +36,8 @@ async def build_dashboard(as_of: date | None = None) -> Dict[str, Any]:
     y_inflow = _num(total.get("inAmount"))
     y_outflow = _num(total.get("outAmount"))
 
-    # 2) 최근 7일 통장 입출금 상위
-    week_start = today - timedelta(days=7)
+    # 2) 최근 7일 통장 입출금 상위 (통합조회 last_7d와 동일하게 today-6 = 7일 포함)
+    week_start = today - timedelta(days=6)
     bank = await _granter_bank_tickets(week_start, today)
     inflows, outflows = _split_inflow_outflow(bank)
     inflows.sort(key=lambda x: x["amount"], reverse=True)
