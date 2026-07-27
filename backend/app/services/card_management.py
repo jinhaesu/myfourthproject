@@ -76,12 +76,9 @@ _CACHE_TTL = 300.0
 
 async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """
-    EXPENSE_TICKET 단일 타입만 가져옴 (list_tickets) — 모든 타입 가져오는
-    list_tickets_all_types보다 훨씬 빠름. 60초 cache로 중복 호출 절약.
+    EXPENSE_TICKET 단일 타입 — 31일 초과 기간은 자동 분할 조회(list_tickets_single).
+    긴 기간(수개월)도 조회 가능. 5분 cache로 중복 호출 절약.
     """
-    if (end_date - start_date).days > 30:
-        start_date = end_date - timedelta(days=30)
-
     key = f"{start_date.isoformat()}~{end_date.isoformat()}"
     now = _time.time()
     cached = _EXPENSE_CACHE.get(key)
@@ -91,17 +88,9 @@ async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[
     from app.services.granter_client import get_granter_client
     client = get_granter_client()
     try:
-        resp = await client.list_tickets({
-            "ticketType": "EXPENSE_TICKET",
-            "startDate": start_date.isoformat(),
-            "endDate": end_date.isoformat(),
-        })
-        if isinstance(resp, list):
-            items = resp
-        elif isinstance(resp, dict):
-            items = resp.get("data") or resp.get("items") or []
-        else:
-            items = []
+        items = await client.list_tickets_single(
+            "EXPENSE_TICKET", start_date.isoformat(), end_date.isoformat(),
+        )
     except Exception:
         logger.exception(f"그랜터 EXPENSE_TICKET 조회 실패 ({start_date}~{end_date})")
         items = []
@@ -133,9 +122,7 @@ async def list_cards(
         end_date = date.today()
     if not start_date:
         start_date = end_date - timedelta(days=31)
-    # 31일 제한
-    if (end_date - start_date).days > 30:
-        start_date = end_date - timedelta(days=30)
+    # 긴 기간은 _fetch_expense_tickets가 자동 분할 조회
 
     expense = await _fetch_expense_tickets(start_date, end_date)
 
@@ -274,11 +261,8 @@ async def list_transactions(
 ) -> List[Dict[str, Any]]:
     """
     카드 사용내역 건별 목록 + 분류(있으면) 조인.
-    그랜터 EXPENSE_TICKET 실시간 조회 기반. 최신순 정렬.
+    그랜터 EXPENSE_TICKET 실시간 조회 기반. 최신순 정렬. 긴 기간 자동 분할.
     """
-    if (end_date - start_date).days > 30:
-        start_date = end_date - timedelta(days=30)
-
     expense = await _fetch_expense_tickets(start_date, end_date)
     tickets = [t for t in expense if _build_card_key(t) == card_key]
 
@@ -475,11 +459,8 @@ async def get_card_analysis(
 ) -> Dict[str, Any]:
     """
     카드 사용 분석 — 가맹점별/카테고리별 top + 일별 합계.
-    그랜터 EXPENSE_TICKET 기반.
+    그랜터 EXPENSE_TICKET 기반. 긴 기간 자동 분할.
     """
-    if (end_date - start_date).days > 30:
-        start_date = end_date - timedelta(days=30)
-
     expense = await _fetch_expense_tickets(start_date, end_date)
 
     # card_key 매칭만

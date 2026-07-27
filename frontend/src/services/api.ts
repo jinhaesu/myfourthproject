@@ -186,7 +186,7 @@ export const treasuryApi = {
 
   internalTransfers: (start_date: string, end_date: string) =>
     api.get('/treasury/internal-transfers', {
-      params: { start_date, end_date }, timeout: 120_000,
+      params: { start_date, end_date }, timeout: 180_000,
     }),
   setAccountRole: (data: { account_label: string; role: string; memo?: string }) =>
     api.put('/treasury/account-role', data),
@@ -1235,7 +1235,7 @@ export interface CardTransaction {
 export const cardsApi = {
   list: (start_date?: string, end_date?: string, mine_only?: boolean) =>
     api.get<{ cards: CardInfo[]; is_admin: boolean }>('/cards/list', {
-      params: { start_date, end_date, mine_only }, timeout: 60_000,
+      params: { start_date, end_date, mine_only }, timeout: 180_000,
     }),
   updateAlias: (card_key: string, patch: { nickname?: string; color?: string; memo?: string; is_active?: boolean }) =>
     api.put('/cards/alias', patch, { params: { card_key } }),
@@ -1243,14 +1243,14 @@ export const cardsApi = {
     api.put('/cards/assign', { card_key, email }),
   transactions: (card_key: string, start_date?: string, end_date?: string) =>
     api.get<{ card_key: string; transactions: CardTransaction[] }>('/cards/transactions', {
-      params: { card_key, start_date, end_date }, timeout: 60_000,
+      params: { card_key, start_date, end_date }, timeout: 180_000,
     }),
   classify: (data: {
     ticket_id: string; card_key: string; category: string; memo?: string
     transact_at?: string; store_name?: string; amount?: number
   }) => api.put('/cards/transactions/classify', data),
   analysis: (card_key: string, start_date?: string, end_date?: string) =>
-    api.get('/cards/analysis', { params: { card_key, start_date, end_date }, timeout: 60_000 }),
+    api.get('/cards/analysis', { params: { card_key, start_date, end_date }, timeout: 180_000 }),
   monthly: (card_key?: string, months: number = 6) =>
     api.get('/cards/monthly', { params: { card_key, months }, timeout: 120_000 }),
   // 월별 분류 마감

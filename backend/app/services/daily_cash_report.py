@@ -107,11 +107,8 @@ async def _granter_tickets_single(
 ) -> List[Dict[str, Any]]:
     """단일 타입 티켓 조회 — 필요한 타입만 1회 호출 (기존 all_types는 4타입×4회 낭비).
 
-    5분 캐시로 같은 기간 재조회 절약. 다이제스트 생성 속도의 핵심.
+    5분 캐시로 같은 기간 재조회 절약. 긴 기간은 자동 분할(list_tickets_single).
     """
-    if (end_date - start_date).days > 30:
-        start_date = end_date - timedelta(days=30)
-
     key = (ticket_type, start_date.isoformat(), end_date.isoformat())
     now = _time.time()
     cached = _SINGLE_TYPE_CACHE.get(key)
@@ -120,17 +117,9 @@ async def _granter_tickets_single(
 
     client = get_granter_client()
     try:
-        resp = await client.list_tickets({
-            "ticketType": ticket_type,
-            "startDate": start_date.isoformat(),
-            "endDate": end_date.isoformat(),
-        })
-        if isinstance(resp, list):
-            items = resp
-        elif isinstance(resp, dict):
-            items = resp.get("data") or resp.get("items") or []
-        else:
-            items = []
+        items = await client.list_tickets_single(
+            ticket_type, start_date.isoformat(), end_date.isoformat(),
+        )
         _SINGLE_TYPE_CACHE[key] = (items, now)
         # 오래된 캐시 정리
         for k in list(_SINGLE_TYPE_CACHE.keys()):

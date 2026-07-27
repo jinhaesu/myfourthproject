@@ -191,6 +191,60 @@ class GranterClient:
         """카드·계좌·세금계산서·현금영수증·결재 등 통합 거래 조회 (POST)"""
         return await self._request("POST", "/tickets", json=payload)
 
+    async def list_tickets_single(
+        self, ticket_type: str, start_date: str, end_date: str,
+    ) -> List[Dict[str, Any]]:
+        """단일 ticketType 거래 조회 — 31일 초과 시 31일씩 분할 호출 후 합침(중복 제거).
+
+        그랜터 31일 한도 때문에 긴 기간(수개월)도 조회 가능하게 하는 헬퍼.
+        """
+        from datetime import date as _date, timedelta as _td
+
+        def _parse(s: str):
+            try:
+                return _date.fromisoformat(s[:10])
+            except Exception:
+                return None
+
+        sd, ed = _parse(start_date), _parse(end_date)
+
+        def _extract(resp: Any) -> List[Dict[str, Any]]:
+            if isinstance(resp, list):
+                return resp
+            if isinstance(resp, dict):
+                return resp.get("data") or resp.get("items") or []
+            return []
+
+        # 31일 이하면 단일 호출
+        if not sd or not ed or (ed - sd).days <= 30:
+            resp = await self.list_tickets({
+                "ticketType": ticket_type,
+                "startDate": start_date, "endDate": end_date,
+            })
+            return _extract(resp)
+
+        # 31일 초과 — 분할
+        merged: List[Dict[str, Any]] = []
+        seen: set = set()
+        cur = sd
+        while cur <= ed:
+            chunk_end = min(cur + _td(days=30), ed)
+            try:
+                resp = await self.list_tickets({
+                    "ticketType": ticket_type,
+                    "startDate": cur.isoformat(), "endDate": chunk_end.isoformat(),
+                })
+                for it in _extract(resp):
+                    tid = it.get("id")
+                    if tid in seen:
+                        continue
+                    seen.add(tid)
+                    merged.append(it)
+            except Exception:
+                logger.exception(f"list_tickets_single 분할 실패 {ticket_type} {cur}~{chunk_end}")
+            cur = chunk_end + _td(days=1)
+        return merged
+
     async def bulk_update_tickets(self, payload: Dict[str, Any]) -> Any:
         """거래 일괄 수정 (분류/태그/메모 등)"""
         return await self._request("POST", "/tickets/bulk-update-individual", json=payload)

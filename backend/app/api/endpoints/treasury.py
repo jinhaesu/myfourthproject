@@ -387,8 +387,8 @@ async def internal_transfers(
     """
     if end_date < start_date:
         raise HTTPException(status_code=400, detail="기간이 올바르지 않습니다.")
-    if (end_date - start_date).days > 190:
-        raise HTTPException(status_code=400, detail="조회 기간은 최대 6개월입니다.")
+    if (end_date - start_date).days > 400:
+        raise HTTPException(status_code=400, detail="조회 기간은 최대 1년입니다.")
     from app.services.internal_transfers import build_internal_transfers
     from app.models.account_role import BankAccountRole
     from sqlalchemy import select as _select
