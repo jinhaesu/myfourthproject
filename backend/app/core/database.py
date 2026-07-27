@@ -302,6 +302,13 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS ix_purchase_catalog_folder ON purchase_catalog_items(folder) WHERE folder IS NOT NULL",
         "ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS channel VARCHAR(50)",
         "ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS channel_account_id VARCHAR(200)",
+        # 구매 자동승인 설정
+        """CREATE TABLE IF NOT EXISTS purchase_settings (
+            id SERIAL PRIMARY KEY,
+            auto_approve_enabled BOOLEAN DEFAULT FALSE,
+            auto_approve_threshold DOUBLE PRECISION DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )""",
         # 계좌 역할 (매출보관/운영지출/적립) — 간접 현금흐름 관리
         """CREATE TABLE IF NOT EXISTS bank_account_roles (
             id SERIAL PRIMARY KEY,

@@ -40,8 +40,9 @@ const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
 }
 
 export default function PurchasePage() {
-  const { user } = useAuthStore()
-  const isAdmin = !!user?.isAdmin
+  const { user, menuMode } = useAuthStore()
+  // 관리자여도 '일반 직원용' 모드로 보면 직원처럼 동작(본인 요청만·승인 불가)
+  const isAdmin = !!user?.isAdmin && menuMode === 'admin'
   const [tab, setTab] = useState<'catalog' | 'requests'>('catalog')
 
   return (
@@ -666,6 +667,51 @@ function CatalogTab() {
 
 // ==================== 구매요청 탭 ====================
 
+function AutoApprovePanel() {
+  const qc = useQueryClient()
+  const [enabled, setEnabled] = useState(false)
+  const [threshold, setThreshold] = useState('')
+  const [loaded, setLoaded] = useState(false)
+
+  useQuery({
+    queryKey: ['purchase-auto-approve'],
+    queryFn: () => purchaseApi.getAutoApprove().then((r) => {
+      if (!loaded) { setEnabled(r.data.enabled); setThreshold(String(r.data.threshold || '')); setLoaded(true) }
+      return r.data
+    }),
+  })
+  const saveMut = useMutation({
+    mutationFn: () => purchaseApi.setAutoApprove(enabled, Number(threshold) || 0),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['purchase-auto-approve'] }); toast.success('자동승인 설정을 저장했습니다') },
+    onError: (e: any) => toast.error(e.response?.data?.detail || '저장 실패'),
+  })
+
+  return (
+    <div className="panel p-2.5 flex items-center gap-2 flex-wrap bg-canvas-50/50">
+      <button
+        onClick={() => setEnabled(!enabled)}
+        className={`relative w-9 h-5 rounded-full transition flex-shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-ink-200'}`}
+        title="금액 이하 자동승인"
+      >
+        <span className={`absolute top-0.5 ${enabled ? 'right-0.5' : 'left-0.5'} w-4 h-4 rounded-full bg-white shadow transition-all`} />
+      </button>
+      <span className="text-xs font-medium text-ink-800">자동승인</span>
+      <span className="text-2xs text-ink-500">이 금액 이하는 제출 즉시 자동 승인</span>
+      <input
+        type="number"
+        value={threshold}
+        onChange={(e) => setThreshold(e.target.value)}
+        placeholder="예: 100000"
+        disabled={!enabled}
+        className="w-28 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none font-mono disabled:bg-ink-50"
+      />
+      <span className="text-2xs text-ink-500">원 이하</span>
+      <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
+        className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 ml-auto">저장</button>
+    </div>
+  )
+}
+
 function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient()
   const [statusFilter, setStatusFilter] = useState('')
@@ -674,8 +720,9 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
   const [candidates, setCandidates] = useState<Record<number, any[]>>({})
 
   const reqQuery = useQuery({
-    queryKey: ['purchase-requests', statusFilter],
-    queryFn: () => purchaseApi.listRequests(statusFilter || undefined).then((r) => r.data.requests),
+    queryKey: ['purchase-requests', statusFilter, isAdmin],
+    // 직원 모드(!isAdmin)면 본인 요청만
+    queryFn: () => purchaseApi.listRequests(statusFilter || undefined, !isAdmin).then((r) => r.data.requests),
   })
   // 보유 카드 목록 — 결제완료 시 사용한 카드 지정용 (본인에게 배정된 카드만)
   const cardsForCompleteQuery = useQuery({
@@ -732,6 +779,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div className="space-y-2">
+      {isAdmin && <AutoApprovePanel />}
       <div className="flex items-center gap-1">
         {['', 'PENDING', 'APPROVED', 'PURCHASED', 'MATCHED', 'REJECTED'].map((s) => (
           <button

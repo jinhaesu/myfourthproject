@@ -52,6 +52,7 @@ from app.models.purchase import (
     PurchaseRequest,
     PurchaseRequestItem,
     PurchaseRequestStatus,
+    PurchaseSetting,
 )
 
 __all__ = [
@@ -114,4 +115,5 @@ __all__ = [
     "PurchaseRequest",
     "PurchaseRequestItem",
     "PurchaseRequestStatus",
+    "PurchaseSetting",
 ]

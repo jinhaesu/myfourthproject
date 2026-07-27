@@ -108,6 +108,19 @@ class PurchaseRequest(Base):
     )
 
 
+class PurchaseSetting(Base):
+    """구매 설정 (단일 행 id=1) — 금액 이하 자동승인 등."""
+    __tablename__ = "purchase_settings"
+    __table_args__ = {"extend_existing": True}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    auto_approve_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_approve_threshold: Mapped[float] = mapped_column(Float, default=0.0)  # 이 금액 이하 자동승인
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
+
+
 class PurchaseRequestItem(Base):
     """구매 요청 품목"""
     __tablename__ = "purchase_request_items"

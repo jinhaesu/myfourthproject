@@ -441,21 +441,67 @@ async def create_request(
             line_total=line_total,
         ))
     req.total_amount = round(total, 2)
+
+    # 금액 이하 자동승인 설정 반영
+    from app.models.purchase import PurchaseSetting
+    setting = (await db.execute(select(PurchaseSetting).where(PurchaseSetting.id == 1))).scalar_one_or_none()
+    if setting and setting.auto_approve_enabled and req.total_amount <= (setting.auto_approve_threshold or 0):
+        req.status = PurchaseRequestStatus.APPROVED.value
+        req.approved_by = "자동승인"
+        req.approved_at = datetime.utcnow()
+
     db.add(req)
     await db.commit()
     req = await _get_request_or_404(db, req.id)
     return _request_to_dict(req)
 
 
+class AutoApproveBody(BaseModel):
+    enabled: bool
+    threshold: float
+
+
+@router.get("/auto-approve-setting")
+async def get_auto_approve(db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    """자동승인 설정 조회."""
+    from app.models.purchase import PurchaseSetting
+    s = (await db.execute(select(PurchaseSetting).where(PurchaseSetting.id == 1))).scalar_one_or_none()
+    if not s:
+        s = PurchaseSetting(id=1, auto_approve_enabled=False, auto_approve_threshold=0.0)
+        db.add(s)
+        await db.commit()
+        await db.refresh(s)
+    return {"enabled": s.auto_approve_enabled, "threshold": s.auto_approve_threshold}
+
+
+@router.put("/auto-approve-setting")
+async def set_auto_approve(
+    body: AutoApproveBody, db: AsyncSession = Depends(get_db), user=Depends(get_current_user),
+):
+    """자동승인 설정 저장 (관리자 전용)."""
+    if not is_accounting_admin(user):
+        raise HTTPException(status_code=403, detail="회계 관리자 권한이 필요합니다.")
+    from app.models.purchase import PurchaseSetting
+    s = (await db.execute(select(PurchaseSetting).where(PurchaseSetting.id == 1))).scalar_one_or_none()
+    if not s:
+        s = PurchaseSetting(id=1)
+        db.add(s)
+    s.auto_approve_enabled = body.enabled
+    s.auto_approve_threshold = max(0.0, body.threshold)
+    await db.commit()
+    return {"ok": True}
+
+
 @router.get("/requests")
 async def list_requests(
     status_filter: Optional[str] = Query(None, alias="status"),
+    mine_only: bool = Query(False, description="직원 모드 — 관리자여도 본인 요청만"),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """구매요청 목록 — 관리자: 전체 / 직원: 본인 요청만."""
+    """구매요청 목록 — 관리자: 전체 / 직원(또는 mine_only): 본인 요청만."""
     stmt = select(PurchaseRequest).options(selectinload(PurchaseRequest.items))
-    if not is_accounting_admin(user):
+    if mine_only or not is_accounting_admin(user):
         stmt = stmt.where(PurchaseRequest.requester_email == user.email)
     if status_filter:
         stmt = stmt.where(PurchaseRequest.status == status_filter.upper())

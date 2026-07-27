@@ -1358,8 +1358,11 @@ export const purchaseApi = {
     title: string; reason?: string; channel?: string; channel_account_id?: string
     items: { catalog_item_id?: number | null; title: string; unit_price: number; quantity: number }[]
   }) => api.post<PurchaseRequestInfo>('/purchase/requests', data),
-  listRequests: (status?: string) =>
-    api.get<{ requests: PurchaseRequestInfo[]; is_admin: boolean }>('/purchase/requests', { params: { status } }),
+  listRequests: (status?: string, mine_only?: boolean) =>
+    api.get<{ requests: PurchaseRequestInfo[]; is_admin: boolean }>('/purchase/requests', { params: { status, mine_only } }),
+  getAutoApprove: () => api.get<{ enabled: boolean; threshold: number }>('/purchase/auto-approve-setting'),
+  setAutoApprove: (enabled: boolean, threshold: number) =>
+    api.put('/purchase/auto-approve-setting', { enabled, threshold }),
   getRequest: (id: number) =>
     api.get<PurchaseRequestInfo>(`/purchase/requests/${id}`),
   approve: (id: number) => api.post<PurchaseRequestInfo>(`/purchase/requests/${id}/approve`),
