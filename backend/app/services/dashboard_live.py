@@ -29,12 +29,16 @@ async def build_dashboard(as_of: date | None = None) -> Dict[str, Any]:
     today = as_of or date.today()
     yesterday = today - timedelta(days=1)
 
-    # 1) 현재 잔액 + 어제 입출금 (daily-financial-report)
-    report = await _granter_daily_report(yesterday)
-    total = (report or {}).get("total", {}) if isinstance(report, dict) else {}
-    balance = _num(total.get("currentBalance"))
-    y_inflow = _num(total.get("inAmount"))
-    y_outflow = _num(total.get("outAmount"))
+    # 1) 현재 가용자금 = 오늘 기준 currentBalance (실시간 — 통합조회 잔액과 동일)
+    today_report = await _granter_daily_report(today)
+    today_total = (today_report or {}).get("total", {}) if isinstance(today_report, dict) else {}
+    balance = _num(today_total.get("currentBalance"))
+
+    # 어제 순증감 = 마지막 완료일(어제) 입출금
+    y_report = await _granter_daily_report(yesterday)
+    y_total = (y_report or {}).get("total", {}) if isinstance(y_report, dict) else {}
+    y_inflow = _num(y_total.get("inAmount"))
+    y_outflow = _num(y_total.get("outAmount"))
 
     # 2) 최근 7일 통장 입출금 상위 (통합조회 last_7d와 동일하게 today-6 = 7일 포함)
     week_start = today - timedelta(days=6)

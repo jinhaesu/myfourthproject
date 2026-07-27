@@ -49,6 +49,7 @@ export default function DashboardPage() {
             <div className="panel p-3 border-l-2 border-l-blue-400">
               <div className="text-2xs text-ink-500 flex items-center gap-1"><BanknotesIcon className="h-3 w-3" />현재 가용자금</div>
               <div className="text-xl font-bold text-ink-900 mt-0.5">{formatCurrency(data.balance, false)}</div>
+              <div className="text-2xs text-ink-400">실시간 통장 잔액 (통합조회와 동일)</div>
             </div>
             <div className="panel p-3">
               <div className="text-2xs text-ink-500">어제 순증감</div>
