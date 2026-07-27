@@ -293,6 +293,8 @@ async def list_transactions(
             "amount": amt,
             "classification": {
                 "category": cls.category,
+                "account_code": cls.account_code,
+                "account_name": cls.account_name,
                 "memo": cls.memo,
                 "classified_by": cls.classified_by,
                 "updated_at": cls.updated_at.isoformat() if cls.updated_at else None,
@@ -310,11 +312,13 @@ async def classify_transaction(
     category: str,
     memo: Optional[str],
     classified_by: str,
+    account_code: Optional[str] = None,
+    account_name: Optional[str] = None,
     transact_at: Optional[str] = None,
     store_name: Optional[str] = None,
     amount: Optional[float] = None,
 ) -> CardUsageClassification:
-    """카드 사용 건 분류 저장 (upsert)."""
+    """카드 사용 건 분류 저장 (upsert) — 원장 계정 기준."""
     cls = (await db.execute(
         select(CardUsageClassification).where(
             CardUsageClassification.ticket_id == ticket_id
@@ -325,6 +329,8 @@ async def classify_transaction(
             ticket_id=ticket_id,
             card_key=card_key,
             category=category,
+            account_code=account_code,
+            account_name=account_name,
             memo=memo,
             classified_by=classified_by,
             transact_at=transact_at,
@@ -334,6 +340,8 @@ async def classify_transaction(
         db.add(cls)
     else:
         cls.category = category
+        cls.account_code = account_code
+        cls.account_name = account_name
         cls.memo = memo
         cls.classified_by = classified_by
         if transact_at:

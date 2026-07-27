@@ -5,7 +5,7 @@ import {
   CheckIcon, XMarkIcon, ArrowPathIcon, CreditCardIcon,
   ClipboardDocumentListIcon, SparklesIcon,
 } from '@heroicons/react/24/outline'
-import { purchaseApi, CatalogItem, PurchaseRequestInfo } from '@/services/api'
+import { purchaseApi, cardsApi, CatalogItem, PurchaseRequestInfo } from '@/services/api'
 import { useAuthStore } from '@/store/authStore'
 import { formatCurrency } from '@/utils/format'
 import toast from 'react-hot-toast'
@@ -381,20 +381,31 @@ function CatalogTab() {
                   )}
                 </div>
               </div>
-              {/* 폴더 지정 */}
+              {/* 폴더 지정 — 선택 또는 새로 추가 */}
               <div className="flex items-center gap-1.5">
                 <span className="text-2xs text-ink-500">📁 폴더</span>
-                <input
-                  type="text"
-                  value={saveFolder}
-                  onChange={(e) => setSaveFolder(e.target.value)}
-                  list="catalog-folders"
-                  placeholder="부서/용도 (예: 생산부, 사무용품)"
-                  className="flex-1 px-2 py-1 text-2xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
-                />
-                <datalist id="catalog-folders">
-                  {folders.map((f) => <option key={f} value={f} />)}
-                </datalist>
+                <select
+                  value={folders.includes(saveFolder) ? saveFolder : (saveFolder ? '__new__' : '')}
+                  onChange={(e) => {
+                    if (e.target.value === '__new__') setSaveFolder(' ')  // 새 폴더 입력 모드
+                    else setSaveFolder(e.target.value)
+                  }}
+                  className="px-2 py-1 text-2xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                >
+                  <option value="">폴더 없음</option>
+                  {folders.map((f) => <option key={f} value={f}>{f}</option>)}
+                  <option value="__new__">+ 새 폴더…</option>
+                </select>
+                {(!folders.includes(saveFolder) && saveFolder !== '') && (
+                  <input
+                    type="text"
+                    value={saveFolder.trim() === '' ? '' : saveFolder}
+                    onChange={(e) => setSaveFolder(e.target.value)}
+                    placeholder="새 폴더명 (예: 생산부)"
+                    autoFocus
+                    className="flex-1 px-2 py-1 text-2xs rounded border border-blue-300 focus:border-blue-400 focus:outline-none"
+                  />
+                )}
               </div>
               <div className="flex gap-1">
                 <button
@@ -619,13 +630,20 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient()
   const [statusFilter, setStatusFilter] = useState('')
   const [expandedId, setExpandedId] = useState<number | null>(null)
-  const [completeForm, setCompleteForm] = useState<{ order_no: string; final_amount: string }>({ order_no: '', final_amount: '' })
+  const [completeForm, setCompleteForm] = useState<{ order_no: string; final_amount: string; card_key: string }>({ order_no: '', final_amount: '', card_key: '' })
   const [candidates, setCandidates] = useState<Record<number, any[]>>({})
 
   const reqQuery = useQuery({
     queryKey: ['purchase-requests', statusFilter],
     queryFn: () => purchaseApi.listRequests(statusFilter || undefined).then((r) => r.data.requests),
   })
+  // 보유 카드 목록 — 결제완료 시 사용한 카드 지정용
+  const cardsForCompleteQuery = useQuery({
+    queryKey: ['purchase-cards'],
+    queryFn: () => cardsApi.list().then((r) => r.data.cards),
+    staleTime: 5 * 60_000,
+  })
+  const heldCards = cardsForCompleteQuery.data || []
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['purchase-requests'] })
 
@@ -644,9 +662,9 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
     onSuccess: () => { invalidate(); toast.success('취소했습니다') },
   })
   const completeMut = useMutation({
-    mutationFn: (vars: { id: number; final_amount: number; order_no?: string }) =>
-      purchaseApi.complete(vars.id, { final_amount: vars.final_amount, order_no: vars.order_no }),
-    onSuccess: () => { invalidate(); toast.success('결제 완료로 등록했습니다. 카드전표 대사를 진행해주세요.') },
+    mutationFn: (vars: { id: number; final_amount: number; order_no?: string; card_key?: string }) =>
+      purchaseApi.complete(vars.id, { final_amount: vars.final_amount, order_no: vars.order_no, card_key: vars.card_key }),
+    onSuccess: () => { invalidate(); toast.success('결제 완료로 등록했습니다. 사용한 카드의 전표와 대사를 진행해주세요.') },
     onError: (e: any) => toast.error(e.response?.data?.detail || '등록 실패'),
   })
   const matchMut = useMutation({
@@ -703,7 +721,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
               <button
                 onClick={() => {
                   setExpandedId(isExpanded ? null : req.id)
-                  setCompleteForm({ order_no: '', final_amount: String(req.total_amount) })
+                  setCompleteForm({ order_no: '', final_amount: String(req.total_amount), card_key: req.card_key || '' })
                 }}
                 className="w-full p-3 text-left hover:bg-canvas-50 flex items-center gap-2"
               >
@@ -772,22 +790,35 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                   {req.status === 'APPROVED' && (
                     <div className="p-2 rounded-md bg-white border border-blue-200 space-y-1.5">
                       <div className="text-2xs font-semibold text-blue-700">
-                        결제 완료 후 등록 — 담당자가 법인카드로 결제한 뒤 최종금액을 입력해주세요
+                        결제 완료 후 등록 — 결제에 <b>사용한 법인카드</b>와 최종금액을 입력하면, 그 카드 전표와 대사합니다
+                      </div>
+                      <div className="flex gap-1.5 flex-wrap">
+                        <select value={completeForm.card_key}
+                          onChange={(e) => setCompleteForm({ ...completeForm, card_key: e.target.value })}
+                          className="flex-1 min-w-[140px] px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none">
+                          <option value="">사용한 카드 선택…</option>
+                          {heldCards.map((c) => (
+                            <option key={c.card_key} value={c.card_key}>
+                              {c.nickname || c.issuer || c.card_key}{c.last4 ? ` ····${c.last4}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <input type="number" value={completeForm.final_amount}
+                          onChange={(e) => setCompleteForm({ ...completeForm, final_amount: e.target.value })}
+                          placeholder="최종 결제금액(원)"
+                          className="w-32 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none font-mono" />
                       </div>
                       <div className="flex gap-1.5">
                         <input type="text" value={completeForm.order_no}
                           onChange={(e) => setCompleteForm({ ...completeForm, order_no: e.target.value })}
                           placeholder="주문번호 (선택)"
                           className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none" />
-                        <input type="number" value={completeForm.final_amount}
-                          onChange={(e) => setCompleteForm({ ...completeForm, final_amount: e.target.value })}
-                          placeholder="최종 결제금액(원)"
-                          className="w-32 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none font-mono" />
                         <button
                           onClick={() => completeMut.mutate({
                             id: req.id,
                             final_amount: Number(completeForm.final_amount),
                             order_no: completeForm.order_no || undefined,
+                            card_key: completeForm.card_key || undefined,
                           })}
                           disabled={!completeForm.final_amount || completeMut.isPending}
                           className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">

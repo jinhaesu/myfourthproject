@@ -1227,6 +1227,8 @@ export interface CardTransaction {
   amount: number
   classification: {
     category: string
+    account_code: string | null
+    account_name: string | null
     memo: string | null
     classified_by: string
     updated_at: string | null
@@ -1246,8 +1248,11 @@ export const cardsApi = {
     api.get<{ card_key: string; transactions: CardTransaction[] }>('/cards/transactions', {
       params: { card_key, start_date, end_date }, timeout: 180_000,
     }),
+  accounts: (q?: string) =>
+    api.get<{ accounts: { code: string; name: string }[] }>('/cards/accounts', { params: { q } }),
   classify: (data: {
-    ticket_id: string; card_key: string; category: string; memo?: string
+    ticket_id: string; card_key: string; category: string
+    account_code?: string; account_name?: string; memo?: string
     transact_at?: string; store_name?: string; amount?: number
   }) => api.put('/cards/transactions/classify', data),
   analysis: (card_key: string, start_date?: string, end_date?: string) =>

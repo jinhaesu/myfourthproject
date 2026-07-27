@@ -8,12 +8,6 @@ import { cardsApi, CardInfo, CardTransaction, CardClosing } from '@/services/api
 import { formatCurrency } from '@/utils/format'
 import toast from 'react-hot-toast'
 
-// 직원 카드 사용 용도 분류 프리셋
-const CATEGORY_PRESETS = [
-  '식대', '소모품', '교통비', '주유비', '접대비',
-  '구독/SW', '광고/마케팅', '배송/물류', '교육/도서', '기타',
-]
-
 function currentMonth() {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
@@ -35,9 +29,17 @@ export default function MyCardsPage() {
   const [month, setMonth] = useState(currentMonth())
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
   const [editingTicket, setEditingTicket] = useState<string | null>(null)
-  const [clsForm, setClsForm] = useState<{ category: string; memo: string }>({ category: '', memo: '' })
+  const [clsForm, setClsForm] = useState<{ account_code: string; account_name: string; memo: string }>({ account_code: '', account_name: '', memo: '' })
 
   const { from, to } = monthRange(month)
+
+  // 원장 계정과목 목록 (분류 선택용)
+  const accountsQuery = useQuery({
+    queryKey: ['card-accounts'],
+    queryFn: () => cardsApi.accounts().then((r) => r.data.accounts),
+    staleTime: 10 * 60_000,
+  })
+  const accounts = accountsQuery.data || []
 
   const listQuery = useQuery({
     queryKey: ['my-cards', month],
@@ -57,11 +59,13 @@ export default function MyCardsPage() {
   })
 
   const classifyMut = useMutation({
-    mutationFn: (tx: CardTransaction & { category: string; memo: string }) =>
+    mutationFn: (tx: CardTransaction & { account_code: string; account_name: string; memo: string }) =>
       cardsApi.classify({
         ticket_id: tx.ticket_id!,
         card_key: selectedCard!,
-        category: tx.category,
+        category: tx.account_name,          // 표시용 = 계정명
+        account_code: tx.account_code,
+        account_name: tx.account_name,
         memo: tx.memo || undefined,
         transact_at: tx.transact_at,
         store_name: tx.store_name || undefined,
@@ -102,17 +106,18 @@ export default function MyCardsPage() {
     }
     setEditingTicket(tx.ticket_id)
     setClsForm({
-      category: tx.classification?.category || '',
+      account_code: tx.classification?.account_code || '',
+      account_name: tx.classification?.account_name || tx.classification?.category || '',
       memo: tx.classification?.memo || '',
     })
   }
 
   function saveClassify(tx: CardTransaction) {
-    if (!clsForm.category) {
-      toast.error('분류를 선택해주세요')
+    if (!clsForm.account_code) {
+      toast.error('계정과목을 선택해주세요')
       return
     }
-    classifyMut.mutate({ ...tx, category: clsForm.category, memo: clsForm.memo })
+    classifyMut.mutate({ ...tx, account_code: clsForm.account_code, account_name: clsForm.account_name, memo: clsForm.memo })
   }
 
   return (
@@ -257,7 +262,7 @@ export default function MyCardsPage() {
                           {tx.transact_at?.replace('T', ' ')}
                           {tx.classification && (
                             <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
-                              {tx.classification.category}
+                              {tx.classification.account_code ? `${tx.classification.account_code} ` : ''}{tx.classification.account_name || tx.classification.category}
                               {tx.classification.memo && ` · ${tx.classification.memo}`}
                             </span>
                           )}
@@ -281,20 +286,21 @@ export default function MyCardsPage() {
 
                     {isEditing && (
                       <div className="mt-2 p-2 rounded-md bg-canvas-50 border border-ink-200 space-y-1.5">
-                        <div className="flex flex-wrap gap-1">
-                          {CATEGORY_PRESETS.map((cat) => (
-                            <button
-                              key={cat}
-                              onClick={() => setClsForm({ ...clsForm, category: cat })}
-                              className={`px-2 py-0.5 text-2xs rounded-full border transition ${
-                                clsForm.category === cat
-                                  ? 'bg-blue-500 text-white border-blue-500'
-                                  : 'bg-white text-ink-600 border-ink-200 hover:border-blue-300'
-                              }`}
-                            >
-                              {cat}
-                            </button>
-                          ))}
+                        <div>
+                          <div className="text-2xs text-ink-500 mb-0.5">계정과목 (원장)</div>
+                          <select
+                            value={clsForm.account_code}
+                            onChange={(e) => {
+                              const acc = accounts.find((a) => a.code === e.target.value)
+                              setClsForm({ ...clsForm, account_code: e.target.value, account_name: acc?.name || '' })
+                            }}
+                            className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                          >
+                            <option value="">계정과목 선택…</option>
+                            {accounts.map((a) => (
+                              <option key={a.code} value={a.code}>{a.code} · {a.name}</option>
+                            ))}
+                          </select>
                         </div>
                         <input
                           type="text"

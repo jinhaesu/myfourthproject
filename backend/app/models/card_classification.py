@@ -28,8 +28,10 @@ class CardUsageClassification(Base):
     store_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
-    # 분류 입력값
-    category: Mapped[str] = mapped_column(String(100))  # 용도 분류 (예: 식대, 소모품, 교통비)
+    # 분류 입력값 — 원장 계정과목 기준
+    category: Mapped[str] = mapped_column(String(100))  # 표시용(=account_name)
+    account_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 원장 계정 코드
+    account_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # 원장 계정명
     memo: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     classified_by: Mapped[str] = mapped_column(String(255), index=True)  # 분류한 사용자 이메일

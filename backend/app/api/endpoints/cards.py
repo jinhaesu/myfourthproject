@@ -37,7 +37,9 @@ class AssignBody(BaseModel):
 class ClassifyBody(BaseModel):
     ticket_id: str
     card_key: str
-    category: str
+    category: str                        # 원장 계정명 (표시용) — account_name과 동일
+    account_code: Optional[str] = None   # 원장 계정 코드
+    account_name: Optional[str] = None   # 원장 계정명
     memo: Optional[str] = None
     transact_at: Optional[str] = None
     store_name: Optional[str] = None
@@ -59,6 +61,24 @@ async def _ensure_card_access(db: AsyncSession, user, card_key: str):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="본인에게 배정된 카드가 아닙니다.",
         )
+
+
+@router.get("/accounts")
+async def list_accounts_for_classify(
+    q: Optional[str] = Query(None, description="계정 코드/명 검색"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """카드 사용 분류용 원장 계정과목 목록 (코드+명) — 직원도 접근 가능."""
+    from sqlalchemy import select as _select
+    from app.models.accounting import Account
+    stmt = _select(Account).where(Account.is_active == True)  # noqa: E712
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(Account.code.ilike(like) | Account.name.ilike(like))
+    stmt = stmt.order_by(Account.code)
+    rows = (await db.execute(stmt)).scalars().all()
+    return {"accounts": [{"code": a.code, "name": a.name} for a in rows]}
 
 
 @router.get("/list")
@@ -163,6 +183,8 @@ async def classify_transaction_api(
         ticket_id=body.ticket_id,
         card_key=body.card_key,
         category=body.category,
+        account_code=body.account_code,
+        account_name=body.account_name or body.category,
         memo=body.memo,
         classified_by=user.email,
         transact_at=body.transact_at,
@@ -172,6 +194,8 @@ async def classify_transaction_api(
     return {
         "ticket_id": cls.ticket_id,
         "category": cls.category,
+        "account_code": cls.account_code,
+        "account_name": cls.account_name,
         "memo": cls.memo,
         "classified_by": cls.classified_by,
     }
