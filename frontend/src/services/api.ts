@@ -38,9 +38,10 @@ api.interceptors.response.use(
     const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean }
     const url = String(originalRequest?.url || '')
 
-    // 외부 API forward(그랜터/홈택스 등)에서 401은 외부 응답이므로 그대로 reject
+    // 외부 API forward에서 401은 외부 응답일 수 있어 그대로 reject.
+    // 단 /granter/는 제외: 그랜터 자체 401은 백엔드가 429로 변환하므로, /granter/의 raw 401은
+    // '우리 관리자 토큰 만료'뿐 → 토큰 갱신해야 함(안 하면 통합조회가 '키 미설정'으로 막힘).
     const isExternalForward =
-      url.includes('/granter/') ||
       url.includes('/exchange-rates/') ||
       url.includes('/integrations/')
 
