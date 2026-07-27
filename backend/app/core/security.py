@@ -286,16 +286,14 @@ def require_admin():
 
 
 def is_accounting_admin(user) -> bool:
-    """회계 관리자 여부 — 지정된 관리자 이메일(ADMIN_EMAILS) 또는 superuser/ADMIN 역할.
+    """회계 관리자 여부 — 중앙 AUTH 허브가 유일한 권한 소스.
 
+    허브 SSO 로그인 시 동기화되는 is_superuser(허브 super_admin) 또는 ADMIN 역할로만 판정.
+    ADMIN_EMAILS 하드코딩 우회는 제거 — 허브 관리자 콘솔에서 권한을 빼면 즉시 일반 직원이 된다.
     회계 메뉴(전표·원장·자금·세금계산서 등) 전체 접근 권한 판별에 사용.
-    일반 직원(회사 도메인 로그인)은 False.
     """
     if user is None:
         return False
-    email = (user.email or "").lower()
-    if email in [e.lower() for e in settings.ADMIN_EMAILS]:
-        return True
     if getattr(user, "is_superuser", False):
         return True
     from app.models.user import RoleType
