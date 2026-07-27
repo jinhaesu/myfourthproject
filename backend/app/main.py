@@ -241,6 +241,29 @@ app = FastAPI(
 # GZip 압축 — 큰 응답(특히 캐시플로우 6개월 ~50MB → ~5MB) 전송 시간 대폭 단축
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
+
+# 그랜터 우선순위: X-Prefetch 헤더로 선조회 요청 표시 → 그랜터 레인에서 사용자 요청에 양보.
+# 순수 ASGI 미들웨어 — contextvar가 엔드포인트/그랜터 호출까지 확실히 전파됨.
+class _GranterPriorityMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            from app.services.granter_client import granter_prefetch_ctx
+            headers = dict(scope.get("headers") or [])
+            is_pf = headers.get(b"x-prefetch") == b"1"
+            token = granter_prefetch_ctx.set(is_pf)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                granter_prefetch_ctx.reset(token)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(_GranterPriorityMiddleware)
+
 # CORS 설정 - Vercel + localhost 허용
 app.add_middleware(
     CORSMiddleware,

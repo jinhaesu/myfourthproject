@@ -20,8 +20,15 @@ GRANTER_BASE_URL로 베이스 호스트(prefix 포함) override 가능.
 """
 import os
 import logging
+import contextvars
 from typing import Optional, Dict, Any, List
 import httpx
+
+# 이 요청이 백그라운드 선조회(prefetch)인지 — X-Prefetch 헤더로 미들웨어가 설정.
+# 선조회 그랜터 호출은 사용자 호출에 레인을 양보(우선순위 낮음).
+granter_prefetch_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "granter_prefetch", default=False,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +68,11 @@ class GranterClient:
     DEFAULT_BASE_URL = "https://app.granter.biz/api/public-docs"
     # 단일 HTTP 호출 timeout. 그랜터가 종종 30s 가까이 걸리는 경우 대비 여유.
     DEFAULT_TIMEOUT = 60.0
-    # 그랜터가 동시 호출 N개 이상이면 401로 차단 → semaphore로 직렬화
-    _SEMAPHORE = None  # type: ignore
+    # 그랜터가 동시 호출 N개 이상이면 401로 차단 → 락으로 직렬화
+    # 우선순위 게이트: 사용자 요청 > 선조회. 사용자 대기 중이면 선조회는 진행 중인 한 건만 마치고 양보.
+    _LOCK = None          # asyncio.Lock — 실제 직렬화(동시 1건)
+    _IDLE = None          # asyncio.Event — 대기 중인 사용자 요청이 없을 때 set
+    _USER_WAITING = 0     # 대기/진행 중인 사용자(비-선조회) 요청 수
 
     def __init__(self):
         import asyncio
@@ -70,9 +80,35 @@ class GranterClient:
         self.base_url = os.getenv("GRANTER_BASE_URL", self.DEFAULT_BASE_URL).rstrip("/")
         self.timeout = float(os.getenv("GRANTER_TIMEOUT", str(self.DEFAULT_TIMEOUT)))
         self._client: Optional[httpx.AsyncClient] = None
-        # 동시 호출 1개로 제한 (그랜터 401 차단 회피)
-        if GranterClient._SEMAPHORE is None:
-            GranterClient._SEMAPHORE = asyncio.Semaphore(1)
+        if GranterClient._LOCK is None:
+            GranterClient._LOCK = asyncio.Lock()
+            GranterClient._IDLE = asyncio.Event()
+            GranterClient._IDLE.set()  # 초기엔 대기 사용자 없음
+
+    @classmethod
+    async def _gate_acquire(cls) -> bool:
+        """그랜터 레인 획득. 반환값 = 이 요청이 선조회였는지(release에서 사용)."""
+        is_pf = granter_prefetch_ctx.get()
+        if is_pf:
+            # 사용자 요청이 대기/진행 중이면 없어질 때까지 양보
+            while not cls._IDLE.is_set():
+                await cls._IDLE.wait()
+        else:
+            cls._USER_WAITING += 1
+            cls._IDLE.clear()
+        await cls._LOCK.acquire()  # type: ignore
+        return is_pf
+
+    @classmethod
+    def _gate_release(cls, is_pf: bool) -> None:
+        try:
+            if cls._LOCK.locked():  # type: ignore
+                cls._LOCK.release()  # type: ignore
+        finally:
+            if not is_pf:
+                cls._USER_WAITING = max(0, cls._USER_WAITING - 1)
+                if cls._USER_WAITING == 0:
+                    cls._IDLE.set()  # type: ignore
 
     @property
     def is_configured(self) -> bool:
@@ -124,22 +160,34 @@ class GranterClient:
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
 
-        # 글로벌 semaphore로 그랜터 동시 호출 1개로 직렬화 (401 차단 방지) + 호출 간 간격
-        async with GranterClient._SEMAPHORE:  # type: ignore
-            try:
-                resp = await client.request(method, path, params=params, json=json, headers=headers)
-            except httpx.TimeoutException as e:
-                if _retry_count < 2:
-                    await asyncio.sleep(1.0 * (2 ** _retry_count))
-                    return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
-                raise GranterAPIError(f"그랜터 API 타임아웃: {path}", status_code=504) from e
-            except httpx.HTTPError as e:
-                if _retry_count < 2:
-                    await asyncio.sleep(1.0 * (2 ** _retry_count))
-                    return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
-                raise GranterAPIError(f"그랜터 API 통신 오류: {e}", status_code=502) from e
-            # 다음 호출과 간격 100ms (그랜터 부담 경감)
-            await asyncio.sleep(0.1)
+        # 우선순위 게이트로 그랜터 동시 호출 1개 직렬화(401 차단 방지) — 사용자 요청 우선.
+        # 재시도는 게이트 밖에서 재귀(락 안 재귀로 인한 교착 방지).
+        _timeout_exc = None
+        _http_exc = None
+        is_pf = await GranterClient._gate_acquire()
+        try:
+            resp = await client.request(method, path, params=params, json=json, headers=headers)
+            await asyncio.sleep(0.1)  # 다음 호출과 간격 (그랜터 부담 경감)
+        except httpx.TimeoutException as e:
+            _timeout_exc = e
+            resp = None
+        except httpx.HTTPError as e:
+            _http_exc = e
+            resp = None
+        finally:
+            GranterClient._gate_release(is_pf)
+
+        # === 게이트 밖에서 예외/상태 재시도 처리 ===
+        if _timeout_exc is not None:
+            if _retry_count < 2:
+                await asyncio.sleep(1.0 * (2 ** _retry_count))
+                return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
+            raise GranterAPIError(f"그랜터 API 타임아웃: {path}", status_code=504) from _timeout_exc
+        if _http_exc is not None:
+            if _retry_count < 2:
+                await asyncio.sleep(1.0 * (2 ** _retry_count))
+                return await self._request(method, path, params, json, idempotency_key, _retry_count + 1)
+            raise GranterAPIError(f"그랜터 API 통신 오류: {_http_exc}", status_code=502) from _http_exc
 
         # 일시적 실패(401/429/5xx) 자동 재시도 — 그랜터 동시 호출 시 간헐 401 회복
         RETRYABLE_STATUS = {401, 429, 502, 503, 504}
