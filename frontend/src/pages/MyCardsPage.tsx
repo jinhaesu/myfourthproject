@@ -178,6 +178,11 @@ export default function MyCardsPage() {
                           <LockClosedIcon className="h-2.5 w-2.5" />마감
                         </span>
                       )}
+                      {card.connected && card.transaction_count === 0 && (
+                        <span className="inline-flex items-center text-2xs px-1.5 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200">
+                          연동됨
+                        </span>
+                      )}
                     </div>
                     <div className="text-2xs text-ink-500 mt-0.5">
                       {month} 사용 {formatCurrency(card.total_amount, false)} · {card.transaction_count.toLocaleString()}건

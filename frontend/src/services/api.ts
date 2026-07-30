@@ -1217,6 +1217,7 @@ export interface CardInfo {
   total_amount: number
   transaction_count: number
   last_used: string | null
+  connected?: boolean
 }
 
 export interface CardTransaction {

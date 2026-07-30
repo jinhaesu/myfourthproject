@@ -67,6 +67,30 @@ def _build_card_key(t: Dict[str, Any]) -> Optional[str]:
     return label or last4
 
 
+def _build_card_key_from_asset(a: Dict[str, Any]) -> Optional[str]:
+    """
+    그랜터 CARD 자산 → 거래 기반(_build_card_key)과 동일 포맷의 카드 식별자.
+    자산은 식별 필드가 최상위(name/nickname/number/organizationName)에 있음
+    (card 서브객체는 비어있음). 거래키와 dedup되도록 org+last4 우선순위를 맞춘다.
+    """
+    org = (a.get("organizationName") or "").strip()
+    number = (a.get("number") or "").strip()
+    name = (a.get("name") or "").strip()
+    nickname = (a.get("nickname") or "").strip()
+    last4 = ""
+    if number:
+        digits = re.sub(r'\D', '', number)
+        last4 = digits[-4:] if len(digits) >= 4 else ""
+    label = nickname or name or org
+    if not label and not last4:
+        return None
+    if org and last4:
+        return f"{org} ({last4})"
+    if label and last4:
+        return f"{label} ({last4})"
+    return label or last4
+
+
 # 메모리 캐시 (period_key → tickets) — granter_client와 동일한 5분 TTL
 # (TTL이 경로마다 다르면 같은 기간 조회가 화면마다 다른 스냅샷을 볼 수 있음)
 import time as _time
@@ -104,6 +128,40 @@ async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[
     for k in list(_EXPENSE_CACHE.keys()):
         if now - _EXPENSE_CACHE[k][1] > 300:
             _EXPENSE_CACHE.pop(k, None)
+    return items
+
+
+# 활성 CARD 자산 캐시 (그랜터 연동됐지만 최근 거래 없는 카드도 노출용)
+_ASSET_CACHE: Dict[str, tuple] = {}
+
+
+async def _fetch_active_card_assets() -> List[Dict[str, Any]]:
+    """
+    그랜터 활성 CARD 자산 목록. 거래내역이 없어도 연동만 돼 있으면 카드 목록에 노출.
+    CARD 단일 assetType만 조회(list_all_assets 6종 순차호출보다 가벼움). 5분 캐시.
+    """
+    key = "active_card"
+    now = _time.time()
+    cached = _ASSET_CACHE.get(key)
+    if cached and (now - cached[1]) < _CACHE_TTL:
+        return cached[0]
+
+    from app.services.granter_client import get_granter_client
+    client = get_granter_client()
+    try:
+        r = await client.list_assets({"assetType": "CARD"})
+        items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+        # 활성 + 비휴면 + 비숨김만
+        items = [
+            a for a in items
+            if a.get("isActive", True) and not a.get("isHidden", False)
+            and not a.get("isDormant", False)
+        ]
+    except Exception:
+        logger.exception("그랜터 활성 CARD 자산 조회 실패")
+        items = []
+
+    _ASSET_CACHE[key] = (items, now)
     return items
 
 
@@ -149,6 +207,25 @@ async def list_cards(
         if d and (not entry["last_used"] or d > entry["last_used"]):
             entry["last_used"] = d
 
+    # 연동 카드 병합 — 거래는 없지만 그랜터에 활성 연동된 카드도 목록에 노출(관리자용).
+    # only_assigned_to(직원용)는 배정 카드만 봐야 하므로 자산 병합/추가 호출 생략.
+    asset_keys: set = set()
+    if not only_assigned_to:
+        try:
+            for a in await _fetch_active_card_assets():
+                ak = _build_card_key_from_asset(a)
+                if not ak:
+                    continue
+                asset_keys.add(ak)
+                by_card.setdefault(ak, {
+                    "card_key": ak,
+                    "total_amount": 0.0,
+                    "transaction_count": 0,
+                    "last_used": None,
+                })
+        except Exception:
+            logger.exception("활성 CARD 자산 병합 실패 — 거래 기반 목록만 반환")
+
     # alias join
     aliases = (await db.execute(select(CardAlias))).scalars().all()
     alias_map = {a.card_key: a for a in aliases}
@@ -183,6 +260,8 @@ async def list_cards(
             "total_amount": agg["total_amount"],
             "transaction_count": agg["transaction_count"],
             "last_used": agg["last_used"],
+            # 그랜터에 활성 연동된 카드 (거래 유무와 무관하게 연동 확인됨)
+            "connected": card_key in asset_keys,
         })
 
     # 사용액 큰 순
