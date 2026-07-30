@@ -3,64 +3,78 @@
  *
  * A통장→B통장 이체는 회계상 매출도 비용도 아니다.
  * 이 헬퍼를 사용해 분석 전에 해당 거래를 필터링한다.
+ *
+ * 판별 로직은 백엔드 internal_transfers.py(_resolve_counterparty)와 동일:
+ *  - 통장거래 적요(bankTransaction.content)에 '우리 계좌'의 은행 별칭 + 계좌 뒷자리(4/3)가
+ *    함께 등장하면 내부이체
+ *  - 적요에 회사명(조인앤조인) 변형이 있으면 내부이체(상대 계좌 미상)
+ * ⚠ 그랜터 통장거래는 구조화된 counterparty가 대부분 비어 있고 실제 상대방은 content에 있음.
+ * ⚠ BANK_ACCOUNT 자산의 계좌번호는 최상위 a.number, 은행명은 a.organizationName 에 있음.
  */
+
+const norm = (s: unknown) => String(s ?? '').replace(/[\s()（）㈜\-_.]/g, '').replace(/주식회사/g, '').toLowerCase()
+const digitsOnly = (s: unknown) => String(s ?? '').replace(/\D/g, '')
+
+// 은행명 → 적요에 등장하는 짧은 별칭 (백엔드 _BANK_SHORT와 동일)
+const BANK_SHORT: Record<string, string[]> = {
+  기업은행: ['기업', 'ibk'],
+  신한은행: ['신한'],
+  하나은행: ['하나', 'keb', '외환'],
+  국민은행: ['국민', 'kb'],
+  우리은행: ['우리'],
+  농협은행: ['농협', 'nh'],
+  농협: ['농협', 'nh'],
+  새마을금고: ['새마을', 'mg'],
+  카카오뱅크: ['카카오'],
+  토스뱅크: ['토스'],
+  산업은행: ['산업', 'kdb'],
+  수협은행: ['수협'],
+  부산은행: ['부산'],
+  대구은행: ['대구'],
+}
+
+interface OwnAccount {
+  bank: string
+  number: string
+  last4: string
+  last3: string
+  /** 정규화된 은행 별칭들 */
+  shorts: string[]
+}
+
+export interface OwnAccountSet {
+  accounts: OwnAccount[]
+  /** 계좌번호(전체 숫자) 집합 — 상대 계좌번호 직접 매칭용 */
+  numbers: Set<string>
+}
 
 /**
  * 본인 소유 은행 계좌 정보를 그랜터 자산 응답에서 추출.
- * granterApi.listAllAssets() 응답 형태:
- *   { CARD: [...], BANK_ACCOUNT: [...], HOME_TAX_ACCOUNT: [...], ... }
- * 각 자산: { bankAccount: { nickName, accountName, accountNumber, ... }, organizationName, ... }
+ * granterApi.listAllAssets() 응답: { CARD: [...], BANK_ACCOUNT: [...], ... }
+ * 각 BANK_ACCOUNT 자산: { id, number, organizationName, name, bankAccount: {...}, ... }
  */
-export interface OwnAccountSet {
-  /** 정규화된 계좌명/별칭 (소문자, 공백 제거) */
-  names: Set<string>
-  /** 숫자만 남긴 계좌번호 */
-  numbers: Set<string>
-  /** 디버깅용 raw 항목 */
-  raw: Array<{ name: string; number: string }>
-}
-
 export function buildOwnAccountSet(allAssets: any): OwnAccountSet {
-  const names = new Set<string>()
+  const accounts: OwnAccount[] = []
   const numbers = new Set<string>()
-  const raw: Array<{ name: string; number: string }> = []
   const banks = (allAssets?.BANK_ACCOUNT as any[]) || []
-
-  const norm = (s: string) => s.replace(/\s+/g, '').toLowerCase()
-
-  // 너무 일반적인 계좌명(보통예금/저축예금 등)은 false positive 다발 → 제외
-  const GENERIC_NAMES = new Set([
-    '보통예금', '저축예금', '당좌예금', '기업자유예금', '자유예금',
-    '입출금통장', '저축통장', '당좌통장',
-  ].map(norm))
 
   for (const a of banks) {
     const ba = a?.bankAccount || {}
-    const nickName      = String(ba.nickName    || '').trim()
-    const accountName   = String(ba.accountName || '').trim()
-    const accountNumber = String(ba.accountNumber || '').replace(/[^0-9]/g, '')
-    const orgName       = String(a.organizationName || '').trim()
-
-    // 이름 추가 — 일반 단어/너무 짧은 이름(<3자) 제외
-    const addName = (s: string) => {
-      const n = norm(s)
-      if (!n || n.length < 3) return
-      if (GENERIC_NAMES.has(n)) return
-      names.add(n)
-    }
-    if (nickName)    addName(nickName)
-    if (accountName) addName(accountName)
-    if (accountNumber) numbers.add(accountNumber)
-
-    // 회사명+계좌번호 조합 (정확 매칭이 안전)
-    if (orgName && accountNumber) {
-      names.add(norm(`${orgName}${accountNumber}`))
-    }
-
-    raw.push({ name: nickName || accountName, number: accountNumber })
+    const number = digitsOnly(a?.number || ba?.number)
+    const bank = String(a?.organizationName || ba?.bankName || ba?.organizationName || '').trim()
+    if (!number) continue
+    numbers.add(number)
+    const shorts = (BANK_SHORT[bank] || (bank ? [bank.slice(0, 2)] : [])).map(norm).filter(Boolean)
+    accounts.push({
+      bank,
+      number,
+      last4: number.length >= 4 ? number.slice(-4) : number,
+      last3: number.length >= 3 ? number.slice(-3) : number,
+      shorts,
+    })
   }
 
-  return { names, numbers, raw }
+  return { accounts, numbers }
 }
 
 /**
@@ -70,37 +84,34 @@ export function buildOwnAccountSet(allAssets: any): OwnAccountSet {
 export function isInternalTransfer(ticket: any, own: OwnAccountSet): boolean {
   const bt = ticket?.bankTransaction
   if (!bt) return false
+  if (!own.accounts.length && own.numbers.size === 0) return false
 
-  // own이 비어있으면 필터 불가 → 그대로 통과
-  if (own.names.size === 0 && own.numbers.size === 0) return false
+  // 실제 상대방/적요는 content 에 있음 (counterparty는 대부분 빈 값)
+  const memo = norm(bt.content || bt.counterparty || bt.opponent || bt.description || '')
+  if (!memo) return false
 
-  const norm = (s: string) => String(s || '').replace(/\s+/g, '').toLowerCase()
+  // 1. 회사명(조인앤조인 등)이 적요에 있으면 내부이체
+  for (const variant of SELF_COMPANY.nameVariants) {
+    const v = norm(variant)
+    if (v && memo.includes(v)) return true
+  }
 
-  // 1. 거래상대방 이름 매칭 (counterparty / opponent / counterpartyName)
-  const cpNameRaw = String(bt.counterparty || bt.opponent || bt.counterpartyName || '').trim()
-  if (cpNameRaw && own.names.has(norm(cpNameRaw))) return true
-
-  // 2. 거래상대방 계좌번호 매칭 (전체)
-  const cpNum = String(bt.counterpartyAccountNumber || bt.opponentAccountNumber || '').replace(/[^0-9]/g, '')
-  if (cpNum && own.numbers.has(cpNum)) return true
-
-  // 3. 마지막 8자리 매칭 (마스킹된 계좌번호 대응)
-  if (cpNum && cpNum.length >= 8) {
-    const last8 = cpNum.slice(-8)
-    for (const ownNum of own.numbers) {
-      if (ownNum.length >= 8 && ownNum.slice(-8) === last8) return true
+  // 2. 상대 계좌번호가 우리 계좌번호와 일치 (전체 또는 마지막 8자리)
+  const cpNum = digitsOnly(bt.counterpartyAccountNumber || bt.opponentAccountNumber || '')
+  if (cpNum) {
+    if (own.numbers.has(cpNum)) return true
+    if (cpNum.length >= 8) {
+      const last8 = cpNum.slice(-8)
+      for (const n of own.numbers) if (n.length >= 8 && n.slice(-8) === last8) return true
     }
   }
 
-  // 4. 본인회사명이 counterparty 또는 content에 포함 — "조인앤조인" 등 변형 모두 검사
-  //    (그랜터가 통장 내역에 "(주)조인앤조인", "조인앤조인" 등 다양하게 기록)
-  const cpNameNorm = norm(cpNameRaw)
-  const contentNorm = norm(bt.content || '')
-  for (const variant of SELF_COMPANY.nameVariants) {
-    const v = norm(variant)
-    if (!v) continue
-    if (cpNameNorm && cpNameNorm.includes(v)) return true
-    if (contentNorm && contentNorm.includes(v)) return true
+  // 3. 적요에 우리 계좌의 은행 별칭 + 뒷자리(4 우선, 3 보조)가 함께 등장 → 내부이체
+  for (const acc of own.accounts) {
+    const bankHit = acc.shorts.some((s) => s && memo.includes(s))
+    if (!bankHit) continue
+    if (acc.last4 && memo.includes(acc.last4)) return true
+    if (acc.last3 && memo.includes(acc.last3)) return true
   }
 
   return false
@@ -112,7 +123,7 @@ export function isInternalTransfer(ticket: any, own: OwnAccountSet): boolean {
  */
 export function filterOutInternalTransfers(tickets: any[], own: OwnAccountSet): any[] {
   if (!tickets?.length) return tickets ?? []
-  if (own.names.size === 0 && own.numbers.size === 0) return tickets
+  if (!own.accounts.length && own.numbers.size === 0) return tickets
   return tickets.filter((t) => !isInternalTransfer(t, own))
 }
 
