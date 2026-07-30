@@ -16,12 +16,12 @@ import { formatCurrency, formatCompactWon, formatDate, formatDateTime } from '@/
 
 const STATUS_META: Record<string, { label: string; class: string }> = {
   draft: { label: '임시', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
-  pending_approval: { label: '결재대기', class: 'badge bg-amber-100 text-amber-700' },
-  approved: { label: '결재완료', class: 'badge bg-blue-100 text-blue-700' },
-  scheduled: { label: '예약', class: 'badge bg-indigo-100 text-indigo-700' },
-  executing: { label: '실행중', class: 'badge bg-blue-100 text-blue-700' },
-  completed: { label: '완료', class: 'badge bg-emerald-100 text-emerald-700' },
-  failed: { label: '실패', class: 'badge bg-rose-100 text-rose-700' },
+  pending_approval: { label: '결재대기', class: 'badge bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300' },
+  approved: { label: '결재완료', class: 'badge bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' },
+  scheduled: { label: '예약', class: 'badge bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300' },
+  executing: { label: '실행중', class: 'badge bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' },
+  completed: { label: '완료', class: 'badge bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300' },
+  failed: { label: '실패', class: 'badge bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-300' },
   cancelled: { label: '취소', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
 }
 
@@ -133,7 +133,7 @@ export default function TransferPage() {
                   <tr key={it.id}>
                     <td className="text-sm">
                       {it.scheduled_date && it.status === 'scheduled' ? (
-                        <span className="text-indigo-600">예약 {formatDate(it.scheduled_date)}</span>
+                        <span className="text-indigo-600 dark:text-indigo-400">예약 {formatDate(it.scheduled_date)}</span>
                       ) : (
                         formatDateTime(it.completed_at || it.created_at)
                       )}
@@ -160,7 +160,7 @@ export default function TransferPage() {
                         {it.status === 'approved' && (
                           <button
                             onClick={() => setOtpFor(it.id)}
-                            className="text-primary-600 hover:underline font-medium"
+                            className="text-primary-600 dark:text-primary-300 hover:underline font-medium"
                           >
                             <ShieldCheckIcon className="h-4 w-4 inline mr-0.5" />
                             실행
@@ -329,7 +329,7 @@ function CreateTransferModal({ userId, onClose }: { userId: number; onClose: () 
             />
           </div>
 
-          <div className="rounded bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
+          <div className="rounded bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 p-3 text-xs text-amber-800 dark:text-amber-200">
             결재 완료 후 OTP 인증을 거쳐야 실제 이체가 실행됩니다.
           </div>
         </div>
@@ -374,7 +374,7 @@ function OTPModal({ transferId, userId, onClose }: { transferId: number; userId:
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-sm p-6">
         <div className="flex items-center gap-2 mb-4">
-          <ShieldCheckIcon className="h-6 w-6 text-primary-600" />
+          <ShieldCheckIcon className="h-6 w-6 text-primary-600 dark:text-primary-300" />
           <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">OTP 인증</h3>
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
@@ -392,7 +392,7 @@ function OTPModal({ transferId, userId, onClose }: { transferId: number; userId:
         <button
           onClick={() => requestOtpMut.mutate()}
           disabled={requestOtpMut.isPending}
-          className="text-xs text-primary-600 hover:underline mt-2"
+          className="text-xs text-primary-600 dark:text-primary-300 hover:underline mt-2"
         >
           OTP 발송 / 재발송
         </button>

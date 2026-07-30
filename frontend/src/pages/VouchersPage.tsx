@@ -337,10 +337,10 @@ function SummaryChip({
 }) {
   const toneClass: Record<string, string> = {
     neutral: 'text-ink-900 dark:text-ink-50',
-    success: 'text-emerald-700',
-    danger: 'text-rose-700',
-    mint: 'text-primary-700',
-    warning: 'text-amber-700',
+    success: 'text-emerald-700 dark:text-emerald-300',
+    danger: 'text-rose-700 dark:text-rose-300',
+    mint: 'text-primary-700 dark:text-primary-300',
+    warning: 'text-amber-700 dark:text-amber-300',
   }
   return (
     <div className="panel px-3 py-2">
@@ -415,8 +415,8 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
           <span
             className={`badge ${
               isDebit
-                ? 'bg-primary-50 text-primary-700 border-primary-200'
-                : 'bg-rose-50 text-rose-700 border-rose-200'
+                ? 'bg-primary-50 dark:bg-primary-900 text-primary-700 dark:text-primary-300 border-primary-200 dark:border-primary-700'
+                : 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
             }`}
           >
             {isDebit ? '차변' : '대변'}
@@ -427,7 +427,7 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
         <td className="px-2.5 py-1.5 text-xs text-ink-900 dark:text-ink-50">{raw.counterparty || '-'}</td>
         <td className="px-2.5 py-1.5 text-right font-mono tabular-nums text-xs whitespace-nowrap">
           {isDebit ? (
-            <span className="text-primary-700 font-semibold">
+            <span className="text-primary-700 dark:text-primary-300 font-semibold">
               {formatCurrency(raw.amount, false)}
             </span>
           ) : (
@@ -436,7 +436,7 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
         </td>
         <td className="px-2.5 py-1.5 text-right font-mono tabular-nums text-xs whitespace-nowrap">
           {!isDebit ? (
-            <span className="text-rose-700 font-semibold">
+            <span className="text-rose-700 dark:text-rose-300 font-semibold">
               {formatCurrency(raw.amount, false)}
             </span>
           ) : (
@@ -454,7 +454,7 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
   }
 
   return (
-    <tr className="bg-amber-50/40">
+    <tr className="bg-amber-50 dark:bg-amber-950/40">
       <td className="px-2.5 py-1.5 text-2xs text-ink-700 dark:text-ink-300 font-mono whitespace-nowrap">
         {dateStr}
       </td>
@@ -463,7 +463,7 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
           <button
             onClick={() => setDirection('debit')}
             className={`px-1.5 py-0.5 text-2xs font-semibold ${
-              direction === 'debit' ? 'bg-primary-600 text-white' : 'text-ink-600 dark:text-ink-400'
+              direction === 'debit' ? 'bg-primary-600 dark:bg-primary-300 text-white' : 'text-ink-600 dark:text-ink-400'
             }`}
           >
             차
@@ -471,7 +471,7 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
           <button
             onClick={() => setDirection('credit')}
             className={`px-1.5 py-0.5 text-2xs font-semibold ${
-              direction === 'credit' ? 'bg-rose-600 text-white' : 'text-ink-600 dark:text-ink-400'
+              direction === 'credit' ? 'bg-rose-600 dark:bg-rose-400 text-white' : 'text-ink-600 dark:text-ink-400'
             }`}
           >
             대

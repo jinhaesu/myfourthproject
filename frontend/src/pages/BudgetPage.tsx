@@ -171,8 +171,8 @@ export default function BudgetPage() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="card">
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-blue-100 rounded-lg">
-              <CalculatorIcon className="h-6 w-6 text-blue-600" />
+            <div className="p-3 bg-blue-100 dark:bg-blue-900 rounded-lg">
+              <CalculatorIcon className="h-6 w-6 text-blue-600 dark:text-blue-400" />
             </div>
             <div>
               <p className="text-sm text-gray-500 dark:text-gray-400">총 예산</p>
@@ -183,12 +183,12 @@ export default function BudgetPage() {
 
         <div className="card">
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-green-100 rounded-lg">
-              <ChartBarIcon className="h-6 w-6 text-green-600" />
+            <div className="p-3 bg-green-100 dark:bg-green-900 rounded-lg">
+              <ChartBarIcon className="h-6 w-6 text-green-600 dark:text-green-400" />
             </div>
             <div>
               <p className="text-sm text-gray-500 dark:text-gray-400">사용액</p>
-              <p className="text-xl font-bold text-green-600">
+              <p className="text-xl font-bold text-green-600 dark:text-green-400">
                 {formatCurrency(totalUsed)}
               </p>
             </div>
@@ -200,7 +200,7 @@ export default function BudgetPage() {
             <p className="text-sm text-gray-500 dark:text-gray-400">잔여 예산</p>
             <p
               className={`text-xl font-bold ${
-                totalRemaining >= 0 ? 'text-blue-600' : 'text-red-600'
+                totalRemaining >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-red-600 dark:text-red-400'
               }`}
             >
               {formatCurrency(totalRemaining)}
@@ -227,7 +227,7 @@ export default function BudgetPage() {
               <span className="text-lg font-bold">{formatPercent(usageRate)}</span>
             </div>
             {usageRate >= 90 && (
-              <div className="flex items-center gap-1 mt-1 text-red-600 text-xs">
+              <div className="flex items-center gap-1 mt-1 text-red-600 dark:text-red-400 text-xs">
                 <ExclamationTriangleIcon className="h-4 w-4" />
                 예산 초과 주의
               </div>
@@ -287,7 +287,7 @@ export default function BudgetPage() {
 
         {budgetsLoading ? (
           <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto"></div>
             <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
           </div>
         ) : budgets?.length > 0 ? (
@@ -459,7 +459,7 @@ function CreateBudgetModal({
   const inputClass = "w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-950 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">예산 생성</h3>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -523,7 +523,7 @@ function CreateBudgetModal({
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="label">계정별 예산 배정</label>
-              <button type="button" onClick={addLine} className="text-sm text-blue-600 hover:text-blue-800 font-medium">
+              <button type="button" onClick={addLine} className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 font-medium">
                 + 계정 추가
               </button>
             </div>
@@ -590,7 +590,7 @@ function CreateBudgetModal({
             <button
               type="submit"
               disabled={isLoading}
-              className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              className="px-4 py-2 text-white bg-blue-600 dark:bg-blue-400 rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
               {isLoading ? '생성 중...' : '생성'}
             </button>

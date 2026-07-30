@@ -399,7 +399,7 @@ export default function FinancialReportsPage() {
                                 ? formatPct(v, 1)
                                 : v === 0
                                 ? <span className="text-ink-300 dark:text-ink-600">-</span>
-                                : (v < 0 ? <span className="text-rose-600">({formatCurrency(Math.abs(v), false)})</span> : formatCurrency(v, false))}
+                                : (v < 0 ? <span className="text-rose-600 dark:text-rose-400">({formatCurrency(Math.abs(v), false)})</span> : formatCurrency(v, false))}
                             </td>
                           )
                         })}
@@ -422,7 +422,7 @@ export default function FinancialReportsPage() {
                                 {v === 0 ? (
                                   <span className="text-ink-200 dark:text-ink-700">-</span>
                                 ) : v < 0 ? (
-                                  <span className="text-rose-600">({formatCurrency(Math.abs(v), false)})</span>
+                                  <span className="text-rose-600 dark:text-rose-400">({formatCurrency(Math.abs(v), false)})</span>
                                 ) : (
                                   formatCurrency(v, false)
                                 )}
@@ -553,21 +553,21 @@ function MonthlyBSPanel({
     {
       id: 'assets',
       label: '자산',
-      tone: 'text-blue-700 bg-blue-50',
+      tone: 'text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950',
       subs: ['I. 유동자산', 'II. 비유동자산'],
       totalKey: 'total_assets' as const,
     },
     {
       id: 'liabilities',
       label: '부채',
-      tone: 'text-rose-700 bg-rose-50',
+      tone: 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950',
       subs: ['I. 유동부채', 'II. 비유동부채'],
       totalKey: 'total_liabilities' as const,
     },
     {
       id: 'equity',
       label: '자본',
-      tone: 'text-purple-700 bg-purple-50',
+      tone: 'text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950',
       subs: ['자본 항목'],
       totalKey: 'total_equity' as const,
     },

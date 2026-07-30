@@ -19,11 +19,11 @@ import LedgerEntryDetailPanel from './LedgerEntryDetailPanel'
 import FiscalYearTabs from '@/components/common/FiscalYearTabs'
 
 const CATEGORY_META: Record<string, { label: string; dot: string; chip: string }> = {
-  asset: { label: '자산', dot: 'bg-blue-500', chip: 'bg-blue-50 text-blue-700 border-blue-200' },
-  liability: { label: '부채', dot: 'bg-rose-500', chip: 'bg-rose-50 text-rose-700 border-rose-200' },
-  equity: { label: '자본', dot: 'bg-purple-500', chip: 'bg-purple-50 text-purple-700 border-purple-200' },
-  revenue: { label: '수익', dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-  expense: { label: '비용', dot: 'bg-amber-500', chip: 'bg-amber-50 text-amber-700 border-amber-200' },
+  asset: { label: '자산', dot: 'bg-blue-500', chip: 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800' },
+  liability: { label: '부채', dot: 'bg-rose-500', chip: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800' },
+  equity: { label: '자본', dot: 'bg-purple-500', chip: 'bg-purple-50 dark:bg-purple-950 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800' },
+  revenue: { label: '수익', dot: 'bg-emerald-500', chip: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' },
+  expense: { label: '비용', dot: 'bg-amber-500', chip: 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800' },
   non_operating: { label: '영업외', dot: 'bg-ink-400 dark:bg-ink-500', chip: 'bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800' },
 }
 
@@ -418,7 +418,7 @@ export default function AccountLedgerPage() {
                             <div className="text-right flex-shrink-0 ml-2">
                               <div
                                 className={`text-xs font-mono tabular-nums font-semibold ${
-                                  Number(a.closing_balance) >= 0 ? 'text-ink-900 dark:text-ink-50' : 'text-rose-600'
+                                  Number(a.closing_balance) >= 0 ? 'text-ink-900 dark:text-ink-50' : 'text-rose-600 dark:text-rose-400'
                                 }`}
                               >
                                 {formatCompactWon(a.closing_balance)}
@@ -627,9 +627,9 @@ function KPIBlock({
 }) {
   const accentClass: Record<string, string> = {
     neutral: 'text-ink-900 dark:text-ink-50',
-    primary: 'text-primary-700',
-    success: 'text-emerald-700',
-    danger: 'text-rose-700',
+    primary: 'text-primary-700 dark:text-primary-300',
+    success: 'text-emerald-700 dark:text-emerald-300',
+    danger: 'text-rose-700 dark:text-rose-300',
   }
   return (
     <div className="px-3.5 py-2.5">
@@ -642,7 +642,7 @@ function KPIBlock({
         {formatCurrency(value, false)}
       </div>
       {delta && (
-        <div className={`text-2xs font-medium mt-0.5 ${delta.positive ? 'text-emerald-600' : 'text-rose-600'}`}>
+        <div className={`text-2xs font-medium mt-0.5 ${delta.positive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
           {delta.positive ? '↑' : '↓'} {delta.value}
         </div>
       )}

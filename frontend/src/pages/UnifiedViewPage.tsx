@@ -498,11 +498,11 @@ export default function UnifiedViewPage() {
           <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-start gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1 text-2xs">
-            <div className="font-semibold text-amber-900">그랜터 API 키 미설정</div>
-            <div className="text-amber-800 mt-0.5">
+            <div className="font-semibold text-amber-900 dark:text-amber-100">그랜터 API 키 미설정</div>
+            <div className="text-amber-800 dark:text-amber-200 mt-0.5">
               Railway → Variables → <code className="font-mono bg-white dark:bg-ink-900 px-1 rounded">GRANTER_API_KEY</code>{' '}
               등록 후 자동 활성화.
             </div>
@@ -510,12 +510,12 @@ export default function UnifiedViewPage() {
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
-            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
           </div>
           {exceeds31Days && (
-            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
               ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
@@ -554,17 +554,17 @@ export default function UnifiedViewPage() {
             {(loanAssets.length > 0 || totalLoan > 0) && (
               <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100 dark:border-ink-800">
                 <div>
-                  <div className="text-2xs text-amber-700 font-semibold">대출 잔액</div>
-                  <div className="mt-0.5 text-sm font-semibold text-amber-700 font-mono tabular-nums">
+                  <div className="text-2xs text-amber-700 dark:text-amber-300 font-semibold">대출 잔액</div>
+                  <div className="mt-0.5 text-sm font-semibold text-amber-700 dark:text-amber-300 font-mono tabular-nums">
                     {formatCurrency(totalLoan, false)}
                   </div>
                   <div className="text-2xs text-ink-400 mt-0.5">{loanAssets.length}개 계좌</div>
                 </div>
                 <div>
-                  <div className="text-2xs text-primary-700 font-semibold">순포지션</div>
+                  <div className="text-2xs text-primary-700 dark:text-primary-300 font-semibold">순포지션</div>
                   <div
                     className={`mt-0.5 text-sm font-semibold font-mono tabular-nums ${
-                      netPosition >= 0 ? 'text-primary-700' : 'text-rose-700'
+                      netPosition >= 0 ? 'text-primary-700 dark:text-primary-300' : 'text-rose-700 dark:text-rose-300'
                     }`}
                   >
                     {formatCurrency(netPosition, false)}
@@ -577,7 +577,7 @@ export default function UnifiedViewPage() {
             <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100 dark:border-ink-800">
               <div>
                 <div className="text-2xs text-ink-500 dark:text-ink-400">기간 카드 사용</div>
-                <div className="mt-0.5 text-sm font-semibold text-rose-700 font-mono tabular-nums">
+                <div className="mt-0.5 text-sm font-semibold text-rose-700 dark:text-rose-300 font-mono tabular-nums">
                   {formatCurrency(totalCardUsed, false)}
                 </div>
                 <div className="text-2xs text-ink-400 mt-0.5">{usageQuery.isLoading ? '집계 중...' : 'EXPENSE_TICKET'}</div>
@@ -648,7 +648,7 @@ export default function UnifiedViewPage() {
                   <div className="text-right flex-shrink-0">
                     <div
                       className={`font-mono tabular-nums font-semibold ${
-                        isActive ? '' : balance >= 0 ? 'text-ink-900 dark:text-ink-50' : 'text-rose-600'
+                        isActive ? '' : balance >= 0 ? 'text-ink-900 dark:text-ink-50' : 'text-rose-600 dark:text-rose-400'
                       }`}
                     >
                       {formatCurrency(balance, false)}
@@ -672,7 +672,7 @@ export default function UnifiedViewPage() {
               icon={<BuildingLibraryIcon className="h-3.5 w-3.5" />}
               count={loanAssets.length}
             >
-              <div className="px-2 py-1 text-2xs text-amber-700 bg-amber-50 rounded mb-1">
+              <div className="px-2 py-1 text-2xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950 rounded mb-1">
                 ⚠️ 가용자금에 합산되지 않음
               </div>
               {loanAssets.map((a, idx) => {
@@ -696,7 +696,7 @@ export default function UnifiedViewPage() {
                       })
                     }
                     className={`w-full flex items-start justify-between px-2 py-1.5 rounded text-2xs transition gap-2 ${
-                      isActive ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'hover:bg-amber-50'
+                      isActive ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'hover:bg-amber-50 dark:hover:bg-amber-950/40'
                     }`}
                   >
                     <div className="text-left min-w-0 flex-1">
@@ -710,7 +710,7 @@ export default function UnifiedViewPage() {
                     <div className="text-right flex-shrink-0">
                       <div
                         className={`font-mono tabular-nums font-semibold ${
-                          isActive ? '' : 'text-amber-700'
+                          isActive ? '' : 'text-amber-700 dark:text-amber-300'
                         }`}
                       >
                         {formatCurrency(balance, false)}
@@ -783,7 +783,7 @@ export default function UnifiedViewPage() {
                         </span>
                       )}
                       {userAlias && (
-                        <span className={`text-2xs px-1.5 py-0.5 rounded font-semibold ${isActive ? 'bg-white/20 dark:bg-ink-900/20 text-white' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
+                        <span className={`text-2xs px-1.5 py-0.5 rounded font-semibold ${isActive ? 'bg-white/20 dark:bg-ink-900/20 text-white' : 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'}`}>
                           {userAlias}
                         </span>
                       )}
@@ -794,7 +794,7 @@ export default function UnifiedViewPage() {
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className={`font-mono tabular-nums font-semibold ${isActive ? '' : 'text-rose-700'}`}>
+                    <div className={`font-mono tabular-nums font-semibold ${isActive ? '' : 'text-rose-700 dark:text-rose-300'}`}>
                       {formatCurrency(used, false)}
                     </div>
                     {limit > 0 && (
@@ -977,26 +977,26 @@ export default function UnifiedViewPage() {
                     const s = (taxSummary || cashReceiptSummary)!
                     return (
                       <>
-                        <div className="rounded-md bg-emerald-50 border border-emerald-200 p-2.5">
-                          <div className="text-2xs font-semibold text-emerald-700 mb-1">매출 합계</div>
-                          <div className="font-mono font-bold text-emerald-800 text-sm tabular-nums leading-tight">
+                        <div className="rounded-md bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 p-2.5">
+                          <div className="text-2xs font-semibold text-emerald-700 dark:text-emerald-300 mb-1">매출 합계</div>
+                          <div className="font-mono font-bold text-emerald-800 dark:text-emerald-200 text-sm tabular-nums leading-tight">
                             {formatCurrency(s.salesAmount, false)}원
                           </div>
-                          <div className="text-2xs text-emerald-600 mt-0.5">{s.salesCount}건</div>
+                          <div className="text-2xs text-emerald-600 dark:text-emerald-400 mt-0.5">{s.salesCount}건</div>
                         </div>
-                        <div className="rounded-md bg-rose-50 border border-rose-200 p-2.5">
-                          <div className="text-2xs font-semibold text-rose-700 mb-1">매입 합계</div>
-                          <div className="font-mono font-bold text-rose-800 text-sm tabular-nums leading-tight">
+                        <div className="rounded-md bg-rose-50 dark:bg-rose-950 border border-rose-200 dark:border-rose-800 p-2.5">
+                          <div className="text-2xs font-semibold text-rose-700 dark:text-rose-300 mb-1">매입 합계</div>
+                          <div className="font-mono font-bold text-rose-800 dark:text-rose-200 text-sm tabular-nums leading-tight">
                             {formatCurrency(s.purchaseAmount, false)}원
                           </div>
-                          <div className="text-2xs text-rose-600 mt-0.5">{s.purchaseCount}건</div>
+                          <div className="text-2xs text-rose-600 dark:text-rose-400 mt-0.5">{s.purchaseCount}건</div>
                         </div>
-                        <div className={`rounded-md p-2.5 border ${s.net >= 0 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-200'}`}>
-                          <div className={`text-2xs font-semibold mb-1 ${s.net >= 0 ? 'text-blue-700' : 'text-amber-700'}`}>순 차감</div>
-                          <div className={`font-mono font-bold text-sm tabular-nums leading-tight ${s.net >= 0 ? 'text-blue-800' : 'text-amber-800'}`}>
+                        <div className={`rounded-md p-2.5 border ${s.net >= 0 ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800' : 'bg-amber-50 dark:bg-amber-950 border-amber-200 dark:border-amber-800'}`}>
+                          <div className={`text-2xs font-semibold mb-1 ${s.net >= 0 ? 'text-blue-700 dark:text-blue-300' : 'text-amber-700 dark:text-amber-300'}`}>순 차감</div>
+                          <div className={`font-mono font-bold text-sm tabular-nums leading-tight ${s.net >= 0 ? 'text-blue-800 dark:text-blue-200' : 'text-amber-800 dark:text-amber-200'}`}>
                             {s.net < 0 ? '-' : ''}{formatCurrency(Math.abs(s.net), false)}원
                           </div>
-                          <div className={`text-2xs mt-0.5 ${s.net >= 0 ? 'text-blue-600' : 'text-amber-600'}`}>매출−매입</div>
+                          <div className={`text-2xs mt-0.5 ${s.net >= 0 ? 'text-blue-600 dark:text-blue-400' : 'text-amber-600 dark:text-amber-400'}`}>매출−매입</div>
                         </div>
                       </>
                     )
@@ -1045,11 +1045,11 @@ export default function UnifiedViewPage() {
                             <td className="px-2 py-1 text-2xs text-ink-900 dark:text-ink-50 overflow-hidden">
                               <div className="truncate font-medium">{contact}</div>
                             </td>
-                            <td className={`px-2 py-1 text-right font-mono tabular-nums text-2xs font-semibold whitespace-nowrap ${isSales ? 'text-emerald-700' : 'text-rose-700'}`}>
+                            <td className={`px-2 py-1 text-right font-mono tabular-nums text-2xs font-semibold whitespace-nowrap ${isSales ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
                               {formatCurrency(amount, false)}
                             </td>
                             <td className="px-2 py-1 text-center">
-                              <span className={`text-2xs font-semibold ${isSales ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              <span className={`text-2xs font-semibold ${isSales ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                                 {isSales ? '매출' : '매입'}
                               </span>
                             </td>
@@ -1134,14 +1134,14 @@ export default function UnifiedViewPage() {
                           </td>
                           <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
                             {inAmount > 0 ? (
-                              <span className="text-emerald-700 font-semibold">{formatCurrency(inAmount, false)}</span>
+                              <span className="text-emerald-700 dark:text-emerald-300 font-semibold">{formatCurrency(inAmount, false)}</span>
                             ) : (
                               <span className="text-ink-200 dark:text-ink-700">-</span>
                             )}
                           </td>
                           <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
                             {outAmount > 0 ? (
-                              <span className="text-rose-700 font-semibold">{formatCurrency(outAmount, false)}</span>
+                              <span className="text-rose-700 dark:text-rose-300 font-semibold">{formatCurrency(outAmount, false)}</span>
                             ) : (
                               <span className="text-ink-200 dark:text-ink-700">-</span>
                             )}
@@ -1230,7 +1230,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   }, [assetsQuery.data])
 
   return (
-    <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 bg-ink-900 dark:bg-ink-50/40 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-ink-900 rounded-lg shadow-pop w-full max-w-3xl max-h-[80vh] overflow-y-auto border border-ink-200 dark:border-ink-800">
         <div className="sticky top-0 bg-white dark:bg-ink-900 border-b border-ink-200 dark:border-ink-800 px-4 py-2.5 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-ink-900 dark:text-ink-50">데이터 소스 (그랜터 자산)</h3>
@@ -1266,10 +1266,10 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                     <div className="text-xs font-medium text-ink-900 dark:text-ink-50 truncate flex items-center gap-1.5">
                       {str(a, 'nickname') || str(a, 'name')}
                       {!isActive && (
-                        <span className="badge bg-rose-50 text-rose-700 border-rose-200">비활성</span>
+                        <span className="badge bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800">비활성</span>
                       )}
                       {a.isDormant && (
-                        <span className="badge bg-amber-50 text-amber-700 border-amber-200">휴면</span>
+                        <span className="badge bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800">휴면</span>
                       )}
                     </div>
                     <div className="text-2xs text-ink-500 dark:text-ink-400 font-mono">

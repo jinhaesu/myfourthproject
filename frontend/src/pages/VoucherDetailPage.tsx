@@ -80,7 +80,7 @@ function AccountSearchSelect({
               <div
                 key={acc.id}
                 onClick={() => handleSelect(acc)}
-                className="px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer flex items-center gap-2"
+                className="px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-blue-950/40 cursor-pointer flex items-center gap-2"
               >
                 <span className="font-mono text-gray-500 dark:text-gray-400 text-xs">{acc.code}</span>
                 <span>{acc.name}</span>
@@ -257,7 +257,7 @@ export default function VoucherDetailPage() {
   if (!isNew && isLoading) {
     return (
       <div className="text-center py-12">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto" />
         <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
       </div>
     )
@@ -356,10 +356,10 @@ export default function VoucherDetailPage() {
           <tfoot>
             <tr className="bg-gray-50 dark:bg-ink-900 font-medium">
               <td className="px-2 py-2">합계</td>
-              <td className={`text-right px-2 py-2 ${!isBalanced ? 'text-red-600' : ''}`}>
+              <td className={`text-right px-2 py-2 ${!isBalanced ? 'text-red-600 dark:text-red-400' : ''}`}>
                 {formatNumber(totalDebit)}
               </td>
-              <td className={`text-right px-2 py-2 ${!isBalanced ? 'text-red-600' : ''}`}>
+              <td className={`text-right px-2 py-2 ${!isBalanced ? 'text-red-600 dark:text-red-400' : ''}`}>
                 {formatNumber(totalCredit)}
               </td>
               <td colSpan={3} className="px-2 py-2">
@@ -369,7 +369,7 @@ export default function VoucherDetailPage() {
                   </span>
                 )}
                 {isBalanced && totalDebit > 0 && (
-                  <span className="text-green-600 text-xs">차대변 일치</span>
+                  <span className="text-green-600 dark:text-green-400 text-xs">차대변 일치</span>
                 )}
               </td>
             </tr>
@@ -748,7 +748,7 @@ function ConfirmWithAccountSelect({
       {voucher.ai_confidence_score && (
         <button
           onClick={() => setShowAccountSelect(true)}
-          className="w-full text-sm text-blue-600 hover:text-blue-800"
+          className="w-full text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800"
         >
           AI 분류 수정 후 확정
         </button>

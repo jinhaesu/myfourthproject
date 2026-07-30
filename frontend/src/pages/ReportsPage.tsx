@@ -153,8 +153,8 @@ export default function ReportsPage() {
         {/* Voucher Report */}
         <div className="card">
           <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-blue-100 rounded-lg">
-              <DocumentTextIcon className="h-6 w-6 text-blue-600" />
+            <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
+              <DocumentTextIcon className="h-6 w-6 text-blue-600 dark:text-blue-400" />
             </div>
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-gray-100">전표 목록 보고서</h3>
@@ -211,8 +211,8 @@ export default function ReportsPage() {
         {/* Budget vs Actual Report */}
         <div className="card">
           <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-green-100 rounded-lg">
-              <DocumentChartBarIcon className="h-6 w-6 text-green-600" />
+            <div className="p-2 bg-green-100 dark:bg-green-900 rounded-lg">
+              <DocumentChartBarIcon className="h-6 w-6 text-green-600 dark:text-green-400" />
             </div>
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-gray-100">예산 대비 실적 보고서</h3>
@@ -249,8 +249,8 @@ export default function ReportsPage() {
         {/* Aging Report */}
         <div className="card">
           <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-yellow-100 rounded-lg">
-              <DocumentChartBarIcon className="h-6 w-6 text-yellow-600" />
+            <div className="p-2 bg-yellow-100 dark:bg-yellow-900 rounded-lg">
+              <DocumentChartBarIcon className="h-6 w-6 text-yellow-600 dark:text-yellow-400" />
             </div>
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-gray-100">채권/채무 연령 분석</h3>
@@ -265,7 +265,7 @@ export default function ReportsPage() {
                 onClick={() => setAgingType('receivables')}
                 className={`flex-1 py-2 rounded-lg text-sm font-medium ${
                   agingType === 'receivables'
-                    ? 'bg-blue-100 text-blue-700'
+                    ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'
                     : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
                 }`}
               >
@@ -275,7 +275,7 @@ export default function ReportsPage() {
                 onClick={() => setAgingType('payables')}
                 className={`flex-1 py-2 rounded-lg text-sm font-medium ${
                   agingType === 'payables'
-                    ? 'bg-blue-100 text-blue-700'
+                    ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'
                     : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
                 }`}
               >
@@ -296,8 +296,8 @@ export default function ReportsPage() {
         {/* Douzone Export */}
         <div className="card">
           <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-purple-100 rounded-lg">
-              <DocumentTextIcon className="h-6 w-6 text-purple-600" />
+            <div className="p-2 bg-purple-100 dark:bg-purple-900 rounded-lg">
+              <DocumentTextIcon className="h-6 w-6 text-purple-600 dark:text-purple-400" />
             </div>
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-gray-100">더존 양식 내보내기</h3>

@@ -129,7 +129,7 @@ export default function AdminPage() {
           onClick={() => setActiveTab('pending')}
           className={`px-4 py-2 rounded-md font-medium transition-colors ${
             activeTab === 'pending'
-              ? 'bg-white dark:bg-ink-900 text-blue-600 shadow'
+              ? 'bg-white dark:bg-ink-900 text-blue-600 dark:text-blue-400 shadow'
               : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
           }`}
         >
@@ -144,7 +144,7 @@ export default function AdminPage() {
           onClick={() => setActiveTab('all')}
           className={`px-4 py-2 rounded-md font-medium transition-colors ${
             activeTab === 'all'
-              ? 'bg-white dark:bg-ink-900 text-blue-600 shadow'
+              ? 'bg-white dark:bg-ink-900 text-blue-600 dark:text-blue-400 shadow'
               : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
           }`}
         >
@@ -154,7 +154,7 @@ export default function AdminPage() {
 
       {loading ? (
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400"></div>
         </div>
       ) : activeTab === 'pending' ? (
         /* Pending Users */
@@ -201,13 +201,13 @@ export default function AdminPage() {
                       <td className="px-6 py-4 whitespace-nowrap text-center">
                         <button
                           onClick={() => handleApproveClick(user)}
-                          className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 mr-2"
+                          className="bg-green-600 dark:bg-green-400 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 mr-2"
                         >
                           승인
                         </button>
                         <button
                           onClick={() => handleReject(user)}
-                          className="bg-red-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-red-700"
+                          className="bg-red-600 dark:bg-red-400 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-red-700"
                         >
                           거절
                         </button>
@@ -267,8 +267,8 @@ export default function AdminPage() {
                     <td className="px-6 py-4 whitespace-nowrap text-center">
                       <span className={`px-2 py-1 text-xs font-medium rounded-full ${
                         user.is_active
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-red-100 text-red-800'
+                          ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200'
+                          : 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200'
                       }`}>
                         {user.is_active ? '활성' : '비활성'}
                       </span>
@@ -278,8 +278,8 @@ export default function AdminPage() {
                         onClick={() => handleToggleActive(user)}
                         className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
                           user.is_active
-                            ? 'bg-red-100 text-red-700 hover:bg-red-200'
-                            : 'bg-green-100 text-green-700 hover:bg-green-200'
+                            ? 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 hover:bg-red-200'
+                            : 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200'
                         }`}
                       >
                         {user.is_active ? '비활성화' : '활성화'}
@@ -295,7 +295,7 @@ export default function AdminPage() {
 
       {/* Approve Modal */}
       {approveModalOpen && selectedUser && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-950 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-md">
             <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">사용자 승인</h3>
             <p className="text-gray-600 dark:text-gray-400 mb-4">
@@ -322,7 +322,7 @@ export default function AdminPage() {
               </button>
               <button
                 onClick={handleApprove}
-                className="px-4 py-2 text-white bg-green-600 rounded-lg hover:bg-green-700"
+                className="px-4 py-2 text-white bg-green-600 dark:bg-green-400 rounded-lg hover:bg-green-700"
               >
                 승인
               </button>

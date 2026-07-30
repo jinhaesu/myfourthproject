@@ -132,7 +132,7 @@ export default function TreasuryPage() {
               onClick={() => setActiveTab(tab.id)}
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.id
-                  ? 'border-blue-600 text-blue-600'
+                  ? 'border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400'
                   : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >
@@ -146,8 +146,8 @@ export default function TreasuryPage() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="card">
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-blue-100 rounded-lg">
-              <BanknotesIcon className="h-6 w-6 text-blue-600" />
+            <div className="p-3 bg-blue-100 dark:bg-blue-900 rounded-lg">
+              <BanknotesIcon className="h-6 w-6 text-blue-600 dark:text-blue-400" />
             </div>
             <div>
               <p className="text-sm text-gray-500 dark:text-gray-400">현금 잔액</p>
@@ -160,12 +160,12 @@ export default function TreasuryPage() {
 
         <div className="card">
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-green-100 rounded-lg">
-              <ArrowDownIcon className="h-6 w-6 text-green-600" />
+            <div className="p-3 bg-green-100 dark:bg-green-900 rounded-lg">
+              <ArrowDownIcon className="h-6 w-6 text-green-600 dark:text-green-400" />
             </div>
             <div>
               <p className="text-sm text-gray-500 dark:text-gray-400">매출채권</p>
-              <p className="text-xl font-bold text-green-600">
+              <p className="text-xl font-bold text-green-600 dark:text-green-400">
                 {formatCurrency(totalReceivable)}
               </p>
             </div>
@@ -174,12 +174,12 @@ export default function TreasuryPage() {
 
         <div className="card">
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-red-100 rounded-lg">
-              <ArrowUpIcon className="h-6 w-6 text-red-600" />
+            <div className="p-3 bg-red-100 dark:bg-red-900 rounded-lg">
+              <ArrowUpIcon className="h-6 w-6 text-red-600 dark:text-red-400" />
             </div>
             <div>
               <p className="text-sm text-gray-500 dark:text-gray-400">매입채무</p>
-              <p className="text-xl font-bold text-red-600">
+              <p className="text-xl font-bold text-red-600 dark:text-red-400">
                 {formatCurrency(totalPayable)}
               </p>
             </div>
@@ -192,8 +192,8 @@ export default function TreasuryPage() {
             <p
               className={`text-xl font-bold ${
                 (cashPosition?.total_balance || 0) + totalReceivable - totalPayable >= 0
-                  ? 'text-green-600'
-                  : 'text-red-600'
+                  ? 'text-green-600 dark:text-green-400'
+                  : 'text-red-600 dark:text-red-400'
               }`}
             >
               {formatCurrency(
@@ -240,7 +240,7 @@ export default function TreasuryPage() {
                   <p className="font-medium">{payment.vendor_name || `지급 #${payment.id}`}</p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">{payment.scheduled_date}</p>
                 </div>
-                <p className="font-mono font-medium text-red-600">
+                <p className="font-mono font-medium text-red-600 dark:text-red-400">
                   {formatCurrency(payment.scheduled_amount)}
                 </p>
               </div>

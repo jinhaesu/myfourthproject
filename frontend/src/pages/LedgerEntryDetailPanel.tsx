@@ -154,7 +154,7 @@ export default function LedgerEntryDetailPanel({
             {description || entry.description || '거래 상세'}
           </span>
           {isDirty && (
-            <span className="badge bg-amber-50 text-amber-700 border-amber-200 ml-1">
+            <span className="badge bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800 ml-1">
               수정 중
             </span>
           )}
@@ -188,7 +188,7 @@ export default function LedgerEntryDetailPanel({
                 onClick={() => setDirection('debit')}
                 className={`px-2.5 py-1.5 text-xs font-semibold flex items-center gap-1 transition ${
                   direction === 'debit'
-                    ? 'bg-primary-600 text-white'
+                    ? 'bg-primary-600 dark:bg-primary-300 text-white'
                     : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
                 }`}
               >
@@ -199,7 +199,7 @@ export default function LedgerEntryDetailPanel({
                 onClick={() => setDirection('credit')}
                 className={`px-2.5 py-1.5 text-xs font-semibold flex items-center gap-1 transition ${
                   direction === 'credit'
-                    ? 'bg-rose-600 text-white'
+                    ? 'bg-rose-600 dark:bg-rose-400 text-white'
                     : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
                 }`}
               >
@@ -316,7 +316,7 @@ export default function LedgerEntryDetailPanel({
                       <span className="font-mono text-ink-400 mr-1.5">{sourceCode}</span>
                       <span className="font-medium text-ink-900 dark:text-ink-50">{sourceName}</span>
                     </span>
-                    <span className="font-mono tabular-nums font-semibold text-primary-700">
+                    <span className="font-mono tabular-nums font-semibold text-primary-700 dark:text-primary-300">
                       {formatCurrency(Number(amount) || 0, false)}
                     </span>
                   </div>
@@ -326,7 +326,7 @@ export default function LedgerEntryDetailPanel({
                       <span className="font-mono text-ink-400 mr-1.5">{counterCode}</span>
                       <span className="font-medium text-ink-900 dark:text-ink-50">{counterName}</span>
                     </span>
-                    <span className="font-mono tabular-nums font-semibold text-primary-700">
+                    <span className="font-mono tabular-nums font-semibold text-primary-700 dark:text-primary-300">
                       {formatCurrency(Number(amount) || 0, false)}
                     </span>
                   </div>
@@ -341,7 +341,7 @@ export default function LedgerEntryDetailPanel({
                       <span className="font-mono text-ink-400 mr-1.5">{sourceCode}</span>
                       <span className="font-medium text-ink-900 dark:text-ink-50">{sourceName}</span>
                     </span>
-                    <span className="font-mono tabular-nums font-semibold text-rose-700">
+                    <span className="font-mono tabular-nums font-semibold text-rose-700 dark:text-rose-300">
                       {formatCurrency(Number(amount) || 0, false)}
                     </span>
                   </div>
@@ -351,7 +351,7 @@ export default function LedgerEntryDetailPanel({
                       <span className="font-mono text-ink-400 mr-1.5">{counterCode}</span>
                       <span className="font-medium text-ink-900 dark:text-ink-50">{counterName}</span>
                     </span>
-                    <span className="font-mono tabular-nums font-semibold text-rose-700">
+                    <span className="font-mono tabular-nums font-semibold text-rose-700 dark:text-rose-300">
                       {formatCurrency(Number(amount) || 0, false)}
                     </span>
                   </div>
@@ -379,7 +379,7 @@ export default function LedgerEntryDetailPanel({
           {voucherDetailQuery.isLoading ? (
             <div className="text-2xs text-ink-400">불러오는 중…</div>
           ) : voucherDetailQuery.isError ? (
-            <div className="text-2xs text-rose-600">전표 정보 조회 실패</div>
+            <div className="text-2xs text-rose-600 dark:text-rose-400">전표 정보 조회 실패</div>
           ) : (
             <div>
               <div className="grid grid-cols-12 gap-2 text-2xs text-ink-500 dark:text-ink-400 font-semibold border-b border-ink-100 dark:border-ink-800 pb-1 mb-1">
@@ -399,12 +399,12 @@ export default function LedgerEntryDetailPanel({
                 return (
                   <div key={i}
                     className={`grid grid-cols-12 gap-2 text-2xs py-1 border-b border-ink-50 dark:border-ink-800 ${
-                      isCurrentEntry ? 'bg-amber-50' : ''
+                      isCurrentEntry ? 'bg-amber-50 dark:bg-amber-950' : ''
                     }`}
                   >
                     <div className="col-span-1 text-center">
                       <span className={`px-1 py-0.5 rounded text-2xs font-semibold ${
-                        isDebit ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                        isDebit ? 'bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300' : 'bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-300'
                       }`}>
                         {isDebit ? '차' : '대'}
                       </span>
@@ -413,20 +413,20 @@ export default function LedgerEntryDetailPanel({
                     <div className="col-span-3 text-ink-800 dark:text-ink-100">{l.account_name || '-'}</div>
                     <div className="col-span-3 text-ink-600 dark:text-ink-400 truncate">{l.description || ''}</div>
                     <div className="col-span-1.5 text-right font-mono">
-                      {isDebit ? <span className="text-emerald-700 font-semibold">{formatCurrency(Number(l.debit_amount), false)}</span> : <span className="text-ink-300 dark:text-ink-600">-</span>}
+                      {isDebit ? <span className="text-emerald-700 dark:text-emerald-300 font-semibold">{formatCurrency(Number(l.debit_amount), false)}</span> : <span className="text-ink-300 dark:text-ink-600">-</span>}
                     </div>
                     <div className="col-span-1.5 text-right font-mono">
-                      {!isDebit ? <span className="text-rose-700 font-semibold">{formatCurrency(Number(l.credit_amount), false)}</span> : <span className="text-ink-300 dark:text-ink-600">-</span>}
+                      {!isDebit ? <span className="text-rose-700 dark:text-rose-300 font-semibold">{formatCurrency(Number(l.credit_amount), false)}</span> : <span className="text-ink-300 dark:text-ink-600">-</span>}
                     </div>
                   </div>
                 )
               })}
               <div className="grid grid-cols-12 gap-2 text-2xs pt-1.5 mt-1 border-t-2 border-ink-200 dark:border-ink-800 font-semibold">
                 <div className="col-span-9 text-right text-ink-700 dark:text-ink-300">합계</div>
-                <div className="col-span-1.5 text-right font-mono text-emerald-700">
+                <div className="col-span-1.5 text-right font-mono text-emerald-700 dark:text-emerald-300">
                   {formatCurrency(Number(voucherDetailQuery.data?.total_debit || 0), false)}
                 </div>
-                <div className="col-span-1.5 text-right font-mono text-rose-700">
+                <div className="col-span-1.5 text-right font-mono text-rose-700 dark:text-rose-300">
                   {formatCurrency(Number(voucherDetailQuery.data?.total_credit || 0), false)}
                 </div>
               </div>

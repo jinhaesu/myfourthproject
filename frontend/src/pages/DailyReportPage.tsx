@@ -125,15 +125,15 @@ export default function DailyReportPage() {
           <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600" />
-          <div className="text-2xs text-amber-800">그랜터 API 키 미설정 — Railway 환경변수 등록 필요</div>
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <div className="text-2xs text-amber-800 dark:text-amber-200">그랜터 API 키 미설정 — Railway 환경변수 등록 필요</div>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
-            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
           </div>
           {data?.effectiveEndDate && data?.previousDate && (
             <div className="text-2xs text-ink-500 dark:text-ink-400">
@@ -142,7 +142,7 @@ export default function DailyReportPage() {
             </div>
           )}
           {exceeds31 && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
+            <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-1 text-2xs text-amber-800 dark:text-amber-200">
               31일 초과 — 종료일 기준 최근 31일만 자동 조회
             </div>
           )}
@@ -259,16 +259,16 @@ export default function DailyReportPage() {
                       </td>
                       <td
                         className={`px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold ${
-                          diff >= 0 ? 'text-emerald-700' : 'text-rose-700'
+                          diff >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'
                         }`}
                       >
                         {diff >= 0 ? '+' : ''}
                         {formatCurrency(diff, false)}
                       </td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-emerald-700">
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-emerald-700 dark:text-emerald-300">
                         {Number(a.inAmount) > 0 ? formatCurrency(a.inAmount, false) : <span className="text-ink-200 dark:text-ink-700">-</span>}
                       </td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-rose-700">
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-rose-700 dark:text-rose-300">
                         {Number(a.outAmount) !== 0 ? formatCurrency(Math.abs(Number(a.outAmount)), false) : <span className="text-ink-200 dark:text-ink-700">-</span>}
                       </td>
                     </tr>
@@ -289,7 +289,7 @@ export default function DailyReportPage() {
       {/* 대출 계좌 별도 표 */}
       {loanAssets.length > 0 && (
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 bg-amber-50/40">
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 bg-amber-50 dark:bg-amber-950/40">
             <h2 className="text-sm">대출 계좌 (잔액 합계와 별도)</h2>
           </div>
           <div className="overflow-x-auto">
@@ -326,12 +326,12 @@ export default function DailyReportPage() {
                       <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-600 dark:text-ink-400">
                         {formatCurrency(a.previousBalance, false)}
                       </td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-amber-700">
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-amber-700 dark:text-amber-300">
                         {formatCurrency(a.currentBalance, false)}
                       </td>
                       <td
                         className={`px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold ${
-                          diff >= 0 ? 'text-amber-700' : 'text-emerald-700'
+                          diff >= 0 ? 'text-amber-700 dark:text-amber-300' : 'text-emerald-700 dark:text-emerald-300'
                         }`}
                       >
                         {diff >= 0 ? '+' : ''}
@@ -369,13 +369,13 @@ function KPI({
   const v = Number(value || 0)
   const toneClass: Record<string, string> = {
     neutral: 'text-ink-900 dark:text-ink-50',
-    primary: 'text-primary-700',
-    success: 'text-emerald-700',
-    danger: 'text-rose-700',
-    warning: 'text-amber-700',
+    primary: 'text-primary-700 dark:text-primary-300',
+    success: 'text-emerald-700 dark:text-emerald-300',
+    danger: 'text-rose-700 dark:text-rose-300',
+    warning: 'text-amber-700 dark:text-amber-300',
   }
   let deltaClass = ''
-  if (delta) deltaClass = v >= 0 ? 'text-emerald-700' : 'text-rose-700'
+  if (delta) deltaClass = v >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'
   return (
     <div className={`panel px-3 py-2 ${highlight ? 'border-ink-900 dark:border-ink-100 border-2' : ''}`}>
       <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider flex items-center gap-1">

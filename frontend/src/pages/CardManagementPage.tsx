@@ -150,7 +150,7 @@ export default function CardManagementPage() {
                 const accent = card.color || '#94A3B8'
                 return (
                   <div key={card.card_key}
-                    className={`p-3 hover:bg-canvas-50 dark:hover:bg-ink-800 cursor-pointer ${isSelected ? 'bg-blue-50/40' : ''}`}
+                    className={`p-3 hover:bg-canvas-50 dark:hover:bg-ink-800 cursor-pointer ${isSelected ? 'bg-blue-50 dark:bg-blue-950/40' : ''}`}
                     onClick={() => !isEditing && setSelectedCard(card.card_key)}
                   >
                     <div className="flex items-start gap-2">
@@ -228,9 +228,9 @@ export default function CardManagementPage() {
                               </span>
                               <span>· {card.transaction_count.toLocaleString()}건</span>
                               {card.last_used && <span>· 최근 {card.last_used}</span>}
-                              {card.memo && <span className="text-blue-700">· {card.memo}</span>}
+                              {card.memo && <span className="text-blue-700 dark:text-blue-300">· {card.memo}</span>}
                               {card.assigned_email ? (
-                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                                   <UserIcon className="h-2.5 w-2.5" />
                                   {card.assigned_email}
                                 </span>
@@ -414,7 +414,7 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                   </div>
                   <div className="flex items-center gap-1 flex-wrap justify-end max-w-[50%]">
                     {Object.entries(c.category_summary || {}).slice(0, 4).map(([cat, amt]) => (
-                      <span key={cat} className="text-2xs px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                      <span key={cat} className="text-2xs px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
                         {cat} {formatShortWon(amt)}
                       </span>
                     ))}
@@ -436,7 +436,7 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                       <button
                         onClick={() => { if (window.confirm(`${c.month} 마감을 해제할까요? 직원이 분류를 다시 수정할 수 있게 됩니다.`)) reopenMut.mutate(c.id) }}
                         disabled={reopenMut.isPending}
-                        className="px-2 py-1 text-2xs rounded border border-amber-300 text-amber-700 hover:bg-amber-50 flex items-center gap-0.5 flex-shrink-0"
+                        className="px-2 py-1 text-2xs rounded border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/40 flex items-center gap-0.5 flex-shrink-0"
                       >
                         <LockOpenIcon className="h-3 w-3" />
                         마감 해제
@@ -451,7 +451,7 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                             <span className="text-ink-500 dark:text-ink-400 w-24 flex-shrink-0">{t.transact_at?.slice(5, 16).replace('T', ' ')}</span>
                             <span className="flex-1 text-ink-800 dark:text-ink-100 truncate">{t.store_name || '(가맹점 미확인)'}</span>
                             {t.classification && (
-                              <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 flex-shrink-0">
+                              <span className="px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 flex-shrink-0">
                                 {t.classification.category}{t.classification.memo ? ` · ${t.classification.memo}` : ''}
                               </span>
                             )}

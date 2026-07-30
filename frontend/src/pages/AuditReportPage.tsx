@@ -153,27 +153,27 @@ interface TabMeta {
 
 const TAB_META: TabMeta[] = [
   { key: 'all',           label: '전체',   severityColor: 'border-ink-900 dark:border-ink-100 text-ink-900 dark:text-ink-50',           badgeClass: 'bg-ink-100 dark:bg-ink-800 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800' },
-  { key: 'revenue',       label: '매출사이드', severityColor: 'border-emerald-500 text-emerald-700', badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-  { key: 'expense',       label: '비용사이드', severityColor: 'border-rose-400 text-rose-600',       badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
-  { key: 'anomaly',       label: '이상거래', severityColor: 'border-rose-500 text-rose-700',         badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
-  { key: 'duplicate',     label: '중복',    severityColor: 'border-rose-500 text-rose-700',         badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
-  { key: 'large',         label: '큰금액',  severityColor: 'border-rose-500 text-rose-700',         badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
-  { key: 'night',         label: '새벽',    severityColor: 'border-amber-500 text-amber-700',       badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
-  { key: 'no_category',   label: '미분류',  severityColor: 'border-amber-500 text-amber-700',       badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
-  { key: 'no_attachment', label: '증빙없음', severityColor: 'border-amber-500 text-amber-700',      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
-  { key: 'long_pending',  label: '미확인',  severityColor: 'border-primary-500 text-primary-700',   badgeClass: 'bg-primary-50 text-primary-700 border-primary-200' },
+  { key: 'revenue',       label: '매출사이드', severityColor: 'border-emerald-500 text-emerald-700 dark:text-emerald-300', badgeClass: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' },
+  { key: 'expense',       label: '비용사이드', severityColor: 'border-rose-400 dark:border-rose-600 text-rose-600 dark:text-rose-400',       badgeClass: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800' },
+  { key: 'anomaly',       label: '이상거래', severityColor: 'border-rose-500 text-rose-700 dark:text-rose-300',         badgeClass: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800' },
+  { key: 'duplicate',     label: '중복',    severityColor: 'border-rose-500 text-rose-700 dark:text-rose-300',         badgeClass: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800' },
+  { key: 'large',         label: '큰금액',  severityColor: 'border-rose-500 text-rose-700 dark:text-rose-300',         badgeClass: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800' },
+  { key: 'night',         label: '새벽',    severityColor: 'border-amber-500 text-amber-700 dark:text-amber-300',       badgeClass: 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800' },
+  { key: 'no_category',   label: '미분류',  severityColor: 'border-amber-500 text-amber-700 dark:text-amber-300',       badgeClass: 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800' },
+  { key: 'no_attachment', label: '증빙없음', severityColor: 'border-amber-500 text-amber-700 dark:text-amber-300',      badgeClass: 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800' },
+  { key: 'long_pending',  label: '미확인',  severityColor: 'border-primary-500 text-primary-700 dark:text-primary-300',   badgeClass: 'bg-primary-50 dark:bg-primary-900 text-primary-700 dark:text-primary-300 border-primary-200 dark:border-primary-700' },
   { key: 'not_included',  label: '미포함',  severityColor: 'border-ink-500 dark:border-ink-400 text-ink-700 dark:text-ink-300',           badgeClass: 'bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800' },
 ]
 
 const RULE_COLOR: Record<RuleKey, string> = {
-  anomaly:        'bg-rose-50 text-rose-700 border-rose-200',
-  large:          'bg-rose-50 text-rose-700 border-rose-200',
-  night:          'bg-amber-50 text-amber-700 border-amber-200',
-  no_category:    'bg-amber-50 text-amber-700 border-amber-200',
-  no_attachment:  'bg-amber-50 text-amber-700 border-amber-200',
-  long_pending:   'bg-primary-50 text-primary-700 border-primary-200',
+  anomaly:        'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+  large:          'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+  night:          'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+  no_category:    'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+  no_attachment:  'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+  long_pending:   'bg-primary-50 dark:bg-primary-900 text-primary-700 dark:text-primary-300 border-primary-200 dark:border-primary-700',
   not_included:   'bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800',
-  duplicate:      'bg-rose-50 text-rose-700 border-rose-200',
+  duplicate:      'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
 }
 
 const SEV_ORDER: Record<Severity, number> = { high: 0, medium: 1, low: 2 }
@@ -636,25 +636,25 @@ export default function AuditReportPage() {
           <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 flex-shrink-0" />
-          <span className="text-2xs text-amber-800">
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+          <span className="text-2xs text-amber-800 dark:text-amber-200">
             그랜터 API 키가 설정되지 않았습니다. 설정 후 감사 리포트를 이용할 수 있습니다.
           </span>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
-            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
           </div>
           {fbFrom && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1 text-2xs text-amber-800">
+            <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-1 text-2xs text-amber-800 dark:text-amber-200">
               {`데이터 없음 — ${fbFrom} ~ ${fbTo} 자동 탐색 중`}
             </div>
           )}
           {!fbFrom && exceeds31 && (
-            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
               ⓘ {daysBetween(effectiveFrom, effectiveTo)}일 분석 — 31일씩 자동 분할 호출({Math.ceil(daysBetween(effectiveFrom, effectiveTo) / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
@@ -677,7 +677,7 @@ export default function AuditReportPage() {
       {!isLoading && issues.length > 0 && (
         <div className="panel px-4 py-2 flex items-center justify-between flex-wrap gap-2">
           <span className="text-2xs text-ink-500 dark:text-ink-400 font-semibold uppercase tracking-wider">검출 금액 합계 (중복 제외)</span>
-          <span className="font-mono font-bold text-sm text-rose-700 tabular-nums">
+          <span className="font-mono font-bold text-sm text-rose-700 dark:text-rose-300 tabular-nums">
             {formatCurrency(kpi.totalAmount, false)}
             <span className="text-2xs text-ink-400 ml-1 font-medium">원</span>
           </span>
@@ -686,12 +686,12 @@ export default function AuditReportPage() {
 
       {/* 모두 정상 */}
       {isAllClean && (
-        <div className="panel p-6 flex flex-col items-center gap-3 border-emerald-200 bg-emerald-50">
-          <div className="w-10 h-10 rounded-full bg-white dark:bg-ink-900 flex items-center justify-center border border-emerald-200">
-            <CheckCircleIcon className="h-5 w-5 text-emerald-600" />
+        <div className="panel p-6 flex flex-col items-center gap-3 border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950">
+          <div className="w-10 h-10 rounded-full bg-white dark:bg-ink-900 flex items-center justify-center border border-emerald-200 dark:border-emerald-800">
+            <CheckCircleIcon className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
           </div>
           <div className="text-center">
-            <div className="text-sm font-semibold text-emerald-800">이상 없음</div>
+            <div className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">이상 없음</div>
             <div className="text-2xs text-ink-500 dark:text-ink-400 mt-1">
               조회 기간 내 {tickets.length.toLocaleString('ko-KR')}건 거래 — 모든 검출 룰을 통과했습니다.
             </div>
@@ -1037,8 +1037,8 @@ function KpiCard({
   loading?: boolean
 }) {
   const cls: Record<string, string> = {
-    neutral: 'text-ink-900 dark:text-ink-50', danger: 'text-rose-700', warning: 'text-amber-700',
-    primary: 'text-primary-700', emerald: 'text-emerald-700',
+    neutral: 'text-ink-900 dark:text-ink-50', danger: 'text-rose-700 dark:text-rose-300', warning: 'text-amber-700 dark:text-amber-300',
+    primary: 'text-primary-700 dark:text-primary-300', emerald: 'text-emerald-700 dark:text-emerald-300',
   }
   return (
     <div className="panel px-3 py-2">
@@ -1057,14 +1057,14 @@ function KpiCard({
 }
 
 function SeverityBadge({ severity }: { severity: Severity }) {
-  if (severity === 'high')   return <span className="badge bg-rose-50 text-rose-700 border-rose-200">고위험</span>
-  if (severity === 'medium') return <span className="badge bg-amber-50 text-amber-700 border-amber-200">중위험</span>
-  return <span className="badge bg-primary-50 text-primary-700 border-primary-200">저위험</span>
+  if (severity === 'high')   return <span className="badge bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800">고위험</span>
+  if (severity === 'medium') return <span className="badge bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800">중위험</span>
+  return <span className="badge bg-primary-50 dark:bg-primary-900 text-primary-700 dark:text-primary-300 border-primary-200 dark:border-primary-700">저위험</span>
 }
 
 function SideBadge({ side }: { side: Side }) {
-  if (side === 'revenue') return <span className="badge bg-emerald-50 text-emerald-700 border-emerald-200">매출 IN</span>
-  if (side === 'expense') return <span className="badge bg-rose-50 text-rose-600 border-rose-200">비용 OUT</span>
+  if (side === 'revenue') return <span className="badge bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800">매출 IN</span>
+  if (side === 'expense') return <span className="badge bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800">비용 OUT</span>
   return <span className="badge bg-ink-50 dark:bg-ink-900 text-ink-500 dark:text-ink-400 border-ink-200 dark:border-ink-800">기타</span>
 }
 

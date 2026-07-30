@@ -250,10 +250,10 @@ function KPICard({
 }) {
   const colorMap: Record<string, string> = {
     neutral: 'text-ink-900 dark:text-ink-50',
-    emerald: 'text-emerald-700',
-    rose: 'text-rose-700',
-    blue: 'text-blue-700',
-    amber: 'text-amber-700',
+    emerald: 'text-emerald-700 dark:text-emerald-300',
+    rose: 'text-rose-700 dark:text-rose-300',
+    blue: 'text-blue-700 dark:text-blue-300',
+    amber: 'text-amber-700 dark:text-amber-300',
   }
   return (
     <div className="panel px-3 py-2">
@@ -271,10 +271,10 @@ function KPICard({
 
 function TxTypeBadge({ type }: { type: '매출세계' | '매입세계' | '통장입금' | '통장출금' }) {
   const cls: Record<string, string> = {
-    매출세계: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    매입세계: 'bg-rose-50 text-rose-700 border-rose-200',
-    통장입금: 'bg-blue-50 text-blue-700 border-blue-200',
-    통장출금: 'bg-amber-50 text-amber-700 border-amber-200',
+    매출세계: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+    매입세계: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+    통장입금: 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800',
+    통장출금: 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
   }
   return <span className={`badge ${cls[type]}`}>{type}</span>
 }
@@ -666,18 +666,18 @@ export default function SettlementPage() {
           <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600" />
-          <span className="text-2xs text-amber-800">그랜터 API 키 미설정 — 설정 페이지에서 연동하세요</span>
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <span className="text-2xs text-amber-800 dark:text-amber-200">그랜터 API 키 미설정 — 설정 페이지에서 연동하세요</span>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
-            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
           </div>
           {exceeds31 && (
-            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
               ⓘ {periodSpan}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodSpan / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
@@ -694,9 +694,9 @@ export default function SettlementPage() {
         <div className="panel px-3 py-2">
           <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">미정산</div>
           <div className="mt-0.5 text-sm font-bold text-ink-900 dark:text-ink-50">
-            <span className="text-amber-700">{summary.receivableCount}</span>
+            <span className="text-amber-700 dark:text-amber-300">{summary.receivableCount}</span>
             <span className="text-ink-400 text-2xs font-normal mx-1">미수</span>
-            <span className="text-rose-700">{summary.payableCount}</span>
+            <span className="text-rose-700 dark:text-rose-300">{summary.payableCount}</span>
             <span className="text-ink-400 text-2xs font-normal ml-1">미지급</span>
           </div>
         </div>
@@ -750,16 +750,16 @@ export default function SettlementPage() {
                     <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                       거래처
                     </th>
-                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-emerald-600 uppercase tracking-wider whitespace-nowrap">
+                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider whitespace-nowrap">
                       매출세금계산서
                     </th>
-                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-rose-600 uppercase tracking-wider whitespace-nowrap">
+                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-rose-600 dark:text-rose-400 uppercase tracking-wider whitespace-nowrap">
                       매입세금계산서
                     </th>
-                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-blue-600 uppercase tracking-wider whitespace-nowrap">
+                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider whitespace-nowrap">
                       통장입금
                     </th>
-                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-amber-600 uppercase tracking-wider whitespace-nowrap">
+                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-amber-600 dark:text-amber-400 uppercase tracking-wider whitespace-nowrap">
                       통장출금
                     </th>
                     <th className="px-2 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider whitespace-nowrap">
@@ -794,12 +794,12 @@ export default function SettlementPage() {
                         key={row.key}
                         onClick={() => setSelectedKey(isSel ? null : row.key)}
                         className={`cursor-pointer transition-colors ${
-                          isSel ? 'bg-primary-50' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
+                          isSel ? 'bg-primary-50 dark:bg-primary-900' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
                         }`}
                       >
                         {/* 거래처명 */}
                         <td className="px-3 py-1.5 max-w-[120px]">
-                          <div className={`text-xs font-medium truncate ${isSel ? 'text-primary-800' : 'text-ink-900 dark:text-ink-50'}`}>
+                          <div className={`text-xs font-medium truncate ${isSel ? 'text-primary-800 dark:text-primary-200' : 'text-ink-900 dark:text-ink-50'}`}>
                             {row.companyName || row.key}
                           </div>
                           {row.businessNumber && (
@@ -809,25 +809,25 @@ export default function SettlementPage() {
                           )}
                         </td>
                         {/* 매출 세금계산서 */}
-                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-emerald-700 font-semibold whitespace-nowrap">
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-emerald-700 dark:text-emerald-300 font-semibold whitespace-nowrap">
                           {row.salesInvoiceAmount > 0
                             ? formatCurrency(row.salesInvoiceAmount, false)
                             : <span className="text-ink-200 dark:text-ink-700">-</span>}
                         </td>
                         {/* 매입 세금계산서 */}
-                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-rose-700 font-semibold whitespace-nowrap">
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-rose-700 dark:text-rose-300 font-semibold whitespace-nowrap">
                           {row.purchaseInvoiceAmount > 0
                             ? formatCurrency(row.purchaseInvoiceAmount, false)
                             : <span className="text-ink-200 dark:text-ink-700">-</span>}
                         </td>
                         {/* 통장 입금 */}
-                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-blue-700 font-semibold whitespace-nowrap">
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-blue-700 dark:text-blue-300 font-semibold whitespace-nowrap">
                           {row.bankInAmount > 0
                             ? formatCurrency(row.bankInAmount, false)
                             : <span className="text-ink-200 dark:text-ink-700">-</span>}
                         </td>
                         {/* 통장 출금 */}
-                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-amber-700 font-semibold whitespace-nowrap">
+                        <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-amber-700 dark:text-amber-300 font-semibold whitespace-nowrap">
                           {row.bankOutAmount > 0
                             ? formatCurrency(row.bankOutAmount, false)
                             : <span className="text-ink-200 dark:text-ink-700">-</span>}
@@ -837,10 +837,10 @@ export default function SettlementPage() {
                           {row.salesInvoiceAmount > 0 || row.bankInAmount > 0 ? (
                             <span className={
                               row.salesBalance > 0
-                                ? 'text-amber-700'
+                                ? 'text-amber-700 dark:text-amber-300'
                                 : row.salesBalance < 0
-                                ? 'text-blue-700'
-                                : 'text-emerald-700'
+                                ? 'text-blue-700 dark:text-blue-300'
+                                : 'text-emerald-700 dark:text-emerald-300'
                             }>
                               {row.salesBalance > 0 ? '+' : ''}
                               {formatCurrency(row.salesBalance, false)}
@@ -854,10 +854,10 @@ export default function SettlementPage() {
                           {row.purchaseInvoiceAmount > 0 || row.bankOutAmount > 0 ? (
                             <span className={
                               row.purchaseBalance > 0
-                                ? 'text-rose-700'
+                                ? 'text-rose-700 dark:text-rose-300'
                                 : row.purchaseBalance < 0
-                                ? 'text-blue-700'
-                                : 'text-emerald-700'
+                                ? 'text-blue-700 dark:text-blue-300'
+                                : 'text-emerald-700 dark:text-emerald-300'
                             }>
                               {row.purchaseBalance > 0 ? '+' : ''}
                               {formatCurrency(row.purchaseBalance, false)}

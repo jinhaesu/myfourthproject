@@ -31,11 +31,11 @@ function extractFromPaste(text: string): { name: string; url: string } {
 }
 
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
-  PENDING: { label: '승인 대기', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-  APPROVED: { label: '승인됨 · 결제 대기', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
-  REJECTED: { label: '반려', cls: 'bg-red-50 text-red-700 border-red-200' },
-  PURCHASED: { label: '결제 완료 · 대사 대기', cls: 'bg-violet-50 text-violet-700 border-violet-200' },
-  MATCHED: { label: '전표 대사 완료', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  PENDING: { label: '승인 대기', cls: 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800' },
+  APPROVED: { label: '승인됨 · 결제 대기', cls: 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800' },
+  REJECTED: { label: '반려', cls: 'bg-red-50 dark:bg-red-950 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800' },
+  PURCHASED: { label: '결제 완료 · 대사 대기', cls: 'bg-violet-50 dark:bg-violet-950 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800' },
+  MATCHED: { label: '전표 대사 완료', cls: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' },
   CANCELED: { label: '취소됨', cls: 'bg-ink-50 dark:bg-ink-900 text-ink-500 dark:text-ink-400 border-ink-200 dark:border-ink-800' },
 }
 
@@ -284,7 +284,7 @@ function CatalogTab() {
             <button
               onClick={handleNaverSearch}
               disabled={naverSearching || !naverQuery.trim()}
-              className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
+              className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 dark:bg-emerald-400 text-white font-semibold hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
             >
               {naverSearching ? '검색 중…' : '검색'}
             </button>
@@ -309,7 +309,7 @@ function CatalogTab() {
             <div className="max-h-72 overflow-y-auto divide-y divide-ink-100 dark:divide-ink-800 bg-white dark:bg-ink-900 rounded border border-ink-200 dark:border-ink-800">
               {naverResults.map((it, i) => (
                 <button key={i} onClick={() => pickNaverResult(it)}
-                  className="w-full p-2 flex items-center gap-2 text-left hover:bg-emerald-50">
+                  className="w-full p-2 flex items-center gap-2 text-left hover:bg-emerald-50 dark:hover:bg-emerald-950/40">
                   {it.image_url && <img src={it.image_url} alt="" className="w-10 h-10 rounded object-cover flex-shrink-0" />}
                   <span className="flex-1 text-2xs text-ink-800 dark:text-ink-100 truncate">{it.title}</span>
                   <span className="text-2xs text-ink-500 dark:text-ink-400 flex-shrink-0">{it.seller}</span>
@@ -322,7 +322,7 @@ function CatalogTab() {
             </div>
           )}
           {naverUnavailable && (
-            <div className="text-2xs text-amber-700">
+            <div className="text-2xs text-amber-700 dark:text-amber-300">
               네이버 검색 API가 아직 설정되지 않았습니다. 아래 '직접 입력'을 이용하거나 관리자에게 문의하세요.
             </div>
           )}
@@ -342,12 +342,12 @@ function CatalogTab() {
                 className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
               />
               <button onClick={handleParse} disabled={parsing || !url.trim()}
-                className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
+                className="px-2.5 py-1 text-2xs rounded bg-blue-600 dark:bg-blue-400 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
                 {parsing ? '인식 중…' : '링크 인식'}
               </button>
             </div>
             {preview && !preview.parsed && (
-              <div className="text-2xs text-amber-700 mt-1">
+              <div className="text-2xs text-amber-700 dark:text-amber-300 mt-1">
                 이 사이트는 링크 자동 인식이 안 됩니다. 위에서 상품명으로 검색하거나 아래에 직접 입력해주세요.
               </div>
             )}
@@ -417,7 +417,7 @@ function CatalogTab() {
                     onChange={(e) => setSaveFolder(e.target.value)}
                     placeholder="새 폴더명 (예: 생산부)"
                     autoFocus
-                    className="flex-1 px-2 py-1 text-2xs rounded border border-blue-300 focus:border-blue-400 focus:outline-none"
+                    className="flex-1 px-2 py-1 text-2xs rounded border border-blue-300 dark:border-blue-700 focus:border-blue-400 focus:outline-none"
                   />
                 )}
               </div>
@@ -463,7 +463,7 @@ function CatalogTab() {
               </button>
               {folders.map((f) => (
                 <button key={f} onClick={() => setFolder(f)}
-                  className={`px-2 py-0.5 text-2xs rounded-full border ${folder === f ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-400 border-ink-200 dark:border-ink-800 hover:border-blue-300'}`}>
+                  className={`px-2 py-0.5 text-2xs rounded-full border ${folder === f ? 'bg-blue-600 dark:bg-blue-400 text-white border-blue-600 dark:border-blue-400' : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-400 border-ink-200 dark:border-ink-800 hover:border-blue-300'}`}>
                   📁 {f}
                 </button>
               ))}
@@ -491,11 +491,11 @@ function CatalogTab() {
                       <input type="text" value={editItemForm.title}
                         onChange={(e) => setEditItemForm({ ...editItemForm, title: e.target.value })}
                         placeholder="상품명"
-                        className="flex-1 px-2 py-1 text-xs rounded border border-blue-300 focus:outline-none" />
+                        className="flex-1 px-2 py-1 text-xs rounded border border-blue-300 dark:border-blue-700 focus:outline-none" />
                       <input type="number" value={editItemForm.price}
                         onChange={(e) => setEditItemForm({ ...editItemForm, price: e.target.value })}
                         placeholder="가격"
-                        className="w-24 px-2 py-1 text-xs rounded border border-blue-300 focus:outline-none font-mono" />
+                        className="w-24 px-2 py-1 text-xs rounded border border-blue-300 dark:border-blue-700 focus:outline-none font-mono" />
                       <button
                         onClick={() => editItemMut.mutate({ id: item.id, title: editItemForm.title, price: editItemForm.price ? Number(editItemForm.price) : null })}
                         disabled={editItemMut.isPending || !editItemForm.title.trim()}
@@ -554,7 +554,7 @@ function CatalogTab() {
                   )}
                   <button
                     onClick={() => addToCart(item)}
-                    className="px-2 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 flex-shrink-0 flex items-center gap-0.5"
+                    className="px-2 py-1 text-2xs rounded bg-blue-600 dark:bg-blue-400 text-white font-semibold hover:bg-blue-700 flex-shrink-0 flex items-center gap-0.5"
                   >
                     <PlusIcon className="h-3 w-3" />
                     담기
@@ -654,7 +654,7 @@ function CatalogTab() {
             <button
               onClick={() => createReqMut.mutate()}
               disabled={createReqMut.isPending}
-              className="w-full py-1.5 text-xs rounded-md bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50"
+              className="w-full py-1.5 text-xs rounded-md bg-blue-600 dark:bg-blue-400 text-white font-semibold hover:bg-blue-700 disabled:opacity-50"
             >
               구매요청 제출 (승인 요청)
             </button>
@@ -707,7 +707,7 @@ function AutoApprovePanel() {
       />
       <span className="text-2xs text-ink-500 dark:text-ink-400">원 이하</span>
       <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
-        className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 ml-auto">저장</button>
+        className="px-2.5 py-1 text-2xs rounded bg-blue-600 dark:bg-blue-400 text-white font-semibold hover:bg-blue-700 ml-auto">저장</button>
     </div>
   )
 }
@@ -820,7 +820,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                   </div>
                   <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
                     {req.requester_email.split('@')[0]} · {req.created_at?.slice(0, 10)} · {req.items.length}개 품목
-                    {req.matched_ticket_id && <span className="text-emerald-600"> · 전표 #{req.matched_ticket_id}</span>}
+                    {req.matched_ticket_id && <span className="text-emerald-600 dark:text-emerald-400"> · 전표 #{req.matched_ticket_id}</span>}
                   </div>
                 </div>
                 <span className="text-sm font-bold font-mono text-ink-900 dark:text-ink-50 flex-shrink-0">
@@ -845,7 +845,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                       구매 채널: {req.channel || '-'}{req.channel_account_id ? ` · 계정 ${req.channel_account_id}` : ''}
                     </div>
                   )}
-                  {req.reject_reason && <div className="text-2xs text-red-600">반려 사유: {req.reject_reason}</div>}
+                  {req.reject_reason && <div className="text-2xs text-red-600 dark:text-red-400">반려 사유: {req.reject_reason}</div>}
                   {req.approved_by && (
                     <div className="text-2xs text-ink-500 dark:text-ink-400">
                       {req.status === 'REJECTED' ? '반려' : '승인'}: {req.approved_by.split('@')[0]} · {req.approved_at?.slice(0, 16).replace('T', ' ')}
@@ -876,8 +876,8 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
 
                   {/* 결제 완료 등록 (승인됨) */}
                   {req.status === 'APPROVED' && (
-                    <div className="p-2 rounded-md bg-white dark:bg-ink-900 border border-blue-200 space-y-1.5">
-                      <div className="text-2xs font-semibold text-blue-700">
+                    <div className="p-2 rounded-md bg-white dark:bg-ink-900 border border-blue-200 dark:border-blue-800 space-y-1.5">
+                      <div className="text-2xs font-semibold text-blue-700 dark:text-blue-300">
                         결제 완료 후 등록 — 결제에 <b>사용한 법인카드</b>와 최종금액을 입력하면, 그 카드 전표와 대사합니다
                       </div>
                       <div className="flex gap-1.5 flex-wrap">
@@ -909,7 +909,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                             card_key: completeForm.card_key || undefined,
                           })}
                           disabled={!completeForm.final_amount || completeMut.isPending}
-                          className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
+                          className="px-2.5 py-1 text-2xs rounded bg-blue-600 dark:bg-blue-400 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
                           등록
                         </button>
                       </div>
@@ -918,14 +918,14 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
 
                   {/* 카드전표 대사 (결제 완료) */}
                   {req.status === 'PURCHASED' && (
-                    <div className="p-2 rounded-md bg-white dark:bg-ink-900 border border-violet-200 space-y-1.5">
+                    <div className="p-2 rounded-md bg-white dark:bg-ink-900 border border-violet-200 dark:border-violet-800 space-y-1.5">
                       <div className="flex items-center justify-between">
-                        <span className="text-2xs font-semibold text-violet-700 flex items-center gap-1">
+                        <span className="text-2xs font-semibold text-violet-700 dark:text-violet-300 flex items-center gap-1">
                           <CreditCardIcon className="h-3 w-3" />
                           그랜터 카드전표 대사 — 금액·시각으로 자동 후보 검색
                         </span>
                         <button onClick={() => loadCandidates(req.id)}
-                          className="px-2 py-0.5 text-2xs rounded border border-violet-300 text-violet-700 hover:bg-violet-50">
+                          className="px-2 py-0.5 text-2xs rounded border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-950/40">
                           후보 검색
                         </button>
                       </div>
@@ -933,7 +933,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                         <div key={c.ticket_id}
                           className="flex items-center justify-between gap-2 text-2xs bg-canvas-50 dark:bg-ink-950 rounded p-1.5">
                           <div className="flex-1 min-w-0">
-                            <span className={`font-medium ${c.exact ? 'text-emerald-700' : 'text-ink-700 dark:text-ink-300'}`}>
+                            <span className={`font-medium ${c.exact ? 'text-emerald-700 dark:text-emerald-300' : 'text-ink-700 dark:text-ink-300'}`}>
                               {c.store_name || '(가맹점 미확인)'}
                             </span>
                             <span className="text-ink-500 dark:text-ink-400 ml-1">
@@ -941,9 +941,9 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                             </span>
                           </div>
                           <span className="font-mono font-semibold">{formatCurrency(c.amount, false)}</span>
-                          {c.exact && <span className="text-emerald-600 font-semibold">금액 일치</span>}
+                          {c.exact && <span className="text-emerald-600 dark:text-emerald-400 font-semibold">금액 일치</span>}
                           <button onClick={() => matchMut.mutate({ id: req.id, ticket_id: c.ticket_id })}
-                            className="px-2 py-0.5 rounded bg-violet-600 text-white font-semibold hover:bg-violet-700">
+                            className="px-2 py-0.5 rounded bg-violet-600 dark:bg-violet-400 text-white font-semibold hover:bg-violet-700">
                             대사 확정
                           </button>
                         </div>

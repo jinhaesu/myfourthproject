@@ -306,19 +306,19 @@ function buildDailyTx(tickets: any[], contactName: string): DailyTx[] {
 // 등급별 색상
 // ─────────────────────────────────────────────
 const GRADE_CLS: Record<Grade, string> = {
-  'A+': 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  A:   'bg-emerald-50 text-emerald-600 border-emerald-200',
-  'B+':'bg-primary-50 text-primary-700 border-primary-200',
-  B:   'bg-primary-50 text-primary-600 border-primary-200',
-  C:   'bg-amber-50  text-amber-700  border-amber-200',
-  D:   'bg-rose-50   text-rose-700   border-rose-200',
+  'A+': 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+  A:   'bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800',
+  'B+':'bg-primary-50 dark:bg-primary-900 text-primary-700 dark:text-primary-300 border-primary-200 dark:border-primary-700',
+  B:   'bg-primary-50 dark:bg-primary-900 text-primary-600 dark:text-primary-300 border-primary-200 dark:border-primary-700',
+  C:   'bg-amber-50 dark:bg-amber-950  text-amber-700 dark:text-amber-300  border-amber-200 dark:border-amber-800',
+  D:   'bg-rose-50 dark:bg-rose-950   text-rose-700 dark:text-rose-300   border-rose-200 dark:border-rose-800',
 }
 const GRADE_BG: Record<Grade, string> = {
   'A+': 'bg-emerald-500',
-  A:   'bg-emerald-400',
+  A:   'bg-emerald-400 dark:bg-emerald-600',
   'B+':'bg-cyan-500',
-  B:   'bg-cyan-400',
-  C:   'bg-amber-400',
+  B:   'bg-cyan-400 dark:bg-cyan-600',
+  C:   'bg-amber-400 dark:bg-amber-600',
   D:   'bg-rose-500',
 }
 /** Recharts Cell용 hex 색상 */
@@ -341,13 +341,13 @@ function GradeBadge({ grade }: { grade: Grade }) {
 function TypeBadge({ type }: { type: ContactType }) {
   if (type === 'sales')
     return (
-      <span className="badge bg-emerald-50 text-emerald-700 border-emerald-200 gap-0.5">
+      <span className="badge bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 gap-0.5">
         <BuildingStorefrontIcon className="h-2.5 w-2.5" />매출처
       </span>
     )
   if (type === 'purchase')
     return (
-      <span className="badge bg-amber-50 text-amber-700 border-amber-200 gap-0.5">
+      <span className="badge bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800 gap-0.5">
         <TruckIcon className="h-2.5 w-2.5" />매입처
       </span>
     )
@@ -373,10 +373,10 @@ function KPI({
 }) {
   const toneClass: Record<string, string> = {
     neutral: 'text-ink-900 dark:text-ink-50',
-    emerald: 'text-emerald-700',
-    primary: 'text-primary-700',
-    amber:   'text-amber-700',
-    rose:    'text-rose-700',
+    emerald: 'text-emerald-700 dark:text-emerald-300',
+    primary: 'text-primary-700 dark:text-primary-300',
+    amber:   'text-amber-700 dark:text-amber-300',
+    rose:    'text-rose-700 dark:text-rose-300',
   }
   return (
     <div className="panel px-3 py-2">
@@ -680,9 +680,9 @@ function TopContactsPanel({
     <div className="panel px-3 py-2.5">
       <div className="flex items-center gap-1.5 mb-2">
         {isSales ? (
-          <BuildingStorefrontIcon className="h-3 w-3 text-emerald-600" />
+          <BuildingStorefrontIcon className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
         ) : (
-          <TruckIcon className="h-3 w-3 text-amber-600" />
+          <TruckIcon className="h-3 w-3 text-amber-600 dark:text-amber-400" />
         )}
         <span className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider">
           {isSales ? '매출처 TOP 5' : '매입처 TOP 5'}
@@ -708,7 +708,7 @@ function TopContactsPanel({
               </div>
               <div
                 className={`text-2xs font-mono font-semibold ${
-                  isSales ? 'text-emerald-700' : 'text-amber-700'
+                  isSales ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'
                 }`}
               >
                 {isSales ? formatCompactWon(c.inAmount) : formatCompactWon(c.outAmount)}
@@ -880,15 +880,15 @@ function ContactDetail({
               <div className="text-sm font-bold font-mono text-ink-900 dark:text-ink-50">{formatCompactWon(contact.totalAmount)}</div>
             </div>
             {contact.inAmount > 0 && (
-              <div className="rounded-md bg-emerald-50 border border-emerald-100 px-2.5 py-2">
-                <div className="text-2xs text-emerald-600 mb-0.5">매출 (IN)</div>
-                <div className="text-sm font-bold font-mono text-emerald-700">{formatCompactWon(contact.inAmount)}</div>
+              <div className="rounded-md bg-emerald-50 dark:bg-emerald-950 border border-emerald-100 dark:border-emerald-900 px-2.5 py-2">
+                <div className="text-2xs text-emerald-600 dark:text-emerald-400 mb-0.5">매출 (IN)</div>
+                <div className="text-sm font-bold font-mono text-emerald-700 dark:text-emerald-300">{formatCompactWon(contact.inAmount)}</div>
               </div>
             )}
             {contact.outAmount > 0 && (
-              <div className="rounded-md bg-amber-50 border border-amber-100 px-2.5 py-2">
-                <div className="text-2xs text-amber-600 mb-0.5">결제 OUT ({contact.outCount}건)</div>
-                <div className="text-sm font-bold font-mono text-amber-700">{formatCompactWon(contact.outAmount)}</div>
+              <div className="rounded-md bg-amber-50 dark:bg-amber-950 border border-amber-100 dark:border-amber-900 px-2.5 py-2">
+                <div className="text-2xs text-amber-600 dark:text-amber-400 mb-0.5">결제 OUT ({contact.outCount}건)</div>
+                <div className="text-sm font-bold font-mono text-amber-700 dark:text-amber-300">{formatCompactWon(contact.outAmount)}</div>
               </div>
             )}
           </div>
@@ -910,7 +910,7 @@ function ContactDetail({
           </div>
           <div className="rounded-md border border-ink-100 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 px-2.5 py-2 space-y-1.5">
             <p className="text-2xs text-ink-600 dark:text-ink-400 leading-relaxed">{gradeDesc[contact.grade]}</p>
-            <p className="text-2xs text-primary-700 font-medium leading-relaxed">
+            <p className="text-2xs text-primary-700 dark:text-primary-300 font-medium leading-relaxed">
               권장: {recommend[contact.grade]}
             </p>
           </div>
@@ -1124,26 +1124,26 @@ export default function ContactScoringPage() {
           <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 flex-shrink-0" />
-          <div className="text-2xs text-amber-800">
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+          <div className="text-2xs text-amber-800 dark:text-amber-200">
             그랜터 API 키가 설정되지 않았습니다. 설정 페이지에서 연결해 주세요.
           </div>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
-            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
           </div>
           {exceeds31 && (
-            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
               ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
           {ticketsQuery.isError && (
-            <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1 flex items-center gap-2 text-2xs text-rose-800">
-              <ExclamationTriangleIcon className="h-3.5 w-3.5 text-rose-600" />
+            <div className="rounded-md border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 px-3 py-1 flex items-center gap-2 text-2xs text-rose-800 dark:text-rose-200">
+              <ExclamationTriangleIcon className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
               데이터 조회 실패 — 새로고침 버튼을 눌러 재시도하세요.
             </div>
           )}
@@ -1199,13 +1199,13 @@ export default function ContactScoringPage() {
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center">
                   <span className="text-2xs text-ink-500 dark:text-ink-400">총 매출 (IN 합계)</span>
-                  <span className="text-xs font-mono font-bold text-emerald-700">
+                  <span className="text-xs font-mono font-bold text-emerald-700 dark:text-emerald-300">
                     {formatCompactWon(kpi.totalInAmount)}
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-2xs text-ink-500 dark:text-ink-400">총 매입 (OUT 합계)</span>
-                  <span className="text-xs font-mono font-bold text-amber-700">
+                  <span className="text-xs font-mono font-bold text-amber-700 dark:text-amber-300">
                     {formatCompactWon(kpi.totalOutAmount)}
                   </span>
                 </div>
@@ -1215,8 +1215,8 @@ export default function ContactScoringPage() {
                   <span
                     className={`text-xs font-mono font-bold ${
                       kpi.totalInAmount - kpi.totalOutAmount >= 0
-                        ? 'text-emerald-700'
-                        : 'text-rose-700'
+                        ? 'text-emerald-700 dark:text-emerald-300'
+                        : 'text-rose-700 dark:text-rose-300'
                     }`}
                   >
                     {formatCompactWon(kpi.totalInAmount - kpi.totalOutAmount)}
@@ -1224,7 +1224,7 @@ export default function ContactScoringPage() {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-2xs text-ink-500 dark:text-ink-400">평균 신용점수</span>
-                  <span className="text-xs font-mono font-bold text-primary-700">
+                  <span className="text-xs font-mono font-bold text-primary-700 dark:text-primary-300">
                     {scores.length > 0
                       ? Math.round(scores.reduce((s, c) => s + c.score, 0) / scores.length)
                       : 0}점
@@ -1363,7 +1363,7 @@ export default function ContactScoringPage() {
                             <button
                               onClick={() => findRecentMut.mutate()}
                               disabled={findRecentMut.isPending}
-                              className="mt-2 text-primary-700 hover:underline text-2xs font-semibold"
+                              className="mt-2 text-primary-700 dark:text-primary-300 hover:underline text-2xs font-semibold"
                             >
                               {findRecentMut.isPending ? '탐색 중...' : '최근 24개월에서 거래 자동 탐색'}
                             </button>
@@ -1379,7 +1379,7 @@ export default function ContactScoringPage() {
                           key={c.name}
                           onClick={() => setSelected(isSel ? null : c)}
                           className={`cursor-pointer transition-colors ${
-                            isSel ? 'bg-primary-50' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
+                            isSel ? 'bg-primary-50 dark:bg-primary-900' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
                           }`}
                         >
                           <td className="px-3 py-1.5 text-2xs text-ink-400 font-mono">{rank}</td>

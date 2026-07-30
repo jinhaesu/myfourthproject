@@ -16,9 +16,9 @@ import { formatPct, formatDate, formatRelativeTime, todayISO, isoLocal } from '@
 
 const STATUS_META: Record<string, { label: string; class: string }> = {
   not_started: { label: '대기', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
-  in_progress: { label: '진행중', class: 'badge bg-blue-100 text-blue-700' },
-  review: { label: '검토중', class: 'badge bg-amber-100 text-amber-700' },
-  completed: { label: '완료', class: 'badge bg-emerald-100 text-emerald-700' },
+  in_progress: { label: '진행중', class: 'badge bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' },
+  review: { label: '검토중', class: 'badge bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300' },
+  completed: { label: '완료', class: 'badge bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300' },
 }
 
 export default function ConnectClosingPage() {
@@ -100,7 +100,7 @@ export default function ConnectClosingPage() {
               onClick={() => setSelectedClientId(c.id)}
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
                 selectedClientId === c.id
-                  ? 'bg-primary-600 text-white'
+                  ? 'bg-primary-600 dark:bg-primary-300 text-white'
                   : 'bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-ink-700'
               }`}
             >
@@ -189,7 +189,7 @@ export default function ConnectClosingPage() {
                     </td>
                     <td className="text-xs text-gray-500 dark:text-gray-400">
                       {c.wehago_uploaded_at ? (
-                        <span className="text-emerald-600">
+                        <span className="text-emerald-600 dark:text-emerald-400">
                           ✓ {formatRelativeTime(c.wehago_uploaded_at)}
                         </span>
                       ) : (
@@ -205,7 +205,7 @@ export default function ConnectClosingPage() {
                           onClick={() =>
                             exportMut.mutate({ closingId: c.id, clientId: c.client_id })
                           }
-                          className="text-primary-600 hover:underline font-medium"
+                          className="text-primary-600 dark:text-primary-300 hover:underline font-medium"
                         >
                           <ArrowDownTrayIcon className="h-4 w-4 inline mr-0.5" />
                           위하고 파일
@@ -213,7 +213,7 @@ export default function ConnectClosingPage() {
                         {c.status !== 'completed' && (
                           <button
                             onClick={() => completeMut.mutate(c.id)}
-                            className="text-emerald-600 hover:underline font-medium"
+                            className="text-emerald-600 dark:text-emerald-400 hover:underline font-medium"
                           >
                             완료처리
                           </button>
@@ -236,12 +236,12 @@ export default function ConnectClosingPage() {
       </div>
 
       {/* Wehago info card */}
-      <div className="rounded-lg border border-teal-200 bg-teal-50 p-5">
+      <div className="rounded-lg border border-teal-200 dark:border-teal-800 bg-teal-50 dark:bg-teal-950 p-5">
         <div className="flex gap-3">
-          <ArchiveBoxArrowDownIcon className="h-6 w-6 text-teal-600 flex-shrink-0" />
+          <ArchiveBoxArrowDownIcon className="h-6 w-6 text-teal-600 dark:text-teal-400 flex-shrink-0" />
           <div>
-            <h3 className="font-semibold text-teal-900">위하고(Wehago) 양식 자동 변환</h3>
-            <p className="text-sm text-teal-800 mt-1">
+            <h3 className="font-semibold text-teal-900 dark:text-teal-100">위하고(Wehago) 양식 자동 변환</h3>
+            <p className="text-sm text-teal-800 dark:text-teal-200 mt-1">
               결산이 완료된 전표를 위하고에서 그대로 import할 수 있는 형식으로 변환합니다.
               <br />
               지원 양식: <code className="font-mono text-xs bg-white dark:bg-ink-900 px-1 rounded">.xlsx</code>{' '}

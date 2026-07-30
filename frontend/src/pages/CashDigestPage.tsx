@@ -16,10 +16,10 @@ const SECTION_ICON: Record<string, any> = {
 }
 
 const SECTION_ACCENT: Record<string, string> = {
-  ai_cashflow: 'from-emerald-50 to-teal-50 border-emerald-200',
-  card_spending: 'from-amber-50 to-orange-50 border-amber-200',
-  cash_status: 'from-blue-50 to-sky-50 border-blue-200',
-  card_usage: 'from-purple-50 to-fuchsia-50 border-purple-200',
+  ai_cashflow: 'from-emerald-50 to-teal-50 border-emerald-200 dark:from-emerald-950/40 dark:to-teal-950/40 dark:border-emerald-900/50',
+  card_spending: 'from-amber-50 to-orange-50 border-amber-200 dark:from-amber-950/40 dark:to-orange-950/40 dark:border-amber-900/50',
+  cash_status: 'from-blue-50 to-sky-50 border-blue-200 dark:from-blue-950/40 dark:to-sky-950/40 dark:border-blue-900/50',
+  card_usage: 'from-purple-50 to-fuchsia-50 border-purple-200 dark:from-purple-950/40 dark:to-fuchsia-950/40 dark:border-purple-900/50',
 }
 
 function todayDateLabel(d?: string): string {
@@ -235,8 +235,8 @@ export default function CashDigestPage() {
                     </div>
                     {/* 토글 */}
                     {meta.required ? (
-                      <div className="w-9 h-5 rounded-full bg-emerald-100 flex items-center justify-end px-0.5">
-                        <CheckIcon className="h-3 w-3 text-emerald-700" />
+                      <div className="w-9 h-5 rounded-full bg-emerald-100 dark:bg-emerald-900 flex items-center justify-end px-0.5">
+                        <CheckIcon className="h-3 w-3 text-emerald-700 dark:text-emerald-300" />
                       </div>
                     ) : (
                       <button
@@ -261,19 +261,19 @@ export default function CashDigestPage() {
             {saveMut.isPending ? '저장 중…' : dirty ? '저장하기' : '저장됨'}
           </button>
           {saveMut.isSuccess && !dirty && (
-            <div className="mt-2 text-2xs text-emerald-700 text-center">
+            <div className="mt-2 text-2xs text-emerald-700 dark:text-emerald-300 text-center">
               ✓ 다음 아침부터 새 설정으로 발송됩니다
             </div>
           )}
           <button
             disabled={sendNowMut.isPending}
             onClick={() => sendNowMut.mutate()}
-            className="mt-2 w-full py-2 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-xs font-semibold disabled:opacity-50"
+            className="mt-2 w-full py-2 rounded-md border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-xs font-semibold disabled:opacity-50"
           >
             {sendNowMut.isPending ? '발송 중…' : '지금 한 번 발송'}
           </button>
           {sendNowMut.isSuccess && (
-            <div className="mt-1 text-2xs text-emerald-600 text-center">✓ 발송 완료</div>
+            <div className="mt-1 text-2xs text-emerald-600 dark:text-emerald-400 text-center">✓ 발송 완료</div>
           )}
         </div>
       </div>
@@ -289,7 +289,7 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
-          <Icon className="h-4 w-4 text-emerald-600" />
+          <Icon className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
           <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">{data.title}</h3>
         </div>
         <div className={`rounded-lg border bg-gradient-to-br ${accent} p-4`}>
@@ -338,7 +338,7 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
-          <Icon className="h-4 w-4 text-amber-600" />
+          <Icon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
           <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">{data.title}</h3>
         </div>
         <div className={`rounded-lg border bg-gradient-to-br ${accent} p-4`}>
@@ -370,7 +370,7 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
-          <Icon className="h-4 w-4 text-blue-600" />
+          <Icon className="h-4 w-4 text-blue-600 dark:text-blue-400" />
           <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">{data.title}</h3>
         </div>
         <div className={`rounded-lg border bg-gradient-to-br ${accent} p-4 space-y-2`}>
@@ -378,11 +378,11 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
           <div className="grid grid-cols-3 gap-2 text-center mt-2">
             <div className="bg-white/60 dark:bg-ink-900/60 rounded p-2">
               <div className="text-2xs text-ink-500 dark:text-ink-400">입금</div>
-              <div className="text-xs font-bold text-emerald-700 mt-0.5">{formatCurrency(data.inflow, false)}</div>
+              <div className="text-xs font-bold text-emerald-700 dark:text-emerald-300 mt-0.5">{formatCurrency(data.inflow, false)}</div>
             </div>
             <div className="bg-white/60 dark:bg-ink-900/60 rounded p-2">
               <div className="text-2xs text-ink-500 dark:text-ink-400">출금</div>
-              <div className="text-xs font-bold text-rose-700 mt-0.5">{formatCurrency(data.outflow, false)}</div>
+              <div className="text-xs font-bold text-rose-700 dark:text-rose-300 mt-0.5">{formatCurrency(data.outflow, false)}</div>
             </div>
             <div className="bg-white/60 dark:bg-ink-900/60 rounded p-2">
               <div className="text-2xs text-ink-500 dark:text-ink-400">잔액</div>
@@ -398,7 +398,7 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
-          <Icon className="h-4 w-4 text-purple-600" />
+          <Icon className="h-4 w-4 text-purple-600 dark:text-purple-400" />
           <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">{data.title}</h3>
         </div>
         <div className={`rounded-lg border bg-gradient-to-br ${accent} p-4`}>

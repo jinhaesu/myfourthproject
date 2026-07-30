@@ -74,7 +74,7 @@ export default function SsoPage() {
   }, [])
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-600 to-indigo-800">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-600 dark:from-blue-400 to-indigo-800 dark:to-indigo-200">
       <div className="max-w-md w-full mx-4">
         <div className="bg-white dark:bg-ink-900 rounded-2xl shadow-xl overflow-hidden p-8 text-center">
           {status === 'loading' ? (
@@ -85,8 +85,8 @@ export default function SsoPage() {
             </>
           ) : (
             <>
-              <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-red-100 mb-3">
-                <svg className="w-7 h-7 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-red-100 dark:bg-red-900 mb-3">
+                <svg className="w-7 h-7 text-red-600 dark:text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
                 </svg>
               </div>
@@ -94,7 +94,7 @@ export default function SsoPage() {
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{errorMessage}</p>
               <Link
                 to="/login"
-                className="inline-block mt-6 w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-lg font-medium hover:from-blue-700 hover:to-indigo-700 transition-all"
+                className="inline-block mt-6 w-full bg-gradient-to-r from-blue-600 dark:from-blue-400 to-indigo-600 dark:to-indigo-400 text-white py-3 rounded-lg font-medium hover:from-blue-700 hover:to-indigo-700 transition-all"
               >
                 로그인 화면으로 돌아가기
               </Link>

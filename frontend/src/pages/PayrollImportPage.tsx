@@ -10,8 +10,8 @@ import { formatCurrency } from '@/utils/format'
 import toast from 'react-hot-toast'
 
 const COST_BADGE: Record<string, { label: string; cls: string }> = {
-  COGS: { label: '원가(노무비)', cls: 'bg-orange-50 text-orange-700 border-orange-200' },
-  SGA: { label: '판관비(급여)', cls: 'bg-blue-50 text-blue-700 border-blue-200' },
+  COGS: { label: '원가(노무비)', cls: 'bg-orange-50 dark:bg-orange-950 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-800' },
+  SGA: { label: '판관비(급여)', cls: 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800' },
 }
 
 export default function PayrollImportPage() {
@@ -112,7 +112,7 @@ export default function PayrollImportPage() {
             정규직(HR) {data.sources.hr_regular}명, 정규직노무 {data.sources.aisystem_regular}명,
             사업소득 {data.sources.aisystem_freelance}명, 파견 {data.sources.aisystem_dispatch}명
             {records.length === 0 && (
-              <span className="text-amber-600"> — 데이터 없음(외부 시스템 미마감이거나 연동키 미설정일 수 있어요)</span>
+              <span className="text-amber-600 dark:text-amber-400"> — 데이터 없음(외부 시스템 미마감이거나 연동키 미설정일 수 있어요)</span>
             )}
           </div>
 
@@ -123,12 +123,12 @@ export default function PayrollImportPage() {
               <div className="text-lg font-bold text-ink-900 dark:text-ink-50">{formatCurrency(data.totals.gross, false)}</div>
             </div>
             <div className="panel p-3">
-              <div className="text-2xs text-orange-600">원가(노무비)</div>
-              <div className="text-lg font-bold text-orange-700">{formatCurrency(cogsTotal, false)}</div>
+              <div className="text-2xs text-orange-600 dark:text-orange-400">원가(노무비)</div>
+              <div className="text-lg font-bold text-orange-700 dark:text-orange-300">{formatCurrency(cogsTotal, false)}</div>
             </div>
             <div className="panel p-3">
-              <div className="text-2xs text-blue-600">판관비(급여)</div>
-              <div className="text-lg font-bold text-blue-700">{formatCurrency(sgaTotal, false)}</div>
+              <div className="text-2xs text-blue-600 dark:text-blue-400">판관비(급여)</div>
+              <div className="text-lg font-bold text-blue-700 dark:text-blue-300">{formatCurrency(sgaTotal, false)}</div>
             </div>
             <div className="panel p-3">
               <div className="text-2xs text-ink-500 dark:text-ink-400">공제 합계(세금+보험)</div>
@@ -192,11 +192,11 @@ export default function PayrollImportPage() {
                   {filteredDepts.map((d) => (
                     <tr key={d.department}
                       onClick={() => setDeptFilter(deptFilter === d.department ? '' : d.department)}
-                      className={`hover:bg-canvas-50 dark:hover:bg-ink-800 cursor-pointer ${deptFilter === d.department ? 'bg-blue-50/40' : ''}`}>
+                      className={`hover:bg-canvas-50 dark:hover:bg-ink-800 cursor-pointer ${deptFilter === d.department ? 'bg-blue-50 dark:bg-blue-950/40' : ''}`}>
                       <td className="px-3 py-1.5 font-medium text-ink-900 dark:text-ink-50">{d.department}</td>
                       <td className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400">{d.count}</td>
-                      <td className="px-3 py-1.5 text-right font-mono text-orange-700">{d.cogs > 0 ? formatCurrency(d.cogs, false) : '-'}</td>
-                      <td className="px-3 py-1.5 text-right font-mono text-blue-700">{d.sga > 0 ? formatCurrency(d.sga, false) : '-'}</td>
+                      <td className="px-3 py-1.5 text-right font-mono text-orange-700 dark:text-orange-300">{d.cogs > 0 ? formatCurrency(d.cogs, false) : '-'}</td>
+                      <td className="px-3 py-1.5 text-right font-mono text-blue-700 dark:text-blue-300">{d.sga > 0 ? formatCurrency(d.sga, false) : '-'}</td>
                       <td className="px-3 py-1.5 text-right font-mono font-semibold text-ink-900 dark:text-ink-50">{formatCurrency(d.gross, false)}</td>
                       <td className="px-3 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{formatCurrency(d.net, false)}</td>
                     </tr>
@@ -245,7 +245,7 @@ export default function PayrollImportPage() {
                           <td className="px-2 py-1.5 text-right font-mono text-ink-900 dark:text-ink-50">{formatCurrency(r.gross_pay, false)}</td>
                           <td className="px-2 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">
                             {formatCurrency(r.income_tax, false)}
-                            {r.tax_source === 'override' && <span className="text-emerald-600 ml-0.5" title="외부 확정값">✓</span>}
+                            {r.tax_source === 'override' && <span className="text-emerald-600 dark:text-emerald-400 ml-0.5" title="외부 확정값">✓</span>}
                           </td>
                           <td className="px-2 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{formatCurrency(r.local_tax, false)}</td>
                           <td className="px-2 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{r.insurance > 0 ? formatCurrency(r.insurance, false) : '-'}</td>
@@ -300,7 +300,7 @@ export default function PayrollImportPage() {
 function PayrollDetailModal({ rec, onClose }: { rec: PayrollImportRecord; onClose: () => void }) {
   const d = rec.detail
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900 dark:bg-ink-50/40 p-4" onClick={onClose}>
       <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-md max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="px-4 py-3 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between sticky top-0 bg-white dark:bg-ink-900">
           <div>
@@ -326,7 +326,7 @@ function PayrollDetailModal({ rec, onClose }: { rec: PayrollImportRecord; onClos
           )}
 
           <div>
-            <div className="text-2xs font-semibold text-emerald-700 mb-1">세전 급여 구성</div>
+            <div className="text-2xs font-semibold text-emerald-700 dark:text-emerald-300 mb-1">세전 급여 구성</div>
             <div className="space-y-0.5">
               {(d?.earnings || [{ label: '세전 급여', amount: rec.gross_pay }]).map((e, i) => (
                 <div key={i} className="flex justify-between text-xs">
@@ -349,7 +349,7 @@ function PayrollDetailModal({ rec, onClose }: { rec: PayrollImportRecord; onClos
 
           {(d?.deductions || []).length > 0 && (
             <div>
-              <div className="text-2xs font-semibold text-rose-700 mb-1">공제 내역</div>
+              <div className="text-2xs font-semibold text-rose-700 dark:text-rose-300 mb-1">공제 내역</div>
               <div className="space-y-0.5">
                 {d!.deductions.map((e, i) => (
                   <div key={i} className="flex justify-between text-xs">
@@ -359,15 +359,15 @@ function PayrollDetailModal({ rec, onClose }: { rec: PayrollImportRecord; onClos
                 ))}
                 <div className="flex justify-between text-xs font-bold border-t border-ink-100 dark:border-ink-800 pt-1 mt-1">
                   <span>공제 합계</span>
-                  <span className="font-mono text-rose-700">-{formatCurrency(rec.total_deduction, false)}</span>
+                  <span className="font-mono text-rose-700 dark:text-rose-300">-{formatCurrency(rec.total_deduction, false)}</span>
                 </div>
               </div>
             </div>
           )}
 
-          <div className="flex justify-between text-sm font-bold bg-blue-50 rounded p-2">
+          <div className="flex justify-between text-sm font-bold bg-blue-50 dark:bg-blue-950 rounded p-2">
             <span>실지급액</span>
-            <span className="font-mono text-blue-700">{formatCurrency(rec.net_pay, false)}</span>
+            <span className="font-mono text-blue-700 dark:text-blue-300">{formatCurrency(rec.net_pay, false)}</span>
           </div>
         </div>
       </div>
@@ -429,7 +429,7 @@ function TaxSettingsPanel({ onClose }: { onClose: () => void }) {
                 ))}
               </div>
               <button onClick={() => saveMut.mutate(p)} disabled={saveMut.isPending}
-                className="mt-1.5 px-2 py-0.5 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700">
+                className="mt-1.5 px-2 py-0.5 text-2xs rounded bg-blue-600 dark:bg-blue-400 text-white font-semibold hover:bg-blue-700">
                 {p.label} 저장
               </button>
             </div>

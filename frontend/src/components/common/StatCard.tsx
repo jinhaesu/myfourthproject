@@ -4,12 +4,12 @@ import Sparkline from './Sparkline'
 type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'neutral' | 'mint'
 
 const toneClasses: Record<Tone, { dot: string; text: string }> = {
-  primary: { dot: 'bg-primary-500', text: 'text-primary-700' },
-  success: { dot: 'bg-emerald-500', text: 'text-emerald-700' },
-  warning: { dot: 'bg-amber-500', text: 'text-amber-700' },
-  danger: { dot: 'bg-rose-500', text: 'text-rose-700' },
+  primary: { dot: 'bg-primary-500', text: 'text-primary-700 dark:text-primary-300' },
+  success: { dot: 'bg-emerald-500', text: 'text-emerald-700 dark:text-emerald-300' },
+  warning: { dot: 'bg-amber-500', text: 'text-amber-700 dark:text-amber-300' },
+  danger: { dot: 'bg-rose-500', text: 'text-rose-700 dark:text-rose-300' },
   neutral: { dot: 'bg-ink-400 dark:bg-ink-500', text: 'text-ink-700 dark:text-ink-300' },
-  mint: { dot: 'bg-primary-500', text: 'text-primary-700' },
+  mint: { dot: 'bg-primary-500', text: 'text-primary-700 dark:text-primary-300' },
 }
 
 interface StatCardProps {
@@ -81,7 +81,7 @@ export default function StatCard({
           {delta && (
             <span
               className={`font-semibold tabular-nums flex-shrink-0 ${
-                delta.positive ? 'text-emerald-600' : 'text-rose-600'
+                delta.positive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
               }`}
             >
               {delta.positive ? '↑' : '↓'} {delta.value}

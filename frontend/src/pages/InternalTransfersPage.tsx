@@ -10,9 +10,9 @@ import DateRangePresets from '@/components/common/DateRangePresets'
 import toast from 'react-hot-toast'
 
 const FLOW_LABEL: Record<string, { label: string; cls: string }> = {
-  topup: { label: '매출풀→운영 메꿈', cls: 'text-amber-700' },
-  sweep: { label: '운영→매출풀 회수', cls: 'text-emerald-700' },
-  savings: { label: '적립 이동(잔액유지)', cls: 'text-violet-600' },
+  topup: { label: '매출풀→운영 메꿈', cls: 'text-amber-700 dark:text-amber-300' },
+  sweep: { label: '운영→매출풀 회수', cls: 'text-emerald-700 dark:text-emerald-300' },
+  savings: { label: '적립 이동(잔액유지)', cls: 'text-violet-600 dark:text-violet-400' },
   other: { label: '기타 이동', cls: 'text-ink-400' },
 }
 
@@ -125,7 +125,7 @@ export default function InternalTransfersPage() {
 
           {/* 은행 잔액 기반 현금흐름 (핵심 지표) */}
           {data.period_balance && (
-            <div className="panel p-3 bg-gradient-to-br from-blue-50/40 to-white dark:to-ink-900">
+            <div className="panel p-3 bg-gradient-to-br from-blue-50 dark:from-blue-950/40 to-white dark:to-ink-900">
               <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-2 flex items-center gap-1">
                 <BanknotesIcon className="h-3 w-3" />은행 잔액 기반 현금흐름 (기간 시작 vs 마감)
               </div>
@@ -141,16 +141,16 @@ export default function InternalTransfersPage() {
                     <div className="text-sm font-bold font-mono text-ink-900 dark:text-ink-50">{formatCurrency(data.period_balance.end_balance, false)}</div>
                   </div>
                 </div>
-                <div className={`ml-auto px-3 py-1.5 rounded-md ${data.period_balance.net_change >= 0 ? 'bg-emerald-50 border border-emerald-200' : 'bg-rose-50 border border-rose-200'}`}>
+                <div className={`ml-auto px-3 py-1.5 rounded-md ${data.period_balance.net_change >= 0 ? 'bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800' : 'bg-rose-50 dark:bg-rose-950 border border-rose-200 dark:border-rose-800'}`}>
                   <div className="text-2xs text-ink-500 dark:text-ink-400">기간 순현금흐름</div>
-                  <div className={`text-lg font-bold font-mono ${data.period_balance.net_change >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  <div className={`text-lg font-bold font-mono ${data.period_balance.net_change >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
                     {data.period_balance.net_change >= 0 ? '+' : ''}{formatCurrency(data.period_balance.net_change, false)}
                   </div>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 mt-2">
-                <div className="text-2xs text-ink-500 dark:text-ink-400">기간 총 유입 <b className="text-emerald-700 font-mono">{data.period_balance.inflow != null ? formatCurrency(data.period_balance.inflow, false) : '—'}</b></div>
-                <div className="text-2xs text-ink-500 dark:text-ink-400">기간 총 유출 <b className="text-rose-700 font-mono">{data.period_balance.outflow != null ? formatCurrency(data.period_balance.outflow, false) : '—'}</b></div>
+                <div className="text-2xs text-ink-500 dark:text-ink-400">기간 총 유입 <b className="text-emerald-700 dark:text-emerald-300 font-mono">{data.period_balance.inflow != null ? formatCurrency(data.period_balance.inflow, false) : '—'}</b></div>
+                <div className="text-2xs text-ink-500 dark:text-ink-400">기간 총 유출 <b className="text-rose-700 dark:text-rose-300 font-mono">{data.period_balance.outflow != null ? formatCurrency(data.period_balance.outflow, false) : '—'}</b></div>
               </div>
               <div className="text-2xs text-ink-400 mt-1.5 leading-relaxed">
                 전 계좌 합산 잔액의 시작→마감 변동입니다. 플러스면 기간 중 현금이 늘었고, 마이너스면 카드·이자 등으로 순유출된 것입니다.
@@ -164,16 +164,16 @@ export default function InternalTransfersPage() {
               <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-2">계좌간 자금 이동 내역 (참고 — 회사 전체 잔액엔 영향 없음)</div>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
                 <div className="bg-canvas-50 dark:bg-ink-950 rounded-md p-2">
-                  <div className="text-2xs text-amber-700">매출풀→운영 메꿈</div>
+                  <div className="text-2xs text-amber-700 dark:text-amber-300">매출풀→운영 메꿈</div>
                   <div className="text-sm font-bold text-ink-900 dark:text-ink-50 mt-0.5">{formatCurrency(cf.reservoir_to_operating, false)}</div>
                   <div className="text-2xs text-ink-400">카드·이자 결제용 이체</div>
                 </div>
                 <div className="bg-canvas-50 dark:bg-ink-950 rounded-md p-2">
-                  <div className="text-2xs text-emerald-700">운영→매출풀 회수</div>
+                  <div className="text-2xs text-emerald-700 dark:text-emerald-300">운영→매출풀 회수</div>
                   <div className="text-sm font-bold text-ink-900 dark:text-ink-50 mt-0.5">{formatCurrency(cf.operating_to_reservoir, false)}</div>
                 </div>
                 <div className="bg-canvas-50 dark:bg-ink-950 rounded-md p-2">
-                  <div className="text-2xs text-violet-600">적립 이동(퇴직연금)</div>
+                  <div className="text-2xs text-violet-600 dark:text-violet-400">적립 이동(퇴직연금)</div>
                   <div className="text-sm font-bold text-ink-900 dark:text-ink-50 mt-0.5">{formatCurrency(cf.savings_move, false)}</div>
                 </div>
                 <div className="bg-canvas-50 dark:bg-ink-950 rounded-md p-2">
@@ -208,13 +208,13 @@ export default function InternalTransfersPage() {
                     {accounts.map((a: any) => (
                       <tr key={a.account} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
                         <td className="px-3 py-1.5 font-medium text-ink-900 dark:text-ink-50">{a.account}</td>
-                        <td className="px-3 py-1.5 text-right font-mono text-rose-600">
+                        <td className="px-3 py-1.5 text-right font-mono text-rose-600 dark:text-rose-400">
                           {a.sent > 0 ? `-${formatCurrency(a.sent, false)}` : '-'}
                         </td>
-                        <td className="px-3 py-1.5 text-right font-mono text-emerald-600">
+                        <td className="px-3 py-1.5 text-right font-mono text-emerald-600 dark:text-emerald-400">
                           {a.received > 0 ? `+${formatCurrency(a.received, false)}` : '-'}
                         </td>
-                        <td className={`px-3 py-1.5 text-right font-mono font-bold ${a.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                        <td className={`px-3 py-1.5 text-right font-mono font-bold ${a.net >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
                           {a.net >= 0 ? '+' : ''}{formatCurrency(a.net, false)}
                         </td>
                         <td className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400">{a.count}</td>
@@ -225,8 +225,8 @@ export default function InternalTransfersPage() {
                     <tfoot>
                       <tr className="border-t-2 border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 font-bold">
                         <td className="px-3 py-1.5 text-ink-900 dark:text-ink-50">누적 합계</td>
-                        <td className="px-3 py-1.5 text-right font-mono text-rose-700">-{formatCurrency(data.account_totals.total_sent, false)}</td>
-                        <td className="px-3 py-1.5 text-right font-mono text-emerald-700">+{formatCurrency(data.account_totals.total_received, false)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono text-rose-700 dark:text-rose-300">-{formatCurrency(data.account_totals.total_sent, false)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono text-emerald-700 dark:text-emerald-300">+{formatCurrency(data.account_totals.total_received, false)}</td>
                         <td className="px-3 py-1.5 text-right font-mono text-ink-900 dark:text-ink-50">
                           {formatCurrency(data.account_totals.net_sum, false)}
                           <span className="text-2xs font-normal text-ink-400 ml-1">
@@ -261,11 +261,11 @@ export default function InternalTransfersPage() {
                   <div key={i} className="px-3 py-2 flex items-center gap-2 hover:bg-canvas-50 dark:hover:bg-ink-800">
                     <span className="text-2xs text-ink-500 dark:text-ink-400 w-24 flex-shrink-0">{t.date} {t.time}</span>
                     <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${t.from_label === '계좌 미상' ? 'bg-ink-50 dark:bg-ink-900 text-ink-400' : 'bg-rose-50 text-rose-700'}`}>
+                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${t.from_label === '계좌 미상' ? 'bg-ink-50 dark:bg-ink-900 text-ink-400' : 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300'}`}>
                         {t.from_label}
                       </span>
                       <ArrowRightIcon className="h-3.5 w-3.5 text-blue-500 flex-shrink-0" />
-                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${t.to_label === '계좌 미상' ? 'bg-ink-50 dark:bg-ink-900 text-ink-400' : 'bg-emerald-50 text-emerald-700'}`}>
+                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${t.to_label === '계좌 미상' ? 'bg-ink-50 dark:bg-ink-900 text-ink-400' : 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'}`}>
                         {t.to_label}
                       </span>
                       {t.flow_type && FLOW_LABEL[t.flow_type] && (

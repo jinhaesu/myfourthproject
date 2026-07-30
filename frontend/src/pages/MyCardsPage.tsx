@@ -164,7 +164,7 @@ export default function MyCardsPage() {
                 key={card.card_key}
                 onClick={() => { setSelectedCard(card.card_key); setEditingTicket(null) }}
                 className={`panel p-3 text-left transition ${
-                  isSelected ? 'ring-2 ring-blue-400' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
+                  isSelected ? 'ring-2 ring-blue-400 dark:ring-blue-600' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -173,12 +173,12 @@ export default function MyCardsPage() {
                     <div className="text-sm font-semibold text-ink-900 dark:text-ink-50 truncate flex items-center gap-1">
                       {card.nickname || card.issuer || card.card_key}
                       {cardClosing && (
-                        <span className="inline-flex items-center gap-0.5 text-2xs px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span className="inline-flex items-center gap-0.5 text-2xs px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                           <LockClosedIcon className="h-2.5 w-2.5" />마감
                         </span>
                       )}
                       {card.connected && card.transaction_count === 0 && (
-                        <span className="inline-flex items-center text-2xs px-1.5 py-0.5 rounded-full bg-sky-50 text-sky-700 border border-sky-200">
+                        <span className="inline-flex items-center text-2xs px-1.5 py-0.5 rounded-full bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
                           연동됨
                         </span>
                       )}
@@ -189,7 +189,7 @@ export default function MyCardsPage() {
                       </span>
                       <span>{month} 사용 {formatCurrency(card.total_amount, false)} · {card.transaction_count.toLocaleString()}건</span>
                     </div>
-                    {card.memo && <div className="text-2xs text-blue-700 mt-0.5">{card.memo}</div>}
+                    {card.memo && <div className="text-2xs text-blue-700 dark:text-blue-300 mt-0.5">{card.memo}</div>}
                   </div>
                 </div>
               </button>
@@ -210,9 +210,9 @@ export default function MyCardsPage() {
                 <>
                   <div className="flex items-center gap-1.5">
                     <div className="w-24 h-1.5 bg-ink-100 dark:bg-ink-800 rounded-full overflow-hidden">
-                      <div className={`h-full ${progress === 100 ? 'bg-emerald-500' : 'bg-amber-400'}`} style={{ width: `${progress}%` }} />
+                      <div className={`h-full ${progress === 100 ? 'bg-emerald-500' : 'bg-amber-400 dark:bg-amber-600'}`} style={{ width: `${progress}%` }} />
                     </div>
-                    <span className={`text-2xs font-medium ${unclassified > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                    <span className={`text-2xs font-medium ${unclassified > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
                       {classifiable.length - unclassified}/{classifiable.length} 분류
                     </span>
                   </div>
@@ -220,7 +220,7 @@ export default function MyCardsPage() {
                     onClick={() => closeMut.mutate()}
                     disabled={unclassified > 0 || closeMut.isPending}
                     title={unclassified > 0 ? `미분류 ${unclassified}건 — 전건 분류 후 마감 가능` : ''}
-                    className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-40 flex items-center gap-1"
+                    className="px-2.5 py-1 text-2xs rounded bg-blue-600 dark:bg-blue-400 text-white font-semibold hover:bg-blue-700 disabled:opacity-40 flex items-center gap-1"
                   >
                     <LockClosedIcon className="h-3 w-3" />
                     {month} 마감 제출
@@ -228,7 +228,7 @@ export default function MyCardsPage() {
                 </>
               )}
               {isClosed && (
-                <span className="text-2xs text-emerald-700 flex items-center gap-1">
+                <span className="text-2xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
                   <CheckCircleIcon className="h-3.5 w-3.5" />
                   {selectedClosing?.closed_at?.slice(0, 10)} 마감 완료 — 수정하려면 관리자에게 해제 요청
                 </span>
@@ -270,7 +270,7 @@ export default function MyCardsPage() {
                         <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
                           {tx.transact_at?.replace('T', ' ')}
                           {tx.classification && (
-                            <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                            <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
                               {tx.classification.account_code ? `${tx.classification.account_code} ` : ''}{tx.classification.account_name || tx.classification.category}
                               {tx.classification.memo && ` · ${tx.classification.memo}`}
                             </span>
@@ -299,7 +299,7 @@ export default function MyCardsPage() {
                           <div className="text-2xs text-ink-500 dark:text-ink-400 mb-0.5">계정과목 (원장) — 검색해서 선택</div>
                           {clsForm.account_code && !acctSearch && (
                             <div className="flex items-center gap-1.5 mb-1">
-                              <span className="text-xs font-medium px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                              <span className="text-xs font-medium px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
                                 {clsForm.account_code} · {clsForm.account_name}
                               </span>
                               <button onClick={() => setClsForm({ ...clsForm, account_code: '', account_name: '' })}
@@ -324,7 +324,7 @@ export default function MyCardsPage() {
                                     .map((a) => (
                                       <button key={a.code}
                                         onClick={() => { setClsForm({ ...clsForm, account_code: a.code, account_name: a.name }); setAcctSearch('') }}
-                                        className="w-full text-left px-2 py-1 text-xs hover:bg-blue-50 flex items-center gap-1.5">
+                                        className="w-full text-left px-2 py-1 text-xs hover:bg-blue-50 dark:hover:bg-blue-950/40 flex items-center gap-1.5">
                                         <span className="font-mono text-ink-500 dark:text-ink-400 w-10 flex-shrink-0">{a.code}</span>
                                         <span className="text-ink-800 dark:text-ink-100">{a.name}</span>
                                       </button>

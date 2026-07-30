@@ -23,13 +23,13 @@ const SOURCE_LABEL: Record<string, string> = {
 }
 
 const SOURCE_TONE: Record<string, string> = {
-  sales_tax_invoice: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  purchase_tax_invoice: 'bg-rose-50 text-rose-700 border-rose-200',
-  sales_invoice: 'bg-emerald-50 text-emerald-600 border-emerald-200',
-  purchase_invoice: 'bg-rose-50 text-rose-600 border-rose-200',
-  card: 'bg-blue-50 text-blue-700 border-blue-200',
-  bank: 'bg-purple-50 text-purple-700 border-purple-200',
-  cash_receipt: 'bg-amber-50 text-amber-700 border-amber-200',
+  sales_tax_invoice: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+  purchase_tax_invoice: 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+  sales_invoice: 'bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800',
+  purchase_invoice: 'bg-rose-50 dark:bg-rose-950 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-800',
+  card: 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800',
+  bank: 'bg-purple-50 dark:bg-purple-950 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800',
+  cash_receipt: 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
 }
 
 const VOUCHER_SOURCE_LABEL: Record<string, string> = {
@@ -46,9 +46,9 @@ function monthAgoISO() {
 }
 
 function confidenceTone(c: number): { bg: string; label: string; band: ConfBand } {
-  if (c >= 0.85) return { bg: 'bg-emerald-100 text-emerald-800', label: '자동확정 가능', band: 'auto' }
-  if (c >= 0.6) return { bg: 'bg-amber-100 text-amber-800', label: '일반검수', band: 'review' }
-  return { bg: 'bg-rose-100 text-rose-800', label: '의심', band: 'suspect' }
+  if (c >= 0.85) return { bg: 'bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200', label: '자동확정 가능', band: 'auto' }
+  if (c >= 0.6) return { bg: 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200', label: '일반검수', band: 'review' }
+  return { bg: 'bg-rose-100 dark:bg-rose-900 text-rose-800 dark:text-rose-200', label: '의심', band: 'suspect' }
 }
 
 // ====================== 위하고 분개장 일괄 등록 모달 ======================
@@ -128,11 +128,11 @@ function JournalMigrationModal({
   const isRunning = !!taskId && progress?.status !== 'completed' && progress?.status !== 'failed'
 
   return (
-    <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 bg-ink-900 dark:bg-ink-50/40 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-ink-900 rounded-lg shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-ink-200 dark:border-ink-800">
           <h2 className="flex items-center gap-2 text-base font-semibold text-ink-800 dark:text-ink-100">
-            <ArrowUpOnSquareIcon className="h-5 w-5 text-purple-600" />
+            <ArrowUpOnSquareIcon className="h-5 w-5 text-purple-600 dark:text-purple-400" />
             위하고 분개장 → 전표 일괄 등록
           </h2>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
@@ -141,12 +141,12 @@ function JournalMigrationModal({
         </div>
 
         <div className="p-4 space-y-3 overflow-y-auto">
-          <div className="rounded-md bg-blue-50 border border-blue-200 p-3 text-2xs text-blue-900">
+          <div className="rounded-md bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 p-3 text-2xs text-blue-900 dark:text-blue-100">
             <div className="flex items-start gap-2">
-              <InformationCircleIcon className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
+              <InformationCircleIcon className="h-4 w-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
               <div>
                 <div className="font-semibold mb-0.5">이미 분개된 위하고 데이터를 정식 전표로 격상합니다.</div>
-                <ul className="list-disc list-inside space-y-0.5 text-blue-800">
+                <ul className="list-disc list-inside space-y-0.5 text-blue-800 dark:text-blue-200">
                   <li>변환 후엔 그랜터 자동 후보가 같은 거래일 때 자동으로 <strong>중복</strong>으로 표시됩니다.</li>
                   <li>이미 변환된 그룹은 다시 변환되지 않습니다 (idempotent).</li>
                   <li>출처 라벨: <code className="px-1 bg-white dark:bg-ink-900 rounded">wehago_import</code></li>
@@ -174,7 +174,7 @@ function JournalMigrationModal({
               <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400">분개장 업로드 선택 (선택 안 하면 전체)</div>
               {journalUploads.length > 0 && (
                 <button onClick={() => setSelectedUploads(new Set(journalUploads.map((u) => u.id)))}
-                  className="text-2xs text-blue-600 hover:underline">전체 선택</button>
+                  className="text-2xs text-blue-600 dark:text-blue-400 hover:underline">전체 선택</button>
               )}
             </div>
             {uploadsQuery.isLoading ? (
@@ -192,7 +192,7 @@ function JournalMigrationModal({
                   const fullyMigrated = u.migrated_vouchers > 0
                   return (
                     <label key={u.id}
-                      className={`flex items-center gap-2 px-2 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 cursor-pointer ${selectedUploads.has(u.id) ? 'bg-blue-50' : ''}`}>
+                      className={`flex items-center gap-2 px-2 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 cursor-pointer ${selectedUploads.has(u.id) ? 'bg-blue-50 dark:bg-blue-950' : ''}`}>
                       <input type="checkbox" checked={selectedUploads.has(u.id)}
                         onChange={() => toggleUpload(u.id)}
                         className="rounded border-ink-300 dark:border-ink-700" />
@@ -200,7 +200,7 @@ function JournalMigrationModal({
                         <div className="flex items-center gap-2">
                           <span className="text-xs text-ink-800 dark:text-ink-100 truncate">{u.filename}</span>
                           {fullyMigrated && (
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-2xs font-semibold">
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 text-2xs font-semibold">
                               ✓ {u.migrated_vouchers}건 변환됨
                             </span>
                           )}
@@ -224,15 +224,15 @@ function JournalMigrationModal({
           {/* 진행률 바 (백그라운드 task) */}
           {taskId && progress && (
             <div className={`rounded-md border p-3 ${
-              progress.status === 'completed' ? 'border-emerald-200 bg-emerald-50' :
-              progress.status === 'failed' ? 'border-rose-200 bg-rose-50' :
-              'border-blue-200 bg-blue-50'
+              progress.status === 'completed' ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950' :
+              progress.status === 'failed' ? 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950' :
+              'border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950'
             }`}>
               <div className="flex items-center justify-between text-xs mb-1.5">
                 <span className={`font-semibold ${
-                  progress.status === 'completed' ? 'text-emerald-800' :
-                  progress.status === 'failed' ? 'text-rose-800' :
-                  'text-blue-800'
+                  progress.status === 'completed' ? 'text-emerald-800 dark:text-emerald-200' :
+                  progress.status === 'failed' ? 'text-rose-800 dark:text-rose-200' :
+                  'text-blue-800 dark:text-blue-200'
                 }`}>
                   {progress.status === 'completed' ? '✓ 완료' :
                    progress.status === 'failed' ? '✗ 실패' :
@@ -256,18 +256,18 @@ function JournalMigrationModal({
                   변환 <strong>{progress.migrated_count}건</strong>
                   {progress.skipped_count > 0 && <> · skip {progress.skipped_count}</>}
                   {progress.error_count > 0 && (
-                    <span className="text-rose-700"> · 오류 <strong>{progress.error_count}건</strong></span>
+                    <span className="text-rose-700 dark:text-rose-300"> · 오류 <strong>{progress.error_count}건</strong></span>
                   )}
                 </div>
               )}
               {(progress.recent_errors || []).length > 0 && (
                 <details className="mt-1.5" open>
-                  <summary className="cursor-pointer text-2xs text-rose-700 font-semibold">
+                  <summary className="cursor-pointer text-2xs text-rose-700 dark:text-rose-300 font-semibold">
                     최근 에러 ({progress.recent_errors.length}개)
                   </summary>
-                  <div className="mt-1 space-y-0.5 text-2xs bg-white dark:bg-ink-900 rounded p-1.5 border border-rose-100 max-h-32 overflow-y-auto font-mono">
+                  <div className="mt-1 space-y-0.5 text-2xs bg-white dark:bg-ink-900 rounded p-1.5 border border-rose-100 dark:border-rose-900 max-h-32 overflow-y-auto font-mono">
                     {progress.recent_errors.map((reason: string, i: number) => (
-                      <div key={i} className="text-rose-800 break-all">· {reason}</div>
+                      <div key={i} className="text-rose-800 dark:text-rose-200 break-all">· {reason}</div>
                     ))}
                   </div>
                 </details>
@@ -277,20 +277,20 @@ function JournalMigrationModal({
 
           {/* 결과 */}
           {result && (
-            <div className="rounded-md bg-emerald-50 border border-emerald-200 p-3 text-xs text-emerald-900">
+            <div className="rounded-md bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 p-3 text-xs text-emerald-900 dark:text-emerald-100">
               <div className="font-semibold mb-1">변환 완료</div>
               <div>
                 <strong>{result.migrated_count}건</strong> 전표 생성
                 {result.skipped_count > 0 && <> · {result.skipped_count}건 skip (이미 변환됨)</>}
-                {result.error_count > 0 && <span className="text-rose-700"> · {result.error_count}건 오류</span>}
+                {result.error_count > 0 && <span className="text-rose-700 dark:text-rose-300"> · {result.error_count}건 오류</span>}
                 {result.total_groups && <span className="text-ink-500 dark:text-ink-400"> · 전체 {result.total_groups}그룹</span>}
               </div>
               {(result.errors || []).length > 0 && (
                 <details className="mt-1">
-                  <summary className="cursor-pointer text-2xs text-rose-700">오류 상세 보기 ({result.errors.length}건)</summary>
+                  <summary className="cursor-pointer text-2xs text-rose-700 dark:text-rose-300">오류 상세 보기 ({result.errors.length}건)</summary>
                   <div className="mt-1 space-y-0.5 text-2xs max-h-32 overflow-y-auto">
                     {(result.errors || []).map((e: any, i: number) => (
-                      <div key={i} className="text-rose-700">· {e.reason}</div>
+                      <div key={i} className="text-rose-700 dark:text-rose-300">· {e.reason}</div>
                     ))}
                   </div>
                 </details>
@@ -298,7 +298,7 @@ function JournalMigrationModal({
             </div>
           )}
           {migrateMut.isError && !taskId && (
-            <div className="rounded-md bg-rose-50 border border-rose-200 p-3 text-2xs text-rose-700">
+            <div className="rounded-md bg-rose-50 dark:bg-rose-950 border border-rose-200 dark:border-rose-800 p-3 text-2xs text-rose-700 dark:text-rose-300">
               실패: {(migrateMut.error as any)?.response?.data?.detail || (migrateMut.error as any)?.message}
             </div>
           )}
@@ -319,7 +319,7 @@ function JournalMigrationModal({
           </button>
           {result && result.migrated_count > 0 && (
             <button onClick={() => { onDone(); onClose() }}
-              className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded hover:bg-emerald-700">
+              className="px-3 py-1.5 text-xs bg-emerald-600 dark:bg-emerald-400 text-white rounded hover:bg-emerald-700">
               닫고 새로고침
             </button>
           )}
@@ -579,7 +579,7 @@ export default function AutoVoucherPage() {
           </div>
           <button
             onClick={() => setShowMigrateModal(true)}
-            className="px-2 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 border border-purple-200 rounded hover:bg-purple-100"
+            className="px-2 py-1.5 text-xs font-semibold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded hover:bg-purple-100 dark:hover:bg-purple-900"
             title="위하고 분개장(이미 분개된 데이터)을 정식 전표로 일괄 등록"
           >
             <ArrowUpOnSquareIcon className="h-3.5 w-3.5 mr-1 inline" />
@@ -606,15 +606,15 @@ export default function AutoVoucherPage() {
       {/* Progress */}
       {taskProgress && (
         <div className={`rounded-md border px-3 py-2 ${
-          taskProgress.status === 'completed' ? 'border-emerald-200 bg-emerald-50' :
-          taskProgress.status === 'failed' ? 'border-rose-200 bg-rose-50' :
-          'border-blue-200 bg-blue-50'
+          taskProgress.status === 'completed' ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950' :
+          taskProgress.status === 'failed' ? 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950' :
+          'border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950'
         }`}>
           <div className="flex items-center justify-between text-2xs mb-1">
             <span className={`font-semibold ${
-              taskProgress.status === 'completed' ? 'text-emerald-800' :
-              taskProgress.status === 'failed' ? 'text-rose-800' :
-              'text-blue-800'
+              taskProgress.status === 'completed' ? 'text-emerald-800 dark:text-emerald-200' :
+              taskProgress.status === 'failed' ? 'text-rose-800 dark:text-rose-200' :
+              'text-blue-800 dark:text-blue-200'
             }`}>
               {taskProgress.status === 'completed' ? '✓ 완료' :
                taskProgress.status === 'failed' ? '✗ 실패' :
@@ -633,7 +633,7 @@ export default function AutoVoucherPage() {
             />
           </div>
           {taskProgress.result && (
-            <div className="mt-1.5 text-2xs text-emerald-800">
+            <div className="mt-1.5 text-2xs text-emerald-800 dark:text-emerald-200">
               <strong>{taskProgress.result.total_created || 0}건</strong> 생성
               (매출 {taskProgress.result.sales_tax_invoice || 0} /
               {' '}매입 {taskProgress.result.purchase_tax_invoice || 0} /
@@ -645,7 +645,7 @@ export default function AutoVoucherPage() {
                 <span className="ml-2">· 카드↔통장 매칭 {taskProgress.result.duplicate_matching.matched_pairs}쌍</span>
               )}
               {taskProgress.result.voucher_duplicate_matching?.matched > 0 && (
-                <span className="ml-2 text-amber-800 font-semibold">
+                <span className="ml-2 text-amber-800 dark:text-amber-200 font-semibold">
                   · 기존 전표 중복 <strong>{taskProgress.result.voucher_duplicate_matching.matched}건</strong>
                 </span>
               )}
@@ -661,8 +661,8 @@ export default function AutoVoucherPage() {
           <div className="flex items-center gap-1">
             <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">상태</span>
             {[
-              { v: 'pending', label: `대기 ${pendingCount || ''}`, tone: 'bg-amber-100 text-amber-800 border-amber-200' },
-              { v: 'confirmed', label: '확정', tone: 'bg-emerald-100 text-emerald-800 border-emerald-200' },
+              { v: 'pending', label: `대기 ${pendingCount || ''}`, tone: 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800' },
+              { v: 'confirmed', label: '확정', tone: 'bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800' },
               { v: 'rejected', label: '거절', tone: 'bg-ink-100 dark:bg-ink-800 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800' },
             ].map((s) => (
               <button key={s.v}
@@ -680,7 +680,7 @@ export default function AutoVoucherPage() {
             <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">중복</span>
             {[
               { v: 'hide' as DupFilter, label: '숨김', tone: 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900 border-ink-900 dark:border-ink-100' },
-              { v: 'include' as DupFilter, label: '포함', tone: 'bg-amber-100 text-amber-800 border-amber-200' },
+              { v: 'include' as DupFilter, label: '포함', tone: 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800' },
               { v: 'only' as DupFilter, label: `중복만 ${duplicateCount || ''}`, tone: 'bg-amber-500 text-white border-amber-500' },
             ].map((s) => (
               <button key={s.v}
@@ -693,14 +693,14 @@ export default function AutoVoucherPage() {
             <button
               onClick={() => matchVoucherDupMut.mutate()}
               disabled={matchVoucherDupMut.isPending}
-              className="ml-1 px-2 py-0.5 rounded text-2xs font-semibold bg-white dark:bg-ink-900 text-purple-700 border border-purple-300 hover:bg-purple-50 disabled:opacity-50"
+              className="ml-1 px-2 py-0.5 rounded text-2xs font-semibold bg-white dark:bg-ink-900 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-700 hover:bg-purple-50 dark:hover:bg-purple-950/40 disabled:opacity-50"
               title="기존 전표(위하고 import 등)와 비교해 중복 후보를 다시 매칭"
             >
               <ArrowPathIcon className="h-3 w-3 mr-0.5 inline" />
               {matchVoucherDupMut.isPending ? '검사 중…' : '중복 재검사'}
             </button>
             {matchVoucherDupMut.data && (
-              <span className="text-2xs text-purple-700 ml-1">
+              <span className="text-2xs text-purple-700 dark:text-purple-300 ml-1">
                 {matchVoucherDupMut.data.data?.matched || 0}건 매칭됨
               </span>
             )}
@@ -726,9 +726,9 @@ export default function AutoVoucherPage() {
             <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">신뢰도</span>
             {[
               { v: 'all' as ConfBand, label: '전체', tone: 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' },
-              { v: 'auto' as ConfBand, label: '자동확정 ≥85%', tone: 'bg-emerald-100 text-emerald-800' },
-              { v: 'review' as ConfBand, label: '일반 60~85%', tone: 'bg-amber-100 text-amber-800' },
-              { v: 'suspect' as ConfBand, label: '의심 <60%', tone: 'bg-rose-100 text-rose-800' },
+              { v: 'auto' as ConfBand, label: '자동확정 ≥85%', tone: 'bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200' },
+              { v: 'review' as ConfBand, label: '일반 60~85%', tone: 'bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200' },
+              { v: 'suspect' as ConfBand, label: '의심 <60%', tone: 'bg-rose-100 dark:bg-rose-900 text-rose-800 dark:text-rose-200' },
             ].map((s) => (
               <button key={s.v}
                 onClick={() => { setConfBand(s.v); setPage(1) }}
@@ -758,7 +758,7 @@ export default function AutoVoucherPage() {
               {selectedIds.size > 0 ? `${selectedIds.size}건 선택` : `${total}건 대기 중`}
             </span>
             <button onClick={selectAutoConfirmable}
-              className="text-2xs font-semibold text-emerald-700 hover:underline">
+              className="text-2xs font-semibold text-emerald-700 dark:text-emerald-300 hover:underline">
               자동확정 가능 ≥85% 선택
             </button>
             <button onClick={selectAllVisible}
@@ -768,7 +768,7 @@ export default function AutoVoucherPage() {
             <button
               onClick={() => selectAllPagesMut.mutate()}
               disabled={selectAllPagesMut.isPending}
-              className="text-2xs font-semibold text-blue-700 hover:underline disabled:opacity-50"
+              className="text-2xs font-semibold text-blue-700 dark:text-blue-300 hover:underline disabled:opacity-50"
               title="모든 페이지의 pending 후보 전체 선택 (필터 적용)"
             >
               {selectAllPagesMut.isPending ? '불러오는 중…' : `전체 페이지 선택 (총 ${pendingCount}건)`}
@@ -793,14 +793,14 @@ export default function AutoVoucherPage() {
         {/* 백그라운드 task 진행률 */}
         {batchTaskId && batchProgress && (
           <div className={`rounded-md border px-3 py-2 mt-2 ${
-            batchProgress.status === 'completed' ? 'border-emerald-200 bg-emerald-50' :
-            batchProgress.status === 'failed' ? 'border-rose-200 bg-rose-50' :
-            'border-blue-200 bg-blue-50'
+            batchProgress.status === 'completed' ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950' :
+            batchProgress.status === 'failed' ? 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950' :
+            'border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950'
           }`}>
             <div className="flex items-center justify-between text-2xs mb-1">
               <span className={`font-semibold ${
-                batchProgress.status === 'completed' ? 'text-emerald-800' :
-                batchProgress.status === 'failed' ? 'text-rose-800' : 'text-blue-800'
+                batchProgress.status === 'completed' ? 'text-emerald-800 dark:text-emerald-200' :
+                batchProgress.status === 'failed' ? 'text-rose-800 dark:text-rose-200' : 'text-blue-800 dark:text-blue-200'
               }`}>
                 {batchProgress.status === 'completed' ? '✓ 완료' :
                  batchProgress.status === 'failed' ? '✗ 실패' : '⏳ 진행 중'} · {batchProgress.message}
@@ -820,18 +820,18 @@ export default function AutoVoucherPage() {
               <div className="mt-1 text-2xs text-ink-700 dark:text-ink-300">
                 확정 <strong>{batchProgress.success_count}</strong>건
                 {batchProgress.failure_count > 0 && (
-                  <> · <span className="text-rose-700">실패 <strong>{batchProgress.failure_count}</strong>건</span></>
+                  <> · <span className="text-rose-700 dark:text-rose-300">실패 <strong>{batchProgress.failure_count}</strong>건</span></>
                 )}
               </div>
             )}
             {(batchProgress.recent_failures || []).length > 0 && (
               <details className="mt-1" open>
-                <summary className="cursor-pointer text-2xs text-rose-700 font-semibold">
+                <summary className="cursor-pointer text-2xs text-rose-700 dark:text-rose-300 font-semibold">
                   최근 실패 사유
                 </summary>
-                <div className="mt-1 space-y-0.5 text-2xs bg-white dark:bg-ink-900 rounded p-1.5 border border-rose-100 max-h-24 overflow-y-auto">
+                <div className="mt-1 space-y-0.5 text-2xs bg-white dark:bg-ink-900 rounded p-1.5 border border-rose-100 dark:border-rose-900 max-h-24 overflow-y-auto">
                   {batchProgress.recent_failures.map((r: string, i: number) => (
-                    <div key={i} className="text-rose-800 break-all">· {r}</div>
+                    <div key={i} className="text-rose-800 dark:text-rose-200 break-all">· {r}</div>
                   ))}
                 </div>
               </details>
@@ -844,20 +844,20 @@ export default function AutoVoucherPage() {
         )}
         {/* 일괄 확정 결과/상태 — selectedIds와 무관하게 항상 표시 */}
         {confirmBatchMut.isPending && !batchTaskId && (
-          <div className="text-2xs pt-2 text-blue-700 font-semibold flex items-center gap-1.5 border-t border-blue-100 mt-2 pt-2">
+          <div className="text-2xs pt-2 text-blue-700 dark:text-blue-300 font-semibold flex items-center gap-1.5 border-t border-blue-100 dark:border-blue-900 mt-2 pt-2">
             <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
             확정 처리 중… (서버 응답 대기)
           </div>
         )}
         {confirmBatchMut.isError && !batchTaskId && (
-          <div className="text-2xs pt-2 text-rose-700 border-t border-rose-100 mt-2 pt-2">
+          <div className="text-2xs pt-2 text-rose-700 dark:text-rose-300 border-t border-rose-100 dark:border-rose-900 mt-2 pt-2">
             <strong>✗ 일괄 확정 실패:</strong> {(confirmBatchMut.error as any)?.response?.data?.detail
               || (confirmBatchMut.error as any)?.message
               || '알 수 없는 오류'}
           </div>
         )}
         {confirmBatchMut.isSuccess && !batchTaskId && (
-          <div className="text-2xs pt-2 space-y-1 border-t border-emerald-100 mt-2 pt-2">
+          <div className="text-2xs pt-2 space-y-1 border-t border-emerald-100 dark:border-emerald-900 mt-2 pt-2">
             {(() => {
               const r = confirmBatchMut.data?.data || {}
               const newOk = r.success_count || 0
@@ -869,7 +869,7 @@ export default function AutoVoucherPage() {
                 <>
                   <div className="text-ink-700 dark:text-ink-300 leading-relaxed">
                     {totalOk > 0 && (
-                      <span className="text-emerald-700 font-bold text-xs">
+                      <span className="text-emerald-700 dark:text-emerald-300 font-bold text-xs">
                         ✓ 확정 {totalOk}건
                       </span>
                     )}
@@ -885,17 +885,17 @@ export default function AutoVoucherPage() {
                       <span className="text-ink-500 dark:text-ink-400 ml-1.5">(전부 신규)</span>
                     )}
                     {newOk === 0 && already > 0 && (
-                      <span className="text-amber-600 ml-1.5">(전부 다른 작업이 먼저 처리함 — 안전)</span>
+                      <span className="text-amber-600 dark:text-amber-400 ml-1.5">(전부 다른 작업이 먼저 처리함 — 안전)</span>
                     )}
                     {skipped > 0 && (
                       <span className="text-ink-500 dark:text-ink-400 ml-2">· skip {skipped}건 (거절/중복)</span>
                     )}
                     {failed > 0 && (
-                      <span className="text-rose-600 ml-2">· 실패 <strong>{failed}건</strong></span>
+                      <span className="text-rose-600 dark:text-rose-400 ml-2">· 실패 <strong>{failed}건</strong></span>
                     )}
                   </div>
                   {failed > 0 && (r.failures || []).length > 0 && (
-                    <details className="text-rose-700" open>
+                    <details className="text-rose-700 dark:text-rose-300" open>
                       <summary className="cursor-pointer font-semibold">실패 사유 ({(r.failures||[]).length}건)</summary>
                       <div className="mt-1 pl-3 max-h-32 overflow-y-auto space-y-0.5">
                         {(r.failures || []).slice(0, 10).map((f: any, i: number) => (
@@ -953,8 +953,8 @@ export default function AutoVoucherPage() {
                     <>
                       <tr key={c.id}
                         className={`border-b border-ink-100 dark:border-ink-800 hover:bg-ink-50/30 dark:hover:bg-ink-800/30 ${
-                          isSelected ? 'bg-blue-50/40' :
-                          isDup ? 'bg-amber-50/50 border-l-4 border-l-amber-400' : ''
+                          isSelected ? 'bg-blue-50 dark:bg-blue-950/40' :
+                          isDup ? 'bg-amber-50 dark:bg-amber-950/50 border-l-4 border-l-amber-400' : ''
                         }`}
                       >
                         <td className="px-2 py-1">
@@ -1004,35 +1004,35 @@ export default function AutoVoucherPage() {
                             <div className="inline-flex items-center gap-1">
                               <button onClick={() => confirmMut.mutate(c.id)}
                                 disabled={confirmMut.isPending}
-                                className="px-1.5 py-0.5 rounded bg-emerald-600 text-white text-2xs hover:bg-emerald-700">
+                                className="px-1.5 py-0.5 rounded bg-emerald-600 dark:bg-emerald-400 text-white text-2xs hover:bg-emerald-700">
                                 <CheckCircleIcon className="h-3 w-3 inline mr-0.5" />
                                 확정
                               </button>
                               <button onClick={() => rejectMut.mutate({ id: c.id })}
                                 disabled={rejectMut.isPending}
-                                className="px-1.5 py-0.5 rounded bg-white dark:bg-ink-900 text-rose-600 border border-rose-200 text-2xs hover:bg-rose-50">
+                                className="px-1.5 py-0.5 rounded bg-white dark:bg-ink-900 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 text-2xs hover:bg-rose-50 dark:hover:bg-rose-950/40">
                                 <XCircleIcon className="h-3 w-3 inline mr-0.5" />
                                 거절
                               </button>
                             </div>
                           ) : c.status === 'confirmed' ? (
-                            <span className="text-2xs text-emerald-700 font-semibold">확정됨 #{c.confirmed_voucher_id}</span>
+                            <span className="text-2xs text-emerald-700 dark:text-emerald-300 font-semibold">확정됨 #{c.confirmed_voucher_id}</span>
                           ) : isDup ? (
                             <div className="text-left">
                               {dupVoucher ? (
                                 <div className="text-2xs">
-                                  <div className="font-semibold text-amber-800">이미 분개됨</div>
+                                  <div className="font-semibold text-amber-800 dark:text-amber-200">이미 분개됨</div>
                                   <div className="text-ink-600 dark:text-ink-400 mt-0.5">
                                     전표 <span className="font-mono">#{dupVoucher.voucher_number}</span>
                                   </div>
                                   {dupSourceLabel && (
-                                    <div className="text-ink-500 dark:text-ink-400">출처: <span className="text-purple-700 font-semibold">{dupSourceLabel}</span></div>
+                                    <div className="text-ink-500 dark:text-ink-400">출처: <span className="text-purple-700 dark:text-purple-300 font-semibold">{dupSourceLabel}</span></div>
                                   )}
                                 </div>
                               ) : c.duplicate_of_id ? (
-                                <span className="text-2xs text-purple-700">카드↔통장 중복 (#{c.duplicate_of_id})</span>
+                                <span className="text-2xs text-purple-700 dark:text-purple-300">카드↔통장 중복 (#{c.duplicate_of_id})</span>
                               ) : (
-                                <span className="text-2xs text-amber-700">중복</span>
+                                <span className="text-2xs text-amber-700 dark:text-amber-300">중복</span>
                               )}
                             </div>
                           ) : (
@@ -1044,15 +1044,15 @@ export default function AutoVoucherPage() {
                         <tr className="bg-canvas-50 dark:bg-ink-950 border-b border-ink-100 dark:border-ink-800">
                           <td colSpan={10} className="px-4 py-2">
                             {isDup && dupVoucher && (
-                              <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-2xs">
-                                <div className="flex items-center gap-2 font-semibold text-amber-800">
+                              <div className="mb-2 rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-2 py-1.5 text-2xs">
+                                <div className="flex items-center gap-2 font-semibold text-amber-800 dark:text-amber-200">
                                   <ExclamationTriangleIcon className="h-3.5 w-3.5" />
                                   이미 등록된 전표와 동일 거래
                                 </div>
                                 <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-0.5 text-ink-700 dark:text-ink-300">
                                   <div>전표 번호: <span className="font-mono font-semibold">#{dupVoucher.voucher_number}</span></div>
                                   <div>전표 일자: <span className="font-mono">{dupVoucher.voucher_date}</span></div>
-                                  <div>출처: <span className="text-purple-700 font-semibold">{dupSourceLabel}</span></div>
+                                  <div>출처: <span className="text-purple-700 dark:text-purple-300 font-semibold">{dupSourceLabel}</span></div>
                                   <div>금액: <span className="font-mono">{formatCurrency(Number(dupVoucher.total_debit), false)}</span></div>
                                   {dupVoucher.merchant_name && (
                                     <div className="col-span-2">거래처: {dupVoucher.merchant_name}</div>

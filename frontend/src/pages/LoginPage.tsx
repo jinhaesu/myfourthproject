@@ -10,7 +10,7 @@ export default function LoginPage() {
   }, [])
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-600 to-indigo-800 text-white">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-600 dark:from-blue-400 to-indigo-800 dark:to-indigo-200 text-white">
       <div className="w-10 h-10 border-4 border-white/30 border-t-white rounded-full animate-spin mb-5" />
       <p className="text-base font-medium">회사 계정 로그인으로 이동 중...</p>
     </div>

@@ -132,7 +132,7 @@ export default function ForecastPage() {
               onClick={() => setActiveTab(tab.id)}
               className={`py-3 px-1 border-b-2 font-medium text-sm ${
                 activeTab === tab.id
-                  ? 'border-blue-500 text-blue-600'
+                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
                   : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300 dark:hover:border-ink-600'
               }`}
             >
@@ -147,7 +147,7 @@ export default function ForecastPage() {
         <div className="space-y-6">
           {dashboardLoading ? (
             <div className="text-center py-12">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto"></div>
               <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
             </div>
           ) : (
@@ -155,8 +155,8 @@ export default function ForecastPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="card">
                   <div className="flex items-center gap-3">
-                    <div className="p-3 bg-green-100 rounded-lg">
-                      <ArrowTrendingUpIcon className="h-6 w-6 text-green-600" />
+                    <div className="p-3 bg-green-100 dark:bg-green-900 rounded-lg">
+                      <ArrowTrendingUpIcon className="h-6 w-6 text-green-600 dark:text-green-400" />
                     </div>
                     <div>
                       <p className="text-sm text-gray-500 dark:text-gray-400">당월 매출</p>
@@ -169,8 +169,8 @@ export default function ForecastPage() {
 
                 <div className="card">
                   <div className="flex items-center gap-3">
-                    <div className="p-3 bg-blue-100 rounded-lg">
-                      <ArrowTrendingUpIcon className="h-6 w-6 text-blue-600" />
+                    <div className="p-3 bg-blue-100 dark:bg-blue-900 rounded-lg">
+                      <ArrowTrendingUpIcon className="h-6 w-6 text-blue-600 dark:text-blue-400" />
                     </div>
                     <div>
                       <p className="text-sm text-gray-500 dark:text-gray-400">영업이익</p>
@@ -194,12 +194,12 @@ export default function ForecastPage() {
 
                 <div className="card">
                   <div className="flex items-center gap-3">
-                    <div className="p-3 bg-yellow-100 rounded-lg">
-                      <ArrowTrendingDownIcon className="h-6 w-6 text-yellow-600" />
+                    <div className="p-3 bg-yellow-100 dark:bg-yellow-900 rounded-lg">
+                      <ArrowTrendingDownIcon className="h-6 w-6 text-yellow-600 dark:text-yellow-400" />
                     </div>
                     <div>
                       <p className="text-sm text-gray-500 dark:text-gray-400">당월 비용</p>
-                      <p className="text-xl font-bold text-red-600">
+                      <p className="text-xl font-bold text-red-600 dark:text-red-400">
                         {formatCurrency(dashboardData?.mtd_expenses || 0)}
                       </p>
                     </div>
@@ -215,15 +215,15 @@ export default function ForecastPage() {
                     {dashboardData.cash_alerts.map((alert: any, index: number) => (
                       <div
                         key={index}
-                        className="flex items-center gap-3 p-3 bg-yellow-50 rounded-lg"
+                        className="flex items-center gap-3 p-3 bg-yellow-50 dark:bg-yellow-950 rounded-lg"
                       >
-                        <ArrowTrendingDownIcon className="h-5 w-5 text-yellow-600 flex-shrink-0" />
+                        <ArrowTrendingDownIcon className="h-5 w-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
                         <div>
-                          <p className="text-sm font-medium text-yellow-800">
+                          <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">
                             {alert.message}
                           </p>
                           {alert.date && (
-                            <p className="text-xs text-yellow-600">{alert.date}</p>
+                            <p className="text-xs text-yellow-600 dark:text-yellow-400">{alert.date}</p>
                           )}
                         </div>
                       </div>
@@ -269,29 +269,29 @@ export default function ForecastPage() {
               <div className="space-y-4">
                 {/* P&L Summary */}
                 <div className="grid grid-cols-3 gap-4 text-center">
-                  <div className="p-4 bg-green-50 rounded-lg">
+                  <div className="p-4 bg-green-50 dark:bg-green-950 rounded-lg">
                     <p className="text-sm text-gray-500 dark:text-gray-400">총 수익</p>
-                    <p className="text-2xl font-bold text-green-600">
+                    <p className="text-2xl font-bold text-green-600 dark:text-green-400">
                       {formatCurrency(plData.total_revenue || 0)}
                     </p>
                   </div>
-                  <div className="p-4 bg-red-50 rounded-lg">
+                  <div className="p-4 bg-red-50 dark:bg-red-950 rounded-lg">
                     <p className="text-sm text-gray-500 dark:text-gray-400">총 비용</p>
-                    <p className="text-2xl font-bold text-red-600">
+                    <p className="text-2xl font-bold text-red-600 dark:text-red-400">
                       {formatCurrency(plData.total_expenses || 0)}
                     </p>
                   </div>
                   <div
                     className={`p-4 rounded-lg ${
-                      (plData.net_income || 0) >= 0 ? 'bg-blue-50' : 'bg-red-50'
+                      (plData.net_income || 0) >= 0 ? 'bg-blue-50 dark:bg-blue-950' : 'bg-red-50 dark:bg-red-950'
                     }`}
                   >
                     <p className="text-sm text-gray-500 dark:text-gray-400">순이익</p>
                     <p
                       className={`text-2xl font-bold ${
                         (plData.net_income || 0) >= 0
-                          ? 'text-blue-600'
-                          : 'text-red-600'
+                          ? 'text-blue-600 dark:text-blue-400'
+                          : 'text-red-600 dark:text-red-400'
                       }`}
                     >
                       {formatCurrency(plData.net_income || 0)}
@@ -372,21 +372,21 @@ export default function ForecastPage() {
               <div className="space-y-4">
                 {/* Summary */}
                 <div className="grid grid-cols-3 gap-4 text-center">
-                  <div className="p-4 bg-blue-50 rounded-lg">
+                  <div className="p-4 bg-blue-50 dark:bg-blue-950 rounded-lg">
                     <p className="text-sm text-gray-500 dark:text-gray-400">현재 잔액</p>
-                    <p className="text-2xl font-bold text-blue-600">
+                    <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
                       {formatCurrency(cashFlowData.current_balance || 0)}
                     </p>
                   </div>
-                  <div className="p-4 bg-green-50 rounded-lg">
+                  <div className="p-4 bg-green-50 dark:bg-green-950 rounded-lg">
                     <p className="text-sm text-gray-500 dark:text-gray-400">예상 입금</p>
-                    <p className="text-2xl font-bold text-green-600">
+                    <p className="text-2xl font-bold text-green-600 dark:text-green-400">
                       {formatCurrency(cashFlowData.total_inflow || 0)}
                     </p>
                   </div>
-                  <div className="p-4 bg-red-50 rounded-lg">
+                  <div className="p-4 bg-red-50 dark:bg-red-950 rounded-lg">
                     <p className="text-sm text-gray-500 dark:text-gray-400">예상 출금</p>
-                    <p className="text-2xl font-bold text-red-600">
+                    <p className="text-2xl font-bold text-red-600 dark:text-red-400">
                       {formatCurrency(cashFlowData.total_outflow || 0)}
                     </p>
                   </div>
@@ -524,9 +524,9 @@ export default function ForecastPage() {
                     {formatCurrency(scenarioMutation.data.data?.base_revenue || 0)}
                   </p>
                 </div>
-                <div className="p-4 bg-green-50 rounded-lg">
+                <div className="p-4 bg-green-50 dark:bg-green-950 rounded-lg">
                   <p className="text-sm text-gray-500 dark:text-gray-400">시나리오 매출</p>
-                  <p className="text-lg font-bold text-green-600">
+                  <p className="text-lg font-bold text-green-600 dark:text-green-400">
                     {formatCurrency(scenarioMutation.data.data?.scenario_revenue || 0)}
                   </p>
                 </div>
@@ -539,16 +539,16 @@ export default function ForecastPage() {
                 <div
                   className={`p-4 rounded-lg ${
                     (scenarioMutation.data.data?.scenario_profit || 0) >= 0
-                      ? 'bg-blue-50'
-                      : 'bg-red-50'
+                      ? 'bg-blue-50 dark:bg-blue-950'
+                      : 'bg-red-50 dark:bg-red-950'
                   }`}
                 >
                   <p className="text-sm text-gray-500 dark:text-gray-400">시나리오 이익</p>
                   <p
                     className={`text-lg font-bold ${
                       (scenarioMutation.data.data?.scenario_profit || 0) >= 0
-                        ? 'text-blue-600'
-                        : 'text-red-600'
+                        ? 'text-blue-600 dark:text-blue-400'
+                        : 'text-red-600 dark:text-red-400'
                     }`}
                   >
                     {formatCurrency(scenarioMutation.data.data?.scenario_profit || 0)}

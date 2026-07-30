@@ -91,7 +91,7 @@ export default function ApprovalsPage() {
               onClick={() => { setActiveTab(tab.id); setSelectedApproval(null); }}
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.id
-                  ? 'border-blue-600 text-blue-600'
+                  ? 'border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400'
                   : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >
@@ -108,7 +108,7 @@ export default function ApprovalsPage() {
             <div className="card">
               {isLoading ? (
                 <div className="text-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto" />
                 </div>
               ) : pendingData?.pending_approvals && pendingData.pending_approvals.length > 0 ? (
                 <div className="divide-y">
@@ -117,7 +117,7 @@ export default function ApprovalsPage() {
                       key={approval.id}
                       onClick={() => setSelectedApproval(approval)}
                       className={`p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-ink-800 ${
-                        selectedApproval?.id === approval.id ? 'bg-primary-50' : ''
+                        selectedApproval?.id === approval.id ? 'bg-primary-50 dark:bg-primary-900' : ''
                       }`}
                     >
                       <div className="flex items-start justify-between">
@@ -180,7 +180,7 @@ export default function ApprovalsPage() {
                 {selectedApproval.voucher_id && (
                   <button
                     onClick={() => navigate(`/vouchers/${selectedApproval.voucher_id}`)}
-                    className="w-full flex items-center gap-2 p-2 text-sm text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+                    className="w-full flex items-center gap-2 p-2 text-sm text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900 transition-colors"
                   >
                     <DocumentTextIcon className="h-5 w-5" />
                     전표 상세 보기
@@ -189,7 +189,7 @@ export default function ApprovalsPage() {
 
                 <div>
                   <p className="text-sm text-gray-500 dark:text-gray-400">예산 상태</p>
-                  <p className={`font-medium ${selectedApproval.budget_available ? 'text-green-600' : 'text-red-600'}`}>
+                  <p className={`font-medium ${selectedApproval.budget_available ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
                     {selectedApproval.budget_message || '확인됨'}
                   </p>
                 </div>

@@ -165,7 +165,7 @@ function CreateBatchModal({ onClose, onCreate, isPending }: CreateBatchModalProp
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900 dark:bg-ink-50/40">
       <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-sm p-5 space-y-4">
         <h2 className="text-base font-semibold text-ink-900 dark:text-ink-50">신규 급여 배치 생성</h2>
         <form onSubmit={handleSubmit} className="space-y-3">
@@ -409,7 +409,7 @@ function JournalPanel({ batchId, status, userId, onStatusChange }: JournalPanelP
       {preview && (
         <div className="space-y-3">
           {/* 균형 여부 */}
-          <div className={`flex items-center gap-1.5 text-xs font-medium ${preview.balanced ? 'text-emerald-700' : 'text-rose-600'}`}>
+          <div className={`flex items-center gap-1.5 text-xs font-medium ${preview.balanced ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-600 dark:text-rose-400'}`}>
             {preview.balanced ? (
               <CheckCircleIcon className="h-4 w-4" />
             ) : (
@@ -728,8 +728,8 @@ export default function PayrollPage() {
                     <td>{batch.pay_date}</td>
                     <td className="text-ink-600 dark:text-ink-400">{batch.title || '-'}</td>
                     <td className="amount">{formatCurrency(batch.total_gross, false)}</td>
-                    <td className="amount text-rose-600">{formatCurrency(batch.total_deduction, false)}</td>
-                    <td className="amount text-emerald-700 font-semibold">{formatCurrency(batch.total_net, false)}</td>
+                    <td className="amount text-rose-600 dark:text-rose-400">{formatCurrency(batch.total_deduction, false)}</td>
+                    <td className="amount text-emerald-700 dark:text-emerald-300 font-semibold">{formatCurrency(batch.total_net, false)}</td>
                     <td>{statusBadge(batch.status)}</td>
                     <td className="text-right">
                       <div className="flex items-center justify-end gap-1">
@@ -819,7 +819,7 @@ export default function PayrollPage() {
             </div>
 
             {isPosted && (
-              <div className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-700">
+              <div className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-50 dark:bg-amber-950 border-b border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-300">
                 <ExclamationTriangleIcon className="h-3.5 w-3.5 flex-shrink-0" />
                 전표 반영 완료 상태입니다. 수정·삭제하려면 먼저 분개를 취소해 주세요.
               </div>
@@ -872,8 +872,8 @@ export default function PayrollPage() {
                         <td className="amount">{formatCurrency(r.bonus, false)}</td>
                         <td className="amount">{formatCurrency(r.other_allowance, false)}</td>
                         <td className="amount font-semibold">{formatCurrency(r.gross_pay, false)}</td>
-                        <td className="amount text-rose-600">{formatCurrency(r.total_deduction, false)}</td>
-                        <td className="amount text-emerald-700 font-semibold">{formatCurrency(r.net_pay, false)}</td>
+                        <td className="amount text-rose-600 dark:text-rose-400">{formatCurrency(r.total_deduction, false)}</td>
+                        <td className="amount text-emerald-700 dark:text-emerald-300 font-semibold">{formatCurrency(r.net_pay, false)}</td>
                         {!isPosted && (
                           <td className="text-right">
                             <button
@@ -903,8 +903,8 @@ export default function PayrollPage() {
                       <td className="amount font-semibold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'bonus'), false)}</td>
                       <td className="amount font-semibold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'other_allowance'), false)}</td>
                       <td className="amount font-bold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalGross, false)}</td>
-                      <td className="amount font-bold text-rose-600 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalDeduction, false)}</td>
-                      <td className="amount font-bold text-emerald-700 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalNet, false)}</td>
+                      <td className="amount font-bold text-rose-600 dark:text-rose-400 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalDeduction, false)}</td>
+                      <td className="amount font-bold text-emerald-700 dark:text-emerald-300 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalNet, false)}</td>
                       {!isPosted && <td />}
                     </tr>
                   </tfoot>

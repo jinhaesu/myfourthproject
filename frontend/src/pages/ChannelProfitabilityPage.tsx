@@ -586,20 +586,20 @@ export default function ChannelProfitabilityPage() {
           <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600" />
-          <span className="text-2xs text-amber-800">
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <span className="text-2xs text-amber-800 dark:text-amber-200">
             그랜터 API 키 미설정 — 설정에서 그랜터 연동을 먼저 완료하세요.
           </span>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
-            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
           </div>
           {exceeds31 && (
-            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
               ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
@@ -630,34 +630,34 @@ export default function ChannelProfitabilityPage() {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <div className="panel px-3 py-2">
           <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">총 매출</div>
-          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-emerald-700">
+          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-emerald-700 dark:text-emerald-300">
             {formatCompactWon(summary.totalRevenue)}
           </div>
           <div className="text-2xs text-ink-400">{formatCurrency(summary.totalRevenue, false)}원</div>
         </div>
         <div className="panel px-3 py-2">
           <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">총 비용</div>
-          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-rose-700">
+          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-rose-700 dark:text-rose-300">
             {formatCompactWon(summary.totalCost)}
           </div>
           <div className="text-2xs text-ink-400">{formatCurrency(summary.totalCost, false)}원</div>
         </div>
         <div className="panel px-3 py-2">
           <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">마진</div>
-          <div className={`mt-0.5 font-mono tabular-nums font-bold text-base ${summary.totalMargin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+          <div className={`mt-0.5 font-mono tabular-nums font-bold text-base ${summary.totalMargin >= 0 ? 'text-primary-700 dark:text-primary-300' : 'text-rose-700 dark:text-rose-300'}`}>
             {formatCompactWon(summary.totalMargin)}
           </div>
           <div className="text-2xs text-ink-400">{formatCurrency(summary.totalMargin, false)}원</div>
         </div>
         <div className="panel px-3 py-2">
           <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">평균 마진율</div>
-          <div className={`mt-0.5 font-mono tabular-nums font-bold text-base ${summary.avgMarginPct >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+          <div className={`mt-0.5 font-mono tabular-nums font-bold text-base ${summary.avgMarginPct >= 0 ? 'text-primary-700 dark:text-primary-300' : 'text-rose-700 dark:text-rose-300'}`}>
             {formatPct(summary.avgMarginPct)}
           </div>
         </div>
         <div className="panel px-3 py-2">
           <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">1위 채널</div>
-          <div className="mt-0.5 font-bold text-sm text-amber-700 truncate">
+          <div className="mt-0.5 font-bold text-sm text-amber-700 dark:text-amber-300 truncate">
             {summary.topChannel?.label ?? '-'}
           </div>
           <div className="text-2xs text-ink-400">
@@ -825,7 +825,7 @@ export default function ChannelProfitabilityPage() {
                     <button
                       onClick={() => findRecentMut.mutate()}
                       disabled={findRecentMut.isPending}
-                      className="text-primary-700 hover:underline font-semibold"
+                      className="text-primary-700 dark:text-primary-300 hover:underline font-semibold"
                     >
                       최근 거래 한 달 자동 탐색
                     </button>
@@ -835,10 +835,10 @@ export default function ChannelProfitabilityPage() {
               {channels.map((ch, idx) => {
                 const isSel = selectedKey === ch.key
                 const marginColor = ch.marginPct >= 20
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
                   : ch.marginPct >= 0
-                  ? 'bg-amber-50 text-amber-700 border-amber-200'
-                  : 'bg-rose-50 text-rose-700 border-rose-200'
+                  ? 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                  : 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
                 return (
                   <div
                     key={ch.key}
@@ -863,7 +863,7 @@ export default function ChannelProfitabilityPage() {
                         <div className="font-mono tabular-nums text-xs font-semibold text-ink-900 dark:text-ink-50">
                           {formatCompactWon(ch.revenue)}
                         </div>
-                        <div className={`text-2xs font-mono ${ch.margin >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        <div className={`text-2xs font-mono ${ch.margin >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                           {ch.margin >= 0 ? '+' : ''}{formatCompactWon(ch.margin)}
                         </div>
                       </div>
@@ -922,31 +922,31 @@ export default function ChannelProfitabilityPage() {
                 <div className="grid grid-cols-5 gap-1.5">
                   <div className="panel px-2 py-2 text-center">
                     <div className="text-2xs text-ink-500 dark:text-ink-400">매출</div>
-                    <div className="font-mono font-bold text-xs text-emerald-700 mt-0.5">
+                    <div className="font-mono font-bold text-xs text-emerald-700 dark:text-emerald-300 mt-0.5">
                       {formatCompactWon(selected.revenue)}
                     </div>
                   </div>
                   <div className="panel px-2 py-2 text-center">
                     <div className="text-2xs text-ink-500 dark:text-ink-400">직접비용</div>
-                    <div className="font-mono font-bold text-xs text-rose-700 mt-0.5">
+                    <div className="font-mono font-bold text-xs text-rose-700 dark:text-rose-300 mt-0.5">
                       {formatCompactWon(selected.directCost)}
                     </div>
                   </div>
                   <div className="panel px-2 py-2 text-center">
                     <div className="text-2xs text-ink-500 dark:text-ink-400">안분비용</div>
-                    <div className="font-mono font-bold text-xs text-rose-600 mt-0.5">
+                    <div className="font-mono font-bold text-xs text-rose-600 dark:text-rose-400 mt-0.5">
                       {formatCompactWon(selected.allocatedCost)}
                     </div>
                   </div>
                   <div className="panel px-2 py-2 text-center">
                     <div className="text-2xs text-ink-500 dark:text-ink-400">마진</div>
-                    <div className={`font-mono font-bold text-xs mt-0.5 ${selected.margin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+                    <div className={`font-mono font-bold text-xs mt-0.5 ${selected.margin >= 0 ? 'text-primary-700 dark:text-primary-300' : 'text-rose-700 dark:text-rose-300'}`}>
                       {formatCompactWon(selected.margin)}
                     </div>
                   </div>
                   <div className="panel px-2 py-2 text-center">
                     <div className="text-2xs text-ink-500 dark:text-ink-400">마진율</div>
-                    <div className={`font-mono font-bold text-xs mt-0.5 ${selected.marginPct >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+                    <div className={`font-mono font-bold text-xs mt-0.5 ${selected.marginPct >= 0 ? 'text-primary-700 dark:text-primary-300' : 'text-rose-700 dark:text-rose-300'}`}>
                       {formatPct(selected.marginPct)}
                     </div>
                   </div>
@@ -1035,7 +1035,7 @@ export default function ChannelProfitabilityPage() {
                   title={`매출 거래 (${selected.revenueTickets.length}건)`}
                   tickets={selected.revenueTickets}
                   color={selected.color}
-                  amountColor="text-emerald-700"
+                  amountColor="text-emerald-700 dark:text-emerald-300"
                 />
 
                 {/* 직접 비용 거래 테이블 */}
@@ -1044,7 +1044,7 @@ export default function ChannelProfitabilityPage() {
                     title={`직접 비용 (${selected.directCostTickets.length}건)`}
                     tickets={selected.directCostTickets}
                     color="#e11d48"
-                    amountColor="text-rose-700"
+                    amountColor="text-rose-700 dark:text-rose-300"
                   />
                 )}
               </div>
@@ -1080,7 +1080,7 @@ export default function ChannelProfitabilityPage() {
                     <td className="px-3 py-1.5 font-mono text-ink-400">{idx + 1}</td>
                     <td className="px-3 py-1.5 font-medium text-ink-800 dark:text-ink-100 max-w-[12rem] truncate">{row.name}</td>
                     <td className="px-3 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{row.count.toLocaleString()}</td>
-                    <td className="px-3 py-1.5 text-right font-mono font-semibold text-emerald-700">
+                    <td className="px-3 py-1.5 text-right font-mono font-semibold text-emerald-700 dark:text-emerald-300">
                       {formatCurrency(row.revenue, false)}
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">
@@ -1149,28 +1149,28 @@ export default function ChannelProfitabilityPage() {
                       </div>
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{ch.revenueCount}</td>
-                    <td className="px-3 py-1.5 text-right font-mono font-semibold text-emerald-700">
+                    <td className="px-3 py-1.5 text-right font-mono font-semibold text-emerald-700 dark:text-emerald-300">
                       {formatCurrency(ch.revenue, false)}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-rose-600">
+                    <td className="px-3 py-1.5 text-right font-mono text-rose-600 dark:text-rose-400">
                       {formatCurrency(ch.directCost, false)}
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono text-rose-400">
                       {formatCurrency(ch.allocatedCost, false)}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-rose-700">
+                    <td className="px-3 py-1.5 text-right font-mono text-rose-700 dark:text-rose-300">
                       {formatCurrency(ch.totalCost, false)}
                     </td>
-                    <td className={`px-3 py-1.5 text-right font-mono font-semibold ${ch.margin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+                    <td className={`px-3 py-1.5 text-right font-mono font-semibold ${ch.margin >= 0 ? 'text-primary-700 dark:text-primary-300' : 'text-rose-700 dark:text-rose-300'}`}>
                       {ch.margin >= 0 ? '+' : ''}{formatCurrency(ch.margin, false)}
                     </td>
                     <td className="px-3 py-1.5 text-right">
                       <span className={`badge text-2xs ${
                         ch.marginPct >= 20
-                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
                           : ch.marginPct >= 0
-                          ? 'bg-amber-50 text-amber-700 border-amber-200'
-                          : 'bg-rose-50 text-rose-700 border-rose-200'
+                          ? 'bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                          : 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
                       }`}>
                         {formatPct(ch.marginPct)}
                       </span>
@@ -1183,19 +1183,19 @@ export default function ChannelProfitabilityPage() {
                   <td className="px-3 py-1.5 text-right font-mono text-ink-700 dark:text-ink-300">
                     {channels.reduce((s, c) => s + c.revenueCount, 0)}
                   </td>
-                  <td className="px-3 py-1.5 text-right font-mono text-emerald-700">
+                  <td className="px-3 py-1.5 text-right font-mono text-emerald-700 dark:text-emerald-300">
                     {formatCurrency(summary.totalRevenue, false)}
                   </td>
-                  <td className="px-3 py-1.5 text-right font-mono text-rose-600">
+                  <td className="px-3 py-1.5 text-right font-mono text-rose-600 dark:text-rose-400">
                     {formatCurrency(channels.reduce((s, c) => s + c.directCost, 0), false)}
                   </td>
                   <td className="px-3 py-1.5 text-right font-mono text-rose-400">
                     {formatCurrency(channels.reduce((s, c) => s + c.allocatedCost, 0), false)}
                   </td>
-                  <td className="px-3 py-1.5 text-right font-mono text-rose-700">
+                  <td className="px-3 py-1.5 text-right font-mono text-rose-700 dark:text-rose-300">
                     {formatCurrency(summary.totalCost, false)}
                   </td>
-                  <td className={`px-3 py-1.5 text-right font-mono ${summary.totalMargin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
+                  <td className={`px-3 py-1.5 text-right font-mono ${summary.totalMargin >= 0 ? 'text-primary-700 dark:text-primary-300' : 'text-rose-700 dark:text-rose-300'}`}>
                     {summary.totalMargin >= 0 ? '+' : ''}{formatCurrency(summary.totalMargin, false)}
                   </td>
                   <td className="px-3 py-1.5 text-right font-mono text-ink-700 dark:text-ink-300">

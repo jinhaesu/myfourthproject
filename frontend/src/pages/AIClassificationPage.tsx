@@ -1080,8 +1080,8 @@ export default function AIClassificationPage() {
       {message && (
         <div className={`mb-4 p-4 rounded-lg ${
           message.type === 'success'
-            ? 'bg-green-100 text-green-800 border border-green-200'
-            : 'bg-red-100 text-red-800 border border-red-200'
+            ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800'
+            : 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800'
         }`}>
           {message.text}
         </div>
@@ -1101,7 +1101,7 @@ export default function AIClassificationPage() {
               onClick={() => setActiveTab(tab.id)}
               className={`py-4 px-1 border-b-2 font-medium text-sm ${
                 activeTab === tab.id
-                  ? 'border-blue-500 text-blue-600'
+                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
                   : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300 dark:hover:border-ink-600'
               }`}
             >
@@ -1147,15 +1147,15 @@ export default function AIClassificationPage() {
             <h3 className="text-lg font-medium mb-4">업로드 통계</h3>
             <div className="grid grid-cols-3 gap-4 text-center">
               <div>
-                <p className="text-3xl font-bold text-blue-600">{statusLoading ? '...' : (status?.completed_uploads || 0)}</p>
+                <p className="text-3xl font-bold text-blue-600 dark:text-blue-400">{statusLoading ? '...' : (status?.completed_uploads || 0)}</p>
                 <p className="text-sm text-gray-500 dark:text-gray-400">완료된 업로드</p>
               </div>
               <div>
-                <p className="text-3xl font-bold text-green-600">{statusLoading ? '...' : fmtNum(status?.total_raw_transactions || 0)}</p>
+                <p className="text-3xl font-bold text-green-600 dark:text-green-400">{statusLoading ? '...' : fmtNum(status?.total_raw_transactions || 0)}</p>
                 <p className="text-sm text-gray-500 dark:text-gray-400">보관된 거래 데이터</p>
               </div>
               <div>
-                <p className="text-3xl font-bold text-purple-600">{statusLoading ? '...' : fmtNum(status?.training_samples || 0)}</p>
+                <p className="text-3xl font-bold text-purple-600 dark:text-purple-400">{statusLoading ? '...' : fmtNum(status?.training_samples || 0)}</p>
                 <p className="text-sm text-gray-500 dark:text-gray-400">학습 데이터</p>
               </div>
             </div>
@@ -1183,19 +1183,19 @@ export default function AIClassificationPage() {
                         <td className="px-4 py-3 text-sm font-medium">
                           {u.filename}
                           {u.upload_type === 'classification' && (
-                            <span className="ml-2 text-xs px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded">분류</span>
+                            <span className="ml-2 text-xs px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 rounded">분류</span>
                           )}
                           {u.upload_type === 'journal_entry' && (
-                            <span className="ml-2 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded">장부반영</span>
+                            <span className="ml-2 text-xs px-1.5 py-0.5 bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 rounded">장부반영</span>
                           )}
                         </td>
                         <td className="px-4 py-3 text-sm text-right text-gray-500 dark:text-gray-400">{fmtSize(u.file_size)}</td>
                         <td className="px-4 py-3 text-sm text-right">{fmtNum(u.saved_count || 0)}건</td>
                         <td className="px-4 py-3 text-center">
                           <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                            u.status === 'completed' ? 'bg-green-100 text-green-700' :
-                            u.status === 'processing' ? 'bg-yellow-100 text-yellow-700' :
-                            'bg-red-100 text-red-700'
+                            u.status === 'completed' ? 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300' :
+                            u.status === 'processing' ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300' :
+                            'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300'
                           }`}>
                             {u.status === 'completed' ? '완료' : u.status === 'processing' ? '처리중' : '실패'}
                           </span>
@@ -1209,7 +1209,7 @@ export default function AIClassificationPage() {
                               <button
                                 onClick={() => handleDeleteJournal(u.id, u.filename)}
                                 disabled={loading}
-                                className="text-xs text-orange-600 hover:text-orange-800 hover:bg-orange-50 px-2 py-1 rounded disabled:opacity-50"
+                                className="text-xs text-orange-600 dark:text-orange-400 hover:text-orange-800 hover:bg-orange-50 dark:hover:bg-orange-950/40 px-2 py-1 rounded disabled:opacity-50"
                                 title="장부 반영 취소"
                               >
                                 장부 반영 취소
@@ -1244,15 +1244,15 @@ export default function AIClassificationPage() {
               <h3 className="text-lg font-medium mb-4">분류 통계</h3>
               <div className="grid grid-cols-3 gap-4 text-center">
                 <div>
-                  <p className="text-3xl font-bold text-blue-600">{status?.total_classifications || 0}</p>
+                  <p className="text-3xl font-bold text-blue-600 dark:text-blue-400">{status?.total_classifications || 0}</p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">총 분류</p>
                 </div>
                 <div>
-                  <p className="text-3xl font-bold text-green-600">{status?.correct_classifications || 0}</p>
+                  <p className="text-3xl font-bold text-green-600 dark:text-green-400">{status?.correct_classifications || 0}</p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">정확 분류</p>
                 </div>
                 <div>
-                  <p className="text-3xl font-bold text-orange-600">{status?.corrected_classifications || 0}</p>
+                  <p className="text-3xl font-bold text-orange-600 dark:text-orange-400">{status?.corrected_classifications || 0}</p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">사용자 수정</p>
                 </div>
               </div>
@@ -1305,7 +1305,7 @@ export default function AIClassificationPage() {
               <button
                 onClick={handleTrainModel}
                 disabled={training || loading || !status?.training_samples || status.training_samples < 50}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-blue-600 dark:bg-blue-400 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed"
               >
                 {training ? '학습 진행 중...' : '모델 재학습'}
               </button>
@@ -1317,29 +1317,29 @@ export default function AIClassificationPage() {
 
             {/* 학습 진행 상태 표시 */}
             {(training || (trainProgress && trainProgress.status === 'running')) && (
-              <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium text-blue-800">{trainProgress?.step || '시작 중...'}</span>
-                  <span className="text-sm font-bold text-blue-800">{trainProgress?.progress || 0}%</span>
+                  <span className="text-sm font-medium text-blue-800 dark:text-blue-200">{trainProgress?.step || '시작 중...'}</span>
+                  <span className="text-sm font-bold text-blue-800 dark:text-blue-200">{trainProgress?.progress || 0}%</span>
                 </div>
-                <div className="w-full bg-blue-200 rounded-full h-3">
+                <div className="w-full bg-blue-200 dark:bg-blue-800 rounded-full h-3">
                   <div
-                    className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                    className="bg-blue-600 dark:bg-blue-400 h-3 rounded-full transition-all duration-500"
                     style={{ width: `${trainProgress?.progress || 0}%` }}
                   />
                 </div>
-                <p className="text-xs text-blue-600 mt-2">{trainProgress?.message || '학습을 준비하고 있습니다...'}</p>
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-2">{trainProgress?.message || '학습을 준비하고 있습니다...'}</p>
               </div>
             )}
 
             {trainProgress?.status === 'completed' && (
-              <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+              <div className="mt-4 p-3 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg text-sm text-green-700 dark:text-green-300">
                 {trainProgress.message}
               </div>
             )}
 
             {trainProgress?.status === 'failed' && (
-              <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              <div className="mt-4 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-700 dark:text-red-300">
                 {trainProgress.message}
               </div>
             )}
@@ -1398,12 +1398,12 @@ export default function AIClassificationPage() {
               <button
                 onClick={handleUploadHistorical}
                 disabled={loading || !uploadFile}
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-green-600 dark:bg-green-400 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed"
               >
                 {loading ? '업로드 중...' : '데이터 업로드'}
               </button>
               {uploadProgress && (
-                <div className="mt-3 flex items-center gap-2 text-sm text-blue-700">
+                <div className="mt-3 flex items-center gap-2 text-sm text-blue-700 dark:text-blue-300">
                   <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -1414,11 +1414,11 @@ export default function AIClassificationPage() {
             </div>
 
             {uploadResult && (
-              <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+              <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-950 rounded-lg">
                 <h4 className="font-medium">업로드 결과</h4>
                 <p className="text-sm">총 {uploadResult.total_rows}개 행 중 {uploadResult.saved_count}개 저장됨</p>
                 {uploadResult.error_count > 0 && (
-                  <p className="text-sm text-red-600">{uploadResult.error_count}개 오류 발생</p>
+                  <p className="text-sm text-red-600 dark:text-red-400">{uploadResult.error_count}개 오류 발생</p>
                 )}
               </div>
             )}
@@ -1435,7 +1435,7 @@ export default function AIClassificationPage() {
               onClick={() => setClassifyMode('card')}
               className={`px-5 py-2.5 font-medium transition-colors ${
                 classifyMode === 'card'
-                  ? 'bg-blue-600 text-white'
+                  ? 'bg-blue-600 dark:bg-blue-400 text-white'
                   : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'
               }`}
             >
@@ -1445,7 +1445,7 @@ export default function AIClassificationPage() {
               onClick={() => setClassifyMode('bank')}
               className={`px-5 py-2.5 font-medium border-l transition-colors ${
                 classifyMode === 'bank'
-                  ? 'bg-teal-600 text-white'
+                  ? 'bg-teal-600 dark:bg-teal-400 text-white'
                   : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'
               }`}
             >
@@ -1455,7 +1455,7 @@ export default function AIClassificationPage() {
               onClick={() => setClassifyMode('tax')}
               className={`px-5 py-2.5 font-medium border-l transition-colors ${
                 classifyMode === 'tax'
-                  ? 'bg-orange-600 text-white'
+                  ? 'bg-orange-600 dark:bg-orange-400 text-white'
                   : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'
               }`}
             >
@@ -1472,8 +1472,8 @@ export default function AIClassificationPage() {
             </p>
 
             {!status?.is_trained && (
-              <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <p className="text-sm text-yellow-800 mb-2">
+              <div className="mb-4 p-4 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+                <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-2">
                   AI 모델이 아직 학습되지 않았습니다.
                   {(status?.training_samples || 0) >= 50
                     ? ' 학습 데이터가 충분합니다. 아래 버튼으로 모델을 학습시켜주세요.'
@@ -1483,13 +1483,13 @@ export default function AIClassificationPage() {
                   <button
                     onClick={handleTrainModel}
                     disabled={training || loading}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 text-sm"
+                    className="px-4 py-2 bg-blue-600 dark:bg-blue-400 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 text-sm"
                   >
                     {training ? '학습 진행 중...' : `모델 학습 시작 (${fmtNum(status?.training_samples || 0)}개 데이터)`}
                   </button>
                 )}
                 {training && trainProgress && (
-                  <div className="mt-2 text-xs text-blue-600">
+                  <div className="mt-2 text-xs text-blue-600 dark:text-blue-400">
                     {trainProgress.step}: {trainProgress.progress}% - {trainProgress.message}
                   </div>
                 )}
@@ -1504,8 +1504,8 @@ export default function AIClassificationPage() {
                   <li>거래처명, 금액, 거래일자</li>
                 </ul>
               </div>
-              <div className="border rounded-lg p-3 border-blue-200 bg-blue-50/50">
-                <h4 className="font-medium mb-2 text-sm text-blue-700">위하고 신용카드(매입)</h4>
+              <div className="border rounded-lg p-3 border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50">
+                <h4 className="font-medium mb-2 text-sm text-blue-700 dark:text-blue-300">위하고 신용카드(매입)</h4>
                 <ul className="text-xs text-gray-600 dark:text-gray-400 list-disc list-inside space-y-0.5">
                   <li><strong>가맹점명</strong> → 적요로 자동 사용</li>
                   <li>매입금액, 부가세, 공급가액</li>
@@ -1536,21 +1536,21 @@ export default function AIClassificationPage() {
               <button
                 onClick={handleClassifyFile}
                 disabled={loading || !classifyFile || !status?.is_trained}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed"
+                className="px-4 py-2 bg-blue-600 dark:bg-blue-400 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed"
               >
                 {loading ? '분류 중...' : '자동 분류 실행'}
               </button>
 
               {/* 분류 진행 상태 표시 */}
               {classifyProgress && classifyProgress.status === 'running' && (
-                <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg">
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm font-medium text-blue-700">{classifyProgress.step}</span>
-                    <span className="text-sm text-blue-600">{classifyProgress.progress}%</span>
+                    <span className="text-sm font-medium text-blue-700 dark:text-blue-300">{classifyProgress.step}</span>
+                    <span className="text-sm text-blue-600 dark:text-blue-400">{classifyProgress.progress}%</span>
                   </div>
-                  <div className="w-full bg-blue-200 rounded-full h-3">
+                  <div className="w-full bg-blue-200 dark:bg-blue-800 rounded-full h-3">
                     <div
-                      className="bg-blue-600 h-3 rounded-full transition-all duration-500"
+                      className="bg-blue-600 dark:bg-blue-400 h-3 rounded-full transition-all duration-500"
                       style={{ width: `${classifyProgress.progress}%` }}
                     />
                   </div>
@@ -1564,8 +1564,8 @@ export default function AIClassificationPage() {
                 </div>
               )}
               {classifyProgress && classifyProgress.status === 'failed' && (
-                <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-sm text-red-700">분류 오류: {classifyProgress.message}</p>
+                <div className="mt-4 p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg">
+                  <p className="text-sm text-red-700 dark:text-red-300">분류 오류: {classifyProgress.message}</p>
                 </div>
               )}
             </div>
@@ -1583,8 +1583,8 @@ export default function AIClassificationPage() {
             </p>
 
             {!status?.is_trained && (
-              <div className="mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <p className="text-sm text-yellow-800 mb-2">
+              <div className="mb-4 p-4 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+                <p className="text-sm text-yellow-800 dark:text-yellow-200 mb-2">
                   AI 모델이 아직 학습되지 않았습니다.
                   {(status?.training_samples || 0) >= 50
                     ? ' 학습 데이터가 충분합니다. 상태/통계 탭에서 모델을 학습시켜주세요.'
@@ -1597,7 +1597,7 @@ export default function AIClassificationPage() {
             <div
               className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
                 bankDragOver
-                  ? 'border-teal-500 bg-teal-50'
+                  ? 'border-teal-500 bg-teal-50 dark:bg-teal-950'
                   : 'border-gray-300 dark:border-ink-700 hover:border-teal-400 hover:bg-gray-50 dark:hover:bg-ink-800'
               }`}
               onDragOver={(e) => { e.preventDefault(); setBankDragOver(true) }}
@@ -1638,7 +1638,7 @@ export default function AIClassificationPage() {
                       </div>
                       <button
                         onClick={(e) => { e.stopPropagation(); removeBankFile(idx) }}
-                        className="text-red-400 hover:text-red-600 flex-shrink-0 ml-3 p-1 rounded hover:bg-red-50"
+                        className="text-red-400 hover:text-red-600 flex-shrink-0 ml-3 p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/40"
                         title="제거"
                       >
                         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1653,16 +1653,16 @@ export default function AIClassificationPage() {
 
             {/* Upload progress - detailed */}
             {bankUploadProgress && (
-              <div className="mt-4 p-4 bg-teal-50 border border-teal-200 rounded-lg">
-                <div className="flex items-center gap-2 text-sm font-medium text-teal-800 mb-2">
+              <div className="mt-4 p-4 bg-teal-50 dark:bg-teal-950 border border-teal-200 dark:border-teal-800 rounded-lg">
+                <div className="flex items-center gap-2 text-sm font-medium text-teal-800 dark:text-teal-200 mb-2">
                   <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
                   <span>{bankUploadProgress}</span>
                 </div>
-                <div className="w-full bg-teal-200 rounded-full h-2">
-                  <div className="bg-teal-600 h-2 rounded-full transition-all duration-500"
+                <div className="w-full bg-teal-200 dark:bg-teal-800 rounded-full h-2">
+                  <div className="bg-teal-600 dark:bg-teal-400 h-2 rounded-full transition-all duration-500"
                     style={{ width: `${Math.min(parseInt(bankUploadProgress.match(/(\d+)%/)?.[1] || '5'), 100)}%` }} />
                 </div>
               </div>
@@ -1673,7 +1673,7 @@ export default function AIClassificationPage() {
               <button
                 onClick={handleBankClassify}
                 disabled={loading || bankFiles.length === 0 || !status?.is_trained}
-                className="px-6 py-2.5 bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed font-medium transition-colors"
+                className="px-6 py-2.5 bg-teal-600 dark:bg-teal-400 text-white rounded-lg hover:bg-teal-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed font-medium transition-colors"
               >
                 {loading ? '분류 중...' : `통장 일괄 분류 시작${bankFiles.length > 0 ? ` (${bankFiles.length}개 파일)` : ''}`}
               </button>
@@ -1694,7 +1694,7 @@ export default function AIClassificationPage() {
                 onClick={() => setTaxType('purchase')}
                 className={`px-5 py-2 font-medium transition-colors ${
                   taxType === 'purchase'
-                    ? 'bg-orange-600 text-white'
+                    ? 'bg-orange-600 dark:bg-orange-400 text-white'
                     : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'
                 }`}
               >
@@ -1704,7 +1704,7 @@ export default function AIClassificationPage() {
                 onClick={() => setTaxType('sales')}
                 className={`px-5 py-2 font-medium border-l transition-colors ${
                   taxType === 'sales'
-                    ? 'bg-emerald-600 text-white'
+                    ? 'bg-emerald-600 dark:bg-emerald-400 text-white'
                     : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'
                 }`}
               >
@@ -1719,9 +1719,9 @@ export default function AIClassificationPage() {
             </p>
 
             <div className={`mb-4 border rounded-lg p-3 ${
-              taxType === 'purchase' ? 'border-orange-200 bg-orange-50/50' : 'border-emerald-200 bg-emerald-50/50'
+              taxType === 'purchase' ? 'border-orange-200 dark:border-orange-800 bg-orange-50 dark:bg-orange-950/50' : 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/50'
             }`}>
-              <h4 className={`font-medium mb-2 text-sm ${taxType === 'purchase' ? 'text-orange-700' : 'text-emerald-700'}`}>
+              <h4 className={`font-medium mb-2 text-sm ${taxType === 'purchase' ? 'text-orange-700 dark:text-orange-300' : 'text-emerald-700 dark:text-emerald-300'}`}>
                 {taxType === 'purchase' ? '매입 세금계산서' : '매출 세금계산서'} 분개 구조
               </h4>
               {taxType === 'purchase' ? (
@@ -1743,7 +1743,7 @@ export default function AIClassificationPage() {
             <div
               className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
                 taxDragOver
-                  ? 'border-orange-500 bg-orange-50'
+                  ? 'border-orange-500 bg-orange-50 dark:bg-orange-950'
                   : 'border-gray-300 dark:border-ink-700 hover:border-orange-400 hover:bg-gray-50 dark:hover:bg-ink-800'
               }`}
               onDragOver={(e) => { e.preventDefault(); setTaxDragOver(true) }}
@@ -1819,8 +1819,8 @@ export default function AIClassificationPage() {
 
             {/* Progress */}
             {taxUploadProgress && (
-              <div className="mt-4 p-3 bg-orange-50 border border-orange-200 rounded-lg">
-                <p className="text-sm text-orange-700">{taxUploadProgress}</p>
+              <div className="mt-4 p-3 bg-orange-50 dark:bg-orange-950 border border-orange-200 dark:border-orange-800 rounded-lg">
+                <p className="text-sm text-orange-700 dark:text-orange-300">{taxUploadProgress}</p>
               </div>
             )}
 
@@ -1830,7 +1830,7 @@ export default function AIClassificationPage() {
                 onClick={handleTaxInvoiceClassify}
                 disabled={loading || taxInvoiceFiles.length === 0}
                 className={`w-full px-4 py-3 text-white rounded-lg disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:cursor-not-allowed font-medium ${
-                  taxType === 'purchase' ? 'bg-orange-600 hover:bg-orange-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                  taxType === 'purchase' ? 'bg-orange-600 dark:bg-orange-400 hover:bg-orange-700' : 'bg-emerald-600 dark:bg-emerald-400 hover:bg-emerald-700'
                 }`}
               >
                 {loading ? '분류 중...' : `세금계산서(${taxType === 'purchase' ? '매입' : '매출'}) 분류 시작${taxInvoiceFiles.length > 0 ? ` (${taxInvoiceFiles.length}개 파일)` : ''}`}
@@ -1852,13 +1852,13 @@ export default function AIClassificationPage() {
                   <p className="text-sm text-gray-500 dark:text-gray-400">총 항목</p>
                 </div>
                 <div className="bg-white dark:bg-ink-900 p-4 rounded-lg shadow border text-center">
-                  <p className="text-2xl font-bold text-green-600">{classifyStats.autoConfirmed}</p>
+                  <p className="text-2xl font-bold text-green-600 dark:text-green-400">{classifyStats.autoConfirmed}</p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">자동 확정</p>
                 </div>
                 <div className="bg-white dark:bg-ink-900 p-4 rounded-lg shadow border text-center cursor-pointer hover:ring-2 hover:ring-orange-300"
                   onClick={() => setResultFilter(resultFilter === 'review' ? 'all' : 'review')}
                 >
-                  <p className="text-2xl font-bold text-orange-600">{classifyStats.needsReview}</p>
+                  <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">{classifyStats.needsReview}</p>
                   <p className="text-sm text-gray-500 dark:text-gray-400">검토 필요</p>
                 </div>
                 <div className="bg-white dark:bg-ink-900 p-4 rounded-lg shadow border text-center">
@@ -1869,9 +1869,9 @@ export default function AIClassificationPage() {
 
               {/* 신뢰도 낮을 때 안내 */}
               {classifyStats.avgConfidence < 0.6 && (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <h4 className="text-sm font-medium text-blue-800 mb-1">신뢰도 안내</h4>
-                  <p className="text-sm text-blue-700">
+                <div className="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                  <h4 className="text-sm font-medium text-blue-800 dark:text-blue-200 mb-1">신뢰도 안내</h4>
+                  <p className="text-sm text-blue-700 dark:text-blue-300">
                     {status?.training_samples && status.training_samples > 100
                       ? `현재 모델: ${status.model_version} (학습 데이터: ${status.training_samples.toLocaleString()}건). 신뢰도가 낮은 항목은 AI(Claude)가 보조 분석합니다.`
                       : '과거 회계 데이터를 업로드하고 모델을 학습시키면 정확도가 향상됩니다.'
@@ -1883,11 +1883,11 @@ export default function AIClassificationPage() {
 
               {/* 검토 사유별 요약 */}
               {classifyStats.reviewReasonCounts && Object.keys(classifyStats.reviewReasonCounts).length > 0 && (
-                <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                  <h4 className="text-sm font-medium text-orange-800 mb-2">검토 필요 사유 요약</h4>
+                <div className="bg-orange-50 dark:bg-orange-950 border border-orange-200 dark:border-orange-800 rounded-lg p-4">
+                  <h4 className="text-sm font-medium text-orange-800 dark:text-orange-200 mb-2">검토 필요 사유 요약</h4>
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(classifyStats.reviewReasonCounts as Record<string, number>).map(([reason, count]) => (
-                      <span key={reason} className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-orange-100 text-orange-800 border border-orange-300">
+                      <span key={reason} className="inline-flex items-center px-3 py-1 rounded-full text-sm bg-orange-100 dark:bg-orange-900 text-orange-800 dark:text-orange-200 border border-orange-300 dark:border-orange-700">
                         {reason}: <span className="font-bold ml-1">{count}건</span>
                       </span>
                     ))}
@@ -1899,18 +1899,18 @@ export default function AIClassificationPage() {
 
           {/* Bank Summary - compact inline banner */}
           {bankResults && bankResults.banks && bankResults.banks.length > 0 && (
-            <div className="bg-teal-50 border border-teal-200 rounded-lg p-3">
+            <div className="bg-teal-50 dark:bg-teal-950 border border-teal-200 dark:border-teal-800 rounded-lg p-3">
               <div className="flex items-center gap-4 flex-wrap text-xs">
                 {bankResults.banks.map((bank: any, idx: number) => (
-                  <span key={idx} className="inline-flex items-center gap-1.5 bg-white dark:bg-ink-900 px-2.5 py-1.5 rounded border border-teal-200">
+                  <span key={idx} className="inline-flex items-center gap-1.5 bg-white dark:bg-ink-900 px-2.5 py-1.5 rounded border border-teal-200 dark:border-teal-800">
                     <span className="font-semibold text-gray-800 dark:text-gray-200">{bank.bank_name}</span>
                     <span className="text-gray-400">{fmtNum(bank.transaction_count || 0)}건</span>
-                    <span className="text-green-600">+{fmtNum(bank.total_deposit || 0)}</span>
+                    <span className="text-green-600 dark:text-green-400">+{fmtNum(bank.total_deposit || 0)}</span>
                     <span className="text-red-500">-{fmtNum(bank.total_withdrawal || 0)}</span>
                   </span>
                 ))}
                 {bankResults.inter_bank_transfers > 0 && (
-                  <span className="inline-flex items-center gap-1 bg-purple-100 px-2.5 py-1.5 rounded border border-purple-200 text-purple-700">
+                  <span className="inline-flex items-center gap-1 bg-purple-100 dark:bg-purple-900 px-2.5 py-1.5 rounded border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-300">
                     은행간 이체 {bankResults.inter_bank_transfers}건
                   </span>
                 )}
@@ -1927,7 +1927,7 @@ export default function AIClassificationPage() {
                   <div className="flex rounded-lg border border-gray-300 dark:border-ink-700 overflow-hidden text-sm">
                     <button
                       onClick={() => setResultFilter('all')}
-                      className={`px-3 py-1 ${resultFilter === 'all' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'}`}
+                      className={`px-3 py-1 ${resultFilter === 'all' ? 'bg-blue-600 dark:bg-blue-400 text-white' : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'}`}
                     >
                       전체 ({classificationResults.length})
                     </button>
@@ -1939,7 +1939,7 @@ export default function AIClassificationPage() {
                     </button>
                     <button
                       onClick={() => setResultFilter('confirmed')}
-                      className={`px-3 py-1 border-l ${resultFilter === 'confirmed' ? 'bg-green-600 text-white' : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'}`}
+                      className={`px-3 py-1 border-l ${resultFilter === 'confirmed' ? 'bg-green-600 dark:bg-green-400 text-white' : 'bg-white dark:bg-ink-900 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800'}`}
                     >
                       확정 ({classificationResults.filter(r => r.auto_confirm).length})
                     </button>
@@ -1980,7 +1980,7 @@ export default function AIClassificationPage() {
                       handleReclassify()
                     }}
                     disabled={loading}
-                    className="px-4 py-2 border border-purple-600 text-purple-600 rounded-lg hover:bg-purple-50 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:text-white disabled:border-gray-300 dark:disabled:border-ink-700"
+                    className="px-4 py-2 border border-purple-600 dark:border-purple-400 text-purple-600 dark:text-purple-400 rounded-lg hover:bg-purple-50 dark:hover:bg-purple-950/40 disabled:bg-gray-300 dark:disabled:bg-ink-700 disabled:text-white disabled:border-gray-300 dark:disabled:border-ink-700"
                     title={classifyFile ? '현재 파일을 최신 AI 모델로 다시 분류합니다' : '자동 분류 탭에서 파일 선택 필요'}
                   >
                     {loading && classifyProgress ? `재분류 ${classifyProgress.progress}%` : loading ? '분류 중...' : 'AI 재분류'}
@@ -1988,7 +1988,7 @@ export default function AIClassificationPage() {
                   <button
                     onClick={handleConfirmJournal}
                     disabled={loading}
-                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300 dark:disabled:bg-ink-700"
+                    className="px-4 py-2 bg-green-600 dark:bg-green-400 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-300 dark:disabled:bg-ink-700"
                     title="확정된 분개를 장부에 반영하고, 수정된 계정은 AI 학습 데이터로 자동 저장됩니다"
                   >
                     {selectedRows.size > 0
@@ -2000,14 +2000,14 @@ export default function AIClassificationPage() {
 
               {/* 재분류 진행 상태 */}
               {classifyProgress && classifyProgress.status === 'running' && (
-                <div className="p-4 bg-purple-50 border border-purple-200 rounded-lg">
+                <div className="p-4 bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800 rounded-lg">
                   <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm font-medium text-purple-700">{classifyProgress.step}</span>
-                    <span className="text-sm text-purple-600">{classifyProgress.progress}%</span>
+                    <span className="text-sm font-medium text-purple-700 dark:text-purple-300">{classifyProgress.step}</span>
+                    <span className="text-sm text-purple-600 dark:text-purple-400">{classifyProgress.progress}%</span>
                   </div>
-                  <div className="w-full bg-purple-200 rounded-full h-3">
+                  <div className="w-full bg-purple-200 dark:bg-purple-800 rounded-full h-3">
                     <div
-                      className="bg-purple-600 h-3 rounded-full transition-all duration-500"
+                      className="bg-purple-600 dark:bg-purple-400 h-3 rounded-full transition-all duration-500"
                       style={{ width: `${classifyProgress.progress}%` }}
                     />
                   </div>
@@ -2037,10 +2037,10 @@ export default function AIClassificationPage() {
                       <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 w-8">#</th>
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-ink-800 select-none" onClick={() => toggleSort('date')}>일자{sortIcon('date')}</th>
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400">적요/가맹점</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 bg-blue-50 cursor-pointer hover:bg-blue-100 select-none" onClick={() => toggleSort('debit')} title="클릭하여 계정 변경 가능">차변(비용){sortIcon('debit')}</th>
-                      <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 bg-blue-50 cursor-pointer hover:bg-blue-100 select-none" onClick={() => toggleSort('debit_amt')}>차변금액{sortIcon('debit_amt')}</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 bg-red-50 cursor-pointer hover:bg-red-100 select-none" onClick={() => toggleSort('credit')} title="클릭하여 계정 변경 가능">대변(지급){sortIcon('credit')}</th>
-                      <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 bg-red-50">대변금액</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 bg-blue-50 dark:bg-blue-950 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-900 select-none" onClick={() => toggleSort('debit')} title="클릭하여 계정 변경 가능">차변(비용){sortIcon('debit')}</th>
+                      <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 bg-blue-50 dark:bg-blue-950 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-900 select-none" onClick={() => toggleSort('debit_amt')}>차변금액{sortIcon('debit_amt')}</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 bg-red-50 dark:bg-red-950 cursor-pointer hover:bg-red-100 dark:hover:bg-red-900 select-none" onClick={() => toggleSort('credit')} title="클릭하여 계정 변경 가능">대변(지급){sortIcon('credit')}</th>
+                      <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 bg-red-50 dark:bg-red-950">대변금액</th>
                       <th className="px-2 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-ink-800 select-none" onClick={() => toggleSort('confidence')}>신뢰도{sortIcon('confidence')}</th>
                     </tr>
                   </thead>
@@ -2074,9 +2074,9 @@ export default function AIClassificationPage() {
                         className={
                           (result.actual_account_code && result.actual_account_code !== result.predicted_account_code) ||
                           (creditOverrides[originalIndex] && creditOverrides[originalIndex].code !== (result.journal_entry?.credit_account_code || '253'))
-                            ? 'bg-blue-50'
+                            ? 'bg-blue-50 dark:bg-blue-950'
                             : result.needs_review
-                            ? 'bg-yellow-50'
+                            ? 'bg-yellow-50 dark:bg-yellow-950'
                             : ''
                         }
                       >
@@ -2105,7 +2105,7 @@ export default function AIClassificationPage() {
 
                         {/* 차변 (비용 계정) — 클릭하여 인라인 수정 */}
                         <td
-                          className="px-2 py-2 text-sm bg-blue-50/50 cursor-pointer group"
+                          className="px-2 py-2 text-sm bg-blue-50 dark:bg-blue-950/50 cursor-pointer group"
                           onClick={() => setEditingCell({ rowIndex: originalIndex, side: 'debit' })}
                         >
                           {editingCell?.rowIndex === originalIndex && editingCell?.side === 'debit' ? (
@@ -2114,7 +2114,7 @@ export default function AIClassificationPage() {
                               value={result.actual_account_code || result.predicted_account_code}
                               onChange={(e) => { e.stopPropagation(); updateClassificationResult(originalIndex, e.target.value) }}
                               onBlur={() => setEditingCell(null)}
-                              className="block w-full rounded-md border-blue-400 ring-1 ring-blue-300 text-xs focus:border-blue-500 focus:ring-blue-500"
+                              className="block w-full rounded-md border-blue-400 dark:border-blue-600 ring-1 ring-blue-300 dark:ring-blue-700 text-xs focus:border-blue-500 focus:ring-blue-500"
                               onClick={(e) => e.stopPropagation()}
                             >
                               <option value={result.predicted_account_code}>
@@ -2147,11 +2147,11 @@ export default function AIClassificationPage() {
                           ) : (
                             <>
                               {result.actual_account_code && result.actual_account_code !== result.predicted_account_code && (
-                                <span className="inline-block w-2 h-2 rounded-full bg-orange-400 mr-1" title="수정됨" />
+                                <span className="inline-block w-2 h-2 rounded-full bg-orange-400 dark:bg-orange-600 mr-1" title="수정됨" />
                               )}
                               {(result.actual_account_code || result.predicted_account_code) ? (
                                 <>
-                                  <span className="font-medium text-blue-800">
+                                  <span className="font-medium text-blue-800 dark:text-blue-200">
                                     {result.actual_account_code || result.predicted_account_code}
                                   </span>{' '}
                                   <span className="text-gray-500 dark:text-gray-400 text-xs">
@@ -2168,7 +2168,7 @@ export default function AIClassificationPage() {
                           )}
                         </td>
 
-                        <td className="px-2 py-2 text-sm text-right font-mono bg-blue-50/50 text-blue-700">
+                        <td className="px-2 py-2 text-sm text-right font-mono bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300">
                           {(() => {
                             const je = result.journal_entry
                             const debitLines = je?.lines?.filter(l => l.type === 'debit')
@@ -2190,7 +2190,7 @@ export default function AIClassificationPage() {
 
                         {/* 대변 (지급 계정) — 클릭하여 인라인 수정 */}
                         <td
-                          className="px-2 py-2 text-sm bg-red-50/50 cursor-pointer group"
+                          className="px-2 py-2 text-sm bg-red-50 dark:bg-red-950/50 cursor-pointer group"
                           onClick={() => setEditingCell({ rowIndex: originalIndex, side: 'credit' })}
                         >
                           {editingCell?.rowIndex === originalIndex && editingCell?.side === 'credit' ? (
@@ -2199,7 +2199,7 @@ export default function AIClassificationPage() {
                               value={creditOverrides[originalIndex]?.code || result.journal_entry?.credit_account_code || '253'}
                               onChange={(e) => { e.stopPropagation(); updateCreditAccount(originalIndex, e.target.value) }}
                               onBlur={() => setEditingCell(null)}
-                              className="block w-full rounded-md border-red-400 ring-1 ring-red-300 text-xs focus:border-red-500 focus:ring-red-500"
+                              className="block w-full rounded-md border-red-400 dark:border-red-600 ring-1 ring-red-300 dark:ring-red-700 text-xs focus:border-red-500 focus:ring-red-500"
                               onClick={(e) => e.stopPropagation()}
                             >
                               <option value={result.journal_entry?.credit_account_code || '253'}>
@@ -2223,7 +2223,7 @@ export default function AIClassificationPage() {
                           ) : (
                             <>
                               {creditOverrides[originalIndex] && creditOverrides[originalIndex].code !== (result.journal_entry?.credit_account_code || '253') && (
-                                <span className="inline-block w-2 h-2 rounded-full bg-orange-400 mr-1" title="수정됨" />
+                                <span className="inline-block w-2 h-2 rounded-full bg-orange-400 dark:bg-orange-600 mr-1" title="수정됨" />
                               )}
                               <span className="text-gray-600 dark:text-gray-400">
                                 {creditOverrides[originalIndex]?.code || result.journal_entry?.credit_account_code || '253'}
@@ -2236,7 +2236,7 @@ export default function AIClassificationPage() {
                           )}
                         </td>
 
-                        <td className="px-2 py-2 text-sm text-right font-mono bg-red-50/50 text-red-600">
+                        <td className="px-2 py-2 text-sm text-right font-mono bg-red-50 dark:bg-red-950/50 text-red-600 dark:text-red-400">
                           {(() => {
                             const je = result.journal_entry
                             const creditLines = je?.lines?.filter(l => l.type === 'credit')
@@ -2259,9 +2259,9 @@ export default function AIClassificationPage() {
                         {/* 신뢰도 */}
                         <td className="px-2 py-2 text-center">
                           <span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-full ${
-                            result.confidence >= 0.85 ? 'bg-green-100 text-green-800' :
-                            result.confidence >= 0.6 ? 'bg-yellow-100 text-yellow-800' :
-                            'bg-red-100 text-red-800'
+                            result.confidence >= 0.85 ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200' :
+                            result.confidence >= 0.6 ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200' :
+                            'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200'
                           }`}>
                             {(result.confidence * 100).toFixed(0)}%
                           </span>
@@ -2282,7 +2282,7 @@ export default function AIClassificationPage() {
                 <div className="flex justify-between items-center text-sm">
                   <div className="flex gap-6">
                     <span className="text-gray-600 dark:text-gray-400">
-                      수정: <span className="font-bold text-blue-600">
+                      수정: <span className="font-bold text-blue-600 dark:text-blue-400">
                         {classificationResults.filter(r => r.actual_account_code && r.actual_account_code !== r.predicted_account_code).length
                          + Object.entries(creditOverrides).filter(([idx, ov]) => {
                            const r = classificationResults[Number(idx)]
@@ -2298,7 +2298,7 @@ export default function AIClassificationPage() {
                       </span>
                     </span>
                     {selectedRows.size > 0 && (
-                      <span className="text-green-700 font-medium">
+                      <span className="text-green-700 dark:text-green-300 font-medium">
                         선택: <span className="font-bold">{selectedRows.size}</span>건
                       </span>
                     )}
@@ -2311,13 +2311,13 @@ export default function AIClassificationPage() {
                     </span>
                   </div>
                   <div className="flex gap-6 font-mono">
-                    <span className="text-blue-700">
+                    <span className="text-blue-700 dark:text-blue-300">
                       차변 합계: <span className="font-bold">{classificationResults.reduce((s, r) => s + (r.amount || 0), 0).toLocaleString()}</span>
                     </span>
-                    <span className="text-red-600">
+                    <span className="text-red-600 dark:text-red-400">
                       대변 합계: <span className="font-bold">{classificationResults.reduce((s, r) => s + (r.amount || 0), 0).toLocaleString()}</span>
                     </span>
-                    <span className="text-green-700 font-bold">
+                    <span className="text-green-700 dark:text-green-300 font-bold">
                       대차 일치
                     </span>
                   </div>
@@ -2326,7 +2326,7 @@ export default function AIClassificationPage() {
             </div>
           ) : loading ? (
             <div className="bg-white dark:bg-ink-900 rounded-lg shadow border p-8 text-center">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3"></div>
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto mb-3"></div>
               <p className="text-gray-500 dark:text-gray-400">분류 결과를 불러오는 중...</p>
             </div>
           ) : (
@@ -2346,7 +2346,7 @@ export default function AIClassificationPage() {
               <button
                 onClick={handleReclassifyAll}
                 disabled={loading}
-                className="px-3 py-1.5 text-xs bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 font-medium"
+                className="px-3 py-1.5 text-xs bg-indigo-600 dark:bg-indigo-400 text-white rounded-lg hover:bg-indigo-700 disabled:bg-gray-300 dark:disabled:bg-ink-700 font-medium"
               >
                 {loading ? '재분류 중...' : '전체 재분류 (최신 규칙)'}
               </button>
@@ -2363,17 +2363,17 @@ export default function AIClassificationPage() {
                       <div
                         key={u.id}
                         className={`flex items-center justify-between px-4 py-3 hover:bg-gray-50 dark:hover:bg-ink-800 cursor-pointer transition-colors ${
-                          isCurrent ? 'bg-blue-50 border-l-4 border-blue-500' : ''
+                          isCurrent ? 'bg-blue-50 dark:bg-blue-950 border-l-4 border-blue-500' : ''
                         }`}
                         onClick={() => handleLoadClassifyResult(u.id)}
                       >
                         <div className="flex items-center gap-2 flex-1 min-w-0">
                           {isTax ? (
-                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-orange-100 text-orange-700 font-medium">세금계산서</span>
+                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-orange-100 dark:bg-orange-900 text-orange-700 dark:text-orange-300 font-medium">세금계산서</span>
                           ) : isBank ? (
-                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-teal-100 text-teal-700 font-medium">통장</span>
+                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-teal-100 dark:bg-teal-900 text-teal-700 dark:text-teal-300 font-medium">통장</span>
                           ) : (
-                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-purple-100 text-purple-700 font-medium">카드</span>
+                            <span className="flex-shrink-0 text-xs px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300 font-medium">카드</span>
                           )}
                           <span className="font-medium text-sm truncate">{u.filename}</span>
                           <span className="text-xs text-gray-400 flex-shrink-0">
@@ -2383,20 +2383,20 @@ export default function AIClassificationPage() {
                             {u.created_at ? new Date(u.created_at).toLocaleDateString('ko-KR') : ''}
                           </span>
                           {isCurrent && (
-                            <span className="flex-shrink-0 text-xs text-blue-600 font-medium bg-blue-100 px-1.5 py-0.5 rounded">보는 중</span>
+                            <span className="flex-shrink-0 text-xs text-blue-600 dark:text-blue-400 font-medium bg-blue-100 dark:bg-blue-900 px-1.5 py-0.5 rounded">보는 중</span>
                           )}
                         </div>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleReclassifyUpload(u.id) }}
                           disabled={loading}
-                          className="text-xs text-indigo-500 hover:text-indigo-700 px-2 py-1 rounded hover:bg-indigo-50 flex-shrink-0"
+                          className="text-xs text-indigo-500 hover:text-indigo-700 px-2 py-1 rounded hover:bg-indigo-50 dark:hover:bg-indigo-950/40 flex-shrink-0"
                         >
                           재분류
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); handleDeleteUpload(u.id, u.filename) }}
                           disabled={loading}
-                          className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 flex-shrink-0"
+                          className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 dark:hover:bg-red-950/40 flex-shrink-0"
                         >
                           삭제
                         </button>

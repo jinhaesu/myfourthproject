@@ -619,7 +619,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
             </table>
             <button
               onClick={addItem}
-              className="flex items-center gap-1 text-2xs text-primary-700 hover:underline mt-1"
+              className="flex items-center gap-1 text-2xs text-primary-700 dark:text-primary-300 hover:underline mt-1"
             >
               <PlusIcon className="h-3 w-3" />
               품목 추가
@@ -642,7 +642,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
             </div>
             <div>
               <span className="text-ink-500 dark:text-ink-400">합계</span>
-              <span className="ml-2 font-mono font-bold text-primary-700 text-sm">
+              <span className="ml-2 font-mono font-bold text-primary-700 dark:text-primary-300 text-sm">
                 {totalAmount.toLocaleString()}
               </span>
             </div>
@@ -662,11 +662,11 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
 
           {/* 디버깅: 그랜터 응답 raw */}
           {debugRaw && (
-            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
-              <div className="text-2xs font-semibold text-rose-700 mb-1">
+            <div className="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 p-3">
+              <div className="text-2xs font-semibold text-rose-700 dark:text-rose-300 mb-1">
                 그랜터 응답 (디버그) — 필드 오류 확인 후 수정하세요
               </div>
-              <pre className="text-2xs text-rose-800 overflow-x-auto whitespace-pre-wrap break-all">
+              <pre className="text-2xs text-rose-800 dark:text-rose-200 overflow-x-auto whitespace-pre-wrap break-all">
                 {debugRaw}
               </pre>
             </div>
@@ -950,18 +950,18 @@ export default function TaxInvoicePage() {
           <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600" />
-          <div className="text-2xs text-amber-800">그랜터 API 키 미설정</div>
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <div className="text-2xs text-amber-800 dark:text-amber-200">그랜터 API 키 미설정</div>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
-            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
           </div>
           {exceeds31 && (
-            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-2xs text-blue-800">
+            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
               ⓘ {daysBetween(from, to)}일 분석 — 31일씩 자동 분할 호출({Math.ceil(daysBetween(from, to) / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
@@ -981,7 +981,7 @@ export default function TaxInvoicePage() {
             <ArrowDownLeftIcon className="h-3 w-3 text-emerald-500" />
             매출 (발행)
           </div>
-          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-emerald-700">
+          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-emerald-700 dark:text-emerald-300">
             {formatCurrency(salesTotal, false)}
           </div>
           <div className="text-2xs text-ink-400 mt-0.5">{salesTickets.length}건</div>
@@ -991,7 +991,7 @@ export default function TaxInvoicePage() {
             <ArrowUpRightIcon className="h-3 w-3 text-rose-500" />
             매입 (수취)
           </div>
-          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-rose-700">
+          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-rose-700 dark:text-rose-300">
             {formatCurrency(purchaseTotal, false)}
           </div>
           <div className="text-2xs text-ink-400 mt-0.5">{purchaseTickets.length}건</div>
@@ -1000,7 +1000,7 @@ export default function TaxInvoicePage() {
           <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">매출 − 매입</div>
           <div
             className={`mt-0.5 font-mono tabular-nums font-bold text-base ${
-              salesTotal - purchaseTotal >= 0 ? 'text-primary-700' : 'text-rose-700'
+              salesTotal - purchaseTotal >= 0 ? 'text-primary-700 dark:text-primary-300' : 'text-rose-700 dark:text-rose-300'
             }`}
           >
             {formatCurrency(salesTotal - purchaseTotal, false)}
@@ -1088,8 +1088,8 @@ export default function TaxInvoicePage() {
                       <span
                         className={`badge ${
                           isSales
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            : 'bg-rose-50 text-rose-700 border-rose-200'
+                            ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                            : 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
                         }`}
                       >
                         {isSales ? '매출' : '매입'}
@@ -1106,7 +1106,7 @@ export default function TaxInvoicePage() {
                     </td>
                     <td
                       className={`px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold ${
-                        isSales ? 'text-emerald-700' : 'text-rose-700'
+                        isSales ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'
                       }`}
                     >
                       {formatCurrency(num(t, 'amount'), false)}
@@ -1132,7 +1132,7 @@ export default function TaxInvoicePage() {
                       <button
                         onClick={() => findRecentMut.mutate()}
                         disabled={findRecentMut.isPending}
-                        className="text-primary-700 hover:underline font-semibold"
+                        className="text-primary-700 dark:text-primary-300 hover:underline font-semibold"
                       >
                         최근 12개월에서 자동 탐색
                       </button>

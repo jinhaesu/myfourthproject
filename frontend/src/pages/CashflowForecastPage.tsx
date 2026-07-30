@@ -851,8 +851,8 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo, an
   const label = direction === 'IN' ? '입금' : '출금'
   const badgeCls =
     direction === 'IN'
-      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-      : 'bg-rose-50 text-rose-700 border-rose-200'
+      ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+      : 'bg-rose-50 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800'
 
   // 기본: 합계금액(비율) desc — 현재 patterns가 이미 totalAmount desc로 정렬돼 들어옴
   const [sortKey, setSortKey] = useState<SortKey>('shareRatio')
@@ -1007,10 +1007,10 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo, an
 
 function ConfidenceBadge({ confidence }: { confidence: Confidence }) {
   if (confidence === 'high') {
-    return <span className="badge bg-emerald-50 text-emerald-700 border-emerald-200">높음</span>
+    return <span className="badge bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800">높음</span>
   }
   if (confidence === 'medium') {
-    return <span className="badge bg-amber-50 text-amber-700 border-amber-200">중간</span>
+    return <span className="badge bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800">중간</span>
   }
   return <span className="badge bg-ink-50 dark:bg-ink-900 text-ink-500 dark:text-ink-400 border-ink-200 dark:border-ink-800">낮음</span>
 }
@@ -1032,7 +1032,7 @@ function ChartTooltipContent({ active, payload, label }: any) {
     <div className="panel px-3 py-2 text-2xs shadow-pop min-w-[140px]">
       <div className="font-semibold text-ink-700 dark:text-ink-300 mb-1">{label}</div>
       {isForecast && (
-        <div className="text-2xs text-amber-600 font-medium mb-1">예측</div>
+        <div className="text-2xs text-amber-600 dark:text-amber-400 font-medium mb-1">예측</div>
       )}
       {payload.map((p: any) => (
         <div key={p.dataKey} className="flex items-center justify-between gap-3">
@@ -1105,7 +1105,7 @@ function CashflowChart({
         <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100">잔액 추이 + 예측</h2>
         <div className="flex items-center gap-3 text-2xs text-ink-500 dark:text-ink-400">
           <span className="flex items-center gap-1">
-            <span className="inline-block w-4 h-0.5 bg-primary-700 rounded" />
+            <span className="inline-block w-4 h-0.5 bg-primary-700 dark:bg-primary-300 rounded" />
             실제 잔액
           </span>
           <span className="flex items-center gap-1">
@@ -1230,11 +1230,11 @@ function DailyDetailTable({ forecastDays }: DailyDetailTableProps) {
                 return (
                   <tr
                     key={d.date}
-                    className={`hover:bg-canvas-50 dark:hover:bg-ink-800 ${d.isDanger ? 'bg-rose-50/60' : ''}`}
+                    className={`hover:bg-canvas-50 dark:hover:bg-ink-800 ${d.isDanger ? 'bg-rose-50 dark:bg-rose-950/60' : ''}`}
                   >
                     <td
                       className={`px-3 py-1.5 font-mono text-2xs whitespace-nowrap ${
-                        d.isDanger ? 'text-rose-700 font-semibold' : 'text-ink-600 dark:text-ink-400'
+                        d.isDanger ? 'text-rose-700 dark:text-rose-300 font-semibold' : 'text-ink-600 dark:text-ink-400'
                       }`}
                     >
                       {d.date}
@@ -1242,15 +1242,15 @@ function DailyDetailTable({ forecastDays }: DailyDetailTableProps) {
                         <ExclamationTriangleIcon className="inline-block ml-1 h-3 w-3 text-rose-500" />
                       )}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-emerald-700">
+                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-emerald-700 dark:text-emerald-300">
                       {d.expectedIn > 0 ? `+${formatCurrency(d.expectedIn, false)}` : <span className="text-ink-200 dark:text-ink-700">-</span>}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-rose-700">
+                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-rose-700 dark:text-rose-300">
                       {d.expectedOut > 0 ? `-${formatCurrency(d.expectedOut, false)}` : <span className="text-ink-200 dark:text-ink-700">-</span>}
                     </td>
                     <td
                       className={`px-3 py-1.5 text-right font-mono tabular-nums text-2xs font-medium ${
-                        net > 0 ? 'text-emerald-700' : net < 0 ? 'text-rose-700' : 'text-ink-300 dark:text-ink-600'
+                        net > 0 ? 'text-emerald-700 dark:text-emerald-300' : net < 0 ? 'text-rose-700 dark:text-rose-300' : 'text-ink-300 dark:text-ink-600'
                       }`}
                     >
                       {net !== 0 ? (
@@ -1264,7 +1264,7 @@ function DailyDetailTable({ forecastDays }: DailyDetailTableProps) {
                     </td>
                     <td
                       className={`px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold ${
-                        d.isDanger ? 'text-rose-700' : 'text-ink-900 dark:text-ink-50'
+                        d.isDanger ? 'text-rose-700 dark:text-rose-300' : 'text-ink-900 dark:text-ink-50'
                       }`}
                     >
                       {formatCurrency(d.balance, false)}
@@ -1302,10 +1302,10 @@ function KPI({
   const v = Number(value ?? 0)
   const toneMap: Record<KpiTone, string> = {
     neutral: 'text-ink-900 dark:text-ink-50',
-    primary: 'text-primary-700',
-    success: 'text-emerald-700',
-    danger: 'text-rose-700',
-    warning: 'text-amber-700',
+    primary: 'text-primary-700 dark:text-primary-300',
+    success: 'text-emerald-700 dark:text-emerald-300',
+    danger: 'text-rose-700 dark:text-rose-300',
+    warning: 'text-amber-700 dark:text-amber-300',
   }
   return (
     <div className={`panel px-3 py-2.5 ${highlight ? 'border-2 border-ink-900 dark:border-ink-100' : ''}`}>
@@ -1722,9 +1722,9 @@ export default function CashflowForecastPage() {
 
       {/* Banners */}
       {healthQuery.isFetched && !isConfigured && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 shrink-0" />
-          <span className="text-2xs text-amber-800">
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+          <span className="text-2xs text-amber-800 dark:text-amber-200">
             그랜터 API 키 미설정 — Railway 환경변수 GRANTER_API_KEY 등록이 필요합니다.
           </span>
         </div>
@@ -1732,9 +1732,9 @@ export default function CashflowForecastPage() {
 
       {healthQuery.isFetched && isConfigured && (
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 flex items-center gap-2">
-            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600" />
-            <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
+          <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
+            <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
           </div>
           {inPatterns.length + outPatterns.length > 0 && (
             <span className="text-2xs text-ink-500 dark:text-ink-400">
@@ -1749,9 +1749,9 @@ export default function CashflowForecastPage() {
 
       {/* 일부 chunk만 실패: 부분 분석 가능하므로 경고만 표시 (전부 실패 시에만 진짜 에러) */}
       {chunkResults.some((q) => q.isError) && !ticketsAllError && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 shrink-0" />
-          <span className="text-2xs text-amber-800">
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+          <span className="text-2xs text-amber-800 dark:text-amber-200">
             일부 기간({LOOKBACK_CHUNKS}개월 중 {chunkResults.filter((q) => q.isError).length}개월) 로드 실패 —
             나머지 {loadedChunks}개월로 분석 진행됩니다.
           </span>
@@ -1764,9 +1764,9 @@ export default function CashflowForecastPage() {
         </div>
       )}
       {ticketsAllError && (
-        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
-          <span className="text-2xs text-rose-800">거래 데이터 로드 실패 ({LOOKBACK_CHUNKS}개월 전 구간)</span>
+        <div className="rounded-md border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 dark:text-rose-400 shrink-0" />
+          <span className="text-2xs text-rose-800 dark:text-rose-200">거래 데이터 로드 실패 ({LOOKBACK_CHUNKS}개월 전 구간)</span>
           <button
             className="btn-secondary text-2xs ml-auto"
             onClick={() => chunkResults.forEach((q) => q.refetch())}
@@ -1785,9 +1785,9 @@ export default function CashflowForecastPage() {
       )}
 
       {riskDay && (
-        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
-          <div className="text-2xs text-rose-800">
+        <div className="rounded-md border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 dark:text-rose-400 shrink-0" />
+          <div className="text-2xs text-rose-800 dark:text-rose-200">
             <span className="font-semibold">자금 부족 위험</span> —{' '}
             {formatDate(riskDay.date)}에 잔액{' '}
             <span className="font-mono font-semibold">{formatCurrency(riskDay.balance, false)}원</span>으로
@@ -1852,8 +1852,8 @@ export default function CashflowForecastPage() {
         <div
           className={`panel px-3 py-2.5 border ${
             riskDay
-              ? 'border-rose-300 bg-rose-50'
-              : 'border-emerald-200 bg-emerald-50'
+              ? 'border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950'
+              : 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950'
           }`}
         >
           <div className="text-2xs font-medium uppercase tracking-wider flex items-center gap-1 mb-0.5 text-ink-500 dark:text-ink-400">
@@ -1861,9 +1861,9 @@ export default function CashflowForecastPage() {
             자금 부족 위험
           </div>
           {riskDay ? (
-            <div className="font-semibold text-sm text-rose-700">{riskDay.date}</div>
+            <div className="font-semibold text-sm text-rose-700 dark:text-rose-300">{riskDay.date}</div>
           ) : (
-            <div className="font-semibold text-sm text-emerald-700">안정</div>
+            <div className="font-semibold text-sm text-emerald-700 dark:text-emerald-300">안정</div>
           )}
         </div>
       </div>

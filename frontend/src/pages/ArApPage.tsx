@@ -238,7 +238,7 @@ export default function ArApPage() {
                     onClick={() => toggleCode(s.code)}
                     className={`px-2.5 py-1 rounded text-2xs font-medium transition ${
                       active
-                        ? 'bg-primary-700 text-white'
+                        ? 'bg-primary-700 dark:bg-primary-300 text-white'
                         : 'text-ink-500 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800 hover:text-ink-700 dark:hover:text-ink-200'
                     }`}
                     title={active ? '클릭하여 제외' : '클릭하여 포함'}
@@ -258,9 +258,9 @@ export default function ArApPage() {
 
       {/* 에러 */}
       {hasError && (
-        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
-          <span className="text-2xs text-rose-800">데이터 조회 실패</span>
+        <div className="rounded-md border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 dark:text-rose-400 shrink-0" />
+          <span className="text-2xs text-rose-800 dark:text-rose-200">데이터 조회 실패</span>
           <button className="btn-secondary text-2xs ml-auto" onClick={() => summaryQuery.refetch()}>
             재시도
           </button>
@@ -460,9 +460,9 @@ export default function ArApPage() {
                           showSign
                           className={
                             c.period_change > 0
-                              ? 'text-emerald-700'
+                              ? 'text-emerald-700 dark:text-emerald-300'
                               : c.period_change < 0
-                              ? 'text-rose-700'
+                              ? 'text-rose-700 dark:text-rose-300'
                               : 'text-ink-300 dark:text-ink-600'
                           }
                         />
@@ -514,9 +514,9 @@ function KPI({
 }) {
   const toneMap = {
     neutral: 'text-ink-900 dark:text-ink-50',
-    primary: 'text-primary-700',
-    success: 'text-emerald-700',
-    danger: 'text-rose-700',
+    primary: 'text-primary-700 dark:text-primary-300',
+    success: 'text-emerald-700 dark:text-emerald-300',
+    danger: 'text-rose-700 dark:text-rose-300',
   }
   const sign = showSign && value > 0 ? '+' : ''
   return (

@@ -208,7 +208,7 @@ function RateKpiCard({
       {pct !== undefined && (
         <div
           className={`text-2xs font-medium mt-0.5 ${
-            pct > 0 ? 'text-rose-600' : pct < 0 ? 'text-emerald-600' : 'text-ink-400'
+            pct > 0 ? 'text-rose-600 dark:text-rose-400' : pct < 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-ink-400'
           }`}
         >
           {pct > 0 ? '▲' : pct < 0 ? '▼' : '—'}
@@ -373,19 +373,19 @@ export default function ExchangeRatesPage() {
 
       {/* 31일 초과 클램프 안내 */}
       {span > 31 && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-2xs text-amber-800">
+        <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-1.5 text-2xs text-amber-800 dark:text-amber-200">
           조회 기간이 31일을 초과합니다 — 종료일 기준 최근 31일({effectiveFrom} ~ {to})로 자동 조정됩니다.
         </div>
       )}
 
       {/* 에러 배너 */}
       {hasError && (
-        <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 flex items-center gap-2">
-          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 shrink-0" />
-          <span className="text-2xs text-rose-800">
+        <div className="rounded-md border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 px-3 py-2 flex items-center gap-2">
+          <ExclamationTriangleIcon className="h-4 w-4 text-rose-600 dark:text-rose-400 shrink-0" />
+          <span className="text-2xs text-rose-800 dark:text-rose-200">
             환율 데이터를 불러오지 못했습니다 — 백엔드 프록시 또는 Frankfurter(ECB) API 응답 실패. 잠시 후 다시 시도하세요.
             {frankfurterQuery.error && (
-              <span className="block mt-0.5 text-rose-600 font-mono">
+              <span className="block mt-0.5 text-rose-600 dark:text-rose-400 font-mono">
                 {(frankfurterQuery.error as any)?.response?.data?.detail ??
                   (frankfurterQuery.error as any)?.message}
               </span>

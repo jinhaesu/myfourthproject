@@ -17,17 +17,17 @@ import StatCard from '@/components/common/StatCard'
 import { formatCompactWon, formatPct, formatRelativeTime, maskBusinessNumber } from '@/utils/format'
 
 const COLLECTION_LABEL: Record<string, { label: string; class: string }> = {
-  healthy: { label: '정상', class: 'badge bg-emerald-100 text-emerald-700' },
-  stale: { label: '지연', class: 'badge bg-amber-100 text-amber-700' },
-  error: { label: '오류', class: 'badge bg-rose-100 text-rose-700' },
+  healthy: { label: '정상', class: 'badge bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300' },
+  stale: { label: '지연', class: 'badge bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300' },
+  error: { label: '오류', class: 'badge bg-rose-100 dark:bg-rose-900 text-rose-700 dark:text-rose-300' },
   not_connected: { label: '미연결', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
 }
 
 const CLIENT_STATUS_LABEL: Record<string, { label: string; class: string }> = {
-  active: { label: '운영 중', class: 'badge bg-emerald-100 text-emerald-700' },
-  paused: { label: '일시중단', class: 'badge bg-amber-100 text-amber-700' },
+  active: { label: '운영 중', class: 'badge bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300' },
+  paused: { label: '일시중단', class: 'badge bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300' },
   terminated: { label: '해지', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
-  onboarding: { label: '온보딩', class: 'badge bg-blue-100 text-blue-700' },
+  onboarding: { label: '온보딩', class: 'badge bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' },
 }
 
 export default function ConnectClientsPage() {
@@ -177,7 +177,7 @@ function ClientRow({
             <span className="font-semibold text-gray-900 dark:text-gray-100 truncate">{client.company_name}</span>
             <span className={status.class}>{status.label}</span>
             {client.is_clobe_ai_connected && (
-              <span className="badge bg-teal-50 text-teal-700">SmartFinance 연결됨</span>
+              <span className="badge bg-teal-50 dark:bg-teal-950 text-teal-700 dark:text-teal-300">SmartFinance 연결됨</span>
             )}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 font-mono">
@@ -204,7 +204,7 @@ function ClientRow({
             <div className="text-gray-500 dark:text-gray-400 text-xs">검토 대기</div>
             <div
               className={`mt-0.5 font-mono font-semibold ${
-                client.pending_voucher_count > 0 ? 'text-amber-600' : 'text-gray-400'
+                client.pending_voucher_count > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-gray-400'
               }`}
             >
               {client.pending_voucher_count}건
@@ -282,7 +282,7 @@ function ClientDetail({ clientId, userId }: { clientId: number; userId: number }
                   {formatRelativeTime(s.last_synced_at)}
                 </div>
                 {s.error_message && (
-                  <div className="text-xs text-rose-600 mt-1">{s.error_message}</div>
+                  <div className="text-xs text-rose-600 dark:text-rose-400 mt-1">{s.error_message}</div>
                 )}
               </div>
             )
@@ -330,7 +330,7 @@ function ClientDetail({ clientId, userId }: { clientId: number; userId: number }
                     <td>
                       <span
                         className={`text-sm font-mono font-semibold ${
-                          isLow ? 'text-rose-600' : 'text-emerald-600'
+                          isLow ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'
                         }`}
                       >
                         {formatPct(v.confidence * 100, 0)}
@@ -343,7 +343,7 @@ function ClientDetail({ clientId, userId }: { clientId: number; userId: number }
                       <div className="flex gap-1">
                         <button
                           onClick={() => approveMut.mutate(v.voucher_id)}
-                          className="text-xs text-emerald-600 hover:underline"
+                          className="text-xs text-emerald-600 dark:text-emerald-400 hover:underline"
                         >
                           승인
                         </button>

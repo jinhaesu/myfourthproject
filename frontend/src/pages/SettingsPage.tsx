@@ -84,9 +84,9 @@ function PasswordStrengthIndicator({ password }: { password: string }) {
           ))}
         </div>
         <span className={`text-xs font-medium ${
-          strength.level <= 2 ? 'text-red-600' :
-          strength.level === 3 ? 'text-yellow-600' :
-          'text-green-600'
+          strength.level <= 2 ? 'text-red-600 dark:text-red-400' :
+          strength.level === 3 ? 'text-yellow-600 dark:text-yellow-400' :
+          'text-green-600 dark:text-green-400'
         }`}>
           {strength.label}
         </span>
@@ -101,7 +101,7 @@ function PasswordStrengthIndicator({ password }: { password: string }) {
             ) : (
               <XCircleIcon className="h-3.5 w-3.5 text-gray-300 dark:text-gray-600 flex-shrink-0" />
             )}
-            <span className={check.met ? 'text-green-700' : 'text-gray-400'}>{check.label}</span>
+            <span className={check.met ? 'text-green-700 dark:text-green-300' : 'text-gray-400'}>{check.label}</span>
           </li>
         ))}
       </ul>
@@ -133,7 +133,7 @@ function NotificationToggle({
         aria-checked={enabled}
         onClick={() => onChange(!enabled)}
         className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-          enabled ? 'bg-blue-600' : 'bg-gray-200 dark:bg-ink-700'
+          enabled ? 'bg-blue-600 dark:bg-blue-400' : 'bg-gray-200 dark:bg-ink-700'
         }`}
       >
         <span
@@ -239,7 +239,7 @@ export default function SettingsPage() {
                 onClick={() => setActiveTab(item.id)}
                 className={`flex items-center w-full px-4 py-3 rounded-lg text-sm font-medium ${
                   activeTab === item.id
-                    ? 'bg-primary-50 text-primary-700'
+                    ? 'bg-primary-50 dark:bg-primary-900 text-primary-700 dark:text-primary-300'
                     : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800 hover:text-gray-900 dark:hover:text-gray-100'
                 }`}
               >
@@ -296,7 +296,7 @@ export default function SettingsPage() {
                     className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                   {profileForm.formState.errors.full_name && (
-                    <p className="mt-1 text-sm text-red-600">
+                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">
                       {profileForm.formState.errors.full_name.message}
                     </p>
                   )}
@@ -366,7 +366,7 @@ export default function SettingsPage() {
                     </button>
                   </div>
                   {passwordForm.formState.errors.currentPassword && (
-                    <p className="mt-1 text-sm text-red-600">
+                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">
                       {passwordForm.formState.errors.currentPassword.message}
                     </p>
                   )}
@@ -396,7 +396,7 @@ export default function SettingsPage() {
                     </button>
                   </div>
                   {passwordForm.formState.errors.newPassword && (
-                    <p className="mt-1 text-sm text-red-600">
+                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">
                       {passwordForm.formState.errors.newPassword.message}
                     </p>
                   )}
@@ -427,7 +427,7 @@ export default function SettingsPage() {
                     </button>
                   </div>
                   {passwordForm.formState.errors.confirmPassword && (
-                    <p className="mt-1 text-sm text-red-600">
+                    <p className="mt-1 text-sm text-red-600 dark:text-red-400">
                       {passwordForm.formState.errors.confirmPassword.message}
                     </p>
                   )}

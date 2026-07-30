@@ -30,7 +30,7 @@ export default function DashboardPage() {
             그랜터 실시간 자금 현황 {data?.as_of ? `· ${data.as_of} 기준` : ''}
           </p>
         </div>
-        <Link to="/cash-digest" className="text-xs px-2.5 py-1.5 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 flex items-center gap-1">
+        <Link to="/cash-digest" className="text-xs px-2.5 py-1.5 rounded-md border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 flex items-center gap-1">
           <SparklesIcon className="h-3.5 w-3.5" /> AI 자금 다이제스트
         </Link>
       </div>
@@ -53,21 +53,21 @@ export default function DashboardPage() {
             </div>
             <div className="panel p-3">
               <div className="text-2xs text-ink-500 dark:text-ink-400">어제 순증감</div>
-              <div className={`text-xl font-bold mt-0.5 ${data.yesterday.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+              <div className={`text-xl font-bold mt-0.5 ${data.yesterday.net >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
                 {data.yesterday.net >= 0 ? '+' : ''}{formatCurrency(data.yesterday.net, false)}
               </div>
               <div className="text-2xs text-ink-400">입 {formatCurrency(data.yesterday.inflow, false)} · 출 {formatCurrency(data.yesterday.outflow, false)}</div>
             </div>
             <div className="panel p-3">
               <div className="text-2xs text-ink-500 dark:text-ink-400">최근 7일 순흐름</div>
-              <div className={`text-xl font-bold mt-0.5 ${data.week.net >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+              <div className={`text-xl font-bold mt-0.5 ${data.week.net >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
                 {data.week.net >= 0 ? '+' : ''}{formatCurrency(data.week.net, false)}
               </div>
             </div>
             <div className="panel p-3 border-l-2 border-l-amber-400">
               <div className="text-2xs text-ink-500 dark:text-ink-400 flex items-center gap-1"><CreditCardIcon className="h-3 w-3" />이번달 카드지출</div>
               <div className="text-xl font-bold text-ink-900 dark:text-ink-50 mt-0.5">{formatCurrency(data.card.this_month, false)}</div>
-              <div className={`text-2xs flex items-center gap-0.5 ${cardDelta > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+              <div className={`text-2xs flex items-center gap-0.5 ${cardDelta > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
                 {cardDelta > 0 ? <ArrowTrendingUpIcon className="h-2.5 w-2.5" /> : <ArrowTrendingDownIcon className="h-2.5 w-2.5" />}
                 전월 대비 {cardDelta >= 0 ? '+' : ''}{cardDelta.toFixed(0)}%
               </div>
@@ -77,7 +77,7 @@ export default function DashboardPage() {
           {/* 최근 입출금 */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="panel overflow-hidden">
-              <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 text-2xs font-semibold text-emerald-700 uppercase flex items-center gap-1">
+              <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 text-2xs font-semibold text-emerald-700 dark:text-emerald-300 uppercase flex items-center gap-1">
                 <ArrowDownLeftIcon className="h-3 w-3" />최근 7일 주요 입금
               </div>
               {data.week.top_inflows.length === 0 ? (
@@ -88,14 +88,14 @@ export default function DashboardPage() {
                     <div key={i} className="px-3 py-1.5 flex items-center gap-2">
                       <span className="text-2xs text-ink-400 w-16 flex-shrink-0">{x.date?.slice(5)}</span>
                       <span className="flex-1 text-xs text-ink-800 dark:text-ink-100 truncate">{x.counterparty}{x.description ? ` · ${x.description}` : ''}</span>
-                      <span className="text-xs font-mono font-semibold text-emerald-700">{formatCurrency(x.amount, false)}</span>
+                      <span className="text-xs font-mono font-semibold text-emerald-700 dark:text-emerald-300">{formatCurrency(x.amount, false)}</span>
                     </div>
                   ))}
                 </div>
               )}
             </div>
             <div className="panel overflow-hidden">
-              <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 text-2xs font-semibold text-rose-700 uppercase flex items-center gap-1">
+              <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 text-2xs font-semibold text-rose-700 dark:text-rose-300 uppercase flex items-center gap-1">
                 <ArrowUpRightIcon className="h-3 w-3" />최근 7일 주요 출금
               </div>
               {data.week.top_outflows.length === 0 ? (
@@ -106,7 +106,7 @@ export default function DashboardPage() {
                     <div key={i} className="px-3 py-1.5 flex items-center gap-2">
                       <span className="text-2xs text-ink-400 w-16 flex-shrink-0">{x.date?.slice(5)}</span>
                       <span className="flex-1 text-xs text-ink-800 dark:text-ink-100 truncate">{x.counterparty}{x.description ? ` · ${x.description}` : ''}</span>
-                      <span className="text-xs font-mono font-semibold text-rose-700">{formatCurrency(x.amount, false)}</span>
+                      <span className="text-xs font-mono font-semibold text-rose-700 dark:text-rose-300">{formatCurrency(x.amount, false)}</span>
                     </div>
                   ))}
                 </div>

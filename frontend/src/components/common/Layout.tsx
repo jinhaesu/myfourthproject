@@ -240,7 +240,7 @@ export default function Layout() {
       <div className="min-h-screen bg-canvas-50 dark:bg-ink-950">
       {/* Mobile sidebar */}
       <div className={`fixed inset-0 z-50 lg:hidden ${sidebarOpen ? '' : 'hidden'}`}>
-        <div className="fixed inset-0 bg-ink-900/40" onClick={() => setSidebarOpen(false)} />
+        <div className="fixed inset-0 bg-ink-900 dark:bg-ink-50/40" onClick={() => setSidebarOpen(false)} />
         <div className="fixed inset-y-0 left-0 flex w-56 flex-col bg-white dark:bg-ink-900 min-h-0">
           <div className="flex h-12 items-center justify-between px-3 border-b border-ink-200 dark:border-ink-800">
             <span className="text-sm font-bold text-ink-900 dark:text-ink-50 tracking-tightish">Smart Finance</span>

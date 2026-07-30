@@ -241,7 +241,7 @@ export default function CashPLPage() {
                     </div>
                     <div className="flex justify-between text-sm border-t border-gray-100 dark:border-ink-800 pt-1 mt-1">
                       <span className="text-gray-600 dark:text-gray-400">차이</span>
-                      <span className={`font-mono font-semibold ${diff >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      <span className={`font-mono font-semibold ${diff >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                         {diff >= 0 ? '+' : ''}{formatCurrency(diff, false)}
                       </span>
                     </div>
@@ -274,11 +274,11 @@ export default function CashPLPage() {
                     <span
                       className={
                         it.category === 'revenue'
-                          ? 'badge bg-blue-100 text-blue-700'
+                          ? 'badge bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300'
                           : it.category === 'cogs'
-                          ? 'badge bg-amber-100 text-amber-700'
+                          ? 'badge bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300'
                           : it.category === 'opex'
-                          ? 'badge bg-purple-100 text-purple-700'
+                          ? 'badge bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300'
                           : 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300'
                       }
                     >

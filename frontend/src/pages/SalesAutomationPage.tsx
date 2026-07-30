@@ -40,17 +40,17 @@ function formatNumber(value: number) {
 type TabType = 'dashboard' | 'channels' | 'voucher' | 'automation'
 
 const statusBadge: Record<string, { className: string; label: string }> = {
-  pending: { className: 'bg-yellow-100 text-yellow-800', label: '대기' },
-  confirmed: { className: 'bg-blue-100 text-blue-800', label: '확정' },
-  settled: { className: 'bg-green-100 text-green-800', label: '정산' },
+  pending: { className: 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200', label: '대기' },
+  confirmed: { className: 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200', label: '확정' },
+  settled: { className: 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200', label: '정산' },
   converted: { className: 'bg-gray-100 dark:bg-ink-800 text-gray-800 dark:text-gray-200', label: '전환완료' },
 }
 
 const channelTypeBadge: Record<string, { className: string; label: string }> = {
-  online_marketplace: { className: 'bg-blue-100 text-blue-800', label: '온라인' },
-  own_website: { className: 'bg-indigo-100 text-indigo-800', label: '자사몰' },
-  offline: { className: 'bg-green-100 text-green-800', label: '오프라인' },
-  wholesale: { className: 'bg-purple-100 text-purple-800', label: '도매/B2B' },
+  online_marketplace: { className: 'bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200', label: '온라인' },
+  own_website: { className: 'bg-indigo-100 dark:bg-indigo-900 text-indigo-800 dark:text-indigo-200', label: '자사몰' },
+  offline: { className: 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200', label: '오프라인' },
+  wholesale: { className: 'bg-purple-100 dark:bg-purple-900 text-purple-800 dark:text-purple-200', label: '도매/B2B' },
 }
 
 // ============================================================================
@@ -82,7 +82,7 @@ export default function SalesAutomationPage() {
               onClick={() => setActiveTab(tab.id)}
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.id
-                  ? 'border-blue-600 text-blue-600'
+                  ? 'border-blue-600 dark:border-blue-400 text-blue-600 dark:text-blue-400'
                   : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >
@@ -274,15 +274,15 @@ function SalesDashboardTab() {
         </div>
         <div className="card">
           <p className="text-sm text-gray-500 dark:text-gray-400">순 매출</p>
-          <p className="text-xl font-bold text-blue-600">{formatCurrency(totalNet)}</p>
+          <p className="text-xl font-bold text-blue-600 dark:text-blue-400">{formatCurrency(totalNet)}</p>
         </div>
         <div className="card">
           <p className="text-sm text-gray-500 dark:text-gray-400">수수료</p>
-          <p className="text-xl font-bold text-red-600">{formatCurrency(totalCommission)}</p>
+          <p className="text-xl font-bold text-red-600 dark:text-red-400">{formatCurrency(totalCommission)}</p>
         </div>
         <div className="card">
           <p className="text-sm text-gray-500 dark:text-gray-400">정산액</p>
-          <p className="text-xl font-bold text-green-600">{formatCurrency(totalSettlement)}</p>
+          <p className="text-xl font-bold text-green-600 dark:text-green-400">{formatCurrency(totalSettlement)}</p>
         </div>
       </div>
 
@@ -364,7 +364,7 @@ function SalesDashboardTab() {
         <h3 className="card-header">채널별 매출 테이블</h3>
         {recordsLoading ? (
           <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto" />
             <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
           </div>
         ) : records && records.length > 0 ? (
@@ -407,8 +407,8 @@ function SalesDashboardTab() {
                       <td className="amount">{formatCurrency(record.gross_sales || 0)}</td>
                       <td className="amount">{formatCurrency(record.returns || 0)}</td>
                       <td className="amount">{formatCurrency(record.net_sales || 0)}</td>
-                      <td className="amount text-red-600">{formatCurrency(record.commission || 0)}</td>
-                      <td className="amount text-green-600">{formatCurrency(record.settlement || 0)}</td>
+                      <td className="amount text-red-600 dark:text-red-400">{formatCurrency(record.commission || 0)}</td>
+                      <td className="amount text-green-600 dark:text-green-400">{formatCurrency(record.settlement || 0)}</td>
                       <td className="text-right">{formatNumber(record.transaction_count || 0)}</td>
                       <td>
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${badge.className}`}>
@@ -470,7 +470,7 @@ function ReportModal({ year, month, onClose }: { year: number; month: number; on
   }
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-950 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-md">
         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">리포트 발송</h3>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -492,7 +492,7 @@ function ReportModal({ year, month, onClose }: { year: number; month: number; on
             <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-ink-800 rounded-lg hover:bg-gray-200 dark:hover:bg-ink-700">
               취소
             </button>
-            <button type="submit" disabled={sendMutation.isPending} className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            <button type="submit" disabled={sendMutation.isPending} className="px-4 py-2 text-white bg-blue-600 dark:bg-blue-400 rounded-lg hover:bg-blue-700 disabled:opacity-50">
               {sendMutation.isPending ? '발송 중...' : '발송'}
             </button>
           </div>
@@ -551,7 +551,7 @@ function ChannelManagementTab() {
 
       {isLoading ? (
         <div className="text-center py-8">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto" />
           <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
         </div>
       ) : channels && channels.length > 0 ? (
@@ -590,7 +590,7 @@ function ChannelManagementTab() {
                   <div className="flex justify-between items-center">
                     <span className="text-gray-500 dark:text-gray-400">활성화</span>
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                      channel.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
+                      channel.is_active ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200' : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
                     }`}>
                       {channel.is_active ? '활성' : '비활성'}
                     </span>
@@ -600,13 +600,13 @@ function ChannelManagementTab() {
                 <div className="flex justify-end gap-2 mt-4 pt-3 border-t">
                   <button
                     onClick={() => handleEdit(channel)}
-                    className="p-2 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50"
+                    className="p-2 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-950/40"
                   >
                     <PencilIcon className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => handleDelete(channel)}
-                    className="p-2 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50"
+                    className="p-2 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40"
                   >
                     <TrashIcon className="h-4 w-4" />
                   </button>
@@ -734,7 +734,7 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
   const inputClass = 'w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent'
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-950 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">
           {isEdit ? '채널 수정' : '채널 추가'}
@@ -789,8 +789,8 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
 
           {/* API 방식일 때만 API 연동 필드 */}
           {formData.collection_method === 'api' && (
-            <div className="bg-blue-50 rounded-lg p-4 space-y-3">
-              <p className="text-sm font-medium text-blue-700">API 연동 설정</p>
+            <div className="bg-blue-50 dark:bg-blue-950 rounded-lg p-4 space-y-3">
+              <p className="text-sm font-medium text-blue-700 dark:text-blue-300">API 연동 설정</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="label">셀러 ID</label>
@@ -810,8 +810,8 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
 
           {/* 스크래핑 방식일 때만 로그인 필드 */}
           {formData.collection_method === 'scraping' && (
-            <div className="bg-amber-50 rounded-lg p-4 space-y-3">
-              <p className="text-sm font-medium text-amber-700">스크래핑 로그인 설정</p>
+            <div className="bg-amber-50 dark:bg-amber-950 rounded-lg p-4 space-y-3">
+              <p className="text-sm font-medium text-amber-700 dark:text-amber-300">스크래핑 로그인 설정</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="label">로그인 ID</label>
@@ -838,7 +838,7 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
               id="channel-active"
               checked={formData.is_active}
               onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-              className="rounded border-gray-300 dark:border-ink-700 text-blue-600 focus:ring-blue-500"
+              className="rounded border-gray-300 dark:border-ink-700 text-blue-600 dark:text-blue-400 focus:ring-blue-500"
             />
             <label htmlFor="channel-active" className="text-sm text-gray-700 dark:text-gray-300">활성화</label>
           </div>
@@ -847,7 +847,7 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
             <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-ink-800 rounded-lg hover:bg-gray-200 dark:hover:bg-ink-700">
               취소
             </button>
-            <button type="submit" disabled={isPending} className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            <button type="submit" disabled={isPending} className="px-4 py-2 text-white bg-blue-600 dark:bg-blue-400 rounded-lg hover:bg-blue-700 disabled:opacity-50">
               {isPending ? '저장 중...' : isEdit ? '수정' : '추가'}
             </button>
           </div>
@@ -941,9 +941,9 @@ function VoucherConversionTab() {
       </div>
 
       {/* Conversion Info */}
-      <div className="card bg-blue-50 border border-blue-200">
-        <h4 className="font-semibold text-blue-900 mb-2">전표 전환 안내</h4>
-        <div className="text-sm text-blue-800 space-y-1">
+      <div className="card bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800">
+        <h4 className="font-semibold text-blue-900 dark:text-blue-100 mb-2">전표 전환 안내</h4>
+        <div className="text-sm text-blue-800 dark:text-blue-200 space-y-1">
           <p>확정된 매출 기록을 선택하여 전표로 전환합니다. 전환 시 다음 전표가 자동 생성됩니다:</p>
           <ul className="list-disc list-inside ml-2 space-y-1">
             <li><strong>매출 전표:</strong> 차변(매출채권) / 대변(상품매출)</li>
@@ -968,7 +968,7 @@ function VoucherConversionTab() {
 
         {isLoading ? (
           <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto" />
             <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
           </div>
         ) : confirmedRecords.length > 0 ? (
@@ -1004,8 +1004,8 @@ function VoucherConversionTab() {
                     </td>
                     <td className="font-medium">{record.channel_name}</td>
                     <td className="amount">{formatCurrency(record.net_sales || 0)}</td>
-                    <td className="amount text-red-600">{formatCurrency(record.commission || 0)}</td>
-                    <td className="amount text-green-600">{formatCurrency(record.settlement || 0)}</td>
+                    <td className="amount text-red-600 dark:text-red-400">{formatCurrency(record.commission || 0)}</td>
+                    <td className="amount text-green-600 dark:text-green-400">{formatCurrency(record.settlement || 0)}</td>
                     <td className="text-right">{formatNumber(record.transaction_count || 0)}</td>
                   </tr>
                 ))}
@@ -1040,9 +1040,9 @@ function VoucherConversionTab() {
                   <tr key={record.id}>
                     <td className="font-medium">{record.channel_name}</td>
                     <td className="amount">{formatCurrency(record.net_sales || 0)}</td>
-                    <td className="amount text-red-600">{formatCurrency(record.commission || 0)}</td>
-                    <td className="amount text-green-600">{formatCurrency(record.settlement || 0)}</td>
-                    <td className="text-sm text-blue-600">
+                    <td className="amount text-red-600 dark:text-red-400">{formatCurrency(record.commission || 0)}</td>
+                    <td className="amount text-green-600 dark:text-green-400">{formatCurrency(record.settlement || 0)}</td>
+                    <td className="text-sm text-blue-600 dark:text-blue-400">
                       {record.voucher_id ? `#${record.voucher_id}` : '-'}
                     </td>
                     <td>
@@ -1120,7 +1120,7 @@ function AutomationSettingsTab() {
 
       {isLoading ? (
         <div className="text-center py-8">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 dark:border-blue-400 mx-auto" />
           <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
         </div>
       ) : schedules && schedules.length > 0 ? (
@@ -1143,7 +1143,7 @@ function AutomationSettingsTab() {
                   <tr key={schedule.id}>
                     <td className="font-medium">{schedule.name}</td>
                     <td>
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200">
                         {scheduleTypeLabel[schedule.schedule_type] || schedule.schedule_type}
                       </span>
                     </td>
@@ -1155,7 +1155,7 @@ function AutomationSettingsTab() {
                     <td className="text-sm">{schedule.last_run || '-'}</td>
                     <td>
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        schedule.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
+                        schedule.is_active ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200' : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
                       }`}>
                         {schedule.is_active ? '활성' : '비활성'}
                       </span>
@@ -1164,13 +1164,13 @@ function AutomationSettingsTab() {
                       <div className="flex justify-end gap-1">
                         <button
                           onClick={() => handleEdit(schedule)}
-                          className="p-2 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50"
+                          className="p-2 text-gray-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-950/40"
                         >
                           <PencilIcon className="h-4 w-4" />
                         </button>
                         <button
                           onClick={() => handleDelete(schedule)}
-                          className="p-2 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50"
+                          className="p-2 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40"
                         >
                           <TrashIcon className="h-4 w-4" />
                         </button>
@@ -1280,7 +1280,7 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
   const inputClass = 'w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent'
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black bg-opacity-50 dark:bg-opacity-950 flex items-center justify-center z-50">
       <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">
           {isEdit ? '스케줄 수정' : '스케줄 추가'}
@@ -1333,7 +1333,7 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
                       type="checkbox"
                       checked={formData.channel_ids.includes(ch.id)}
                       onChange={() => handleChannelToggle(ch.id)}
-                      className="rounded border-gray-300 dark:border-ink-700 text-blue-600 focus:ring-blue-500"
+                      className="rounded border-gray-300 dark:border-ink-700 text-blue-600 dark:text-blue-400 focus:ring-blue-500"
                     />
                     {ch.name}
                   </label>
@@ -1355,7 +1355,7 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
                 type="checkbox"
                 checked={formData.attach_excel}
                 onChange={(e) => setFormData({ ...formData, attach_excel: e.target.checked })}
-                className="rounded border-gray-300 dark:border-ink-700 text-blue-600 focus:ring-blue-500"
+                className="rounded border-gray-300 dark:border-ink-700 text-blue-600 dark:text-blue-400 focus:ring-blue-500"
               />
               엑셀 첨부
             </label>
@@ -1364,7 +1364,7 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
                 type="checkbox"
                 checked={formData.is_active}
                 onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-                className="rounded border-gray-300 dark:border-ink-700 text-blue-600 focus:ring-blue-500"
+                className="rounded border-gray-300 dark:border-ink-700 text-blue-600 dark:text-blue-400 focus:ring-blue-500"
               />
               활성화
             </label>
@@ -1374,7 +1374,7 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
             <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-ink-800 rounded-lg hover:bg-gray-200 dark:hover:bg-ink-700">
               취소
             </button>
-            <button type="submit" disabled={isPending} className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50">
+            <button type="submit" disabled={isPending} className="px-4 py-2 text-white bg-blue-600 dark:bg-blue-400 rounded-lg hover:bg-blue-700 disabled:opacity-50">
               {isPending ? '저장 중...' : isEdit ? '수정' : '추가'}
             </button>
           </div>
