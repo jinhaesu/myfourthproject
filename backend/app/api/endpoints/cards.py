@@ -17,6 +17,7 @@ from app.services.card_management import (
     list_cards, upsert_alias, get_card_analysis, get_monthly_summary,
     assign_card, list_transactions, classify_transaction, get_assigned_card_keys,
     get_closing, close_month, list_closings, reopen_closing, _month_range,
+    migrate_card_keys,
 )
 
 router = APIRouter()
@@ -98,6 +99,21 @@ async def list_cards_api(
         "cards": await list_cards(db, start_date, end_date, only_assigned_to=only),
         "is_admin": is_accounting_admin(user),
     }
+
+
+@router.post("/admin/migrate-keys")
+async def migrate_keys_api(
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    기존 card_key(legacy 'org (last4)') → 그랜터 카드 id로 일괄 이관 (관리자 전용, 멱등).
+    뒷4자리 충돌 방지용 키 체계 전환 시 1회 실행. 별칭/배정/마감/구매요청 카드키 보존.
+    """
+    if not is_accounting_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="관리자 전용")
+    report = await migrate_card_keys(db)
+    return {"ok": True, "report": report}
 
 
 @router.put("/alias")

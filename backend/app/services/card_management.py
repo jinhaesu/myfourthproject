@@ -43,18 +43,18 @@ def _extract_card_meta(card_key: str) -> Dict[str, Optional[str]]:
     return {"issuer": issuer or None, "last4": last4}
 
 
-def _build_card_key(t: Dict[str, Any]) -> Optional[str]:
+def _legacy_card_key_from_fields(
+    org: Optional[str], number: Optional[str],
+    name: Optional[str], nickname: Optional[str],
+) -> Optional[str]:
     """
-    EXPENSE_TICKET → 카드 식별자 문자열.
-    그랜터 응답: t.cardUsage.card.{name, number, organizationName}
+    (구) 카드 식별자 — 'org (last4)' 문자열. 뒷4자리 충돌 위험이 있어 신규 키에는
+    쓰지 않지만, 기존 저장 키 마이그레이션 매핑과 id 없는 응답 폴백용으로 보존.
     """
-    cu = t.get("cardUsage") or {}
-    card = cu.get("card") or {}
-    name = (card.get("name") or "").strip()
-    org = (card.get("organizationName") or "").strip()
-    number = (card.get("number") or "").strip()
-    nickname = (card.get("nickname") or "").strip()
-    # 우선순위: org + last4 가 가장 안정적
+    org = (org or "").strip()
+    number = (number or "").strip()
+    name = (name or "").strip()
+    nickname = (nickname or "").strip()
     last4 = ""
     if number:
         digits = re.sub(r'\D', '', number)
@@ -67,30 +67,65 @@ def _build_card_key(t: Dict[str, Any]) -> Optional[str]:
     if label and last4:
         return f"{label} ({last4})"
     return label or last4
+
+
+def _meta_from_fields(
+    org: Optional[str], number: Optional[str],
+    name: Optional[str], nickname: Optional[str],
+) -> Dict[str, Optional[str]]:
+    """카드 표시용 메타(issuer=발급사, last4=뒷4자리). 키가 id로 바뀌어 키 파싱 대신 사용."""
+    org = (org or "").strip()
+    last4 = None
+    if number:
+        d = re.sub(r'\D', '', str(number))
+        last4 = d[-4:] if len(d) >= 4 else None
+    return {"issuer": org or None, "last4": last4}
+
+
+def _build_card_key(t: Dict[str, Any]) -> Optional[str]:
+    """
+    EXPENSE_TICKET → 카드 식별자.
+    그랜터 카드 자산 id(cardUsage.card.id)를 최우선 사용 — 뒷4자리 충돌을 원천 차단하고
+    번호 마스킹 변화에도 안정적. id가 없을 때만 legacy(org+last4) 문자열로 폴백.
+    """
+    cu = t.get("cardUsage") or {}
+    card = cu.get("card") or {}
+    cid = card.get("id")
+    if cid is not None:
+        return str(cid)
+    return _legacy_card_key_from_fields(
+        card.get("organizationName"), card.get("number"),
+        card.get("name"), card.get("nickname"),
+    )
+
+
+def _card_meta_from_ticket(t: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    card = (t.get("cardUsage") or {}).get("card") or {}
+    return _meta_from_fields(
+        card.get("organizationName"), card.get("number"),
+        card.get("name"), card.get("nickname"),
+    )
 
 
 def _build_card_key_from_asset(a: Dict[str, Any]) -> Optional[str]:
     """
-    그랜터 CARD 자산 → 거래 기반(_build_card_key)과 동일 포맷의 카드 식별자.
-    자산은 식별 필드가 최상위(name/nickname/number/organizationName)에 있음
-    (card 서브객체는 비어있음). 거래키와 dedup되도록 org+last4 우선순위를 맞춘다.
+    그랜터 CARD 자산 → 카드 식별자. 자산 id를 최우선 사용(거래 cardUsage.card.id와 동일 체계),
+    id 없으면 legacy 폴백. 거래키와 동일 id를 반환하므로 중복 없이 dedup된다.
     """
-    org = (a.get("organizationName") or "").strip()
-    number = (a.get("number") or "").strip()
-    name = (a.get("name") or "").strip()
-    nickname = (a.get("nickname") or "").strip()
-    last4 = ""
-    if number:
-        digits = re.sub(r'\D', '', number)
-        last4 = digits[-4:] if len(digits) >= 4 else ""
-    label = nickname or name or org
-    if not label and not last4:
-        return None
-    if org and last4:
-        return f"{org} ({last4})"
-    if label and last4:
-        return f"{label} ({last4})"
-    return label or last4
+    cid = a.get("id")
+    if cid is not None:
+        return str(cid)
+    return _legacy_card_key_from_fields(
+        a.get("organizationName"), a.get("number"),
+        a.get("name"), a.get("nickname"),
+    )
+
+
+def _card_meta_from_asset(a: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    return _meta_from_fields(
+        a.get("organizationName"), a.get("number"),
+        a.get("name"), a.get("nickname"),
+    )
 
 
 # 메모리 캐시 (period_key → tickets) — granter_client와 동일한 5분 TTL
@@ -201,7 +236,10 @@ async def list_cards(
             "total_amount": 0.0,
             "transaction_count": 0,
             "last_used": None,
+            "_meta": None,
         })
+        if not entry.get("_meta"):
+            entry["_meta"] = _card_meta_from_ticket(t)
         entry["total_amount"] += amt
         entry["transaction_count"] += 1
         d = t.get("transactAt") or t.get("createdAt") or ""
@@ -224,6 +262,7 @@ async def list_cards(
                     "total_amount": 0.0,
                     "transaction_count": 0,
                     "last_used": None,
+                    "_meta": _card_meta_from_asset(a),
                 })
         except Exception:
             logger.exception("활성 CARD 자산 병합 실패 — 거래 기반 목록만 반환")
@@ -249,12 +288,14 @@ async def list_cards(
     result = []
     for card_key, agg in by_card.items():
         alias = alias_map.get(card_key)
-        meta = _extract_card_meta(card_key)
+        # 표시 메타는 거래/자산에서 캐리한 값 사용 (키가 id로 바뀌어 키 파싱 불가).
+        # 배정만 되고 메타 없는 경우 alias에 저장된 issuer/last4로 폴백.
+        meta = agg.get("_meta") or {"issuer": None, "last4": None}
         result.append({
             "card_key": card_key,
             "nickname": alias.nickname if alias else None,
-            "issuer": (alias.issuer if alias else None) or meta["issuer"],
-            "last4": (alias.last4 if alias else None) or meta["last4"],
+            "issuer": (alias.issuer if alias else None) or meta.get("issuer"),
+            "last4": (alias.last4 if alias else None) or meta.get("last4"),
             "color": alias.color if alias else None,
             "memo": alias.memo if alias else None,
             "is_active": alias.is_active if alias else True,
@@ -271,6 +312,143 @@ async def list_cards(
     return result
 
 
+async def migrate_card_keys(db: AsyncSession) -> Dict[str, Any]:
+    """
+    기존 card_key(legacy 'org (last4)' 문자열) → 그랜터 카드 id 문자열로 이관. 멱등.
+
+    - 그랜터 전체 CARD 자산으로 legacy_key→id 매핑 구성(고유 매핑만 사용).
+    - 뒷4자리 충돌로 legacy_key가 2개 이상 id에 매핑되면 모호 → 건너뜀(해당 키에
+      배정/마감이 있으면 skipped_ambiguous로 보고).
+    - 이미 id 형태인 키는 already_id로 건너뜀.
+    - 대상 id에 이미 다른 alias가 있으면 unique 충돌 방지 위해 건너뜀.
+    - 부수적으로 alias.issuer 말미의 중복 '(last4)'도 정리.
+    """
+    from app.services.granter_client import get_granter_client
+    client = get_granter_client()
+    try:
+        r = await client.list_assets({"assetType": "CARD"})
+        items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
+    except Exception:
+        logger.exception("migrate_card_keys: 자산 조회 실패")
+        items = []
+
+    id_set: set = set()
+    legacy_to_ids: Dict[str, set] = {}
+    for a in items:
+        cid = a.get("id")
+        if cid is None:
+            continue
+        sid = str(cid)
+        id_set.add(sid)
+        lk = _legacy_card_key_from_fields(
+            a.get("organizationName"), a.get("number"),
+            a.get("name"), a.get("nickname"),
+        )
+        if lk:
+            legacy_to_ids.setdefault(lk, set()).add(sid)
+
+    def resolve(old_key: str) -> Optional[str]:
+        ids = legacy_to_ids.get(old_key)
+        if ids and len(ids) == 1:
+            return next(iter(ids))
+        return None
+
+    report = {
+        "assets_scanned": len(id_set),
+        "aliases": {"updated": 0, "already_id": 0, "skipped_ambiguous": 0,
+                     "skipped_unmatched": 0, "skipped_target_taken": 0, "issuer_cleaned": 0},
+        "closings": {"updated": 0, "already_id": 0, "skipped": 0},
+    }
+
+    aliases = (await db.execute(select(CardAlias))).scalars().all()
+    existing_id_keys = {a.card_key for a in aliases if a.card_key in id_set}
+    for al in aliases:
+        # issuer 중복 (last4) 정리 (키 이관과 무관하게 표시 개선)
+        if al.issuer:
+            cleaned = re.sub(r'\s*\(\d{3,4}\)\s*$', '', al.issuer).strip()
+            if cleaned != al.issuer:
+                al.issuer = cleaned or None
+                report["aliases"]["issuer_cleaned"] += 1
+        k = al.card_key or ""
+        if k in id_set:
+            report["aliases"]["already_id"] += 1
+            continue
+        nid = resolve(k)
+        if nid is None:
+            if legacy_to_ids.get(k) and len(legacy_to_ids[k]) > 1:
+                report["aliases"]["skipped_ambiguous"] += 1
+            else:
+                report["aliases"]["skipped_unmatched"] += 1
+            continue
+        if nid in existing_id_keys:
+            report["aliases"]["skipped_target_taken"] += 1
+            continue
+        al.card_key = nid
+        existing_id_keys.add(nid)
+        report["aliases"]["updated"] += 1
+
+    closings = (await db.execute(select(CardMonthlyClosing))).scalars().all()
+    for cl in closings:
+        k = cl.card_key or ""
+        if k in id_set:
+            report["closings"]["already_id"] += 1
+            continue
+        nid = resolve(k)
+        if nid is None:
+            report["closings"]["skipped"] += 1
+            continue
+        cl.card_key = nid
+        report["closings"]["updated"] += 1
+
+    # 구매요청 결제완료 카드(card_key) — 대사 매칭이 id 기준으로 유지되도록 함께 이관
+    from app.models.purchase import PurchaseRequest
+    report["purchase_requests"] = {"updated": 0, "already_id": 0, "skipped": 0, "empty": 0}
+    reqs = (await db.execute(
+        select(PurchaseRequest).where(PurchaseRequest.card_key.isnot(None))
+    )).scalars().all()
+    for req in reqs:
+        k = req.card_key or ""
+        if not k:
+            report["purchase_requests"]["empty"] += 1
+            continue
+        if k in id_set:
+            report["purchase_requests"]["already_id"] += 1
+            continue
+        nid = resolve(k)
+        if nid is None:
+            report["purchase_requests"]["skipped"] += 1
+            continue
+        req.card_key = nid
+        report["purchase_requests"]["updated"] += 1
+
+    await db.commit()
+    return report
+
+
+async def _resolve_card_meta(card_key: str) -> Dict[str, Optional[str]]:
+    """
+    card_key(id 문자열 또는 legacy)에 대한 표시 메타(issuer/last4/label) 조회.
+    id 키는 그랜터 활성 CARD 자산에서 매칭해 발급사/뒷4자리/읽기 좋은 라벨을 뽑는다.
+    """
+    if card_key and card_key.isdigit():
+        try:
+            for a in await _fetch_active_card_assets():
+                if str(a.get("id")) == card_key:
+                    meta = _meta_from_fields(
+                        a.get("organizationName"), a.get("number"),
+                        a.get("name"), a.get("nickname"),
+                    )
+                    label = (a.get("nickname") or a.get("name")
+                             or a.get("organizationName") or card_key)
+                    meta["label"] = str(label).split("|")[0].strip() or card_key
+                    return meta
+        except Exception:
+            logger.exception("_resolve_card_meta 자산 조회 실패 (%s)", card_key)
+    m = _extract_card_meta(card_key)
+    m["label"] = m.get("issuer") or card_key
+    return m
+
+
 async def upsert_alias(
     db: AsyncSession,
     card_key: str,
@@ -283,11 +461,11 @@ async def upsert_alias(
     alias = (await db.execute(
         select(CardAlias).where(CardAlias.card_key == card_key)
     )).scalar_one_or_none()
-    meta = _extract_card_meta(card_key)
+    meta = await _resolve_card_meta(card_key)
     if alias is None:
         alias = CardAlias(
             card_key=card_key,
-            nickname=nickname or card_key,
+            nickname=nickname or meta.get("label") or card_key,
             issuer=meta["issuer"],
             last4=meta["last4"],
             color=color,
@@ -319,10 +497,10 @@ async def assign_card(
         select(CardAlias).where(CardAlias.card_key == card_key)
     )).scalar_one_or_none()
     if alias is None:
-        meta = _extract_card_meta(card_key)
+        meta = await _resolve_card_meta(card_key)
         alias = CardAlias(
             card_key=card_key,
-            nickname=card_key,
+            nickname=meta.get("label") or card_key,
             issuer=meta["issuer"],
             last4=meta["last4"],
             is_active=True,
