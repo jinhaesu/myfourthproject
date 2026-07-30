@@ -130,14 +130,14 @@ export default function MyCardsPage() {
             <CreditCardIcon className="h-5 w-5 text-blue-500" />
             내 카드 관리
           </h1>
-          <p className="text-xs text-ink-500 mt-1">
+          <p className="text-xs text-ink-500 dark:text-ink-400 mt-1">
             배정된 카드의 월 사용내역을 건별로 분류하고, 전건 분류 후 월 마감을 제출해주세요
           </p>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
           <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
           <input type="month" value={month} onChange={(e) => { setMonth(e.target.value); setEditingTicket(null) }}
-            className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none" />
+            className="bg-transparent text-xs font-medium text-ink-700 dark:text-ink-300 focus:outline-none" />
         </div>
       </div>
 
@@ -146,8 +146,8 @@ export default function MyCardsPage() {
         <div className="panel p-8 text-center text-2xs text-ink-400">불러오는 중…</div>
       ) : cards.length === 0 ? (
         <div className="panel p-10 text-center">
-          <CreditCardIcon className="h-8 w-8 text-ink-300 mx-auto mb-2" />
-          <div className="text-xs text-ink-600 font-medium">배정된 카드가 없습니다</div>
+          <CreditCardIcon className="h-8 w-8 text-ink-300 dark:text-ink-600 mx-auto mb-2" />
+          <div className="text-xs text-ink-600 dark:text-ink-400 font-medium">배정된 카드가 없습니다</div>
           <div className="text-2xs text-ink-400 mt-1">
             법인카드가 필요하면 회계 담당자에게 배정을 요청해주세요.<br />
             (관리자는 회계 관리자용 → 카드 관리에서 본인 이메일로 배정하면 여기에 표시됩니다)
@@ -164,13 +164,13 @@ export default function MyCardsPage() {
                 key={card.card_key}
                 onClick={() => { setSelectedCard(card.card_key); setEditingTicket(null) }}
                 className={`panel p-3 text-left transition ${
-                  isSelected ? 'ring-2 ring-blue-400' : 'hover:bg-canvas-50'
+                  isSelected ? 'ring-2 ring-blue-400' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
                 }`}
               >
                 <div className="flex items-center gap-2">
                   <div className="w-1 self-stretch rounded-full" style={{ background: accent }} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-ink-900 truncate flex items-center gap-1">
+                    <div className="text-sm font-semibold text-ink-900 dark:text-ink-50 truncate flex items-center gap-1">
                       {card.nickname || card.issuer || card.card_key}
                       {cardClosing && (
                         <span className="inline-flex items-center gap-0.5 text-2xs px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
@@ -183,8 +183,8 @@ export default function MyCardsPage() {
                         </span>
                       )}
                     </div>
-                    <div className="text-2xs text-ink-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-canvas-100 text-ink-700 font-medium">
+                    <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-canvas-100 dark:bg-ink-900 text-ink-700 dark:text-ink-300 font-medium">
                         {card.issuer || '카드사 미상'}{card.last4 ? ` ····${card.last4}` : ''}
                       </span>
                       <span>{month} 사용 {formatCurrency(card.total_amount, false)} · {card.transaction_count.toLocaleString()}건</span>
@@ -201,15 +201,15 @@ export default function MyCardsPage() {
       {/* 사용 내역 + 분류 + 마감 */}
       {selectedCard && (
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between flex-wrap gap-2">
-            <span className="text-2xs font-semibold text-ink-500 uppercase">
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between flex-wrap gap-2">
+            <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">
               {month} 사용 내역 · {cards.find((c) => c.card_key === selectedCard)?.nickname || selectedCard}
             </span>
             <div className="flex items-center gap-2">
               {classifiable.length > 0 && !isClosed && (
                 <>
                   <div className="flex items-center gap-1.5">
-                    <div className="w-24 h-1.5 bg-ink-100 rounded-full overflow-hidden">
+                    <div className="w-24 h-1.5 bg-ink-100 dark:bg-ink-800 rounded-full overflow-hidden">
                       <div className={`h-full ${progress === 100 ? 'bg-emerald-500' : 'bg-amber-400'}`} style={{ width: `${progress}%` }} />
                     </div>
                     <span className={`text-2xs font-medium ${unclassified > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
@@ -240,14 +240,14 @@ export default function MyCardsPage() {
           ) : txQuery.isError ? (
             <div className="p-8 text-center text-2xs text-red-500">
               사용 내역을 불러오지 못했습니다: {(txQuery.error as any)?.response?.data?.detail || '네트워크 오류'}
-              <button onClick={() => txQuery.refetch()} className="block mx-auto mt-2 px-2 py-1 rounded border border-ink-200 text-ink-600">
+              <button onClick={() => txQuery.refetch()} className="block mx-auto mt-2 px-2 py-1 rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400">
                 다시 시도
               </button>
             </div>
           ) : txs.length === 0 ? (
             <div className="p-8 text-center text-2xs text-ink-400">{month} 사용 내역 없음</div>
           ) : (
-            <div className="divide-y divide-ink-100">
+            <div className="divide-y divide-ink-100 dark:divide-ink-800">
               {txs.map((tx) => {
                 const isEditing = editingTicket === tx.ticket_id
                 return (
@@ -260,14 +260,14 @@ export default function MyCardsPage() {
                           ) : (
                             <ExclamationCircleIcon className="h-3.5 w-3.5 text-amber-500 flex-shrink-0" />
                           )}
-                          <span className="text-xs font-medium text-ink-900 truncate">
+                          <span className="text-xs font-medium text-ink-900 dark:text-ink-50 truncate">
                             {tx.store_name || '(가맹점 미확인)'}
                           </span>
                           {tx.granter_category && (
                             <span className="text-2xs text-ink-400">· {tx.granter_category}</span>
                           )}
                         </div>
-                        <div className="text-2xs text-ink-500 mt-0.5">
+                        <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
                           {tx.transact_at?.replace('T', ' ')}
                           {tx.classification && (
                             <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
@@ -278,13 +278,13 @@ export default function MyCardsPage() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2 flex-shrink-0">
-                        <span className="text-sm font-bold font-mono text-ink-900">
+                        <span className="text-sm font-bold font-mono text-ink-900 dark:text-ink-50">
                           {formatCurrency(tx.amount, false)}
                         </span>
                         {tx.ticket_id && !isEditing && !isClosed && (
                           <button
                             onClick={() => startClassify(tx)}
-                            className="px-2 py-1 text-2xs rounded border border-ink-200 text-ink-600 hover:bg-ink-50 flex items-center gap-0.5"
+                            className="px-2 py-1 text-2xs rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800 flex items-center gap-0.5"
                           >
                             <PencilSquareIcon className="h-3 w-3" />
                             {tx.classification ? '수정' : '분류'}
@@ -294,9 +294,9 @@ export default function MyCardsPage() {
                     </div>
 
                     {isEditing && (
-                      <div className="mt-2 p-2 rounded-md bg-canvas-50 border border-ink-200 space-y-1.5">
+                      <div className="mt-2 p-2 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800 space-y-1.5">
                         <div>
-                          <div className="text-2xs text-ink-500 mb-0.5">계정과목 (원장) — 검색해서 선택</div>
+                          <div className="text-2xs text-ink-500 dark:text-ink-400 mb-0.5">계정과목 (원장) — 검색해서 선택</div>
                           {clsForm.account_code && !acctSearch && (
                             <div className="flex items-center gap-1.5 mb-1">
                               <span className="text-xs font-medium px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
@@ -314,10 +314,10 @@ export default function MyCardsPage() {
                                 onChange={(e) => setAcctSearch(e.target.value)}
                                 placeholder="계정 코드/명 검색 (예: 소모품, 여비, 830)"
                                 autoFocus
-                                className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                                className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                               />
                               {acctSearch.trim() && (
-                                <div className="absolute z-20 mt-0.5 w-full max-h-48 overflow-y-auto bg-white border border-ink-200 rounded-md shadow-lg divide-y divide-ink-50">
+                                <div className="absolute z-20 mt-0.5 w-full max-h-48 overflow-y-auto bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 rounded-md shadow-lg divide-y divide-ink-50 dark:divide-ink-800">
                                   {accounts
                                     .filter((a) => a.code.includes(acctSearch.trim()) || a.name.includes(acctSearch.trim()))
                                     .slice(0, 40)
@@ -325,8 +325,8 @@ export default function MyCardsPage() {
                                       <button key={a.code}
                                         onClick={() => { setClsForm({ ...clsForm, account_code: a.code, account_name: a.name }); setAcctSearch('') }}
                                         className="w-full text-left px-2 py-1 text-xs hover:bg-blue-50 flex items-center gap-1.5">
-                                        <span className="font-mono text-ink-500 w-10 flex-shrink-0">{a.code}</span>
-                                        <span className="text-ink-800">{a.name}</span>
+                                        <span className="font-mono text-ink-500 dark:text-ink-400 w-10 flex-shrink-0">{a.code}</span>
+                                        <span className="text-ink-800 dark:text-ink-100">{a.name}</span>
                                       </button>
                                     ))}
                                   {accounts.filter((a) => a.code.includes(acctSearch.trim()) || a.name.includes(acctSearch.trim())).length === 0 && (
@@ -342,7 +342,7 @@ export default function MyCardsPage() {
                           value={clsForm.memo}
                           onChange={(e) => setClsForm({ ...clsForm, memo: e.target.value })}
                           placeholder="메모 (예: 팀 점심, 프린터 토너 구매)"
-                          className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                          className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                         />
                         <div className="flex items-center gap-1">
                           <button
@@ -354,7 +354,7 @@ export default function MyCardsPage() {
                           </button>
                           <button
                             onClick={() => setEditingTicket(null)}
-                            className="px-2.5 py-1 text-2xs rounded border border-ink-200 text-ink-600"
+                            className="px-2.5 py-1 text-2xs rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400"
                           >
                             취소
                           </button>

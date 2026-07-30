@@ -19,6 +19,14 @@ function daysAgoISO(n: number) {
   const d = new Date(); d.setDate(d.getDate() - n); return isoLocal(d)
 }
 
+// 카드 표시 라벨 — 별칭 > 카드사+뒷4자리 > 키. card_key가 이제 그랜터 id라 그대로 노출 금지.
+function cardLabel(c?: CardInfo | null, fallback = ''): string {
+  if (!c) return fallback
+  if (c.nickname) return c.nickname
+  const base = `${c.issuer || ''}${c.last4 ? ` ····${c.last4}` : ''}`.trim()
+  return base || c.card_key || fallback
+}
+
 export default function CardManagementPage() {
   const qc = useQueryClient()
   const [from, setFrom] = useState(daysAgoISO(30))
@@ -90,17 +98,17 @@ export default function CardManagementPage() {
             <CreditCardIcon className="h-5 w-5 text-blue-500" />
             카드 관리
           </h1>
-          <p className="text-xs text-ink-500 mt-1">
+          <p className="text-xs text-ink-500 dark:text-ink-400 mt-1">
             카드별 별명 지정, 사용 가맹점/카테고리 분석, 일별·월별 추이
           </p>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
           <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-            className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
-          <span className="text-ink-300">→</span>
+            className="bg-transparent text-xs font-medium text-ink-700 dark:text-ink-300 focus:outline-none w-28" />
+          <span className="text-ink-300 dark:text-ink-600">→</span>
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-            className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28" />
+            className="bg-transparent text-xs font-medium text-ink-700 dark:text-ink-300 focus:outline-none w-28" />
         </div>
       </div>
 
@@ -109,16 +117,16 @@ export default function CardManagementPage() {
       {/* KPI */}
       <div className="grid grid-cols-3 gap-2">
         <div className="panel p-3">
-          <div className="text-2xs text-ink-500">카드 수</div>
-          <div className="text-lg font-bold text-ink-900">{cards.length}장</div>
+          <div className="text-2xs text-ink-500 dark:text-ink-400">카드 수</div>
+          <div className="text-lg font-bold text-ink-900 dark:text-ink-50">{cards.length}장</div>
         </div>
         <div className="panel p-3">
-          <div className="text-2xs text-ink-500">기간 총 사용액</div>
-          <div className="text-lg font-bold text-ink-900">{formatCurrency(totalAll, false)}</div>
+          <div className="text-2xs text-ink-500 dark:text-ink-400">기간 총 사용액</div>
+          <div className="text-lg font-bold text-ink-900 dark:text-ink-50">{formatCurrency(totalAll, false)}</div>
         </div>
         <div className="panel p-3">
-          <div className="text-2xs text-ink-500">총 거래 건수</div>
-          <div className="text-lg font-bold text-ink-900">
+          <div className="text-2xs text-ink-500 dark:text-ink-400">총 거래 건수</div>
+          <div className="text-lg font-bold text-ink-900 dark:text-ink-50">
             {cards.reduce((s, c) => s + (c.transaction_count || 0), 0).toLocaleString()}건
           </div>
         </div>
@@ -127,7 +135,7 @@ export default function CardManagementPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-3">
         {/* 카드 목록 */}
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 text-2xs font-semibold text-ink-500 uppercase">
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">
             카드 목록 · 총 사용액 큰 순
           </div>
           {listQuery.isLoading ? (
@@ -135,14 +143,14 @@ export default function CardManagementPage() {
           ) : cards.length === 0 ? (
             <div className="p-8 text-center text-2xs text-ink-400">기간 내 카드 사용 내역 없음</div>
           ) : (
-            <div className="divide-y divide-ink-100">
+            <div className="divide-y divide-ink-100 dark:divide-ink-800">
               {cards.map((card) => {
                 const isEditing = editingKey === card.card_key
                 const isSelected = selectedCard === card.card_key
                 const accent = card.color || '#94A3B8'
                 return (
                   <div key={card.card_key}
-                    className={`p-3 hover:bg-canvas-50 cursor-pointer ${isSelected ? 'bg-blue-50/40' : ''}`}
+                    className={`p-3 hover:bg-canvas-50 dark:hover:bg-ink-800 cursor-pointer ${isSelected ? 'bg-blue-50/40' : ''}`}
                     onClick={() => !isEditing && setSelectedCard(card.card_key)}
                   >
                     <div className="flex items-start gap-2">
@@ -150,15 +158,15 @@ export default function CardManagementPage() {
                       <div className="flex-1 min-w-0">
                         {isEditing ? (
                           <div className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
-                            <div className="text-2xs text-ink-500 mb-0.5">
-                              {card.card_key} <span className="text-ink-400">에 별명 지정</span>
+                            <div className="text-2xs text-ink-500 dark:text-ink-400 mb-0.5">
+                              {card.issuer || '카드'}{card.last4 ? ` ····${card.last4}` : ''} <span className="text-ink-400">에 별명 지정</span>
                             </div>
                             <input
                               type="text"
                               value={editForm.nickname}
                               onChange={(e) => setEditForm({ ...editForm, nickname: e.target.value })}
                               placeholder="별명 (예: 마케팅 법인카드, 대표이사 개인카드)"
-                              className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                              className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                               autoFocus
                             />
                             <input
@@ -166,21 +174,21 @@ export default function CardManagementPage() {
                               value={editForm.memo}
                               onChange={(e) => setEditForm({ ...editForm, memo: e.target.value })}
                               placeholder="메모 (예: 직원 식대용)"
-                              className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                              className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                             />
                             <input
                               type="email"
                               value={editForm.assignedEmail}
                               onChange={(e) => setEditForm({ ...editForm, assignedEmail: e.target.value })}
                               placeholder="배정 이메일 (예: hong@joinandjoin.com) — 비우면 배정 해제"
-                              className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                              className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                             />
                             <div className="flex items-center gap-1">
-                              <span className="text-2xs text-ink-500 mr-1">색상</span>
+                              <span className="text-2xs text-ink-500 dark:text-ink-400 mr-1">색상</span>
                               {COLOR_PRESETS.map((c) => (
                                 <button key={c}
                                   onClick={() => setEditForm({ ...editForm, color: c })}
-                                  className={`w-4 h-4 rounded-full ${editForm.color === c ? 'ring-2 ring-offset-1 ring-ink-700' : ''}`}
+                                  className={`w-4 h-4 rounded-full ${editForm.color === c ? 'ring-2 ring-offset-1 ring-ink-700 dark:ring-ink-100' : ''}`}
                                   style={{ background: c }}
                                 />
                               ))}
@@ -192,7 +200,7 @@ export default function CardManagementPage() {
                                 저장
                               </button>
                               <button onClick={() => setEditingKey(null)}
-                                className="px-2 py-1 text-2xs rounded border border-ink-200 text-ink-600">
+                                className="px-2 py-1 text-2xs rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400">
                                 <XMarkIcon className="h-3 w-3 inline mr-0.5" />
                                 취소
                               </button>
@@ -202,23 +210,22 @@ export default function CardManagementPage() {
                           <>
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5 min-w-0">
-                                <span className="text-sm font-semibold text-ink-900 truncate">
+                                <span className="text-sm font-semibold text-ink-900 dark:text-ink-50 truncate">
                                   {card.nickname || card.issuer || card.card_key}
                                 </span>
-                                {card.last4 && (
-                                  <span className="text-2xs font-mono text-ink-500">····{card.last4}</span>
-                                )}
                                 <button onClick={(e) => { e.stopPropagation(); startEdit(card) }}
-                                  className="text-ink-400 hover:text-ink-700">
+                                  className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
                                   <PencilIcon className="h-3 w-3" />
                                 </button>
                               </div>
-                              <span className="text-sm font-bold text-ink-900 font-mono">
+                              <span className="text-sm font-bold text-ink-900 dark:text-ink-50 font-mono">
                                 {formatCurrency(card.total_amount, false)}
                               </span>
                             </div>
-                            <div className="text-2xs text-ink-500 flex items-center gap-2 flex-wrap mt-0.5">
-                              <span>{card.card_key}</span>
+                            <div className="text-2xs text-ink-500 dark:text-ink-400 flex items-center gap-2 flex-wrap mt-0.5">
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-canvas-100 dark:bg-ink-800 text-ink-700 dark:text-ink-200 font-medium">
+                                {card.issuer || '카드사 미상'}{card.last4 ? ` ····${card.last4}` : ''}
+                              </span>
                               <span>· {card.transaction_count.toLocaleString()}건</span>
                               {card.last_used && <span>· 최근 {card.last_used}</span>}
                               {card.memo && <span className="text-blue-700">· {card.memo}</span>}
@@ -228,7 +235,7 @@ export default function CardManagementPage() {
                                   {card.assigned_email}
                                 </span>
                               ) : (
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-ink-50 text-ink-400 border border-ink-200">
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-ink-50 dark:bg-ink-900 text-ink-400 border border-ink-200 dark:border-ink-800">
                                   미배정
                                 </span>
                               )}
@@ -248,7 +255,7 @@ export default function CardManagementPage() {
         <div className="panel p-3 self-start sticky top-3 space-y-3">
           {!selectedCard ? (
             <div className="text-center text-2xs text-ink-400 py-12">
-              <CreditCardIcon className="h-8 w-8 text-ink-300 mx-auto mb-2" />
+              <CreditCardIcon className="h-8 w-8 text-ink-300 dark:text-ink-600 mx-auto mb-2" />
               왼쪽에서 카드를 선택하면<br />상세 분석이 보입니다
             </div>
           ) : !analysisQuery.data ? (
@@ -256,24 +263,24 @@ export default function CardManagementPage() {
           ) : (
             <>
               <div>
-                <h3 className="text-sm font-bold text-ink-900">
-                  {cards.find((c) => c.card_key === selectedCard)?.nickname || selectedCard}
+                <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">
+                  {cardLabel(cards.find((c) => c.card_key === selectedCard), selectedCard || '')}
                 </h3>
-                <div className="text-2xs text-ink-500">{selectedCard}</div>
+                <div className="text-2xs text-ink-500 dark:text-ink-400">{selectedCard}</div>
               </div>
 
               <div className="grid grid-cols-3 gap-2 text-center">
-                <div className="bg-canvas-50 rounded p-2">
-                  <div className="text-2xs text-ink-500">총 사용</div>
-                  <div className="text-xs font-bold text-ink-900">{formatCurrency(analysisQuery.data.total_amount, false)}</div>
+                <div className="bg-canvas-50 dark:bg-ink-950 rounded p-2">
+                  <div className="text-2xs text-ink-500 dark:text-ink-400">총 사용</div>
+                  <div className="text-xs font-bold text-ink-900 dark:text-ink-50">{formatCurrency(analysisQuery.data.total_amount, false)}</div>
                 </div>
-                <div className="bg-canvas-50 rounded p-2">
-                  <div className="text-2xs text-ink-500">건수</div>
-                  <div className="text-xs font-bold text-ink-900">{analysisQuery.data.transaction_count.toLocaleString()}</div>
+                <div className="bg-canvas-50 dark:bg-ink-950 rounded p-2">
+                  <div className="text-2xs text-ink-500 dark:text-ink-400">건수</div>
+                  <div className="text-xs font-bold text-ink-900 dark:text-ink-50">{analysisQuery.data.transaction_count.toLocaleString()}</div>
                 </div>
-                <div className="bg-canvas-50 rounded p-2">
-                  <div className="text-2xs text-ink-500">평균</div>
-                  <div className="text-xs font-bold text-ink-900">{formatCurrency(analysisQuery.data.avg_per_transaction, false)}</div>
+                <div className="bg-canvas-50 dark:bg-ink-950 rounded p-2">
+                  <div className="text-2xs text-ink-500 dark:text-ink-400">평균</div>
+                  <div className="text-xs font-bold text-ink-900 dark:text-ink-50">{formatCurrency(analysisQuery.data.avg_per_transaction, false)}</div>
                 </div>
               </div>
 
@@ -283,7 +290,7 @@ export default function CardManagementPage() {
               {/* 카테고리 */}
               {(analysisQuery.data.top_categories || []).length > 0 && (
                 <div>
-                  <div className="text-2xs font-semibold text-ink-600 mb-1.5 flex items-center gap-1">
+                  <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1.5 flex items-center gap-1">
                     <ChartBarIcon className="h-3 w-3" />카테고리별
                   </div>
                   <CategoryBars categories={analysisQuery.data.top_categories} total={analysisQuery.data.total_amount} />
@@ -293,17 +300,17 @@ export default function CardManagementPage() {
               {/* 가맹점 top */}
               {(analysisQuery.data.top_stores || []).length > 0 && (
                 <div>
-                  <div className="text-2xs font-semibold text-ink-600 mb-1.5 flex items-center gap-1">
+                  <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1.5 flex items-center gap-1">
                     <MapPinIcon className="h-3 w-3" />주요 가맹점 (Top 10)
                   </div>
                   <div className="space-y-0.5 text-2xs max-h-60 overflow-y-auto">
                     {(analysisQuery.data.top_stores || []).slice(0, 10).map((s: any, i: number) => (
-                      <div key={i} className="flex items-center justify-between px-2 py-1 hover:bg-ink-50 rounded">
+                      <div key={i} className="flex items-center justify-between px-2 py-1 hover:bg-ink-50 dark:hover:bg-ink-800 rounded">
                         <div className="flex-1 min-w-0">
-                          <div className="text-ink-800 truncate">{s.store}</div>
-                          <div className="text-2xs text-ink-500">{s.category} · {s.count}건</div>
+                          <div className="text-ink-800 dark:text-ink-100 truncate">{s.store}</div>
+                          <div className="text-2xs text-ink-500 dark:text-ink-400">{s.category} · {s.count}건</div>
                         </div>
-                        <span className="font-mono font-semibold text-ink-900 ml-2">
+                        <span className="font-mono font-semibold text-ink-900 dark:text-ink-50 ml-2">
                           {formatCurrency(s.total, false)}
                         </span>
                       </div>
@@ -321,9 +328,9 @@ export default function CardManagementPage() {
 
       {/* 월별 추이 */}
       <div className="panel p-3">
-        <div className="text-2xs font-semibold text-ink-600 mb-2 flex items-center gap-1">
+        <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-2 flex items-center gap-1">
           <ChartBarIcon className="h-3 w-3" />
-          월별 사용액 추이 {selectedCard ? `(${cards.find((c) => c.card_key === selectedCard)?.nickname || selectedCard})` : '(전체 카드)'}
+          월별 사용액 추이 {selectedCard ? `(${cardLabel(cards.find((c) => c.card_key === selectedCard), selectedCard)})` : '(전체 카드)'}
         </div>
         {monthlyQuery.isLoading ? (
           <div className="text-2xs text-ink-400 py-4 text-center">불러오는 중…</div>
@@ -368,21 +375,18 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
   })
 
   const closings: CardClosing[] = closingsQuery.data || []
-  const cardName = (key: string) => {
-    const c = cards.find((x) => x.card_key === key)
-    return c?.nickname || key
-  }
+  const cardName = (key: string) => cardLabel(cards.find((x) => x.card_key === key), key)
   const cardAssignee = (key: string) => cards.find((x) => x.card_key === key)?.assigned_email
 
   return (
     <div className="panel overflow-hidden">
-      <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
-        <span className="text-2xs font-semibold text-ink-500 uppercase flex items-center gap-1">
+      <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
+        <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase flex items-center gap-1">
           <LockClosedIcon className="h-3 w-3" />
           월별 분류 마감 현황 (직원 제출분)
         </span>
         <input type="month" value={month} onChange={(e) => { setMonth(e.target.value); setExpandedId(null) }}
-          className="px-2 py-0.5 text-2xs rounded border border-ink-200 focus:border-blue-400 focus:outline-none" />
+          className="px-2 py-0.5 text-2xs rounded border border-ink-200 dark:border-ink-800 focus:border-blue-400 focus:outline-none" />
       </div>
       {closingsQuery.isLoading ? (
         <div className="p-6 text-center text-2xs text-ink-400">불러오는 중…</div>
@@ -391,19 +395,19 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
           {month} 마감 제출된 카드가 없습니다 — 직원이 내 카드 관리에서 전건 분류 후 마감을 제출하면 여기 표시됩니다
         </div>
       ) : (
-        <div className="divide-y divide-ink-100">
+        <div className="divide-y divide-ink-100 dark:divide-ink-800">
           {closings.map((c) => {
             const isExpanded = expandedId === c.id
             return (
               <div key={c.id}>
                 <button
                   onClick={() => setExpandedId(isExpanded ? null : c.id)}
-                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-canvas-50"
+                  className="w-full px-3 py-2 flex items-center gap-2 text-left hover:bg-canvas-50 dark:hover:bg-ink-800"
                 >
                   {isExpanded ? <ChevronDownIcon className="h-3 w-3 text-ink-400" /> : <ChevronRightIcon className="h-3 w-3 text-ink-400" />}
                   <div className="flex-1 min-w-0">
-                    <span className="text-xs font-semibold text-ink-900">{cardName(c.card_key)}</span>
-                    <span className="text-2xs text-ink-500 ml-2">
+                    <span className="text-xs font-semibold text-ink-900 dark:text-ink-50">{cardName(c.card_key)}</span>
+                    <span className="text-2xs text-ink-500 dark:text-ink-400 ml-2">
                       {cardAssignee(c.card_key) || c.closed_by} · {c.transaction_count}건 ·
                       마감 {c.closed_at?.slice(0, 10)} ({c.closed_by.split('@')[0]})
                     </span>
@@ -415,16 +419,16 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                       </span>
                     ))}
                   </div>
-                  <span className="text-sm font-bold font-mono text-ink-900 flex-shrink-0">
+                  <span className="text-sm font-bold font-mono text-ink-900 dark:text-ink-50 flex-shrink-0">
                     {formatCurrency(c.total_amount, false)}
                   </span>
                 </button>
                 {isExpanded && (
-                  <div className="px-3 pb-3 bg-canvas-50/50 border-t border-ink-100">
+                  <div className="px-3 pb-3 bg-canvas-50/50 dark:bg-ink-950/50 border-t border-ink-100 dark:border-ink-800">
                     <div className="flex items-center justify-between py-2">
                       <div className="flex items-center gap-1 flex-wrap">
                         {Object.entries(c.category_summary || {}).map(([cat, amt]) => (
-                          <span key={cat} className="text-2xs px-1.5 py-0.5 rounded-full bg-white text-ink-700 border border-ink-200">
+                          <span key={cat} className="text-2xs px-1.5 py-0.5 rounded-full bg-white dark:bg-ink-900 text-ink-700 dark:text-ink-300 border border-ink-200 dark:border-ink-800">
                             {cat}: <b className="font-mono">{formatCurrency(amt, false)}</b>
                           </span>
                         ))}
@@ -443,15 +447,15 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                     ) : (
                       <div className="max-h-72 overflow-y-auto space-y-0.5">
                         {(detailQuery.data?.transactions || []).map((t: any) => (
-                          <div key={t.ticket_id || t.transact_at} className="flex items-center gap-2 text-2xs bg-white rounded px-2 py-1">
-                            <span className="text-ink-500 w-24 flex-shrink-0">{t.transact_at?.slice(5, 16).replace('T', ' ')}</span>
-                            <span className="flex-1 text-ink-800 truncate">{t.store_name || '(가맹점 미확인)'}</span>
+                          <div key={t.ticket_id || t.transact_at} className="flex items-center gap-2 text-2xs bg-white dark:bg-ink-900 rounded px-2 py-1">
+                            <span className="text-ink-500 dark:text-ink-400 w-24 flex-shrink-0">{t.transact_at?.slice(5, 16).replace('T', ' ')}</span>
+                            <span className="flex-1 text-ink-800 dark:text-ink-100 truncate">{t.store_name || '(가맹점 미확인)'}</span>
                             {t.classification && (
                               <span className="px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 flex-shrink-0">
                                 {t.classification.category}{t.classification.memo ? ` · ${t.classification.memo}` : ''}
                               </span>
                             )}
-                            <span className="font-mono font-semibold text-ink-900 w-24 text-right flex-shrink-0">
+                            <span className="font-mono font-semibold text-ink-900 dark:text-ink-50 w-24 text-right flex-shrink-0">
                               {formatCurrency(t.amount, false)}
                             </span>
                           </div>
@@ -483,7 +487,7 @@ function DailyChart({ timeline }: { timeline: { date: string; amount: number }[]
   const ticks = [max, max * 0.75, max * 0.5, max * 0.25, 0]
   return (
     <div>
-      <div className="text-2xs font-semibold text-ink-600 mb-1.5 flex items-center gap-1">
+      <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1.5 flex items-center gap-1">
         <CalendarDaysIcon className="h-3 w-3" />일별 사용액
       </div>
       <div className="flex gap-1">
@@ -497,7 +501,7 @@ function DailyChart({ timeline }: { timeline: { date: string; amount: number }[]
         <div className="flex-1 relative h-28">
           {/* 가로 grid line */}
           {ticks.map((_, i) => (
-            <div key={i} className="absolute left-0 right-0 border-t border-ink-100"
+            <div key={i} className="absolute left-0 right-0 border-t border-ink-100 dark:border-ink-800"
               style={{ top: `${(i / (ticks.length - 1)) * 100}%` }} />
           ))}
           <div className="absolute inset-0 flex items-end gap-0.5 p-0.5">
@@ -533,10 +537,10 @@ function CategoryBars({ categories, total }: { categories: { category: string; t
         return (
           <div key={i} className="text-2xs">
             <div className="flex items-center justify-between">
-              <span className="text-ink-700">{c.category}</span>
-              <span className="font-mono text-ink-600">{formatCurrency(c.total, false)} ({pct.toFixed(0)}%)</span>
+              <span className="text-ink-700 dark:text-ink-300">{c.category}</span>
+              <span className="font-mono text-ink-600 dark:text-ink-400">{formatCurrency(c.total, false)} ({pct.toFixed(0)}%)</span>
             </div>
-            <div className="h-1.5 bg-ink-100 rounded-full overflow-hidden">
+            <div className="h-1.5 bg-ink-100 dark:bg-ink-800 rounded-full overflow-hidden">
               <div className="h-full bg-blue-500" style={{ width: `${pct}%` }} />
             </div>
           </div>
@@ -562,7 +566,7 @@ function MonthlyChart({ months }: { months: { month: string; total: number; coun
         {/* 차트 */}
         <div className="flex-1 relative h-40">
           {ticks.map((_, i) => (
-            <div key={i} className="absolute left-0 right-0 border-t border-ink-100"
+            <div key={i} className="absolute left-0 right-0 border-t border-ink-100 dark:border-ink-800"
               style={{ top: `${(i / (ticks.length - 1)) * 100}%` }} />
           ))}
           <div className="absolute inset-0 flex items-end gap-3 p-1">
@@ -571,7 +575,7 @@ function MonthlyChart({ months }: { months: { month: string; total: number; coun
               return (
                 <div key={m.month} className="flex-1 h-full flex flex-col items-center justify-end group relative">
                   {m.total > 0 && (
-                    <span className="text-2xs font-mono text-ink-700 opacity-0 group-hover:opacity-100 absolute -top-4 whitespace-nowrap z-10">
+                    <span className="text-2xs font-mono text-ink-700 dark:text-ink-300 opacity-0 group-hover:opacity-100 absolute -top-4 whitespace-nowrap z-10">
                       {formatCurrency(m.total, false)}
                     </span>
                   )}
@@ -586,8 +590,8 @@ function MonthlyChart({ months }: { months: { month: string; total: number; coun
       <div className="flex items-end gap-3 mt-2 pl-12">
         {months.map((m) => (
           <div key={m.month} className="flex-1 text-center text-2xs">
-            <div className="font-semibold text-ink-700">{m.month}</div>
-            <div className="font-mono text-ink-900">{formatShortWon(m.total)}원</div>
+            <div className="font-semibold text-ink-700 dark:text-ink-300">{m.month}</div>
+            <div className="font-mono text-ink-900 dark:text-ink-50">{formatShortWon(m.total)}원</div>
             <div className="text-ink-400">{m.count.toLocaleString()}건</div>
           </div>
         ))}
