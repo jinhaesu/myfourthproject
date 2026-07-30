@@ -523,7 +523,7 @@ function CreateBudgetModal({
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="label">계정별 예산 배정</label>
-              <button type="button" onClick={addLine} className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 font-medium">
+              <button type="button" onClick={addLine} className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 font-medium">
                 + 계정 추가
               </button>
             </div>

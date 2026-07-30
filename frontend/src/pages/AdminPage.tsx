@@ -278,8 +278,8 @@ export default function AdminPage() {
                         onClick={() => handleToggleActive(user)}
                         className={`px-3 py-1.5 rounded-lg text-sm font-medium ${
                           user.is_active
-                            ? 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 hover:bg-red-200'
-                            : 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200'
+                            ? 'bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-800'
+                            : 'bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-800'
                         }`}
                       >
                         {user.is_active ? '비활성화' : '활성화'}

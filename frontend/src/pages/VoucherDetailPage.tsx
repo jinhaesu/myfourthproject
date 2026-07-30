@@ -748,7 +748,7 @@ function ConfirmWithAccountSelect({
       {voucher.ai_confidence_score && (
         <button
           onClick={() => setShowAccountSelect(true)}
-          className="w-full text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800"
+          className="w-full text-sm text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300"
         >
           AI 분류 수정 후 확정
         </button>
