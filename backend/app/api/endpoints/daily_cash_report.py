@@ -157,6 +157,30 @@ async def preview_report(
     cfg = await get_or_create_config(db, user_id)
     content = await generate_report_content(db, user_id, target, cfg)
     content["from_snapshot"] = False
+
+    # 새로 생성한 경우 오늘 스냅샷을 덮어써 최신 로직이 이후 조회/대시보드에도 반영되게 함.
+    # (로직 수정 후 이미 생성된 스냅샷이 오래된 값을 계속 보여주던 문제 방지. sent_at은 보존.)
+    try:
+        existing = (await db.execute(
+            select(DailyCashReportSnapshot).where(
+                DailyCashReportSnapshot.user_id == user_id,
+                DailyCashReportSnapshot.report_date == date.today(),
+            )
+        )).scalar_one_or_none()
+        serialized = json.dumps(content, default=str, ensure_ascii=False)
+        if existing:
+            existing.content = serialized
+        else:
+            db.add(DailyCashReportSnapshot(
+                user_id=user_id,
+                report_date=date.today(),
+                content=serialized,
+            ))
+        await db.commit()
+    except Exception:
+        logger.exception("preview 스냅샷 갱신 실패 (무시)")
+        await db.rollback()
+
     return content
 
 
