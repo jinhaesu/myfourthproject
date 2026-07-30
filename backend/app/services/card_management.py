@@ -312,17 +312,22 @@ async def list_cards(
     return result
 
 
-async def migrate_card_keys(db: AsyncSession) -> Dict[str, Any]:
+async def migrate_card_keys(
+    db: AsyncSession,
+    manual_map: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """
     기존 card_key(legacy 'org (last4)' 문자열) → 그랜터 카드 id 문자열로 이관. 멱등.
 
     - 그랜터 전체 CARD 자산으로 legacy_key→id 매핑 구성(고유 매핑만 사용).
     - 뒷4자리 충돌로 legacy_key가 2개 이상 id에 매핑되면 모호 → 건너뜀(해당 키에
       배정/마감이 있으면 skipped_ambiguous로 보고).
+    - manual_map {legacy_key: id}가 주어지면 해당 키는 그 id로 강제 이관(모호 해소용).
     - 이미 id 형태인 키는 already_id로 건너뜀.
     - 대상 id에 이미 다른 alias가 있으면 unique 충돌 방지 위해 건너뜀.
     - 부수적으로 alias.issuer 말미의 중복 '(last4)'도 정리.
     """
+    manual = {k: str(v) for k, v in (manual_map or {}).items()}
     from app.services.granter_client import get_granter_client
     client = get_granter_client()
     try:
@@ -348,6 +353,9 @@ async def migrate_card_keys(db: AsyncSession) -> Dict[str, Any]:
             legacy_to_ids.setdefault(lk, set()).add(sid)
 
     def resolve(old_key: str) -> Optional[str]:
+        forced = manual.get(old_key)
+        if forced and forced in id_set:
+            return forced
         ids = legacy_to_ids.get(old_key)
         if ids and len(ids) == 1:
             return next(iter(ids))

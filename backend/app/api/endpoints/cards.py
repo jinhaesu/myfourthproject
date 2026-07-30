@@ -103,16 +103,19 @@ async def list_cards_api(
 
 @router.post("/admin/migrate-keys")
 async def migrate_keys_api(
+    body: dict = Body(default_factory=dict),
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
     """
     기존 card_key(legacy 'org (last4)') → 그랜터 카드 id로 일괄 이관 (관리자 전용, 멱등).
     뒷4자리 충돌 방지용 키 체계 전환 시 1회 실행. 별칭/배정/마감/구매요청 카드키 보존.
+    body.manual_map {legacy_key: id} 로 뒷4자리 충돌(모호) 건을 수동 해소 가능.
     """
     if not is_accounting_admin(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="관리자 전용")
-    report = await migrate_card_keys(db)
+    manual_map = body.get("manual_map") if isinstance(body, dict) else None
+    report = await migrate_card_keys(db, manual_map=manual_map)
     return {"ok": True, "report": report}
 
 
