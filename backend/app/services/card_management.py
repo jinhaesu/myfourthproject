@@ -38,6 +38,8 @@ def _extract_card_meta(card_key: str) -> Dict[str, Optional[str]]:
     last4 = m.group(1) if m else None
     # 첫 부분 issuer
     issuer = re.split(r'[—\-—\|]', s, 1)[0].strip()
+    # 'BC카드 (2950)' 처럼 뒤에 붙은 (last4)는 issuer에서 제거 (last4로 별도 표시됨)
+    issuer = re.sub(r'\s*\(\d{3,4}\)\s*$', '', issuer).strip()
     return {"issuer": issuer or None, "last4": last4}
 
 
