@@ -19,6 +19,7 @@ import api, { granterApi } from '@/services/api'
 import { isoLocal } from '@/utils/format'
 import PeriodPicker from '@/components/common/PeriodPicker'
 import { usePeriodStore } from '@/store/periodStore'
+import { useChartTheme } from '@/lib/chartTheme'
 
 // ---------------------------------------------------------------------------
 // 통화 메타 / 색상
@@ -155,14 +156,14 @@ function ChartTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null
   return (
     <div className="panel px-3 py-2 text-2xs shadow-pop min-w-[160px]">
-      <div className="font-semibold text-ink-700 mb-1">{label}</div>
+      <div className="font-semibold text-ink-700 dark:text-ink-300 mb-1">{label}</div>
       {payload.map((p: any) => (
         <div key={p.dataKey} className="flex items-center justify-between gap-3">
           <span style={{ color: p.color }}>
             {CURRENCY_META[p.dataKey]?.flag} {p.dataKey}
             {p.dataKey === 'JPY' ? ' (100엔)' : ''}
           </span>
-          <span className="font-mono tabular-nums text-ink-900">
+          <span className="font-mono tabular-nums text-ink-900 dark:text-ink-50">
             {typeof p.value === 'number'
               ? `${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 }).format(p.value)}원`
               : '-'}
@@ -196,10 +197,10 @@ function RateKpiCard({
     <div className="panel px-3 py-2.5" style={{ borderLeft: `3px solid ${color}` }}>
       <div className="flex items-center gap-1 mb-1">
         <span className="text-base leading-none">{meta?.flag}</span>
-        <span className="text-2xs font-semibold text-ink-700">{currency}</span>
+        <span className="text-2xs font-semibold text-ink-700 dark:text-ink-300">{currency}</span>
         <span className="text-2xs text-ink-400 ml-1">{meta?.unit}</span>
       </div>
-      <div className="font-mono tabular-nums font-bold text-sm text-ink-900">
+      <div className="font-mono tabular-nums font-bold text-sm text-ink-900 dark:text-ink-50">
         {currentRate !== undefined
           ? `${new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 2 }).format(currentRate)}원`
           : '-'}
@@ -224,6 +225,7 @@ function RateKpiCard({
 // ---------------------------------------------------------------------------
 
 export default function ExchangeRatesPage() {
+  const chartTheme = useChartTheme()
   const preset = usePeriodStore((s) => s.preset)
   const from = usePeriodStore((s) => s.from)
   const to = usePeriodStore((s) => s.to)
@@ -337,10 +339,10 @@ export default function ExchangeRatesPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <GlobeAltIcon className="h-4 w-4 text-ink-500" />
+            <GlobeAltIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             환율 흐름
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             KRW 기준 주요 통화 환율 시계열 — 출처: {dataSource}
           </p>
         </div>
@@ -403,7 +405,7 @@ export default function ExchangeRatesPage() {
 
       {/* 통화 선택 토글 */}
       <div className="panel px-3 py-2">
-        <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1.5">
+        <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-1.5">
           통화 선택
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -418,7 +420,7 @@ export default function ExchangeRatesPage() {
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-2xs font-medium transition ${
                   active
                     ? 'text-white border-transparent'
-                    : 'bg-white text-ink-500 border-ink-200 hover:border-ink-400'
+                    : 'bg-white dark:bg-ink-900 text-ink-500 dark:text-ink-400 border-ink-200 dark:border-ink-800 hover:border-ink-400 dark:hover:border-ink-500'
                 }`}
                 style={active ? { backgroundColor: color, borderColor: color } : undefined}
               >
@@ -452,7 +454,7 @@ export default function ExchangeRatesPage() {
       {/* 메인 차트 */}
       <div className="panel p-3">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-ink-800">환율 시계열 (원화 기준)</h2>
+          <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100">환율 시계열 (원화 기준)</h2>
           <span className="text-2xs text-ink-400">
             {effectiveFrom} ~ {to}
           </span>
@@ -471,16 +473,16 @@ export default function ExchangeRatesPage() {
         ) : (
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
               <XAxis
                 dataKey="label"
-                tick={{ fontSize: 9, fill: '#a1a1aa' }}
+                tick={{ fontSize: 9, fill: chartTheme.axisColor }}
                 interval={tickInterval}
                 tickLine={false}
                 axisLine={false}
               />
               <YAxis
-                tick={{ fontSize: 9, fill: '#a1a1aa' }}
+                tick={{ fontSize: 9, fill: chartTheme.axisColor }}
                 tickFormatter={(v) =>
                   new Intl.NumberFormat('ko-KR', { maximumFractionDigits: 0 }).format(v)
                 }
@@ -517,21 +519,21 @@ export default function ExchangeRatesPage() {
       {/* 시계열 데이터 테이블 */}
       {timeSeriesData.length > 0 && (
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-ink-800">날짜별 환율 상세</h2>
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100">날짜별 환율 상세</h2>
             <span className="text-2xs text-ink-400">{timeSeriesData.length}일</span>
           </div>
           <div className="overflow-x-auto max-h-72 overflow-y-auto">
             <table className="min-w-full">
-              <thead className="bg-canvas-50 sticky top-0 z-10">
+              <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10">
                 <tr>
-                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     날짜
                   </th>
                   {ALL_CURRENCIES.filter((c) => selectedCurrencies.has(c)).map((code) => (
                     <th
                       key={code}
-                      className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider whitespace-nowrap"
+                      className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider whitespace-nowrap"
                     >
                       {CURRENCY_META[code]?.flag} {code}
                       {code === 'JPY' ? ' (100엔)' : ''}
@@ -539,11 +541,11 @@ export default function ExchangeRatesPage() {
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-ink-100">
+              <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                 {[...timeSeriesData].reverse().map((point) => {
                   return (
-                    <tr key={point.date} className="hover:bg-canvas-50">
-                      <td className="px-3 py-1.5 font-mono text-2xs text-ink-600 whitespace-nowrap">
+                    <tr key={point.date} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
+                      <td className="px-3 py-1.5 font-mono text-2xs text-ink-600 dark:text-ink-400 whitespace-nowrap">
                         {point.date}
                       </td>
                       {ALL_CURRENCIES.filter((c) => selectedCurrencies.has(c)).map((code) => {
@@ -551,13 +553,13 @@ export default function ExchangeRatesPage() {
                         return (
                           <td
                             key={code}
-                            className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-800"
+                            className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-800 dark:text-ink-100"
                           >
                             {val !== undefined
                               ? new Intl.NumberFormat('ko-KR', {
                                   maximumFractionDigits: 2,
                                 }).format(val)
-                              : <span className="text-ink-200">-</span>}
+                              : <span className="text-ink-200 dark:text-ink-700">-</span>}
                           </td>
                         )
                       })}

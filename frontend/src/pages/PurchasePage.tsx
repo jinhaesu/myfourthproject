@@ -36,7 +36,7 @@ const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   REJECTED: { label: '반려', cls: 'bg-red-50 text-red-700 border-red-200' },
   PURCHASED: { label: '결제 완료 · 대사 대기', cls: 'bg-violet-50 text-violet-700 border-violet-200' },
   MATCHED: { label: '전표 대사 완료', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
-  CANCELED: { label: '취소됨', cls: 'bg-ink-50 text-ink-500 border-ink-200' },
+  CANCELED: { label: '취소됨', cls: 'bg-ink-50 dark:bg-ink-900 text-ink-500 dark:text-ink-400 border-ink-200 dark:border-ink-800' },
 }
 
 export default function PurchasePage() {
@@ -53,15 +53,15 @@ export default function PurchasePage() {
             <ShoppingBagIcon className="h-5 w-5 text-blue-500" />
             구매 요청
           </h1>
-          <p className="text-xs text-ink-500 mt-1">
+          <p className="text-xs text-ink-500 dark:text-ink-400 mt-1">
             상품 링크를 붙여넣어 카탈로그에 등록하고, 구매요청 → 승인 → 결제 후 카드전표와 자동 대사합니다
           </p>
         </div>
-        <div className="flex rounded-md border border-ink-200 bg-white p-0.5">
+        <div className="flex rounded-md border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 p-0.5">
           <button
             onClick={() => setTab('catalog')}
             className={`px-3 py-1 text-xs font-medium rounded transition ${
-              tab === 'catalog' ? 'bg-ink-900 text-white' : 'text-ink-600 hover:text-ink-900'
+              tab === 'catalog' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:text-ink-900 dark:hover:text-ink-50'
             }`}
           >
             카탈로그
@@ -69,7 +69,7 @@ export default function PurchasePage() {
           <button
             onClick={() => setTab('requests')}
             className={`px-3 py-1 text-xs font-medium rounded transition ${
-              tab === 'requests' ? 'bg-ink-900 text-white' : 'text-ink-600 hover:text-ink-900'
+              tab === 'requests' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:text-ink-900 dark:hover:text-ink-50'
             }`}
           >
             구매요청 {isAdmin && '(승인 관리)'}
@@ -264,7 +264,7 @@ function CatalogTab() {
       <div className="space-y-3">
         {/* 상품명 검색 (기본) */}
         <div className="panel p-3 space-y-2">
-          <div className="text-2xs font-semibold text-ink-600 flex items-center gap-1">
+          <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 flex items-center gap-1">
             <SparklesIcon className="h-3 w-3" />
             상품명 검색 · 쿠팡 등 공유 텍스트 붙여넣기
           </div>
@@ -278,7 +278,7 @@ function CatalogTab() {
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleNaverSearch() } }}
               placeholder="예: 제로콜라 24캔  ·  또는 쿠팡 공유 텍스트 붙여넣기 (상품명+링크)"
               rows={1}
-              className="flex-1 px-2.5 py-1.5 text-xs rounded-md border border-ink-300 focus:border-blue-400 focus:outline-none resize-none"
+              className="flex-1 px-2.5 py-1.5 text-xs rounded-md border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none resize-none"
               autoFocus
             />
             <button
@@ -298,7 +298,7 @@ function CatalogTab() {
                   price: null, seller: '', image_url: null, platform: null, parsed: true,
                 })
               }}
-              className="px-3 py-1.5 text-xs rounded-md border border-ink-300 text-ink-700 font-semibold hover:bg-ink-50 flex items-center gap-1"
+              className="px-3 py-1.5 text-xs rounded-md border border-ink-300 dark:border-ink-700 text-ink-700 dark:text-ink-300 font-semibold hover:bg-ink-50 dark:hover:bg-ink-800 flex items-center gap-1"
               title="쿠팡 등 직접 구매 상품을 검색 없이 바로 등록"
             >
               직접 등록
@@ -306,13 +306,13 @@ function CatalogTab() {
           </div>
 
           {naverResults.length > 0 && (
-            <div className="max-h-72 overflow-y-auto divide-y divide-ink-100 bg-white rounded border border-ink-200">
+            <div className="max-h-72 overflow-y-auto divide-y divide-ink-100 dark:divide-ink-800 bg-white dark:bg-ink-900 rounded border border-ink-200 dark:border-ink-800">
               {naverResults.map((it, i) => (
                 <button key={i} onClick={() => pickNaverResult(it)}
                   className="w-full p-2 flex items-center gap-2 text-left hover:bg-emerald-50">
                   {it.image_url && <img src={it.image_url} alt="" className="w-10 h-10 rounded object-cover flex-shrink-0" />}
-                  <span className="flex-1 text-2xs text-ink-800 truncate">{it.title}</span>
-                  <span className="text-2xs text-ink-500 flex-shrink-0">{it.seller}</span>
+                  <span className="flex-1 text-2xs text-ink-800 dark:text-ink-100 truncate">{it.title}</span>
+                  <span className="text-2xs text-ink-500 dark:text-ink-400 flex-shrink-0">{it.seller}</span>
                   <span className="text-2xs font-mono font-semibold flex-shrink-0">
                     {it.price != null ? formatCurrency(it.price, false) : '-'}
                   </span>
@@ -329,7 +329,7 @@ function CatalogTab() {
 
           {/* 링크 직접 입력 (부가 — og 파싱 가능한 사이트: 11번가·지마켓 등) */}
           <details className="text-2xs">
-            <summary className="cursor-pointer text-ink-500 hover:text-ink-800 select-none flex items-center gap-1">
+            <summary className="cursor-pointer text-ink-500 dark:text-ink-400 hover:text-ink-800 dark:hover:text-ink-100 select-none flex items-center gap-1">
               <LinkIcon className="h-3 w-3" />또는 링크로 추가 (11번가·지마켓 등 · 네이버/쿠팡은 차단됨)
             </summary>
             <div className="flex gap-1.5 mt-1.5">
@@ -339,7 +339,7 @@ function CatalogTab() {
                 onChange={(e) => setUrl(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleParse()}
                 placeholder="https://www.11st.co.kr/... 등"
-                className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
               />
               <button onClick={handleParse} disabled={parsing || !url.trim()}
                 className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
@@ -354,10 +354,10 @@ function CatalogTab() {
           </details>
 
           {preview && (
-            <div className="p-2.5 rounded-md bg-canvas-50 border border-ink-200 space-y-1.5">
+            <div className="p-2.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800 space-y-1.5">
               <div className="flex gap-2.5">
                 {preview.image_url && (
-                  <img src={preview.image_url} alt="" className="w-16 h-16 rounded object-cover border border-ink-200" />
+                  <img src={preview.image_url} alt="" className="w-16 h-16 rounded object-cover border border-ink-200 dark:border-ink-800" />
                 )}
                 <div className="flex-1 space-y-1">
                   <input
@@ -365,7 +365,7 @@ function CatalogTab() {
                     value={preview.title || ''}
                     onChange={(e) => setPreview({ ...preview, title: e.target.value })}
                     placeholder="상품명 (직접 입력 가능)"
-                    className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none font-medium"
+                    className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none font-medium"
                   />
                   <div className="flex gap-1.5">
                     <input
@@ -373,14 +373,14 @@ function CatalogTab() {
                       value={preview.price ?? ''}
                       onChange={(e) => setPreview({ ...preview, price: e.target.value ? Number(e.target.value) : null })}
                       placeholder="가격(원)"
-                      className="w-28 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none font-mono"
+                      className="w-28 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none font-mono"
                     />
                     <input
                       type="text"
                       value={preview.seller || ''}
                       onChange={(e) => setPreview({ ...preview, seller: e.target.value })}
                       placeholder="구매처 (예: 쿠팡)"
-                      className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                      className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                     />
                   </div>
                   <input
@@ -388,23 +388,23 @@ function CatalogTab() {
                     value={preview.url || ''}
                     onChange={(e) => setPreview({ ...preview, url: e.target.value })}
                     placeholder="상품 링크 (선택 — 쿠팡 등 참조용, 없어도 등록 가능)"
-                    className="w-full px-2 py-1 text-2xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                    className="w-full px-2 py-1 text-2xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                   />
                   {preview.platform && (
-                    <div className="text-2xs text-ink-500">플랫폼: {preview.platform}</div>
+                    <div className="text-2xs text-ink-500 dark:text-ink-400">플랫폼: {preview.platform}</div>
                   )}
                 </div>
               </div>
               {/* 폴더 지정 — 선택 또는 새로 추가 */}
               <div className="flex items-center gap-1.5">
-                <span className="text-2xs text-ink-500">📁 폴더</span>
+                <span className="text-2xs text-ink-500 dark:text-ink-400">📁 폴더</span>
                 <select
                   value={folders.includes(saveFolder) ? saveFolder : (saveFolder ? '__new__' : '')}
                   onChange={(e) => {
                     if (e.target.value === '__new__') setSaveFolder(' ')  // 새 폴더 입력 모드
                     else setSaveFolder(e.target.value)
                   }}
-                  className="px-2 py-1 text-2xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                  className="px-2 py-1 text-2xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                 >
                   <option value="">폴더 없음</option>
                   {folders.map((f) => <option key={f} value={f}>{f}</option>)}
@@ -432,7 +432,7 @@ function CatalogTab() {
                 </button>
                 <button
                   onClick={() => setPreview(null)}
-                  className="px-2.5 py-1 text-2xs rounded border border-ink-200 text-ink-600"
+                  className="px-2.5 py-1 text-2xs rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400"
                 >
                   <XMarkIcon className="h-3 w-3 inline mr-0.5" />
                   취소
@@ -444,26 +444,26 @@ function CatalogTab() {
 
         {/* 카탈로그 목록 */}
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between gap-2">
-            <span className="text-2xs font-semibold text-ink-500 uppercase">회사 카탈로그</span>
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between gap-2">
+            <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">회사 카탈로그</span>
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="상품명/판매자 검색"
-              className="px-2 py-1 text-2xs rounded border border-ink-200 focus:border-blue-400 focus:outline-none w-44"
+              className="px-2 py-1 text-2xs rounded border border-ink-200 dark:border-ink-800 focus:border-blue-400 focus:outline-none w-44"
             />
           </div>
           {/* 폴더 필터 */}
           {folders.length > 0 && (
-            <div className="px-3 py-1.5 border-b border-ink-100 flex items-center gap-1 flex-wrap">
+            <div className="px-3 py-1.5 border-b border-ink-100 dark:border-ink-800 flex items-center gap-1 flex-wrap">
               <button onClick={() => setFolder('')}
-                className={`px-2 py-0.5 text-2xs rounded-full border ${folder === '' ? 'bg-ink-900 text-white border-ink-900' : 'bg-white text-ink-600 border-ink-200'}`}>
+                className={`px-2 py-0.5 text-2xs rounded-full border ${folder === '' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900 border-ink-900 dark:border-ink-100' : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-400 border-ink-200 dark:border-ink-800'}`}>
                 전체
               </button>
               {folders.map((f) => (
                 <button key={f} onClick={() => setFolder(f)}
-                  className={`px-2 py-0.5 text-2xs rounded-full border ${folder === f ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-ink-600 border-ink-200 hover:border-blue-300'}`}>
+                  className={`px-2 py-0.5 text-2xs rounded-full border ${folder === f ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-400 border-ink-200 dark:border-ink-800 hover:border-blue-300'}`}>
                   📁 {f}
                 </button>
               ))}
@@ -476,13 +476,13 @@ function CatalogTab() {
               등록된 상품이 없습니다. 위에 링크를 붙여넣어 등록해주세요.
             </div>
           ) : (
-            <div className="divide-y divide-ink-100">
+            <div className="divide-y divide-ink-100 dark:divide-ink-800">
               {items.map((item) => (
-                <div key={item.id} className="p-2.5 flex items-center gap-2.5 hover:bg-canvas-50">
+                <div key={item.id} className="p-2.5 flex items-center gap-2.5 hover:bg-canvas-50 dark:hover:bg-ink-800">
                   {item.image_url ? (
-                    <img src={item.image_url} alt="" className="w-10 h-10 rounded object-cover border border-ink-200 flex-shrink-0" />
+                    <img src={item.image_url} alt="" className="w-10 h-10 rounded object-cover border border-ink-200 dark:border-ink-800 flex-shrink-0" />
                   ) : (
-                    <div className="w-10 h-10 rounded bg-ink-100 flex items-center justify-center flex-shrink-0">
+                    <div className="w-10 h-10 rounded bg-ink-100 dark:bg-ink-800 flex items-center justify-center flex-shrink-0">
                       <ShoppingBagIcon className="h-4 w-4 text-ink-400" />
                     </div>
                   )}
@@ -501,20 +501,20 @@ function CatalogTab() {
                         disabled={editItemMut.isPending || !editItemForm.title.trim()}
                         className="px-2 py-1 text-2xs rounded bg-emerald-500 text-white font-semibold hover:bg-emerald-600 disabled:opacity-50">저장</button>
                       <button onClick={() => setEditItemId(null)}
-                        className="px-2 py-1 text-2xs rounded border border-ink-200 text-ink-600">취소</button>
+                        className="px-2 py-1 text-2xs rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400">취소</button>
                     </div>
                   ) : (
                     <>
                   <div className="flex-1 min-w-0">
                     {item.url ? (
                       <a href={item.url} target="_blank" rel="noreferrer"
-                        className="text-xs font-medium text-ink-900 truncate block hover:text-blue-600 hover:underline">
+                        className="text-xs font-medium text-ink-900 dark:text-ink-50 truncate block hover:text-blue-600 hover:underline">
                         {item.title}
                       </a>
                     ) : (
-                      <span className="text-xs font-medium text-ink-900 truncate block">{item.title}</span>
+                      <span className="text-xs font-medium text-ink-900 dark:text-ink-50 truncate block">{item.title}</span>
                     )}
-                    <div className="text-2xs text-ink-500 flex items-center gap-1 flex-wrap">
+                    <div className="text-2xs text-ink-500 dark:text-ink-400 flex items-center gap-1 flex-wrap">
                       {item.platform && <span>{item.platform} · </span>}
                       {item.seller && <span>{item.seller} · </span>}
                       등록 {item.created_by.split('@')[0]}
@@ -523,7 +523,7 @@ function CatalogTab() {
                           const f = window.prompt('폴더명 (비우면 폴더 없음)', item.folder || '')
                           if (f !== null) moveFolderMut.mutate({ id: item.id, folder: f.trim() })
                         }}
-                        className="px-1 py-0.5 rounded bg-ink-50 text-ink-500 hover:text-blue-600 border border-ink-200"
+                        className="px-1 py-0.5 rounded bg-ink-50 dark:bg-ink-900 text-ink-500 dark:text-ink-400 hover:text-blue-600 border border-ink-200 dark:border-ink-800"
                         title="폴더 지정/이동"
                       >
                         📁 {item.folder || '폴더'}
@@ -531,7 +531,7 @@ function CatalogTab() {
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className="text-xs font-bold font-mono text-ink-900">
+                    <div className="text-xs font-bold font-mono text-ink-900 dark:text-ink-50">
                       {item.price != null ? formatCurrency(item.price, false) : '-'}
                     </div>
                     <div className="flex items-center gap-1 ml-auto">
@@ -568,7 +568,7 @@ function CatalogTab() {
 
       {/* 구매요청 장바구니 */}
       <div className="panel p-3 self-start sticky top-3 space-y-2">
-        <div className="text-2xs font-semibold text-ink-600 flex items-center gap-1">
+        <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 flex items-center gap-1">
           <ClipboardDocumentListIcon className="h-3 w-3" />
           구매요청 작성 ({cart.length}개 품목)
         </div>
@@ -580,8 +580,8 @@ function CatalogTab() {
           <>
             <div className="space-y-1">
               {cart.map((line, i) => (
-                <div key={i} className="flex items-center gap-1.5 text-2xs bg-canvas-50 rounded p-1.5">
-                  <span className="flex-1 truncate text-ink-800">{line.title}</span>
+                <div key={i} className="flex items-center gap-1.5 text-2xs bg-canvas-50 dark:bg-ink-950 rounded p-1.5">
+                  <span className="flex-1 truncate text-ink-800 dark:text-ink-100">{line.title}</span>
                   <input
                     type="number"
                     min={1}
@@ -589,9 +589,9 @@ function CatalogTab() {
                     onChange={(e) =>
                       setCart(cart.map((c, j) => (j === i ? { ...c, quantity: Math.max(1, Number(e.target.value)) } : c)))
                     }
-                    className="w-12 px-1 py-0.5 text-2xs rounded border border-ink-200 text-center"
+                    className="w-12 px-1 py-0.5 text-2xs rounded border border-ink-200 dark:border-ink-800 text-center"
                   />
-                  <span className="font-mono text-ink-700 w-20 text-right">
+                  <span className="font-mono text-ink-700 dark:text-ink-300 w-20 text-right">
                     {formatCurrency(line.unit_price * line.quantity, false)}
                   </span>
                   <button onClick={() => setCart(cart.filter((_, j) => j !== i))}
@@ -601,7 +601,7 @@ function CatalogTab() {
                 </div>
               ))}
             </div>
-            <div className="flex items-center justify-between text-xs font-bold border-t border-ink-200 pt-2">
+            <div className="flex items-center justify-between text-xs font-bold border-t border-ink-200 dark:border-ink-800 pt-2">
               <span>합계</span>
               <span className="font-mono">{formatCurrency(cartTotal, false)}</span>
             </div>
@@ -610,14 +610,14 @@ function CatalogTab() {
               value={reqTitle}
               onChange={(e) => setReqTitle(e.target.value)}
               placeholder="요청 제목 (예: 3월 사무용품 구매)"
-              className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+              className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
             />
             <textarea
               value={reqReason}
               onChange={(e) => setReqReason(e.target.value)}
               placeholder="구매 사유"
               rows={2}
-              className="w-full px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none resize-none"
+              className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none resize-none"
             />
             {/* 구매 채널 + 계정 ID (이전 사용값 재사용) */}
             <div className="flex gap-1.5">
@@ -627,7 +627,7 @@ function CatalogTab() {
                 onChange={(e) => setChannel(e.target.value)}
                 list="purchase-channels"
                 placeholder="구매 채널 (쿠팡/네이버 등)"
-                className="w-28 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                className="w-28 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
               />
               <input
                 type="text"
@@ -639,7 +639,7 @@ function CatalogTab() {
                 }}
                 list="purchase-accounts"
                 placeholder="구매 계정 ID"
-                className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none"
+                className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
               />
               <datalist id="purchase-channels">
                 {Array.from(new Set(accounts.map((a) => a.channel).filter(Boolean))).map((c) => <option key={c} value={c} />)}
@@ -687,25 +687,25 @@ function AutoApprovePanel() {
   })
 
   return (
-    <div className="panel p-2.5 flex items-center gap-2 flex-wrap bg-canvas-50/50">
+    <div className="panel p-2.5 flex items-center gap-2 flex-wrap bg-canvas-50/50 dark:bg-ink-950/50">
       <button
         onClick={() => setEnabled(!enabled)}
-        className={`relative w-9 h-5 rounded-full transition flex-shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-ink-200'}`}
+        className={`relative w-9 h-5 rounded-full transition flex-shrink-0 ${enabled ? 'bg-emerald-500' : 'bg-ink-200 dark:bg-ink-700'}`}
         title="금액 이하 자동승인"
       >
-        <span className={`absolute top-0.5 ${enabled ? 'right-0.5' : 'left-0.5'} w-4 h-4 rounded-full bg-white shadow transition-all`} />
+        <span className={`absolute top-0.5 ${enabled ? 'right-0.5' : 'left-0.5'} w-4 h-4 rounded-full bg-white dark:bg-ink-900 shadow transition-all`} />
       </button>
-      <span className="text-xs font-medium text-ink-800">자동승인</span>
-      <span className="text-2xs text-ink-500">이 금액 이하는 제출 즉시 자동 승인</span>
+      <span className="text-xs font-medium text-ink-800 dark:text-ink-100">자동승인</span>
+      <span className="text-2xs text-ink-500 dark:text-ink-400">이 금액 이하는 제출 즉시 자동 승인</span>
       <input
         type="number"
         value={threshold}
         onChange={(e) => setThreshold(e.target.value)}
         placeholder="예: 100000"
         disabled={!enabled}
-        className="w-28 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none font-mono disabled:bg-ink-50"
+        className="w-28 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none font-mono disabled:bg-ink-50 dark:disabled:bg-ink-800"
       />
-      <span className="text-2xs text-ink-500">원 이하</span>
+      <span className="text-2xs text-ink-500 dark:text-ink-400">원 이하</span>
       <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
         className="px-2.5 py-1 text-2xs rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 ml-auto">저장</button>
     </div>
@@ -787,8 +787,8 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
             onClick={() => setStatusFilter(s)}
             className={`px-2 py-1 text-2xs rounded-full border transition ${
               statusFilter === s
-                ? 'bg-ink-900 text-white border-ink-900'
-                : 'bg-white text-ink-600 border-ink-200 hover:border-ink-400'
+                ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900 border-ink-900 dark:border-ink-100'
+                : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-400 border-ink-200 dark:border-ink-800 hover:border-ink-400 dark:hover:border-ink-500'
             }`}
           >
             {s ? STATUS_LABEL[s].label : '전체'}
@@ -811,43 +811,43 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                   setExpandedId(isExpanded ? null : req.id)
                   setCompleteForm({ order_no: '', final_amount: String(req.total_amount), card_key: req.card_key || '' })
                 }}
-                className="w-full p-3 text-left hover:bg-canvas-50 flex items-center gap-2"
+                className="w-full p-3 text-left hover:bg-canvas-50 dark:hover:bg-ink-800 flex items-center gap-2"
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-xs font-semibold text-ink-900">#{req.id} {req.title}</span>
+                    <span className="text-xs font-semibold text-ink-900 dark:text-ink-50">#{req.id} {req.title}</span>
                     <span className={`text-2xs px-1.5 py-0.5 rounded-full border ${st.cls}`}>{st.label}</span>
                   </div>
-                  <div className="text-2xs text-ink-500 mt-0.5">
+                  <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
                     {req.requester_email.split('@')[0]} · {req.created_at?.slice(0, 10)} · {req.items.length}개 품목
                     {req.matched_ticket_id && <span className="text-emerald-600"> · 전표 #{req.matched_ticket_id}</span>}
                   </div>
                 </div>
-                <span className="text-sm font-bold font-mono text-ink-900 flex-shrink-0">
+                <span className="text-sm font-bold font-mono text-ink-900 dark:text-ink-50 flex-shrink-0">
                   {formatCurrency(req.final_amount ?? req.total_amount, false)}
                 </span>
               </button>
 
               {isExpanded && (
-                <div className="border-t border-ink-100 p-3 space-y-2 bg-canvas-50/50">
+                <div className="border-t border-ink-100 dark:border-ink-800 p-3 space-y-2 bg-canvas-50/50 dark:bg-ink-950/50">
                   {/* 품목 */}
                   <div className="space-y-0.5">
                     {req.items.map((it) => (
                       <div key={it.id} className="flex items-center justify-between text-2xs">
-                        <span className="text-ink-700">{it.title} × {it.quantity}</span>
-                        <span className="font-mono text-ink-900">{formatCurrency(it.line_total, false)}</span>
+                        <span className="text-ink-700 dark:text-ink-300">{it.title} × {it.quantity}</span>
+                        <span className="font-mono text-ink-900 dark:text-ink-50">{formatCurrency(it.line_total, false)}</span>
                       </div>
                     ))}
                   </div>
-                  {req.reason && <div className="text-2xs text-ink-600">사유: {req.reason}</div>}
+                  {req.reason && <div className="text-2xs text-ink-600 dark:text-ink-400">사유: {req.reason}</div>}
                   {(req.channel || req.channel_account_id) && (
-                    <div className="text-2xs text-ink-600">
+                    <div className="text-2xs text-ink-600 dark:text-ink-400">
                       구매 채널: {req.channel || '-'}{req.channel_account_id ? ` · 계정 ${req.channel_account_id}` : ''}
                     </div>
                   )}
                   {req.reject_reason && <div className="text-2xs text-red-600">반려 사유: {req.reject_reason}</div>}
                   {req.approved_by && (
-                    <div className="text-2xs text-ink-500">
+                    <div className="text-2xs text-ink-500 dark:text-ink-400">
                       {req.status === 'REJECTED' ? '반려' : '승인'}: {req.approved_by.split('@')[0]} · {req.approved_at?.slice(0, 16).replace('T', ' ')}
                     </div>
                   )}
@@ -868,7 +868,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                     )}
                     {!isAdmin && req.status === 'PENDING' && (
                       <button onClick={() => cancelMut.mutate(req.id)}
-                        className="px-2.5 py-1 text-2xs rounded border border-ink-300 text-ink-600 hover:bg-ink-50">
+                        className="px-2.5 py-1 text-2xs rounded border border-ink-300 dark:border-ink-700 text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800">
                         요청 취소
                       </button>
                     )}
@@ -876,14 +876,14 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
 
                   {/* 결제 완료 등록 (승인됨) */}
                   {req.status === 'APPROVED' && (
-                    <div className="p-2 rounded-md bg-white border border-blue-200 space-y-1.5">
+                    <div className="p-2 rounded-md bg-white dark:bg-ink-900 border border-blue-200 space-y-1.5">
                       <div className="text-2xs font-semibold text-blue-700">
                         결제 완료 후 등록 — 결제에 <b>사용한 법인카드</b>와 최종금액을 입력하면, 그 카드 전표와 대사합니다
                       </div>
                       <div className="flex gap-1.5 flex-wrap">
                         <select value={completeForm.card_key}
                           onChange={(e) => setCompleteForm({ ...completeForm, card_key: e.target.value })}
-                          className="flex-1 min-w-[140px] px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none">
+                          className="flex-1 min-w-[140px] px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none">
                           <option value="">{heldCards.length ? '사용한 카드 선택…' : '배정된 카드 없음 (관리자에게 배정 요청)'}</option>
                           {heldCards.map((c) => (
                             <option key={c.card_key} value={c.card_key}>
@@ -894,13 +894,13 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                         <input type="number" value={completeForm.final_amount}
                           onChange={(e) => setCompleteForm({ ...completeForm, final_amount: e.target.value })}
                           placeholder="최종 결제금액(원)"
-                          className="w-32 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none font-mono" />
+                          className="w-32 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none font-mono" />
                       </div>
                       <div className="flex gap-1.5">
                         <input type="text" value={completeForm.order_no}
                           onChange={(e) => setCompleteForm({ ...completeForm, order_no: e.target.value })}
                           placeholder="주문번호 (선택)"
-                          className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 focus:border-blue-400 focus:outline-none" />
+                          className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none" />
                         <button
                           onClick={() => completeMut.mutate({
                             id: req.id,
@@ -918,7 +918,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
 
                   {/* 카드전표 대사 (결제 완료) */}
                   {req.status === 'PURCHASED' && (
-                    <div className="p-2 rounded-md bg-white border border-violet-200 space-y-1.5">
+                    <div className="p-2 rounded-md bg-white dark:bg-ink-900 border border-violet-200 space-y-1.5">
                       <div className="flex items-center justify-between">
                         <span className="text-2xs font-semibold text-violet-700 flex items-center gap-1">
                           <CreditCardIcon className="h-3 w-3" />
@@ -931,12 +931,12 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                       </div>
                       {(candidates[req.id] || []).map((c) => (
                         <div key={c.ticket_id}
-                          className="flex items-center justify-between gap-2 text-2xs bg-canvas-50 rounded p-1.5">
+                          className="flex items-center justify-between gap-2 text-2xs bg-canvas-50 dark:bg-ink-950 rounded p-1.5">
                           <div className="flex-1 min-w-0">
-                            <span className={`font-medium ${c.exact ? 'text-emerald-700' : 'text-ink-700'}`}>
+                            <span className={`font-medium ${c.exact ? 'text-emerald-700' : 'text-ink-700 dark:text-ink-300'}`}>
                               {c.store_name || '(가맹점 미확인)'}
                             </span>
-                            <span className="text-ink-500 ml-1">
+                            <span className="text-ink-500 dark:text-ink-400 ml-1">
                               {c.transact_at?.replace('T', ' ')} · {c.card_key}
                             </span>
                           </div>

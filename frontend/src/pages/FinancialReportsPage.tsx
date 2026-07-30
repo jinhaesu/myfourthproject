@@ -179,20 +179,20 @@ export default function FinancialReportsPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <TableCellsIcon className="h-4 w-4 text-ink-500" />
+            <TableCellsIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             재무보고서
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             {viewMode === 'pl' ? '기간별 손익계산서 (cross-tab) · 현금주의' : '월별 재무상태표 — 각 월말의 누적 잔액'}
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           {/* View 토글 (P&L / BS) */}
-          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
             <button
               onClick={() => setViewMode('pl')}
               className={`px-2.5 py-1 rounded text-2xs font-semibold transition ${
-                viewMode === 'pl' ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+                viewMode === 'pl' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
               }`}
             >
               손익계산서
@@ -200,7 +200,7 @@ export default function FinancialReportsPage() {
             <button
               onClick={() => setViewMode('bs')}
               className={`px-2.5 py-1 rounded text-2xs font-semibold transition ${
-                viewMode === 'bs' ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+                viewMode === 'bs' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
               }`}
             >
               재무상태표
@@ -215,15 +215,15 @@ export default function FinancialReportsPage() {
             }}
           />
           {/* Period type 토글 */}
-          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
             {(['daily', 'weekly', 'monthly', 'quarterly', 'yearly'] as PeriodType[]).map((p) => (
               <button
                 key={p}
                 onClick={() => setPeriodType(p)}
                 className={`px-2.5 py-1 rounded text-2xs font-semibold transition ${
                   periodType === p
-                    ? 'bg-ink-900 text-white'
-                    : 'text-ink-600 hover:bg-ink-50'
+                    ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900'
+                    : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
                 }`}
               >
                 {PERIOD_LABEL[p]}
@@ -231,20 +231,20 @@ export default function FinancialReportsPage() {
             ))}
           </div>
 
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white border border-ink-200">
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
             <CalendarDaysIcon className="h-3 w-3 text-ink-400" />
             <input
               type="date"
               value={fromDate}
               onChange={(e) => setFromDate(e.target.value)}
-              className="bg-transparent text-2xs font-medium text-ink-700 focus:outline-none w-24"
+              className="bg-transparent text-2xs font-medium text-ink-700 dark:text-ink-300 focus:outline-none w-24"
             />
-            <span className="text-ink-300">→</span>
+            <span className="text-ink-300 dark:text-ink-600">→</span>
             <input
               type="date"
               value={toDate}
               onChange={(e) => setToDate(e.target.value)}
-              className="bg-transparent text-2xs font-medium text-ink-700 focus:outline-none w-24"
+              className="bg-transparent text-2xs font-medium text-ink-700 dark:text-ink-300 focus:outline-none w-24"
             />
           </div>
 
@@ -287,7 +287,7 @@ export default function FinancialReportsPage() {
                       setFromDate(startOfYearISO(y))
                       setToDate(endOfYearISO(y))
                     }}
-                    className="px-2 py-0.5 rounded border border-ink-200 bg-white text-ink-700 hover:bg-ink-50 font-semibold"
+                    className="px-2 py-0.5 rounded border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 text-ink-700 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 font-semibold"
                   >
                     {y}
                   </button>
@@ -299,19 +299,19 @@ export default function FinancialReportsPage() {
           <div className="overflow-x-auto">
             <table className="min-w-full text-2xs">
               <thead>
-                <tr className="bg-canvas-50 border-b border-ink-200">
-                  <th className="sticky left-0 bg-canvas-50 z-10 px-3 py-2 text-left font-semibold text-ink-500 uppercase tracking-wider min-w-[200px] border-r border-ink-200">
+                <tr className="bg-canvas-50 dark:bg-ink-950 border-b border-ink-200 dark:border-ink-800">
+                  <th className="sticky left-0 bg-canvas-50 dark:bg-ink-950 z-10 px-3 py-2 text-left font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider min-w-[200px] border-r border-ink-200 dark:border-ink-800">
                     계정과목
                   </th>
                   {summaries.map((s) => (
                     <th
                       key={s.period_label}
-                      className="px-3 py-2 text-right font-semibold text-ink-500 uppercase tracking-wider min-w-[110px]"
+                      className="px-3 py-2 text-right font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider min-w-[110px]"
                     >
                       {s.period_label}
                     </th>
                   ))}
-                  <th className="px-3 py-2 text-right font-semibold text-ink-700 uppercase tracking-wider min-w-[120px] bg-ink-100">
+                  <th className="px-3 py-2 text-right font-semibold text-ink-700 dark:text-ink-300 uppercase tracking-wider min-w-[120px] bg-ink-100 dark:bg-ink-800">
                     합계
                   </th>
                 </tr>
@@ -321,7 +321,7 @@ export default function FinancialReportsPage() {
                   if (row.kind === 'spacer') {
                     return (
                       <tr key={`spacer-${idx}`}>
-                        <td colSpan={summaries.length + 2} className="h-2 bg-canvas-50 border-y border-ink-200/40" />
+                        <td colSpan={summaries.length + 2} className="h-2 bg-canvas-50 dark:bg-ink-950 border-y border-ink-200/40 dark:border-ink-800/40" />
                       </tr>
                     )
                   }
@@ -341,24 +341,24 @@ export default function FinancialReportsPage() {
                         key={`row-${idx}`}
                         className={
                           isSubtotal
-                            ? 'bg-canvas-50 border-y border-ink-200'
+                            ? 'bg-canvas-50 dark:bg-ink-950 border-y border-ink-200 dark:border-ink-800'
                             : isRatio
-                            ? 'bg-white'
+                            ? 'bg-white dark:bg-ink-900'
                             : expandable
-                            ? 'hover:bg-canvas-50/50 cursor-pointer'
-                            : 'hover:bg-canvas-50/50'
+                            ? 'hover:bg-canvas-50/50 dark:hover:bg-ink-800/50 cursor-pointer'
+                            : 'hover:bg-canvas-50/50 dark:hover:bg-ink-800/50'
                         }
                         onClick={() => expandable && toggle(row.expandKey!)}
                       >
                         <td
-                          className={`sticky left-0 z-10 px-3 py-1.5 border-r border-ink-200 whitespace-nowrap ${
+                          className={`sticky left-0 z-10 px-3 py-1.5 border-r border-ink-200 dark:border-ink-800 whitespace-nowrap ${
                             isSubtotal
-                              ? 'bg-canvas-50 font-bold text-ink-900'
+                              ? 'bg-canvas-50 dark:bg-ink-950 font-bold text-ink-900 dark:text-ink-50'
                               : isRatio
-                              ? 'bg-white text-ink-500 font-medium pl-6'
+                              ? 'bg-white dark:bg-ink-900 text-ink-500 dark:text-ink-400 font-medium pl-6'
                               : isHeader
-                              ? 'bg-white text-ink-700 font-semibold'
-                              : 'bg-white text-ink-700'
+                              ? 'bg-white dark:bg-ink-900 text-ink-700 dark:text-ink-300 font-semibold'
+                              : 'bg-white dark:bg-ink-900 text-ink-700 dark:text-ink-300'
                           }`}
                         >
                           <span className="inline-flex items-center gap-1">
@@ -387,18 +387,18 @@ export default function FinancialReportsPage() {
                               key={`${row.label}-${col.period_label}`}
                               className={`px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap ${
                                 isTotalCol
-                                  ? 'bg-ink-50 font-bold text-ink-900'
+                                  ? 'bg-ink-50 dark:bg-ink-900 font-bold text-ink-900 dark:text-ink-50'
                                   : isSubtotal
-                                  ? 'bg-canvas-50 font-semibold text-ink-900'
+                                  ? 'bg-canvas-50 dark:bg-ink-950 font-semibold text-ink-900 dark:text-ink-50'
                                   : isRatio
-                                  ? 'text-ink-500 text-2xs italic'
-                                  : 'text-ink-700'
+                                  ? 'text-ink-500 dark:text-ink-400 text-2xs italic'
+                                  : 'text-ink-700 dark:text-ink-300'
                               }`}
                             >
                               {row.isPct
                                 ? formatPct(v, 1)
                                 : v === 0
-                                ? <span className="text-ink-300">-</span>
+                                ? <span className="text-ink-300 dark:text-ink-600">-</span>
                                 : (v < 0 ? <span className="text-rose-600">({formatCurrency(Math.abs(v), false)})</span> : formatCurrency(v, false))}
                             </td>
                           )
@@ -409,18 +409,18 @@ export default function FinancialReportsPage() {
                       {expandable && isExpanded && subAccounts.map((acc: any) => {
                         const totalForRow = acc.values.reduce((a: number, b: number) => a + b, 0)
                         return (
-                          <tr key={`${row.expandKey}-${acc.code}`} className="bg-white hover:bg-canvas-50/30">
-                            <td className="sticky left-0 z-10 px-3 py-1 pl-9 border-r border-ink-200 bg-white whitespace-nowrap text-2xs">
+                          <tr key={`${row.expandKey}-${acc.code}`} className="bg-white dark:bg-ink-900 hover:bg-canvas-50/30 dark:hover:bg-ink-800/30">
+                            <td className="sticky left-0 z-10 px-3 py-1 pl-9 border-r border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 whitespace-nowrap text-2xs">
                               <span className="font-mono text-ink-400 mr-1.5">{acc.code}</span>
-                              <span className="text-ink-700">{acc.name}</span>
+                              <span className="text-ink-700 dark:text-ink-300">{acc.name}</span>
                             </td>
                             {acc.values.map((v: number, vi: number) => (
                               <td
                                 key={`${acc.code}-${vi}`}
-                                className="px-3 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs text-ink-600"
+                                className="px-3 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs text-ink-600 dark:text-ink-400"
                               >
                                 {v === 0 ? (
-                                  <span className="text-ink-200">-</span>
+                                  <span className="text-ink-200 dark:text-ink-700">-</span>
                                 ) : v < 0 ? (
                                   <span className="text-rose-600">({formatCurrency(Math.abs(v), false)})</span>
                                 ) : (
@@ -428,7 +428,7 @@ export default function FinancialReportsPage() {
                                 )}
                               </td>
                             ))}
-                            <td className="px-3 py-1 text-right font-mono tabular-nums bg-ink-50 text-2xs font-semibold text-ink-900 whitespace-nowrap">
+                            <td className="px-3 py-1 text-right font-mono tabular-nums bg-ink-50 dark:bg-ink-900 text-2xs font-semibold text-ink-900 dark:text-ink-50 whitespace-nowrap">
                               {formatCurrency(totalForRow, false)}
                             </td>
                           </tr>
@@ -532,7 +532,7 @@ function MonthlyBSPanel({
               <button
                 key={y}
                 onClick={() => onPickYear(y)}
-                className="px-2 py-0.5 rounded border border-ink-200 bg-white text-ink-700 hover:bg-ink-50 font-semibold"
+                className="px-2 py-0.5 rounded border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 text-ink-700 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 font-semibold"
               >
                 {y}
               </button>
@@ -545,9 +545,9 @@ function MonthlyBSPanel({
 
   const { months, collect, subSum } = matrix
   const cellRight =
-    'px-3 py-1.5 text-right font-mono tabular-nums text-ink-800'
+    'px-3 py-1.5 text-right font-mono tabular-nums text-ink-800 dark:text-ink-100'
   const headerCell =
-    'px-3 py-2 text-right font-semibold text-ink-500 uppercase tracking-wider min-w-[110px]'
+    'px-3 py-2 text-right font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider min-w-[110px]'
 
   const SECTIONS = [
     {
@@ -578,8 +578,8 @@ function MonthlyBSPanel({
       <div className="overflow-x-auto">
         <table className="min-w-full text-2xs">
           <thead>
-            <tr className="bg-canvas-50 border-b border-ink-200">
-              <th className="sticky left-0 bg-canvas-50 z-10 px-3 py-2 text-left font-semibold text-ink-500 uppercase tracking-wider min-w-[220px] border-r border-ink-200">
+            <tr className="bg-canvas-50 dark:bg-ink-950 border-b border-ink-200 dark:border-ink-800">
+              <th className="sticky left-0 bg-canvas-50 dark:bg-ink-950 z-10 px-3 py-2 text-left font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider min-w-[220px] border-r border-ink-200 dark:border-ink-800">
                 계정과목
               </th>
               {months.map((m) => (
@@ -593,7 +593,7 @@ function MonthlyBSPanel({
             {SECTIONS.map((sec) => (
               <>
                 {/* 섹션 헤더 */}
-                <tr key={`sec-${sec.id}`} className={`${sec.tone} border-y border-ink-200`}>
+                <tr key={`sec-${sec.id}`} className={`${sec.tone} border-y border-ink-200 dark:border-ink-800`}>
                   <td className={`sticky left-0 z-10 px-3 py-1.5 font-semibold ${sec.tone}`}>
                     {sec.label}
                   </td>
@@ -608,8 +608,8 @@ function MonthlyBSPanel({
                   if (rows.length === 0) return null
                   return (
                     <>
-                      <tr key={`sub-${sec.id}-${subName}`} className="bg-ink-50/50 border-y border-ink-200/40">
-                        <td className="sticky left-0 bg-ink-50/50 z-10 px-3 py-1 font-semibold text-ink-700">
+                      <tr key={`sub-${sec.id}-${subName}`} className="bg-ink-50/50 dark:bg-ink-900/50 border-y border-ink-200/40 dark:border-ink-800/40">
+                        <td className="sticky left-0 bg-ink-50/50 dark:bg-ink-900/50 z-10 px-3 py-1 font-semibold text-ink-700 dark:text-ink-300">
                           {subName}
                         </td>
                         {months.map((m) => (
@@ -619,8 +619,8 @@ function MonthlyBSPanel({
                         ))}
                       </tr>
                       {rows.map((r) => (
-                        <tr key={`${sec.id}-${r.code}`} className="hover:bg-ink-50/30 border-b border-ink-100">
-                          <td className="sticky left-0 bg-white z-10 px-3 py-1 pl-6 text-ink-700">
+                        <tr key={`${sec.id}-${r.code}`} className="hover:bg-ink-50/30 dark:hover:bg-ink-800/30 border-b border-ink-100 dark:border-ink-800">
+                          <td className="sticky left-0 bg-white dark:bg-ink-900 z-10 px-3 py-1 pl-6 text-ink-700 dark:text-ink-300">
                             <span className="font-mono text-ink-400 mr-1.5">{r.code}</span>
                             {r.name}
                           </td>
@@ -639,8 +639,8 @@ function MonthlyBSPanel({
               </>
             ))}
             {/* 합계 행 (부채+자본) */}
-            <tr className="bg-ink-900 text-white border-t-2 border-ink-900">
-              <td className="sticky left-0 bg-ink-900 z-10 px-3 py-2 font-bold">
+            <tr className="bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900 border-t-2 border-ink-900 dark:border-ink-100">
+              <td className="sticky left-0 bg-ink-900 dark:bg-ink-100 z-10 px-3 py-2 font-bold">
                 부채 + 자본
               </td>
               {months.map((m) => (

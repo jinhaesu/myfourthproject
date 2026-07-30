@@ -23,6 +23,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
+import { useChartTheme } from '@/lib/chartTheme'
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('ko-KR', {
@@ -42,7 +43,7 @@ const statusBadge: Record<string, { className: string; label: string }> = {
   pending: { className: 'bg-yellow-100 text-yellow-800', label: '대기' },
   confirmed: { className: 'bg-blue-100 text-blue-800', label: '확정' },
   settled: { className: 'bg-green-100 text-green-800', label: '정산' },
-  converted: { className: 'bg-gray-100 text-gray-800', label: '전환완료' },
+  converted: { className: 'bg-gray-100 dark:bg-ink-800 text-gray-800 dark:text-gray-200', label: '전환완료' },
 }
 
 const channelTypeBadge: Record<string, { className: string; label: string }> = {
@@ -68,12 +69,12 @@ export default function SalesAutomationPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">매출 자동화</h1>
-        <p className="text-gray-500 mt-1">채널별 매출을 수집하고 전표로 전환합니다.</p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">매출 자동화</h1>
+        <p className="text-gray-500 dark:text-gray-400 mt-1">채널별 매출을 수집하고 전표로 전환합니다.</p>
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200">
+      <div className="border-b border-gray-200 dark:border-ink-800">
         <nav className="flex gap-4">
           {tabs.map((tab) => (
             <button
@@ -82,7 +83,7 @@ export default function SalesAutomationPage() {
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.id
                   ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >
               {tab.label}
@@ -103,6 +104,7 @@ export default function SalesAutomationPage() {
 // Tab 1: Sales Dashboard
 // ============================================================================
 function SalesDashboardTab() {
+  const chartTheme = useChartTheme()
   const queryClient = useQueryClient()
   const now = new Date()
   const [year, setYear] = useState(now.getFullYear())
@@ -238,7 +240,7 @@ function SalesDashboardTab() {
             }}
           />
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">연도</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">연도</label>
             <select
               value={year}
               onChange={(e) => setYear(Number(e.target.value))}
@@ -250,7 +252,7 @@ function SalesDashboardTab() {
             </select>
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">월</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">월</label>
             <select
               value={month}
               onChange={(e) => setMonth(Number(e.target.value))}
@@ -267,19 +269,19 @@ function SalesDashboardTab() {
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="card">
-          <p className="text-sm text-gray-500">총 매출</p>
-          <p className="text-xl font-bold text-gray-900">{formatCurrency(totalGross)}</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">총 매출</p>
+          <p className="text-xl font-bold text-gray-900 dark:text-gray-100">{formatCurrency(totalGross)}</p>
         </div>
         <div className="card">
-          <p className="text-sm text-gray-500">순 매출</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">순 매출</p>
           <p className="text-xl font-bold text-blue-600">{formatCurrency(totalNet)}</p>
         </div>
         <div className="card">
-          <p className="text-sm text-gray-500">수수료</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">수수료</p>
           <p className="text-xl font-bold text-red-600">{formatCurrency(totalCommission)}</p>
         </div>
         <div className="card">
-          <p className="text-sm text-gray-500">정산액</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">정산액</p>
           <p className="text-xl font-bold text-green-600">{formatCurrency(totalSettlement)}</p>
         </div>
       </div>
@@ -293,11 +295,11 @@ function SalesDashboardTab() {
             {channelChartData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={channelChartData} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis type="number" stroke="#6b7280" fontSize={12} tickFormatter={(v) => `${(v / 10000).toFixed(0)}만`} />
-                  <YAxis dataKey="name" type="category" stroke="#6b7280" fontSize={12} width={90} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+                  <XAxis type="number" stroke={chartTheme.axisColor} fontSize={12} tickFormatter={(v) => `${(v / 10000).toFixed(0)}만`} />
+                  <YAxis dataKey="name" type="category" stroke={chartTheme.axisColor} fontSize={12} width={90} />
                   <Tooltip
-                    contentStyle={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}
+                    contentStyle={{ backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, borderRadius: '8px', color: chartTheme.tooltipText }}
                     formatter={(value: number) => formatCurrency(value)}
                   />
                   <Bar dataKey="net_sales" name="순매출" fill="#3b82f6" radius={[0, 4, 4, 0]} />
@@ -318,11 +320,11 @@ function SalesDashboardTab() {
             {trendData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={trendData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="month" stroke="#6b7280" fontSize={12} />
-                  <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => `${(v / 10000).toFixed(0)}만`} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+                  <XAxis dataKey="month" stroke={chartTheme.axisColor} fontSize={12} />
+                  <YAxis stroke={chartTheme.axisColor} fontSize={12} tickFormatter={(v) => `${(v / 10000).toFixed(0)}만`} />
                   <Tooltip
-                    contentStyle={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}
+                    contentStyle={{ backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, borderRadius: '8px', color: chartTheme.tooltipText }}
                     formatter={(value: number) => formatCurrency(value)}
                   />
                   <Line type="monotone" dataKey="net_sales" name="순매출" stroke="#3b82f6" strokeWidth={2} dot={{ r: 4 }} />
@@ -363,7 +365,7 @@ function SalesDashboardTab() {
         {recordsLoading ? (
           <div className="text-center py-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
-            <p className="text-gray-500 mt-2">로딩 중...</p>
+            <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
           </div>
         ) : records && records.length > 0 ? (
           <div className="table-container">
@@ -375,7 +377,7 @@ function SalesDashboardTab() {
                       type="checkbox"
                       checked={records.length > 0 && selectedIds.length === records.length}
                       onChange={(e) => handleSelectAll(e.target.checked)}
-                      className="rounded border-gray-300"
+                      className="rounded border-gray-300 dark:border-ink-700"
                     />
                   </th>
                   <th>채널명</th>
@@ -398,7 +400,7 @@ function SalesDashboardTab() {
                           type="checkbox"
                           checked={selectedIds.includes(record.id)}
                           onChange={(e) => handleSelectOne(record.id, e.target.checked)}
-                          className="rounded border-gray-300"
+                          className="rounded border-gray-300 dark:border-ink-700"
                         />
                       </td>
                       <td className="font-medium">{record.channel_name}</td>
@@ -420,7 +422,7 @@ function SalesDashboardTab() {
             </table>
           </div>
         ) : (
-          <div className="text-center py-8 text-gray-500">매출 기록이 없습니다.</div>
+          <div className="text-center py-8 text-gray-500 dark:text-gray-400">매출 기록이 없습니다.</div>
         )}
       </div>
 
@@ -469,12 +471,12 @@ function ReportModal({ year, month, onClose }: { year: number; month: number; on
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 w-full max-w-md">
-        <h3 className="text-lg font-bold text-gray-900 mb-4">리포트 발송</h3>
+      <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-md">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">리포트 발송</h3>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="label">기간</label>
-            <p className="text-sm text-gray-600">{year}년 {month}월</p>
+            <p className="text-sm text-gray-600 dark:text-gray-400">{year}년 {month}월</p>
           </div>
           <div>
             <label className="label">수신자 이메일 (쉼표 구분)</label>
@@ -482,12 +484,12 @@ function ReportModal({ year, month, onClose }: { year: number; month: number; on
               type="text"
               value={recipients}
               onChange={(e) => setRecipients(e.target.value)}
-              className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               placeholder="user1@example.com, user2@example.com"
             />
           </div>
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-ink-800 rounded-lg hover:bg-gray-200 dark:hover:bg-ink-700">
               취소
             </button>
             <button type="submit" disabled={sendMutation.isPending} className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50">
@@ -550,7 +552,7 @@ function ChannelManagementTab() {
       {isLoading ? (
         <div className="text-center py-8">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
-          <p className="text-gray-500 mt-2">로딩 중...</p>
+          <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
         </div>
       ) : channels && channels.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -560,8 +562,8 @@ function ChannelManagementTab() {
               <div key={channel.id} className="card">
                 <div className="flex items-start justify-between mb-3">
                   <div>
-                    <h4 className="font-semibold text-gray-900">{channel.name}</h4>
-                    <p className="text-sm text-gray-500">{channel.channel_code}</p>
+                    <h4 className="font-semibold text-gray-900 dark:text-gray-100">{channel.name}</h4>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">{channel.channel_code}</p>
                   </div>
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${typeBadge.className}`}>
                     {typeBadge.label}
@@ -570,25 +572,25 @@ function ChannelManagementTab() {
 
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-gray-500">수수료율</span>
+                    <span className="text-gray-500 dark:text-gray-400">수수료율</span>
                     <span className="font-medium">{channel.commission_rate || 0}%</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-500">정산일</span>
+                    <span className="text-gray-500 dark:text-gray-400">정산일</span>
                     <span className="font-medium">매월 {channel.settlement_day || '-'}일</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-500">수집방식</span>
+                    <span className="text-gray-500 dark:text-gray-400">수집방식</span>
                     <span className="font-medium">{channel.collection_method || '-'}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-500">최근 동기화</span>
+                    <span className="text-gray-500 dark:text-gray-400">최근 동기화</span>
                     <span className="font-medium text-xs">{channel.last_sync || '-'}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-gray-500">활성화</span>
+                    <span className="text-gray-500 dark:text-gray-400">활성화</span>
                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                      channel.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                      channel.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
                     }`}>
                       {channel.is_active ? '활성' : '비활성'}
                     </span>
@@ -614,7 +616,7 @@ function ChannelManagementTab() {
           })}
         </div>
       ) : (
-        <div className="card text-center py-12 text-gray-500">
+        <div className="card text-center py-12 text-gray-500 dark:text-gray-400">
           등록된 채널이 없습니다. '채널 추가' 버튼을 눌러 추가하세요.
         </div>
       )}
@@ -729,12 +731,12 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
   }
 
   const isPending = createMutation.isPending || updateMutation.isPending
-  const inputClass = 'w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+  const inputClass = 'w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent'
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <h3 className="text-lg font-bold text-gray-900 mb-4">
+      <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">
           {isEdit ? '채널 수정' : '채널 추가'}
         </h3>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -825,8 +827,8 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
 
           {/* 수동 방식 안내 */}
           {formData.collection_method === 'manual' && (
-            <div className="bg-gray-50 rounded-lg p-4">
-              <p className="text-sm text-gray-600">수동 방식: 매출 데이터를 직접 입력하거나 엑셀로 업로드합니다.</p>
+            <div className="bg-gray-50 dark:bg-ink-900 rounded-lg p-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">수동 방식: 매출 데이터를 직접 입력하거나 엑셀로 업로드합니다.</p>
             </div>
           )}
 
@@ -836,13 +838,13 @@ function ChannelModal({ channel, onClose }: { channel: any | null; onClose: () =
               id="channel-active"
               checked={formData.is_active}
               onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-              className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              className="rounded border-gray-300 dark:border-ink-700 text-blue-600 focus:ring-blue-500"
             />
-            <label htmlFor="channel-active" className="text-sm text-gray-700">활성화</label>
+            <label htmlFor="channel-active" className="text-sm text-gray-700 dark:text-gray-300">활성화</label>
           </div>
 
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-ink-800 rounded-lg hover:bg-gray-200 dark:hover:bg-ink-700">
               취소
             </button>
             <button type="submit" disabled={isPending} className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50">
@@ -920,7 +922,7 @@ function VoucherConversionTab() {
       <div className="card">
         <div className="flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">연도</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">연도</label>
             <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="input w-28">
               {[now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1].map((y) => (
                 <option key={y} value={y}>{y}년</option>
@@ -928,7 +930,7 @@ function VoucherConversionTab() {
             </select>
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">월</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">월</label>
             <select value={month} onChange={(e) => setMonth(Number(e.target.value))} className="input w-24">
               {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
                 <option key={m} value={m}>{m}월</option>
@@ -953,7 +955,7 @@ function VoucherConversionTab() {
       {/* Confirmed Records (ready for conversion) */}
       <div className="card">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">전환 대상 (확정 상태)</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">전환 대상 (확정 상태)</h3>
           <button
             onClick={handleConvert}
             disabled={selectedIds.length === 0 || convertMutation.isPending}
@@ -967,7 +969,7 @@ function VoucherConversionTab() {
         {isLoading ? (
           <div className="text-center py-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
-            <p className="text-gray-500 mt-2">로딩 중...</p>
+            <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
           </div>
         ) : confirmedRecords.length > 0 ? (
           <div className="table-container">
@@ -979,7 +981,7 @@ function VoucherConversionTab() {
                       type="checkbox"
                       checked={confirmedRecords.length > 0 && selectedIds.length === confirmedRecords.length}
                       onChange={(e) => handleSelectAll(e.target.checked)}
-                      className="rounded border-gray-300"
+                      className="rounded border-gray-300 dark:border-ink-700"
                     />
                   </th>
                   <th>채널명</th>
@@ -997,7 +999,7 @@ function VoucherConversionTab() {
                         type="checkbox"
                         checked={selectedIds.includes(record.id)}
                         onChange={(e) => handleSelectOne(record.id, e.target.checked)}
-                        className="rounded border-gray-300"
+                        className="rounded border-gray-300 dark:border-ink-700"
                       />
                     </td>
                     <td className="font-medium">{record.channel_name}</td>
@@ -1011,7 +1013,7 @@ function VoucherConversionTab() {
             </table>
           </div>
         ) : (
-          <div className="text-center py-8 text-gray-500">
+          <div className="text-center py-8 text-gray-500 dark:text-gray-400">
             전환 대상인 확정 상태의 매출이 없습니다.
           </div>
         )}
@@ -1044,7 +1046,7 @@ function VoucherConversionTab() {
                       {record.voucher_id ? `#${record.voucher_id}` : '-'}
                     </td>
                     <td>
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 dark:bg-ink-800 text-gray-800 dark:text-gray-200">
                         전환완료
                       </span>
                     </td>
@@ -1054,7 +1056,7 @@ function VoucherConversionTab() {
             </table>
           </div>
         ) : (
-          <div className="text-center py-8 text-gray-500">
+          <div className="text-center py-8 text-gray-500 dark:text-gray-400">
             전환 이력이 없습니다.
           </div>
         )}
@@ -1119,7 +1121,7 @@ function AutomationSettingsTab() {
       {isLoading ? (
         <div className="text-center py-8">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
-          <p className="text-gray-500 mt-2">로딩 중...</p>
+          <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
         </div>
       ) : schedules && schedules.length > 0 ? (
         <div className="card">
@@ -1145,7 +1147,7 @@ function AutomationSettingsTab() {
                         {scheduleTypeLabel[schedule.schedule_type] || schedule.schedule_type}
                       </span>
                     </td>
-                    <td className="text-sm text-gray-600">
+                    <td className="text-sm text-gray-600 dark:text-gray-400">
                       {schedule.execution_day ? `${schedule.execution_day}일 ` : ''}
                       {schedule.execution_time || '-'}
                     </td>
@@ -1153,7 +1155,7 @@ function AutomationSettingsTab() {
                     <td className="text-sm">{schedule.last_run || '-'}</td>
                     <td>
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        schedule.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                        schedule.is_active ? 'bg-green-100 text-green-800' : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
                       }`}>
                         {schedule.is_active ? '활성' : '비활성'}
                       </span>
@@ -1181,7 +1183,7 @@ function AutomationSettingsTab() {
           </div>
         </div>
       ) : (
-        <div className="card text-center py-12 text-gray-500">
+        <div className="card text-center py-12 text-gray-500 dark:text-gray-400">
           등록된 스케줄이 없습니다. '스케줄 추가' 버튼을 눌러 추가하세요.
         </div>
       )}
@@ -1275,12 +1277,12 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
   }
 
   const isPending = createMutation.isPending || updateMutation.isPending
-  const inputClass = 'w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+  const inputClass = 'w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent'
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <h3 className="text-lg font-bold text-gray-900 mb-4">
+      <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">
           {isEdit ? '스케줄 수정' : '스케줄 추가'}
         </h3>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -1323,7 +1325,7 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
           {/* Channel multi-select */}
           <div>
             <label className="label">대상 채널</label>
-            <div className="mt-1 border border-gray-300 rounded-lg p-3 max-h-40 overflow-y-auto space-y-2">
+            <div className="mt-1 border border-gray-300 dark:border-ink-700 rounded-lg p-3 max-h-40 overflow-y-auto space-y-2">
               {channels && channels.length > 0 ? (
                 channels.map((ch: any) => (
                   <label key={ch.id} className="flex items-center gap-2 text-sm cursor-pointer">
@@ -1331,7 +1333,7 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
                       type="checkbox"
                       checked={formData.channel_ids.includes(ch.id)}
                       onChange={() => handleChannelToggle(ch.id)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      className="rounded border-gray-300 dark:border-ink-700 text-blue-600 focus:ring-blue-500"
                     />
                     {ch.name}
                   </label>
@@ -1353,7 +1355,7 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
                 type="checkbox"
                 checked={formData.attach_excel}
                 onChange={(e) => setFormData({ ...formData, attach_excel: e.target.checked })}
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                className="rounded border-gray-300 dark:border-ink-700 text-blue-600 focus:ring-blue-500"
               />
               엑셀 첨부
             </label>
@@ -1362,14 +1364,14 @@ function ScheduleModal({ schedule, onClose }: { schedule: any | null; onClose: (
                 type="checkbox"
                 checked={formData.is_active}
                 onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                className="rounded border-gray-300 dark:border-ink-700 text-blue-600 focus:ring-blue-500"
               />
               활성화
             </label>
           </div>
 
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-ink-800 rounded-lg hover:bg-gray-200 dark:hover:bg-ink-700">
               취소
             </button>
             <button type="submit" disabled={isPending} className="px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50">

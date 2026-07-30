@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
+import { useThemeStore } from '@/store/themeStore'
 import { authApi } from '@/services/api'
 import { useAdminPrefetch } from '@/hooks/useAdminPrefetch'
 import NuldamSystemBar from '@/components/NuldamSystemBar'
@@ -21,6 +22,7 @@ import {
   TableCellsIcon,
   Squares2X2Icon,
   SunIcon,
+  MoonIcon,
   ScaleIcon,
   ReceiptPercentIcon,
   ArchiveBoxArrowDownIcon,
@@ -98,6 +100,24 @@ const baseNavigation: NavItem[] = [
 
 const adminNavItem: NavItem = { name: '관리자', href: '/admin', icon: UsersIcon }
 
+/** Sun/moon button — persists preference via themeStore, toggles <html class="dark">. */
+function ThemeToggle() {
+  const { theme, toggleTheme } = useThemeStore()
+  const isDark = theme === 'dark'
+
+  return (
+    <button
+      type="button"
+      onClick={toggleTheme}
+      aria-label={isDark ? '라이트 모드로 전환' : '다크 모드로 전환'}
+      title={isDark ? '라이트 모드로 전환' : '다크 모드로 전환'}
+      className="p-1.5 rounded-md text-ink-500 dark:text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 hover:text-ink-900 dark:hover:text-ink-50 transition-colors"
+    >
+      {isDark ? <SunIcon className="h-4 w-4" /> : <MoonIcon className="h-4 w-4" />}
+    </button>
+  )
+}
+
 function NavList({
   navigation,
   pathname,
@@ -126,11 +146,11 @@ function NavList({
             onClick={onItemClick}
             className={`flex items-center gap-2 px-2 py-1 my-px rounded-md text-xs font-medium transition-colors duration-100 ${
               isActive
-                ? 'bg-ink-100 text-ink-900'
-                : 'text-ink-600 hover:bg-ink-50 hover:text-ink-900'
+                ? 'bg-ink-100 dark:bg-ink-800 text-ink-900 dark:text-ink-50'
+                : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800 hover:text-ink-900 dark:hover:text-ink-50'
             }`}
           >
-            <Icon className={`h-3.5 w-3.5 flex-shrink-0 ${isActive ? 'text-ink-900' : 'text-ink-400'}`} />
+            <Icon className={`h-3.5 w-3.5 flex-shrink-0 ${isActive ? 'text-ink-900 dark:text-ink-50' : 'text-ink-400'}`} />
             <span className="truncate">{item.name}</span>
           </Link>
         )
@@ -152,13 +172,13 @@ function MenuModeToggle() {
 
   return (
     <div className="px-2 pt-2">
-      <div className="flex rounded-md border border-ink-200 bg-canvas-50 p-0.5">
+      <div className="flex rounded-md border border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 p-0.5">
         <button
           onClick={() => switchTo('employee')}
           className={`flex-1 rounded px-1 py-1 text-2xs font-medium transition ${
             menuMode === 'employee'
-              ? 'bg-white text-ink-900 shadow-sm'
-              : 'text-ink-500 hover:text-ink-800'
+              ? 'bg-white dark:bg-ink-900 text-ink-900 dark:text-ink-50 shadow-sm'
+              : 'text-ink-500 dark:text-ink-400 hover:text-ink-800 dark:hover:text-ink-100'
           }`}
         >
           일반 직원용
@@ -167,8 +187,8 @@ function MenuModeToggle() {
           onClick={() => switchTo('admin')}
           className={`flex-1 rounded px-1 py-1 text-2xs font-medium transition ${
             menuMode === 'admin'
-              ? 'bg-white text-ink-900 shadow-sm'
-              : 'text-ink-500 hover:text-ink-800'
+              ? 'bg-white dark:bg-ink-900 text-ink-900 dark:text-ink-50 shadow-sm'
+              : 'text-ink-500 dark:text-ink-400 hover:text-ink-800 dark:hover:text-ink-100'
           }`}
         >
           회계 관리자용
@@ -217,16 +237,16 @@ export default function Layout() {
   return (
     <>
       <NuldamSystemBar current="account" />
-      <div className="min-h-screen bg-canvas-50">
+      <div className="min-h-screen bg-canvas-50 dark:bg-ink-950">
       {/* Mobile sidebar */}
       <div className={`fixed inset-0 z-50 lg:hidden ${sidebarOpen ? '' : 'hidden'}`}>
         <div className="fixed inset-0 bg-ink-900/40" onClick={() => setSidebarOpen(false)} />
-        <div className="fixed inset-y-0 left-0 flex w-56 flex-col bg-white min-h-0">
-          <div className="flex h-12 items-center justify-between px-3 border-b border-ink-200">
-            <span className="text-sm font-bold text-ink-900 tracking-tightish">Smart Finance</span>
+        <div className="fixed inset-y-0 left-0 flex w-56 flex-col bg-white dark:bg-ink-900 min-h-0">
+          <div className="flex h-12 items-center justify-between px-3 border-b border-ink-200 dark:border-ink-800">
+            <span className="text-sm font-bold text-ink-900 dark:text-ink-50 tracking-tightish">Smart Finance</span>
             <button
               onClick={() => setSidebarOpen(false)}
-              className="text-ink-400 hover:text-ink-700 p-1 rounded"
+              className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200 p-1 rounded"
             >
               <XMarkIcon className="h-4 w-4" />
             </button>
@@ -242,13 +262,13 @@ export default function Layout() {
 
       {/* Desktop sidebar */}
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-56 lg:flex-col">
-        <div className="flex flex-col flex-1 min-h-0 bg-white border-r border-ink-200">
-          <div className="flex h-12 items-center px-3 border-b border-ink-200">
+        <div className="flex flex-col flex-1 min-h-0 bg-white dark:bg-ink-900 border-r border-ink-200 dark:border-ink-800">
+          <div className="flex h-12 items-center px-3 border-b border-ink-200 dark:border-ink-800">
             <div className="flex items-center gap-2">
-              <div className="w-5 h-5 rounded bg-ink-900 flex items-center justify-center">
-                <span className="text-2xs font-bold text-white tracking-tighter">SF</span>
+              <div className="w-5 h-5 rounded bg-ink-900 dark:bg-ink-100 flex items-center justify-center">
+                <span className="text-2xs font-bold text-white dark:text-ink-900 tracking-tighter">SF</span>
               </div>
-              <span className="text-sm font-semibold text-ink-900 tracking-tightish">Smart Finance</span>
+              <span className="text-sm font-semibold text-ink-900 dark:text-ink-50 tracking-tightish">Smart Finance</span>
             </div>
           </div>
 
@@ -256,21 +276,21 @@ export default function Layout() {
           <NavList navigation={navigation} pathname={location.pathname} />
 
           {/* User strip */}
-          <div className="border-t border-ink-200 p-2">
+          <div className="border-t border-ink-200 dark:border-ink-800 p-2">
             <button
               onClick={handleLogout}
-              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-ink-50 transition group"
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-ink-50 dark:hover:bg-ink-800 transition group"
             >
-              <div className="w-6 h-6 rounded-full bg-ink-200 flex items-center justify-center text-2xs font-semibold text-ink-700">
+              <div className="w-6 h-6 rounded-full bg-ink-200 dark:bg-ink-700 flex items-center justify-center text-2xs font-semibold text-ink-700 dark:text-ink-300">
                 {userInitial}
               </div>
               <div className="flex-1 min-w-0 text-left">
-                <div className="text-xs font-medium text-ink-900 truncate">
+                <div className="text-xs font-medium text-ink-900 dark:text-ink-50 truncate">
                   {user?.fullName || user?.username}
                 </div>
-                <div className="text-2xs text-ink-500 truncate">{user?.position || user?.departmentName || '-'}</div>
+                <div className="text-2xs text-ink-500 dark:text-ink-400 truncate">{user?.position || user?.departmentName || '-'}</div>
               </div>
-              <ArrowRightOnRectangleIcon className="h-3.5 w-3.5 text-ink-400 group-hover:text-ink-700" />
+              <ArrowRightOnRectangleIcon className="h-3.5 w-3.5 text-ink-400 group-hover:text-ink-700 dark:group-hover:text-ink-200" />
             </button>
           </div>
         </div>
@@ -278,21 +298,22 @@ export default function Layout() {
 
       {/* Main */}
       <div className="lg:pl-56">
-        <header className="sticky top-0 z-40 bg-white/80 backdrop-blur border-b border-ink-200">
+        <header className="sticky top-0 z-40 bg-white/80 dark:bg-ink-900/80 backdrop-blur border-b border-ink-200 dark:border-ink-800">
           <div className="flex h-12 items-center justify-between px-4 sm:px-6 lg:px-8">
             <button
               type="button"
-              className="lg:hidden -m-2 p-2 text-ink-700"
+              className="lg:hidden -m-2 p-2 text-ink-700 dark:text-ink-300"
               onClick={() => setSidebarOpen(true)}
             >
               <Bars3Icon className="h-5 w-5" />
             </button>
             <div className="flex-1" />
-            <div className="flex items-center gap-3 text-2xs text-ink-500">
-              <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-ink-200 bg-canvas-50 font-mono">
+            <div className="flex items-center gap-3 text-2xs text-ink-500 dark:text-ink-400">
+              <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 font-mono">
                 ⌘K
               </kbd>
               <span className="hidden sm:inline-block">검색</span>
+              <ThemeToggle />
             </div>
           </div>
         </header>

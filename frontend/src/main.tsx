@@ -4,7 +4,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import App from './App'
+import { useThemeStore } from './store/themeStore'
 import './styles/globals.css'
+
+// Ensure <html class="dark"> matches the persisted preference. index.html's
+// inline script already avoids a flash on first paint; this keeps the DOM in
+// sync with the zustand store on every load (SPA re-entry, HMR, etc).
+useThemeStore.getState().setTheme(useThemeStore.getState().theme)
 
 // 캐시 정책 (체감 속도 + 안정성 균형):
 // - staleTime: 3분 — 관리자 진입 시 선조회한 데이터가 fresh로 유지되어, 메뉴 클릭 시 재조회 없이 즉시 표시.

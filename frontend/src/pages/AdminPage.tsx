@@ -119,18 +119,18 @@ export default function AdminPage() {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">관리자</h1>
-        <p className="text-gray-500 mt-1">사용자 및 시스템 관리</p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">관리자</h1>
+        <p className="text-gray-500 dark:text-gray-400 mt-1">사용자 및 시스템 관리</p>
       </div>
 
       {/* Tabs */}
-      <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg w-fit mb-6">
+      <div className="flex space-x-1 bg-gray-100 dark:bg-ink-800 p-1 rounded-lg w-fit mb-6">
         <button
           onClick={() => setActiveTab('pending')}
           className={`px-4 py-2 rounded-md font-medium transition-colors ${
             activeTab === 'pending'
-              ? 'bg-white text-blue-600 shadow'
-              : 'text-gray-600 hover:text-gray-900'
+              ? 'bg-white dark:bg-ink-900 text-blue-600 shadow'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
           }`}
         >
           가입 승인 대기
@@ -144,8 +144,8 @@ export default function AdminPage() {
           onClick={() => setActiveTab('all')}
           className={`px-4 py-2 rounded-md font-medium transition-colors ${
             activeTab === 'all'
-              ? 'bg-white text-blue-600 shadow'
-              : 'text-gray-600 hover:text-gray-900'
+              ? 'bg-white dark:bg-ink-900 text-blue-600 shadow'
+              : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
           }`}
         >
           전체 사용자
@@ -158,10 +158,10 @@ export default function AdminPage() {
         </div>
       ) : activeTab === 'pending' ? (
         /* Pending Users */
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+        <div className="bg-white dark:bg-ink-900 rounded-xl shadow-sm border border-gray-200 dark:border-ink-800">
           {pendingUsers.length === 0 ? (
-            <div className="p-12 text-center text-gray-500">
-              <svg className="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="p-12 text-center text-gray-500 dark:text-gray-400">
+              <svg className="w-16 h-16 mx-auto text-gray-300 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <p className="text-lg font-medium">승인 대기 중인 사용자가 없습니다</p>
@@ -169,33 +169,33 @@ export default function AdminPage() {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full">
-                <thead className="bg-gray-50 border-b">
+                <thead className="bg-gray-50 dark:bg-ink-900 border-b">
                   <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">이름</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">이메일</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">부서</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">직위</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">신청일</th>
-                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">액션</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">이름</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">이메일</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">부서</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">직위</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">신청일</th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">액션</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-200">
+                <tbody className="divide-y divide-gray-200 dark:divide-ink-800">
                   {pendingUsers.map((user) => (
-                    <tr key={user.id} className="hover:bg-gray-50">
+                    <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-ink-800">
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="font-medium text-gray-900">{user.full_name}</div>
-                        <div className="text-sm text-gray-500">@{user.username}</div>
+                        <div className="font-medium text-gray-900 dark:text-gray-100">{user.full_name}</div>
+                        <div className="text-sm text-gray-500 dark:text-gray-400">@{user.username}</div>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
                         {user.email}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
                         {user.department_name || '-'}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
                         {user.position || '-'}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
                         {new Date(user.created_at).toLocaleDateString('ko-KR')}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-center">
@@ -221,41 +221,41 @@ export default function AdminPage() {
         </div>
       ) : (
         /* All Users */
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+        <div className="bg-white dark:bg-ink-900 rounded-xl shadow-sm border border-gray-200 dark:border-ink-800">
           <div className="overflow-x-auto">
             <table className="w-full">
-              <thead className="bg-gray-50 border-b">
+              <thead className="bg-gray-50 dark:bg-ink-900 border-b">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">사번</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">이름</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">이메일</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">부서</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">역할</th>
-                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">상태</th>
-                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">액션</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">사번</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">이름</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">이메일</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">부서</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">역할</th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">상태</th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase">액션</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200">
+              <tbody className="divide-y divide-gray-200 dark:divide-ink-800">
                 {allUsers.map((user) => (
-                  <tr key={user.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                  <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-ink-800">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">
                       {user.employee_id}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="font-medium text-gray-900">{user.full_name}</div>
-                      <div className="text-sm text-gray-500">@{user.username}</div>
+                      <div className="font-medium text-gray-900 dark:text-gray-100">{user.full_name}</div>
+                      <div className="text-sm text-gray-500 dark:text-gray-400">@{user.username}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
                       {user.email}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">
                       {user.department_name || '-'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <select
                         value={roles.find(r => r.name === user.role_name)?.id || ''}
                         onChange={(e) => handleRoleChange(user.id, parseInt(e.target.value))}
-                        className="text-sm border border-gray-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="text-sm border border-gray-300 dark:border-ink-700 rounded-lg px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       >
                         {roles.map((role) => (
                           <option key={role.id} value={role.id}>
@@ -296,27 +296,27 @@ export default function AdminPage() {
       {/* Approve Modal */}
       {approveModalOpen && selectedUser && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 w-full max-w-md">
-            <h3 className="text-lg font-bold text-gray-900 mb-4">사용자 승인</h3>
-            <p className="text-gray-600 mb-4">
+          <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">사용자 승인</h3>
+            <p className="text-gray-600 dark:text-gray-400 mb-4">
               <span className="font-medium">{selectedUser.full_name}</span>님의 가입을 승인하려면 사번을 입력하세요.
             </p>
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                 사번 <span className="text-red-500">*</span>
               </label>
               <input
                 type="text"
                 value={employeeId}
                 onChange={(e) => setEmployeeId(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 placeholder="예: EMP001"
               />
             </div>
             <div className="flex justify-end space-x-3">
               <button
                 onClick={() => setApproveModalOpen(false)}
-                className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-ink-800 rounded-lg hover:bg-gray-200 dark:hover:bg-ink-700"
               >
                 취소
               </button>

@@ -15,7 +15,7 @@ import StatCard from '@/components/common/StatCard'
 import { formatPct, formatDate, formatRelativeTime, todayISO, isoLocal } from '@/utils/format'
 
 const STATUS_META: Record<string, { label: string; class: string }> = {
-  not_started: { label: '대기', class: 'badge bg-gray-100 text-gray-700' },
+  not_started: { label: '대기', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
   in_progress: { label: '진행중', class: 'badge bg-blue-100 text-blue-700' },
   review: { label: '검토중', class: 'badge bg-amber-100 text-amber-700' },
   completed: { label: '완료', class: 'badge bg-emerald-100 text-emerald-700' },
@@ -79,8 +79,8 @@ export default function ConnectClosingPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">결산 자동화</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">결산 자동화</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
             전표 분류율 90%+. 위하고 업로드용 파일을 한 번에.
           </p>
         </div>
@@ -92,7 +92,7 @@ export default function ConnectClosingPage() {
 
       {/* Client picker */}
       <div className="card">
-        <div className="text-sm text-gray-700 mb-2">수임고객 선택</div>
+        <div className="text-sm text-gray-700 dark:text-gray-300 mb-2">수임고객 선택</div>
         <div className="flex flex-wrap gap-2">
           {clientsQuery.data?.items?.map((c: any) => (
             <button
@@ -101,7 +101,7 @@ export default function ConnectClosingPage() {
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition ${
                 selectedClientId === c.id
                   ? 'bg-primary-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  : 'bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-ink-700'
               }`}
             >
               {c.company_name}
@@ -136,8 +136,8 @@ export default function ConnectClosingPage() {
 
       {/* Closing list */}
       <div className="card p-0 overflow-hidden">
-        <div className="p-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">결산 기간</h2>
+        <div className="p-4 border-b border-gray-200 dark:border-ink-800">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">결산 기간</h2>
         </div>
         <div className="table-container border-0">
           <table className="table">
@@ -159,22 +159,22 @@ export default function ConnectClosingPage() {
                 const rate = c.classification_rate || 0
                 return (
                   <tr key={c.id}>
-                    <td className="text-sm text-gray-700">{c.fiscal_year}</td>
-                    <td className="text-sm text-gray-700">
+                    <td className="text-sm text-gray-700 dark:text-gray-300">{c.fiscal_year}</td>
+                    <td className="text-sm text-gray-700 dark:text-gray-300">
                       {formatDate(c.period_start)} ~ {formatDate(c.period_end)}
                     </td>
                     <td>
-                      <span className="badge bg-gray-100 text-gray-700">
+                      <span className="badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300">
                         {c.period_type === 'monthly' ? '월간' : c.period_type === 'quarterly' ? '분기' : '연간'}
                       </span>
                     </td>
                     <td className="text-sm font-mono">
-                      <span className="font-medium text-gray-900">{c.voucher_classified_count}</span>
+                      <span className="font-medium text-gray-900 dark:text-gray-100">{c.voucher_classified_count}</span>
                       <span className="text-gray-400"> / {c.voucher_total_count}</span>
                     </td>
                     <td>
                       <div className="flex items-center gap-2">
-                        <div className="w-20 bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                        <div className="w-20 bg-gray-200 dark:bg-ink-700 rounded-full h-1.5 overflow-hidden">
                           <div
                             className={`h-full ${
                               rate >= 0.9 ? 'bg-emerald-500' : rate >= 0.7 ? 'bg-amber-500' : 'bg-rose-500'
@@ -182,12 +182,12 @@ export default function ConnectClosingPage() {
                             style={{ width: `${rate * 100}%` }}
                           />
                         </div>
-                        <span className="text-sm font-mono font-semibold text-gray-900">
+                        <span className="text-sm font-mono font-semibold text-gray-900 dark:text-gray-100">
                           {formatPct(rate * 100, 0)}
                         </span>
                       </div>
                     </td>
-                    <td className="text-xs text-gray-500">
+                    <td className="text-xs text-gray-500 dark:text-gray-400">
                       {c.wehago_uploaded_at ? (
                         <span className="text-emerald-600">
                           ✓ {formatRelativeTime(c.wehago_uploaded_at)}
@@ -244,9 +244,9 @@ export default function ConnectClosingPage() {
             <p className="text-sm text-teal-800 mt-1">
               결산이 완료된 전표를 위하고에서 그대로 import할 수 있는 형식으로 변환합니다.
               <br />
-              지원 양식: <code className="font-mono text-xs bg-white px-1 rounded">.xlsx</code>{' '}
-              <code className="font-mono text-xs bg-white px-1 rounded">.csv</code>{' '}
-              <code className="font-mono text-xs bg-white px-1 rounded">.xml</code>
+              지원 양식: <code className="font-mono text-xs bg-white dark:bg-ink-900 px-1 rounded">.xlsx</code>{' '}
+              <code className="font-mono text-xs bg-white dark:bg-ink-900 px-1 rounded">.csv</code>{' '}
+              <code className="font-mono text-xs bg-white dark:bg-ink-900 px-1 rounded">.xml</code>
             </p>
           </div>
         </div>
@@ -304,10 +304,10 @@ function StartClosingModal({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+      <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-md p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">결산 시작</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">결산 시작</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
             <XMarkIcon className="h-5 w-5" />
           </button>
         </div>

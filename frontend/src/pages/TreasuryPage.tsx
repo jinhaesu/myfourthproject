@@ -14,6 +14,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts'
+import { useChartTheme } from '@/lib/chartTheme'
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('ko-KR', {
@@ -26,6 +27,7 @@ function formatCurrency(value: number) {
 type TabType = 'overview' | 'aging'
 
 export default function TreasuryPage() {
+  const chartTheme = useChartTheme()
   const currentYear = new Date().getFullYear()
   const [fiscalYear, setFiscalYear] = useState(currentYear)
   const [activeTab, setActiveTab] = useState<TabType>('overview')
@@ -99,8 +101,8 @@ export default function TreasuryPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">자금 관리</h1>
-          <p className="text-gray-500 mt-1">현금, 채권, 채무를 관리합니다.</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">자금 관리</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">현금, 채권, 채무를 관리합니다.</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <FiscalYearTabs
@@ -119,7 +121,7 @@ export default function TreasuryPage() {
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200">
+      <div className="border-b border-gray-200 dark:border-ink-800">
         <nav className="flex gap-4">
           {[
             { id: 'overview' as TabType, label: '현황' },
@@ -131,7 +133,7 @@ export default function TreasuryPage() {
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.id
                   ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >
               {tab.label}
@@ -148,7 +150,7 @@ export default function TreasuryPage() {
               <BanknotesIcon className="h-6 w-6 text-blue-600" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">현금 잔액</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">현금 잔액</p>
               <p className="text-xl font-bold">
                 {formatCurrency(cashPosition?.total_balance || 0)}
               </p>
@@ -162,7 +164,7 @@ export default function TreasuryPage() {
               <ArrowDownIcon className="h-6 w-6 text-green-600" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">매출채권</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">매출채권</p>
               <p className="text-xl font-bold text-green-600">
                 {formatCurrency(totalReceivable)}
               </p>
@@ -176,7 +178,7 @@ export default function TreasuryPage() {
               <ArrowUpIcon className="h-6 w-6 text-red-600" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">매입채무</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">매입채무</p>
               <p className="text-xl font-bold text-red-600">
                 {formatCurrency(totalPayable)}
               </p>
@@ -186,7 +188,7 @@ export default function TreasuryPage() {
 
         <div className="card">
           <div>
-            <p className="text-sm text-gray-500">순 자금</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">순 자금</p>
             <p
               className={`text-xl font-bold ${
                 (cashPosition?.total_balance || 0) + totalReceivable - totalPayable >= 0
@@ -211,11 +213,11 @@ export default function TreasuryPage() {
             {cashPosition?.accounts?.map((account: any) => (
               <div
                 key={account.id}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                className="flex items-center justify-between p-3 bg-gray-50 dark:bg-ink-900 rounded-lg"
               >
                 <div>
                   <p className="font-medium">{account.alias}</p>
-                  <p className="text-sm text-gray-500">{account.bank}</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">{account.bank}</p>
                 </div>
                 <p className="font-mono font-medium">
                   {formatCurrency(account.current_balance)}
@@ -232,11 +234,11 @@ export default function TreasuryPage() {
             {upcomingPayments?.slice(0, 5).map((payment: any) => (
               <div
                 key={payment.id}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                className="flex items-center justify-between p-3 bg-gray-50 dark:bg-ink-900 rounded-lg"
               >
                 <div>
                   <p className="font-medium">{payment.vendor_name || `지급 #${payment.id}`}</p>
-                  <p className="text-sm text-gray-500">{payment.scheduled_date}</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">{payment.scheduled_date}</p>
                 </div>
                 <p className="font-mono font-medium text-red-600">
                   {formatCurrency(payment.scheduled_amount)}
@@ -244,7 +246,7 @@ export default function TreasuryPage() {
               </div>
             ))}
             {(!upcomingPayments || upcomingPayments.length === 0) && (
-              <p className="text-gray-500 text-sm text-center py-4">
+              <p className="text-gray-500 dark:text-gray-400 text-sm text-center py-4">
                 예정된 지급이 없습니다.
               </p>
             )}
@@ -261,11 +263,11 @@ export default function TreasuryPage() {
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={agingChartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-                  <XAxis dataKey="period" stroke="#6b7280" fontSize={12} />
-                  <YAxis stroke="#6b7280" fontSize={12} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+                  <XAxis dataKey="period" stroke={chartTheme.axisColor} fontSize={12} />
+                  <YAxis stroke={chartTheme.axisColor} fontSize={12} />
                   <Tooltip
-                    contentStyle={{ backgroundColor: 'white', border: '1px solid #e5e7eb', borderRadius: '8px' }}
+                    contentStyle={{ backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, borderRadius: '8px', color: chartTheme.tooltipText }}
                     formatter={(value: number) => `${value.toLocaleString()}만원`}
                   />
                   <Legend />
@@ -317,7 +319,7 @@ export default function TreasuryPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="card">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">매출채권 (미수금)</h3>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">매출채권 (미수금)</h3>
             <select
               value={arStatusFilter || ''}
               onChange={(e) => setArStatusFilter(e.target.value || undefined)}
@@ -329,9 +331,9 @@ export default function TreasuryPage() {
             </select>
           </div>
           {arLoading ? (
-            <div className="text-center py-4 text-gray-500">로딩 중...</div>
+            <div className="text-center py-4 text-gray-500 dark:text-gray-400">로딩 중...</div>
           ) : !receivables || receivables.length === 0 ? (
-            <div className="text-center py-4 text-gray-500">매출채권이 없습니다.</div>
+            <div className="text-center py-4 text-gray-500 dark:text-gray-400">매출채권이 없습니다.</div>
           ) : (
           <div className="table-container">
             <table className="table">
@@ -374,7 +376,7 @@ export default function TreasuryPage() {
 
         <div className="card">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-semibold text-gray-900">매입채무 (미지급금)</h3>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">매입채무 (미지급금)</h3>
             <select
               value={apStatusFilter || ''}
               onChange={(e) => setApStatusFilter(e.target.value || undefined)}
@@ -387,9 +389,9 @@ export default function TreasuryPage() {
             </select>
           </div>
           {apLoading ? (
-            <div className="text-center py-4 text-gray-500">로딩 중...</div>
+            <div className="text-center py-4 text-gray-500 dark:text-gray-400">로딩 중...</div>
           ) : !payables || payables.length === 0 ? (
-            <div className="text-center py-4 text-gray-500">매입채무가 없습니다.</div>
+            <div className="text-center py-4 text-gray-500 dark:text-gray-400">매입채무가 없습니다.</div>
           ) : (
           <div className="table-container">
             <table className="table">

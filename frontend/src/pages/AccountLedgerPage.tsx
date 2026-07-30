@@ -24,7 +24,7 @@ const CATEGORY_META: Record<string, { label: string; dot: string; chip: string }
   equity: { label: '자본', dot: 'bg-purple-500', chip: 'bg-purple-50 text-purple-700 border-purple-200' },
   revenue: { label: '수익', dot: 'bg-emerald-500', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   expense: { label: '비용', dot: 'bg-amber-500', chip: 'bg-amber-50 text-amber-700 border-amber-200' },
-  non_operating: { label: '영업외', dot: 'bg-ink-400', chip: 'bg-ink-50 text-ink-700 border-ink-200' },
+  non_operating: { label: '영업외', dot: 'bg-ink-400 dark:bg-ink-500', chip: 'bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800' },
 }
 
 const CATEGORY_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expense', 'non_operating']
@@ -211,7 +211,7 @@ export default function AccountLedgerPage() {
               <span>{p.value}</span>
             </span>
           ) : (
-            <span className="text-ink-300">-</span>
+            <span className="text-ink-300 dark:text-ink-600">-</span>
           ),
       },
       {
@@ -247,10 +247,10 @@ export default function AccountLedgerPage() {
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <h1 className="flex items-center gap-2">
-            <BookOpenIcon className="h-5 w-5 text-ink-500" />
+            <BookOpenIcon className="h-5 w-5 text-ink-500 dark:text-ink-400" />
             계정별 원장
           </h1>
-          <p className="text-xs text-ink-500 mt-1">
+          <p className="text-xs text-ink-500 dark:text-ink-400 mt-1">
             {accountsQuery.isLoading
               ? '불러오는 중…'
               : `${accounts.length}개 계정 · ${totalCount.toLocaleString('ko-KR')}건의 거래`}
@@ -266,20 +266,20 @@ export default function AccountLedgerPage() {
               setPeriodEnd(y === currentY ? todayISO() : isoYearEnd(y))
             }}
           />
-          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white border border-ink-200">
+          <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
             <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
             <input
               type="date"
               value={periodStart}
               onChange={(e) => setPeriodStart(e.target.value)}
-              className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28"
+              className="bg-transparent text-xs font-medium text-ink-700 dark:text-ink-300 focus:outline-none w-28"
             />
-            <span className="text-ink-300">→</span>
+            <span className="text-ink-300 dark:text-ink-600">→</span>
             <input
               type="date"
               value={periodEnd}
               onChange={(e) => setPeriodEnd(e.target.value)}
-              className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-28"
+              className="bg-transparent text-xs font-medium text-ink-700 dark:text-ink-300 focus:outline-none w-28"
             />
           </div>
           <button
@@ -296,7 +296,7 @@ export default function AccountLedgerPage() {
       <div className="ledger-shell">
         {/* Sidebar */}
         <aside className="ledger-sidebar">
-          <div className="p-2.5 border-b border-ink-200 space-y-2">
+          <div className="p-2.5 border-b border-ink-200 dark:border-ink-800 space-y-2">
             <div className="relative">
               <MagnifyingGlassIcon className="h-3.5 w-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-ink-400" />
               <input
@@ -306,7 +306,7 @@ export default function AccountLedgerPage() {
                 placeholder="계정 검색"
                 className="pl-7 pr-12 input text-xs"
               />
-              <kbd className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1 py-0.5 rounded border border-ink-200 bg-canvas-50 text-2xs text-ink-400 font-mono">
+              <kbd className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1 py-0.5 rounded border border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 text-2xs text-ink-400 font-mono">
                 ⌘K
               </kbd>
             </div>
@@ -315,8 +315,8 @@ export default function AccountLedgerPage() {
                 onClick={() => setCategoryFilter(undefined)}
                 className={`px-2 py-0.5 rounded text-2xs font-semibold transition ${
                   !categoryFilter
-                    ? 'bg-ink-900 text-white'
-                    : 'bg-white text-ink-600 border border-ink-200 hover:border-ink-300'
+                    ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900'
+                    : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-400 border border-ink-200 dark:border-ink-800 hover:border-ink-300 dark:hover:border-ink-600'
                 }`}
               >
                 전체
@@ -330,8 +330,8 @@ export default function AccountLedgerPage() {
                     onClick={() => setCategoryFilter(isActive ? undefined : k)}
                     className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-2xs font-semibold transition ${
                       isActive
-                        ? 'bg-ink-900 text-white'
-                        : 'bg-white text-ink-600 border border-ink-200 hover:border-ink-300'
+                        ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900'
+                        : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-400 border border-ink-200 dark:border-ink-800 hover:border-ink-300 dark:hover:border-ink-600'
                     }`}
                   >
                     <span className={`w-1 h-1 rounded-full ${v.dot}`} />
@@ -340,12 +340,12 @@ export default function AccountLedgerPage() {
                 )
               })}
             </div>
-            <label className="flex items-center gap-1.5 text-2xs text-ink-500 select-none cursor-pointer">
+            <label className="flex items-center gap-1.5 text-2xs text-ink-500 dark:text-ink-400 select-none cursor-pointer">
               <input
                 type="checkbox"
                 checked={onlyActivity}
                 onChange={(e) => setOnlyActivity(e.target.checked)}
-                className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3"
+                className="rounded border-ink-300 dark:border-ink-700 text-ink-900 dark:text-ink-50 focus:ring-ink-300 dark:focus:ring-ink-600 w-3 h-3"
               />
               거래 있는 계정만
             </label>
@@ -355,7 +355,7 @@ export default function AccountLedgerPage() {
             {accountsQuery.isLoading && (
               <div className="px-3 py-4 space-y-2">
                 {[1, 2, 3, 4, 5].map((i) => (
-                  <div key={i} className="h-7 bg-ink-100 rounded animate-pulse" />
+                  <div key={i} className="h-7 bg-ink-100 dark:bg-ink-800 rounded animate-pulse" />
                 ))}
               </div>
             )}
@@ -373,7 +373,7 @@ export default function AccountLedgerPage() {
                   <div key={cat} className="mb-1.5">
                     <button
                       onClick={() => toggleCat(cat)}
-                      className="w-full px-3 py-1 flex items-center justify-between text-2xs font-semibold uppercase tracking-wider text-ink-500 hover:text-ink-900"
+                      className="w-full px-3 py-1 flex items-center justify-between text-2xs font-semibold uppercase tracking-wider text-ink-500 dark:text-ink-400 hover:text-ink-900 dark:hover:text-ink-50"
                     >
                       <span className="flex items-center gap-1.5">
                         {collapsed ? (
@@ -383,7 +383,7 @@ export default function AccountLedgerPage() {
                         )}
                         <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
                         {meta.label}
-                        <span className="text-ink-300 font-normal">{group.length}</span>
+                        <span className="text-ink-300 dark:text-ink-600 font-normal">{group.length}</span>
                       </span>
                       <span className="font-mono text-2xs text-ink-400 normal-case tracking-normal">
                         {formatCompactWon(groupTotal)}
@@ -405,7 +405,7 @@ export default function AccountLedgerPage() {
                                 </span>
                                 <span
                                   className={`text-xs truncate ${
-                                    isActive ? 'font-semibold text-ink-900' : 'font-medium text-ink-700'
+                                    isActive ? 'font-semibold text-ink-900 dark:text-ink-50' : 'font-medium text-ink-700 dark:text-ink-300'
                                   }`}
                                 >
                                   {a.account_name}
@@ -418,7 +418,7 @@ export default function AccountLedgerPage() {
                             <div className="text-right flex-shrink-0 ml-2">
                               <div
                                 className={`text-xs font-mono tabular-nums font-semibold ${
-                                  Number(a.closing_balance) >= 0 ? 'text-ink-900' : 'text-rose-600'
+                                  Number(a.closing_balance) >= 0 ? 'text-ink-900 dark:text-ink-50' : 'text-rose-600'
                                 }`}
                               >
                                 {formatCompactWon(a.closing_balance)}
@@ -433,7 +433,7 @@ export default function AccountLedgerPage() {
 
             {!accountsQuery.isLoading && accounts.length === 0 && (
               <div className="px-4 py-6 text-center">
-                <p className="text-xs text-ink-500">이 기간에 거래가 없습니다.</p>
+                <p className="text-xs text-ink-500 dark:text-ink-400">이 기간에 거래가 없습니다.</p>
                 {availableYears.length > 0 && (
                   <div className="mt-3">
                     <p className="text-2xs text-ink-400 mb-1.5">데이터가 있는 년도</p>
@@ -445,7 +445,7 @@ export default function AccountLedgerPage() {
                             setPeriodStart(isoYearStart(y))
                             setPeriodEnd(isoYearEnd(y))
                           }}
-                          className="px-2 py-0.5 rounded text-2xs font-semibold bg-white border border-ink-200 text-ink-700 hover:bg-ink-50 hover:border-ink-300"
+                          className="px-2 py-0.5 rounded text-2xs font-semibold bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 text-ink-700 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 hover:border-ink-300 dark:hover:border-ink-600"
                         >
                           {y}
                         </button>
@@ -463,12 +463,12 @@ export default function AccountLedgerPage() {
           {summary ? (
             <>
               {/* Account header */}
-              <div className="px-5 py-3.5 border-b border-ink-200 bg-white">
+              <div className="px-5 py-3.5 border-b border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-mono text-ink-400">{summary.account_code}</span>
-                      <h2 className="text-lg font-semibold text-ink-900 tracking-crisp">
+                      <h2 className="text-lg font-semibold text-ink-900 dark:text-ink-50 tracking-crisp">
                         {summary.account_name}
                       </h2>
                       <span className={`badge ${CATEGORY_META[summary.category]?.chip}`}>
@@ -476,9 +476,9 @@ export default function AccountLedgerPage() {
                         {CATEGORY_META[summary.category]?.label}
                       </span>
                     </div>
-                    <div className="text-2xs text-ink-500 mt-0.5">
+                    <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
                       {formatDate(summary.period_start)} – {formatDate(summary.period_end)} ·{' '}
-                      <span className="font-medium text-ink-700">
+                      <span className="font-medium text-ink-700 dark:text-ink-300">
                         {summary.transaction_count.toLocaleString('ko-KR')}건
                       </span>
                     </div>
@@ -515,7 +515,7 @@ export default function AccountLedgerPage() {
                   const isPL = ['revenue', 'expense', 'non_operating'].includes(summary.category)
                   if (isPL) {
                     return (
-                      <div className="mt-3.5 grid grid-cols-3 divide-x divide-ink-100 border border-ink-200 rounded-md bg-canvas-50">
+                      <div className="mt-3.5 grid grid-cols-3 divide-x divide-ink-100 dark:divide-ink-800 border border-ink-200 dark:border-ink-800 rounded-md bg-canvas-50 dark:bg-ink-950">
                         <KPIBlock label="차변 발생" value={summary.period_debit} accent="primary" />
                         <KPIBlock label="대변 발생" value={summary.period_credit} accent="danger" />
                         <KPIBlock
@@ -528,7 +528,7 @@ export default function AccountLedgerPage() {
                     )
                   }
                   return (
-                    <div className="mt-3.5 grid grid-cols-4 divide-x divide-ink-100 border border-ink-200 rounded-md bg-canvas-50">
+                    <div className="mt-3.5 grid grid-cols-4 divide-x divide-ink-100 dark:divide-ink-800 border border-ink-200 dark:border-ink-800 rounded-md bg-canvas-50 dark:bg-ink-950">
                       <KPIBlock label="기초 잔액" value={summary.opening_balance} />
                       <KPIBlock label="차변" value={summary.period_debit} accent="primary" />
                       <KPIBlock label="대변" value={summary.period_credit} accent="danger" />
@@ -626,14 +626,14 @@ function KPIBlock({
   delta?: { value: string; positive: boolean }
 }) {
   const accentClass: Record<string, string> = {
-    neutral: 'text-ink-900',
+    neutral: 'text-ink-900 dark:text-ink-50',
     primary: 'text-primary-700',
     success: 'text-emerald-700',
     danger: 'text-rose-700',
   }
   return (
     <div className="px-3.5 py-2.5">
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">{label}</div>
+      <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">{label}</div>
       <div
         className={`mt-1 font-mono tabular-nums ${
           bold ? 'text-base font-bold' : 'text-sm font-semibold'

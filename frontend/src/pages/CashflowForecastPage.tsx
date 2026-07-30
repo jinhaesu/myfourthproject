@@ -11,6 +11,7 @@ import {
   ReferenceLine,
 } from 'recharts'
 import { buildOwnAccountSet, filterOutInternalTransfers, isSelfContact } from '@/utils/internalTransfer'
+import { useChartTheme } from '@/lib/chartTheme'
 import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
@@ -676,10 +677,10 @@ function UserInputPanel({
   return (
     <div className="panel overflow-hidden">
       <button
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-canvas-50 transition"
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-canvas-50 dark:hover:bg-ink-800 transition"
         onClick={() => setOpen((p) => !p)}
       >
-        <span className="text-sm font-semibold text-ink-800">예측 조건 입력 (선택)</span>
+        <span className="text-sm font-semibold text-ink-800 dark:text-ink-100">예측 조건 입력 (선택)</span>
         {open ? (
           <ChevronUpIcon className="h-4 w-4 text-ink-400" />
         ) : (
@@ -688,7 +689,7 @@ function UserInputPanel({
       </button>
 
       {open && (
-        <div className="px-3 pb-3 space-y-4 border-t border-ink-100 pt-3">
+        <div className="px-3 pb-3 space-y-4 border-t border-ink-100 dark:border-ink-800 pt-3">
           {/* Expected Revenue */}
           <div>
             <label className="label">예측 기간 예상 매출 합계 (비워두면 과거 평균 기반 자동 추정)</label>
@@ -707,21 +708,21 @@ function UserInputPanel({
           {/* IN contact overrides */}
           {inPatterns.length > 0 && (
             <div>
-              <div className="text-xs font-semibold text-ink-700 mb-1.5">거래처별 예상 입금 조정 (선택)</div>
+              <div className="text-xs font-semibold text-ink-700 dark:text-ink-300 mb-1.5">거래처별 예상 입금 조정 (선택)</div>
               <div className="overflow-x-auto">
                 <table className="min-w-full text-2xs">
                   <thead>
-                    <tr className="border-b border-ink-100">
-                      <th className="text-left py-1 pr-3 font-medium text-ink-500">거래처</th>
-                      <th className="text-right py-1 pr-3 font-medium text-ink-500">과거 평균</th>
-                      <th className="text-right py-1 font-medium text-ink-500">예상 금액</th>
+                    <tr className="border-b border-ink-100 dark:border-ink-800">
+                      <th className="text-left py-1 pr-3 font-medium text-ink-500 dark:text-ink-400">거래처</th>
+                      <th className="text-right py-1 pr-3 font-medium text-ink-500 dark:text-ink-400">과거 평균</th>
+                      <th className="text-right py-1 font-medium text-ink-500 dark:text-ink-400">예상 금액</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-ink-50">
+                  <tbody className="divide-y divide-ink-50 dark:divide-ink-800">
                     {inPatterns.slice(0, 15).map((p) => (
                       <tr key={p.contact}>
-                        <td className="py-1 pr-3 text-ink-700 max-w-[140px] truncate">{p.contact}</td>
-                        <td className="py-1 pr-3 text-right font-mono text-ink-500">
+                        <td className="py-1 pr-3 text-ink-700 dark:text-ink-300 max-w-[140px] truncate">{p.contact}</td>
+                        <td className="py-1 pr-3 text-right font-mono text-ink-500 dark:text-ink-400">
                           {formatCompactWon(p.avgAmount)}
                         </td>
                         <td className="py-1 text-right">
@@ -744,21 +745,21 @@ function UserInputPanel({
           {/* OUT contact overrides */}
           {outPatterns.length > 0 && (
             <div>
-              <div className="text-xs font-semibold text-ink-700 mb-1.5">거래처별 예상 출금 조정 (선택)</div>
+              <div className="text-xs font-semibold text-ink-700 dark:text-ink-300 mb-1.5">거래처별 예상 출금 조정 (선택)</div>
               <div className="overflow-x-auto">
                 <table className="min-w-full text-2xs">
                   <thead>
-                    <tr className="border-b border-ink-100">
-                      <th className="text-left py-1 pr-3 font-medium text-ink-500">거래처</th>
-                      <th className="text-right py-1 pr-3 font-medium text-ink-500">과거 평균</th>
-                      <th className="text-right py-1 font-medium text-ink-500">예상 금액</th>
+                    <tr className="border-b border-ink-100 dark:border-ink-800">
+                      <th className="text-left py-1 pr-3 font-medium text-ink-500 dark:text-ink-400">거래처</th>
+                      <th className="text-right py-1 pr-3 font-medium text-ink-500 dark:text-ink-400">과거 평균</th>
+                      <th className="text-right py-1 font-medium text-ink-500 dark:text-ink-400">예상 금액</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-ink-50">
+                  <tbody className="divide-y divide-ink-50 dark:divide-ink-800">
                     {outPatterns.slice(0, 15).map((p) => (
                       <tr key={p.contact}>
-                        <td className="py-1 pr-3 text-ink-700 max-w-[140px] truncate">{p.contact}</td>
-                        <td className="py-1 pr-3 text-right font-mono text-ink-500">
+                        <td className="py-1 pr-3 text-ink-700 dark:text-ink-300 max-w-[140px] truncate">{p.contact}</td>
+                        <td className="py-1 pr-3 text-right font-mono text-ink-500 dark:text-ink-400">
                           {formatCompactWon(p.avgAmount)}
                         </td>
                         <td className="py-1 text-right">
@@ -781,7 +782,7 @@ function UserInputPanel({
           {/* One-time costs */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <div className="text-xs font-semibold text-ink-700">일회성 비용 추가</div>
+              <div className="text-xs font-semibold text-ink-700 dark:text-ink-300">일회성 비용 추가</div>
               <button className="btn-secondary text-2xs" onClick={onAddCost}>
                 <PlusCircleIcon className="h-3 w-3" />
                 추가
@@ -940,7 +941,7 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo, an
     return (
       <th
         className={`px-3 py-1.5 text-${align} text-2xs font-semibold uppercase tracking-wider cursor-pointer select-none transition ${
-          active ? 'text-ink-900 bg-canvas-100' : 'text-ink-500 hover:text-ink-700 hover:bg-canvas-100'
+          active ? 'text-ink-900 dark:text-ink-50 bg-canvas-100 dark:bg-ink-900' : 'text-ink-500 dark:text-ink-400 hover:text-ink-700 dark:hover:text-ink-200 hover:bg-canvas-100 dark:hover:bg-ink-800'
         }`}
         onClick={() => handleSort(sk)}
         title="클릭하여 정렬"
@@ -956,7 +957,7 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo, an
   return (
     <div className="overflow-x-auto max-h-60 overflow-y-auto">
       <table className="min-w-full">
-        <thead className="bg-canvas-50 sticky top-0 z-10">
+        <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10">
           <tr>
             <SortHeader label="거래처" sk="contact" align="left" />
             <SortHeader label="과거 평균" sk="avgAmount" align="right" />
@@ -968,21 +969,21 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo, an
             <SortHeader label="비율" sk="shareRatio" align="right" />
           </tr>
         </thead>
-        <tbody className="divide-y divide-ink-100">
+        <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
           {sortedPatterns.map(({ p, nextDate, forecastAmt, occurrences }) => (
-            <tr key={p.contact} className="hover:bg-canvas-50">
-              <td className="px-3 py-1.5 text-xs text-ink-800 max-w-[140px] truncate">{p.contact}</td>
-              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-500">
+            <tr key={p.contact} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
+              <td className="px-3 py-1.5 text-xs text-ink-800 dark:text-ink-100 max-w-[140px] truncate">{p.contact}</td>
+              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-500 dark:text-ink-400">
                 {formatCurrency(p.avgAmount, false)}
               </td>
-              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-900 font-semibold">
+              <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-900 dark:text-ink-50 font-semibold">
                 {formatCurrency(forecastAmt, false)}
                 {occurrences > 1 && (
                   <span className="ml-1 text-2xs text-ink-400 font-normal">({occurrences}회)</span>
                 )}
               </td>
-              <td className="px-3 py-1.5 text-right text-2xs text-ink-600">{p.txCount}회</td>
-              <td className="px-3 py-1.5 text-right text-2xs text-ink-600">
+              <td className="px-3 py-1.5 text-right text-2xs text-ink-600 dark:text-ink-400">{p.txCount}회</td>
+              <td className="px-3 py-1.5 text-right text-2xs text-ink-600 dark:text-ink-400">
                 {p.preferredDayOfMonth !== null
                   ? `매월 ${p.preferredDayOfMonth}일`
                   : `~${p.cycleDays}일`}
@@ -993,7 +994,7 @@ function ContactPatternTable({ patterns, direction, forecastFrom, forecastTo, an
               <td className="px-3 py-1.5 text-center text-2xs">
                 <ConfidenceBadge confidence={p.confidence} />
               </td>
-              <td className="px-3 py-1.5 text-right text-2xs text-ink-500">
+              <td className="px-3 py-1.5 text-right text-2xs text-ink-500 dark:text-ink-400">
                 {(p.shareRatio * 100).toFixed(1)}%
               </td>
             </tr>
@@ -1011,7 +1012,7 @@ function ConfidenceBadge({ confidence }: { confidence: Confidence }) {
   if (confidence === 'medium') {
     return <span className="badge bg-amber-50 text-amber-700 border-amber-200">중간</span>
   }
-  return <span className="badge bg-ink-50 text-ink-500 border-ink-200">낮음</span>
+  return <span className="badge bg-ink-50 dark:bg-ink-900 text-ink-500 dark:text-ink-400 border-ink-200 dark:border-ink-800">낮음</span>
 }
 
 // -- CashflowChart --
@@ -1029,14 +1030,14 @@ function ChartTooltipContent({ active, payload, label }: any) {
   const isForecast = payload[0]?.payload?.isForecast
   return (
     <div className="panel px-3 py-2 text-2xs shadow-pop min-w-[140px]">
-      <div className="font-semibold text-ink-700 mb-1">{label}</div>
+      <div className="font-semibold text-ink-700 dark:text-ink-300 mb-1">{label}</div>
       {isForecast && (
         <div className="text-2xs text-amber-600 font-medium mb-1">예측</div>
       )}
       {payload.map((p: any) => (
         <div key={p.dataKey} className="flex items-center justify-between gap-3">
           <span style={{ color: p.color }}>{p.name}</span>
-          <span className="font-mono tabular-nums text-ink-900">
+          <span className="font-mono tabular-nums text-ink-900 dark:text-ink-50">
             {formatCompactWon(p.value)}
           </span>
         </div>
@@ -1064,6 +1065,7 @@ function CashflowChart({
   isLoading,
   hasError,
 }: CashflowChartProps) {
+  const chartTheme = useChartTheme()
   const chartData = useMemo<ChartPoint[]>(() => {
     const past: ChartPoint[] = historicalPoints.map((p) => ({
       label: p.date.slice(5),
@@ -1100,8 +1102,8 @@ function CashflowChart({
   return (
     <div className="panel p-3">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-ink-800">잔액 추이 + 예측</h2>
-        <div className="flex items-center gap-3 text-2xs text-ink-500">
+        <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100">잔액 추이 + 예측</h2>
+        <div className="flex items-center gap-3 text-2xs text-ink-500 dark:text-ink-400">
           <span className="flex items-center gap-1">
             <span className="inline-block w-4 h-0.5 bg-primary-700 rounded" />
             실제 잔액
@@ -1130,16 +1132,16 @@ function CashflowChart({
       ) : (
         <ResponsiveContainer width="100%" height={240}>
           <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
+            <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
             <XAxis
               dataKey="label"
-              tick={{ fontSize: 9, fill: '#a1a1aa' }}
+              tick={{ fontSize: 9, fill: chartTheme.axisColor }}
               interval={tickInterval}
               tickLine={false}
               axisLine={false}
             />
             <YAxis
-              tick={{ fontSize: 9, fill: '#a1a1aa' }}
+              tick={{ fontSize: 9, fill: chartTheme.axisColor }}
               tickFormatter={(v) => formatCompactWon(v)}
               tickLine={false}
               axisLine={false}
@@ -1190,32 +1192,32 @@ interface DailyDetailTableProps {
 function DailyDetailTable({ forecastDays }: DailyDetailTableProps) {
   return (
     <div className="panel overflow-hidden">
-      <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-ink-800">일별 예측 상세</h2>
+      <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100">일별 예측 상세</h2>
         <span className="text-2xs text-ink-400">{forecastDays.length}일</span>
       </div>
       <div className="overflow-x-auto max-h-72 overflow-y-auto">
         <table className="min-w-full">
-          <thead className="bg-canvas-50 sticky top-0 z-10">
+          <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10">
             <tr>
-              <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+              <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                 날짜
               </th>
-              <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+              <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                 예상 입금
               </th>
-              <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+              <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                 예상 출금
               </th>
-              <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+              <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                 순변동
               </th>
-              <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+              <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                 예상 잔액
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-ink-100">
+          <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
             {forecastDays.length === 0 ? (
               <tr>
                 <td colSpan={5} className="py-6 text-center text-2xs text-ink-400">
@@ -1228,11 +1230,11 @@ function DailyDetailTable({ forecastDays }: DailyDetailTableProps) {
                 return (
                   <tr
                     key={d.date}
-                    className={`hover:bg-canvas-50 ${d.isDanger ? 'bg-rose-50/60' : ''}`}
+                    className={`hover:bg-canvas-50 dark:hover:bg-ink-800 ${d.isDanger ? 'bg-rose-50/60' : ''}`}
                   >
                     <td
                       className={`px-3 py-1.5 font-mono text-2xs whitespace-nowrap ${
-                        d.isDanger ? 'text-rose-700 font-semibold' : 'text-ink-600'
+                        d.isDanger ? 'text-rose-700 font-semibold' : 'text-ink-600 dark:text-ink-400'
                       }`}
                     >
                       {d.date}
@@ -1241,14 +1243,14 @@ function DailyDetailTable({ forecastDays }: DailyDetailTableProps) {
                       )}
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-emerald-700">
-                      {d.expectedIn > 0 ? `+${formatCurrency(d.expectedIn, false)}` : <span className="text-ink-200">-</span>}
+                      {d.expectedIn > 0 ? `+${formatCurrency(d.expectedIn, false)}` : <span className="text-ink-200 dark:text-ink-700">-</span>}
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-rose-700">
-                      {d.expectedOut > 0 ? `-${formatCurrency(d.expectedOut, false)}` : <span className="text-ink-200">-</span>}
+                      {d.expectedOut > 0 ? `-${formatCurrency(d.expectedOut, false)}` : <span className="text-ink-200 dark:text-ink-700">-</span>}
                     </td>
                     <td
                       className={`px-3 py-1.5 text-right font-mono tabular-nums text-2xs font-medium ${
-                        net > 0 ? 'text-emerald-700' : net < 0 ? 'text-rose-700' : 'text-ink-300'
+                        net > 0 ? 'text-emerald-700' : net < 0 ? 'text-rose-700' : 'text-ink-300 dark:text-ink-600'
                       }`}
                     >
                       {net !== 0 ? (
@@ -1257,12 +1259,12 @@ function DailyDetailTable({ forecastDays }: DailyDetailTableProps) {
                           {formatCurrency(net, false)}
                         </>
                       ) : (
-                        <span className="text-ink-200">0</span>
+                        <span className="text-ink-200 dark:text-ink-700">0</span>
                       )}
                     </td>
                     <td
                       className={`px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold ${
-                        d.isDanger ? 'text-rose-700' : 'text-ink-900'
+                        d.isDanger ? 'text-rose-700' : 'text-ink-900 dark:text-ink-50'
                       }`}
                     >
                       {formatCurrency(d.balance, false)}
@@ -1299,15 +1301,15 @@ function KPI({
 }) {
   const v = Number(value ?? 0)
   const toneMap: Record<KpiTone, string> = {
-    neutral: 'text-ink-900',
+    neutral: 'text-ink-900 dark:text-ink-50',
     primary: 'text-primary-700',
     success: 'text-emerald-700',
     danger: 'text-rose-700',
     warning: 'text-amber-700',
   }
   return (
-    <div className={`panel px-3 py-2.5 ${highlight ? 'border-2 border-ink-900' : ''}`}>
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider flex items-center gap-1 mb-0.5">
+    <div className={`panel px-3 py-2.5 ${highlight ? 'border-2 border-ink-900 dark:border-ink-100' : ''}`}>
+      <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider flex items-center gap-1 mb-0.5">
         {icon}
         {label}
       </div>
@@ -1611,10 +1613,10 @@ export default function CashflowForecastPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <ChartBarIcon className="h-4 w-4 text-ink-500" />
+            <ChartBarIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             캐시플로우 예측
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             과거 패턴 분석 기반 미래 자금 예측 도구
           </p>
           {filteredCount > 0 && (
@@ -1654,7 +1656,7 @@ export default function CashflowForecastPage() {
       <div className="panel p-3 space-y-3">
         {/* Lookback */}
         <div>
-          <div className="text-2xs font-semibold text-ink-600 mb-1.5 uppercase tracking-wider">
+          <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1.5 uppercase tracking-wider">
             분석 기준 기간 (과거 데이터)
           </div>
           <PeriodPicker
@@ -1667,26 +1669,26 @@ export default function CashflowForecastPage() {
               { label: '범위', presets: ['last_7d', 'last_30d'] },
             ]}
           />
-          <p className="text-2xs text-ink-500 mt-1">
-            ※ 거래처 패턴은 지난 <span className="font-semibold text-ink-700">2개월치 전체 거래</span>로 분석합니다 (단기 트렌드 반영).
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-1">
+            ※ 거래처 패턴은 지난 <span className="font-semibold text-ink-700 dark:text-ink-300">2개월치 전체 거래</span>로 분석합니다 (단기 트렌드 반영).
             상단 기간은 잔액 시계열 표시용. 카드결제(EXPENSE_TICKET)는 별도 변동성 지출로 처리.
           </p>
         </div>
 
         {/* Forecast preset */}
         <div>
-          <div className="text-2xs font-semibold text-ink-600 mb-1.5 uppercase tracking-wider">
+          <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1.5 uppercase tracking-wider">
             예측 기간
           </div>
           <div className="flex items-center gap-1 flex-wrap">
-            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
               {(['next30', 'next60', 'next_month', 'next_next_month', 'next_quarter', 'custom'] as ForecastPreset[]).map(
                 (p) => (
                   <button
                     key={p}
                     onClick={() => applyForecastPreset(p)}
                     className={`px-2 py-1 rounded text-2xs font-semibold transition ${
-                      forecastPreset === p ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+                      forecastPreset === p ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
                     }`}
                   >
                     {FORECAST_PRESET_LABELS[p]}
@@ -1695,17 +1697,17 @@ export default function CashflowForecastPage() {
               )}
             </div>
             {forecastPreset === 'custom' && (
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white border border-ink-200">
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
                 <input
                   type="date"
-                  className="bg-transparent text-2xs text-ink-700 w-28 focus:outline-none"
+                  className="bg-transparent text-2xs text-ink-700 dark:text-ink-300 w-28 focus:outline-none"
                   value={forecastFrom}
                   onChange={(e) => setForecastFrom(e.target.value)}
                 />
-                <span className="text-ink-300">→</span>
+                <span className="text-ink-300 dark:text-ink-600">→</span>
                 <input
                   type="date"
-                  className="bg-transparent text-2xs text-ink-700 w-28 focus:outline-none"
+                  className="bg-transparent text-2xs text-ink-700 dark:text-ink-300 w-28 focus:outline-none"
                   value={forecastTo}
                   onChange={(e) => setForecastTo(e.target.value)}
                 />
@@ -1735,11 +1737,11 @@ export default function CashflowForecastPage() {
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
           {inPatterns.length + outPatterns.length > 0 && (
-            <span className="text-2xs text-ink-500">
+            <span className="text-2xs text-ink-500 dark:text-ink-400">
               입금 거래처{' '}
-              <span className="font-semibold text-ink-700">{inPatterns.length}곳</span> ·
+              <span className="font-semibold text-ink-700 dark:text-ink-300">{inPatterns.length}곳</span> ·
               출금 거래처{' '}
-              <span className="font-semibold text-ink-700">{outPatterns.length}곳</span> 분석 완료
+              <span className="font-semibold text-ink-700 dark:text-ink-300">{outPatterns.length}곳</span> 분석 완료
             </span>
           )}
         </div>
@@ -1774,9 +1776,9 @@ export default function CashflowForecastPage() {
         </div>
       )}
       {ticketsLoading && (
-        <div className="rounded-md border border-ink-200 bg-canvas-50 px-3 py-2 flex items-center gap-2">
-          <ArrowPathIcon className="h-4 w-4 text-ink-500 animate-spin shrink-0" />
-          <span className="text-2xs text-ink-700">
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 px-3 py-2 flex items-center gap-2">
+          <ArrowPathIcon className="h-4 w-4 text-ink-500 dark:text-ink-400 animate-spin shrink-0" />
+          <span className="text-2xs text-ink-700 dark:text-ink-300">
             {LOOKBACK_CHUNKS}개월 거래 로드 중… ({loadedChunks}/{LOOKBACK_CHUNKS}개월 완료, 첫 로드는 ~20초)
           </span>
         </div>
@@ -1797,7 +1799,7 @@ export default function CashflowForecastPage() {
       {/* No data */}
       {!isLoading && !hasError && isConfigured && historicalPoints.length === 0 && (
         <div className="panel px-4 py-8 text-center space-y-3">
-          <p className="text-2xs text-ink-500">선택 기간에 잔액 데이터가 없습니다.</p>
+          <p className="text-2xs text-ink-500 dark:text-ink-400">선택 기간에 잔액 데이터가 없습니다.</p>
           <button
             className="btn-secondary text-2xs"
             onClick={() => {
@@ -1854,7 +1856,7 @@ export default function CashflowForecastPage() {
               : 'border-emerald-200 bg-emerald-50'
           }`}
         >
-          <div className="text-2xs font-medium uppercase tracking-wider flex items-center gap-1 mb-0.5 text-ink-500">
+          <div className="text-2xs font-medium uppercase tracking-wider flex items-center gap-1 mb-0.5 text-ink-500 dark:text-ink-400">
             <ExclamationTriangleIcon className="h-3 w-3" />
             자금 부족 위험
           </div>
@@ -1898,8 +1900,8 @@ export default function CashflowForecastPage() {
       {/* Contact pattern tables */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-ink-800">입금 거래처 패턴</h2>
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100">입금 거래처 패턴</h2>
             <span className="text-2xs text-ink-400">{inPatterns.length}곳</span>
           </div>
           <ContactPatternTable
@@ -1911,8 +1913,8 @@ export default function CashflowForecastPage() {
           />
         </div>
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-ink-800">출금 거래처 패턴</h2>
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100">출금 거래처 패턴</h2>
             <span className="text-2xs text-ink-400">{outPatterns.length}곳</span>
           </div>
           <ContactPatternTable
@@ -1929,25 +1931,25 @@ export default function CashflowForecastPage() {
       <DailyDetailTable forecastDays={forecastDays} />
 
       {/* Footer */}
-      <div className="text-2xs text-ink-500 pb-2 space-y-1">
+      <div className="text-2xs text-ink-500 dark:text-ink-400 pb-2 space-y-1">
         <p>
-          <span className="font-semibold text-ink-700">분석 기준:</span> 지난 2개월 거래 ·
+          <span className="font-semibold text-ink-700 dark:text-ink-300">분석 기준:</span> 지난 2개월 거래 ·
           거래처 ≥2회 또는 합계 ≥30만원 인 패턴만 인정 (1회성 일회성 거래 제외) ·
           본인 회사(조인앤조인 사업자번호/회사명 변형/통장 간 이체)는 분석에서 자동 제외.
         </p>
         <p>
-          <span className="font-semibold text-ink-700">예측 산정식:</span>
+          <span className="font-semibold text-ink-700 dark:text-ink-300">예측 산정식:</span>
           거래처별 forecast = (분석기간 총거래액 × forecast기간/분석기간) × 신뢰도 가중치 (높음 ×1.0 / 중간 ×0.9 / 낮음 ×0.6).
           이를 발생 예정일에 균등 분산. 평균(avg)이 아닌 총액 기반이라 bimodal 분포(예: 본 급여 + 상여) 평균 왜곡 방지.
         </p>
         <p>
-          <span className="font-semibold text-ink-700">카드결제(OUT buffer):</span> 식당·주유소 등
+          <span className="font-semibold text-ink-700 dark:text-ink-300">카드결제(OUT buffer):</span> 식당·주유소 등
           1회성. 일평균 <span className="font-mono">{formatCurrency(cardDailyAvg, false)}원/일</span>
           (기간 총 <span className="font-mono">{formatCurrency(cardOneTimeTotal, false)}원</span> ÷ {analysisPeriodDays}일),
           평일 100% / 주말 60% 차감.
         </p>
         <p>
-          <span className="font-semibold text-ink-700">현금영수증(IN buffer):</span> 매장형 일다수 매출.
+          <span className="font-semibold text-ink-700 dark:text-ink-300">현금영수증(IN buffer):</span> 매장형 일다수 매출.
           발행자가 본인회사라 거래처 분석 불가 → 일평균
           <span className="font-mono"> {formatCurrency(cashReceiptDailyAvg, false)}원/일</span>
           (기간 총 <span className="font-mono">{formatCurrency(cashReceiptTotal, false)}원</span>)로
@@ -1955,20 +1957,20 @@ export default function CashflowForecastPage() {
         </p>
         {selfBankNetIn > 0 && (
           <p>
-            <span className="font-semibold text-ink-700">외부 매출 추정(IN buffer):</span> 그랜터가
+            <span className="font-semibold text-ink-700 dark:text-ink-300">외부 매출 추정(IN buffer):</span> 그랜터가
             contact을 자기 회사명으로 잘못 기록한 BANK 입금 중 통장간 이체로 매칭 안 되는 net 분.
             기간 총 <span className="font-mono">{formatCurrency(selfBankNetIn, false)}원</span> →
             일평균 <span className="font-mono">{formatCurrency(selfBankNetInDailyAvg, false)}원/일</span> 가산.
           </p>
         )}
         <p>
-          <span className="font-semibold text-ink-700">영업일 보정:</span> 주말(토/일)·한국 공휴일은
+          <span className="font-semibold text-ink-700 dark:text-ink-300">영업일 보정:</span> 주말(토/일)·한국 공휴일은
           입출금 0으로 처리. 거래처 발생일이 휴일이면 입금은 직전 영업일로 당기고,
           출금은 다음 영업일로 미룸. 일평균 buffer(카드/현금영수증/본인BANK)도 영업일에만 가산
           (휴일 수만큼 영업일에 분산).
         </p>
         <p>
-          <span className="font-semibold text-ink-700">거래처 정규화:</span> "급여 132건"·"급여 144건"
+          <span className="font-semibold text-ink-700 dark:text-ink-300">거래처 정규화:</span> "급여 132건"·"급여 144건"
           같이 매번 description이 달라 분리되는 거래는 합쳐서 한 거래처로 분석
           (급여/상여금/카드사 결제 등).
         </p>

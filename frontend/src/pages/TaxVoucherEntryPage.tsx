@@ -224,19 +224,19 @@ export default function TaxVoucherEntryPage() {
       <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <h1 className="flex items-center gap-2">
-            <PencilSquareIcon className="h-5 w-5 text-ink-500" />
+            <PencilSquareIcon className="h-5 w-5 text-ink-500 dark:text-ink-400" />
             매입매출 전표 입력
           </h1>
-          <p className="text-xs text-ink-500 mt-1">
+          <p className="text-xs text-ink-500 dark:text-ink-400 mt-1">
             공급가 입력 시 부가세 자동 계산 + 분개 자동 생성.
             <span className="ml-2 text-ink-400">단축키: Ctrl+S 저장 · F2 거래처</span>
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-2xs text-ink-600 cursor-pointer">
+          <label className="flex items-center gap-1.5 text-2xs text-ink-600 dark:text-ink-400 cursor-pointer">
             <input type="checkbox" checked={continueMode}
               onChange={(e) => setContinueMode(e.target.checked)}
-              className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3" />
+              className="rounded border-ink-300 dark:border-ink-700 text-ink-900 dark:text-ink-50 focus:ring-ink-300 dark:focus:ring-ink-600 w-3 h-3" />
             연속 입력 모드
           </label>
           {lastVoucherNo && (
@@ -249,7 +249,7 @@ export default function TaxVoucherEntryPage() {
       </div>
 
       {/* Kind tabs */}
-      <div className="flex gap-1 border-b border-ink-200 overflow-x-auto">
+      <div className="flex gap-1 border-b border-ink-200 dark:border-ink-800 overflow-x-auto">
         {KIND_TABS.map((t) => {
           const active = form.kind === t.key
           const Icon = t.icon
@@ -257,7 +257,7 @@ export default function TaxVoucherEntryPage() {
             <button key={t.key}
               onClick={() => setForm((f) => ({ ...f, kind: t.key }))}
               className={`px-3 py-1.5 text-xs font-semibold border-b-2 -mb-px whitespace-nowrap transition ${
-                active ? t.tone : 'border-transparent text-ink-500 hover:text-ink-900'
+                active ? t.tone : 'border-transparent text-ink-500 dark:text-ink-400 hover:text-ink-900 dark:hover:text-ink-50'
               }`}
             >
               <Icon className="h-3.5 w-3.5 inline mr-1" />
@@ -272,51 +272,51 @@ export default function TaxVoucherEntryPage() {
         <div className="panel p-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-2xs font-semibold text-ink-500 uppercase tracking-wider">거래일자</label>
-              <div className="mt-0.5 flex items-center gap-1 px-2 py-1.5 rounded-md border border-ink-200">
+              <label className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">거래일자</label>
+              <div className="mt-0.5 flex items-center gap-1 px-2 py-1.5 rounded-md border border-ink-200 dark:border-ink-800">
                 <CalendarDaysIcon className="h-3.5 w-3.5 text-ink-400" />
                 <input type="date" value={form.transaction_date}
                   onChange={(e) => setForm((f) => ({ ...f, transaction_date: e.target.value }))}
-                  className="bg-transparent text-xs font-medium text-ink-700 focus:outline-none w-full" />
+                  className="bg-transparent text-xs font-medium text-ink-700 dark:text-ink-300 focus:outline-none w-full" />
               </div>
             </div>
             <div>
-              <label className="text-2xs font-semibold text-ink-500 uppercase tracking-wider">거래처</label>
+              <label className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">거래처</label>
               <input
                 ref={counterpartyRef}
                 value={form.counterparty}
                 onChange={(e) => setForm((f) => ({ ...f, counterparty: e.target.value }))}
                 onKeyDown={(e) => { if (e.key === 'Enter') supplyRef.current?.focus() }}
                 placeholder="거래처명"
-                className="mt-0.5 w-full px-2 py-1.5 text-xs rounded-md border border-ink-200 focus:border-ink-400 focus:outline-none"
+                className="mt-0.5 w-full px-2 py-1.5 text-xs rounded-md border border-ink-200 dark:border-ink-800 focus:border-ink-400 dark:focus:border-ink-500 focus:outline-none"
               />
             </div>
           </div>
 
           <div>
-            <label className="text-2xs font-semibold text-ink-500 uppercase tracking-wider">적요</label>
+            <label className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">적요</label>
             <input
               value={form.description}
               onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
               placeholder="(선택) 거래 내용"
-              className="mt-0.5 w-full px-2 py-1.5 text-xs rounded-md border border-ink-200 focus:border-ink-400 focus:outline-none"
+              className="mt-0.5 w-full px-2 py-1.5 text-xs rounded-md border border-ink-200 dark:border-ink-800 focus:border-ink-400 dark:focus:border-ink-500 focus:outline-none"
             />
           </div>
 
           <div className="grid grid-cols-3 gap-3">
             <div>
-              <label className="text-2xs font-semibold text-ink-500 uppercase tracking-wider">공급가액</label>
+              <label className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">공급가액</label>
               <input
                 ref={supplyRef}
                 inputMode="numeric"
                 value={form.supply ? Number(form.supply.replace(/,/g, '')).toLocaleString('ko-KR') : ''}
                 onChange={(e) => setSupplyAndAutoVat(e.target.value)}
                 placeholder="0"
-                className="mt-0.5 w-full px-2 py-1.5 text-sm font-mono text-right rounded-md border border-ink-200 focus:border-ink-400 focus:outline-none"
+                className="mt-0.5 w-full px-2 py-1.5 text-sm font-mono text-right rounded-md border border-ink-200 dark:border-ink-800 focus:border-ink-400 dark:focus:border-ink-500 focus:outline-none"
               />
             </div>
             <div>
-              <label className="text-2xs font-semibold text-ink-500 uppercase tracking-wider">부가세</label>
+              <label className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">부가세</label>
               <input
                 inputMode="numeric"
                 value={form.vat ? Number(form.vat.replace(/,/g, '')).toLocaleString('ko-KR') : ''}
@@ -324,12 +324,12 @@ export default function TaxVoucherEntryPage() {
                 disabled={!isTaxable}
                 placeholder="0"
                 className={`mt-0.5 w-full px-2 py-1.5 text-sm font-mono text-right rounded-md border focus:outline-none ${
-                  isTaxable ? 'border-ink-200 focus:border-ink-400' : 'border-ink-100 bg-ink-50 text-ink-400'
+                  isTaxable ? 'border-ink-200 dark:border-ink-800 focus:border-ink-400 dark:focus:border-ink-500' : 'border-ink-100 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 text-ink-400'
                 }`}
               />
             </div>
             <div>
-              <label className="text-2xs font-semibold text-ink-500 uppercase tracking-wider">합계 (총액)</label>
+              <label className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">합계 (총액)</label>
               <input
                 inputMode="numeric"
                 value={total ? total.toLocaleString('ko-KR') : ''}
@@ -342,7 +342,7 @@ export default function TaxVoucherEntryPage() {
 
           {showExpenseAccount && (
             <div>
-              <label className="text-2xs font-semibold text-ink-500 uppercase tracking-wider">차변 계정 (비용/자산)</label>
+              <label className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">차변 계정 (비용/자산)</label>
               <select
                 value={form.expenseAccountCode}
                 onChange={(e) => {
@@ -353,7 +353,7 @@ export default function TaxVoucherEntryPage() {
                     expenseAccountName: acc?.name || '',
                   }))
                 }}
-                className="mt-0.5 w-full px-2 py-1.5 text-xs rounded-md border border-ink-200 focus:border-ink-400 focus:outline-none"
+                className="mt-0.5 w-full px-2 py-1.5 text-xs rounded-md border border-ink-200 dark:border-ink-800 focus:border-ink-400 dark:focus:border-ink-500 focus:outline-none"
               >
                 {COMMON_EXPENSE_ACCOUNTS.map((a) => (
                   <option key={a.code} value={a.code}>
@@ -366,17 +366,17 @@ export default function TaxVoucherEntryPage() {
 
           {showCardCompany && (
             <div>
-              <label className="text-2xs font-semibold text-ink-500 uppercase tracking-wider">카드사</label>
+              <label className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">카드사</label>
               <input
                 value={form.cardCompany}
                 onChange={(e) => setForm((f) => ({ ...f, cardCompany: e.target.value }))}
                 placeholder="예: 비씨카드(3917)"
-                className="mt-0.5 w-full px-2 py-1.5 text-xs rounded-md border border-ink-200 focus:border-ink-400 focus:outline-none"
+                className="mt-0.5 w-full px-2 py-1.5 text-xs rounded-md border border-ink-200 dark:border-ink-800 focus:border-ink-400 dark:focus:border-ink-500 focus:outline-none"
               />
             </div>
           )}
 
-          <div className="flex items-center gap-2 pt-3 border-t border-ink-200">
+          <div className="flex items-center gap-2 pt-3 border-t border-ink-200 dark:border-ink-800">
             <button
               onClick={() => submitMut.mutate(false)}
               disabled={!canSubmit() || submitMut.isPending}
@@ -424,7 +424,7 @@ export default function TaxVoucherEntryPage() {
               <div className="flex items-center gap-2 pt-1 border-t border-amber-200">
                 <button
                   onClick={() => { setDuplicates(null); submitMut.reset() }}
-                  className="text-2xs font-semibold text-ink-700 underline"
+                  className="text-2xs font-semibold text-ink-700 dark:text-ink-300 underline"
                 >
                   취소
                 </button>
@@ -442,8 +442,8 @@ export default function TaxVoucherEntryPage() {
         {/* 분개 미리보기 */}
         <div className="panel p-4">
           <div className="flex items-center gap-2 mb-2">
-            <BoltIcon className="h-3.5 w-3.5 text-ink-500" />
-            <h2 className="text-xs font-semibold text-ink-700 uppercase tracking-wider">자동 분개 미리보기</h2>
+            <BoltIcon className="h-3.5 w-3.5 text-ink-500 dark:text-ink-400" />
+            <h2 className="text-xs font-semibold text-ink-700 dark:text-ink-300 uppercase tracking-wider">자동 분개 미리보기</h2>
           </div>
 
           {!supplyNum ? (
@@ -453,23 +453,23 @@ export default function TaxVoucherEntryPage() {
           ) : (
             <div className="space-y-3">
               <div>
-                <div className="text-2xs font-semibold text-ink-600 mb-1 flex items-center justify-between">
+                <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1 flex items-center justify-between">
                   <span>차변</span>
-                  <span className="font-mono text-ink-500">
+                  <span className="font-mono text-ink-500 dark:text-ink-400">
                     합계 {formatCurrency(
                       previewLines.debits.reduce((a, b) => a + Number(b.amount), 0),
                       false
                     )}
                   </span>
                 </div>
-                <div className="border border-ink-200 rounded-md overflow-hidden">
+                <div className="border border-ink-200 dark:border-ink-800 rounded-md overflow-hidden">
                   {previewLines.debits.map((l, i) => (
-                    <div key={i} className={`flex items-center justify-between text-xs px-3 py-1.5 ${i > 0 ? 'border-t border-ink-100' : ''}`}>
+                    <div key={i} className={`flex items-center justify-between text-xs px-3 py-1.5 ${i > 0 ? 'border-t border-ink-100 dark:border-ink-800' : ''}`}>
                       <div>
                         <span className="font-mono text-ink-400 text-2xs">{l.account_code}</span>
-                        <span className="ml-2 text-ink-800">{l.account_name}</span>
+                        <span className="ml-2 text-ink-800 dark:text-ink-100">{l.account_name}</span>
                       </div>
-                      <span className="font-mono font-semibold text-ink-900">
+                      <span className="font-mono font-semibold text-ink-900 dark:text-ink-50">
                         {formatCurrency(Number(l.amount), false)}
                       </span>
                     </div>
@@ -478,24 +478,24 @@ export default function TaxVoucherEntryPage() {
               </div>
 
               <div>
-                <div className="text-2xs font-semibold text-ink-600 mb-1 flex items-center justify-between">
+                <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1 flex items-center justify-between">
                   <span>대변</span>
-                  <span className="font-mono text-ink-500">
+                  <span className="font-mono text-ink-500 dark:text-ink-400">
                     합계 {formatCurrency(
                       previewLines.credits.reduce((a, b) => a + Number(b.amount), 0),
                       false
                     )}
                   </span>
                 </div>
-                <div className="border border-ink-200 rounded-md overflow-hidden">
+                <div className="border border-ink-200 dark:border-ink-800 rounded-md overflow-hidden">
                   {previewLines.credits.map((l, i) => (
-                    <div key={i} className={`flex items-center justify-between text-xs px-3 py-1.5 ${i > 0 ? 'border-t border-ink-100' : ''}`}>
+                    <div key={i} className={`flex items-center justify-between text-xs px-3 py-1.5 ${i > 0 ? 'border-t border-ink-100 dark:border-ink-800' : ''}`}>
                       <div>
                         <span className="font-mono text-ink-400 text-2xs">{l.account_code}</span>
-                        <span className="ml-2 text-ink-800">{l.account_name}</span>
-                        {l.memo && <span className="ml-2 text-2xs text-ink-500">({l.memo})</span>}
+                        <span className="ml-2 text-ink-800 dark:text-ink-100">{l.account_name}</span>
+                        {l.memo && <span className="ml-2 text-2xs text-ink-500 dark:text-ink-400">({l.memo})</span>}
                       </div>
-                      <span className="font-mono font-semibold text-ink-900">
+                      <span className="font-mono font-semibold text-ink-900 dark:text-ink-50">
                         {formatCurrency(Number(l.amount), false)}
                       </span>
                     </div>
@@ -503,7 +503,7 @@ export default function TaxVoucherEntryPage() {
                 </div>
               </div>
 
-              <div className="text-2xs text-ink-500 px-1">
+              <div className="text-2xs text-ink-500 dark:text-ink-400 px-1">
                 <span className="font-semibold">차변 합 = 대변 합 검증:</span>{' '}
                 {previewLines.debits.reduce((a, b) => a + Number(b.amount), 0) ===
                  previewLines.credits.reduce((a, b) => a + Number(b.amount), 0) ? (

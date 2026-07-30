@@ -76,12 +76,12 @@ export default function SsoPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-600 to-indigo-800">
       <div className="max-w-md w-full mx-4">
-        <div className="bg-white rounded-2xl shadow-xl overflow-hidden p-8 text-center">
+        <div className="bg-white dark:bg-ink-900 rounded-2xl shadow-xl overflow-hidden p-8 text-center">
           {status === 'loading' ? (
             <>
-              <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-200 border-t-blue-600" />
-              <h2 className="text-lg font-semibold text-gray-900">회사 계정으로 로그인 중...</h2>
-              <p className="text-sm text-gray-500 mt-1">잠시만 기다려 주세요</p>
+              <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-200 dark:border-ink-800 border-t-blue-600" />
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">회사 계정으로 로그인 중...</h2>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">잠시만 기다려 주세요</p>
             </>
           ) : (
             <>
@@ -90,8 +90,8 @@ export default function SsoPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
                 </svg>
               </div>
-              <h2 className="text-lg font-semibold text-gray-900">로그인 실패</h2>
-              <p className="text-sm text-gray-500 mt-2">{errorMessage}</p>
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">로그인 실패</h2>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{errorMessage}</p>
               <Link
                 to="/login"
                 className="inline-block mt-6 w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-3 rounded-lg font-medium hover:from-blue-700 hover:to-indigo-700 transition-all"

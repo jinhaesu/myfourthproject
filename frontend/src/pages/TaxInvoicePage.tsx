@@ -143,18 +143,18 @@ function ContractorPickerModal({
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col"
+        className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 헤더 */}
-        <div className="px-4 py-3 border-b border-ink-200 flex items-center justify-between">
+        <div className="px-4 py-3 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
           <h3 className="text-sm font-semibold">거래처 조회</h3>
-          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
             <XMarkIcon className="h-4 w-4" />
           </button>
         </div>
         {/* 검색 */}
-        <div className="px-4 py-2 border-b border-ink-100">
+        <div className="px-4 py-2 border-b border-ink-100 dark:border-ink-800">
           <input
             type="text"
             className="input w-full text-xs"
@@ -173,23 +173,23 @@ function ContractorPickerModal({
             <div className="p-6 text-center text-2xs text-ink-400">검색 결과 없음</div>
           ) : (
             <table className="min-w-full">
-              <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-200">
+              <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10 border-b border-ink-200 dark:border-ink-800">
                 <tr>
-                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     회사명
                   </th>
-                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     사업자번호
                   </th>
-                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     대표자
                   </th>
-                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     거래 빈도
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-ink-100">
+              <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                 {filtered.map((c) => (
                   <tr
                     key={c.businessNumber || c.companyName}
@@ -197,18 +197,18 @@ function ContractorPickerModal({
                       onSelect(c)
                       onClose()
                     }}
-                    className="cursor-pointer hover:bg-canvas-50"
+                    className="cursor-pointer hover:bg-canvas-50 dark:hover:bg-ink-800"
                   >
-                    <td className="px-3 py-1.5 text-xs text-ink-900 font-medium">
+                    <td className="px-3 py-1.5 text-xs text-ink-900 dark:text-ink-50 font-medium">
                       {c.companyName || '-'}
                     </td>
-                    <td className="px-3 py-1.5 text-2xs text-ink-700 font-mono">
+                    <td className="px-3 py-1.5 text-2xs text-ink-700 dark:text-ink-300 font-mono">
                       {c.businessNumber || '-'}
                     </td>
-                    <td className="px-3 py-1.5 text-2xs text-ink-700">
+                    <td className="px-3 py-1.5 text-2xs text-ink-700 dark:text-ink-300">
                       {c.representativeName || '-'}
                     </td>
-                    <td className="px-3 py-1.5 text-right text-2xs text-ink-500 tabular-nums">
+                    <td className="px-3 py-1.5 text-right text-2xs text-ink-500 dark:text-ink-400 tabular-nums">
                       {c.count}회
                     </td>
                   </tr>
@@ -382,14 +382,14 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
   return (
     /* fixed overlay */
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+      <div className="bg-white dark:bg-ink-900 rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
         {/* 모달 헤더 */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-ink-200">
-          <h2 className="font-bold text-sm text-ink-900 flex items-center gap-2">
-            <ReceiptPercentIcon className="h-4 w-4 text-ink-500" />
+        <div className="flex items-center justify-between px-5 py-3 border-b border-ink-200 dark:border-ink-800">
+          <h2 className="font-bold text-sm text-ink-900 dark:text-ink-50 flex items-center gap-2">
+            <ReceiptPercentIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             세금계산서 발행
           </h2>
-          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
             <XMarkIcon className="h-4 w-4" />
           </button>
         </div>
@@ -431,8 +431,8 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
           </div>
 
           {/* 공급자 */}
-          <fieldset className="border border-ink-200 rounded-lg p-3 space-y-2">
-            <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+          <fieldset className="border border-ink-200 dark:border-ink-800 rounded-lg p-3 space-y-2">
+            <legend className="px-1 text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
               공급자 (본인)
             </legend>
             <div className="grid grid-cols-2 gap-2">
@@ -500,8 +500,8 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
           </fieldset>
 
           {/* 공급받는자 */}
-          <fieldset className="border border-ink-200 rounded-lg p-3 space-y-2">
-            <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider flex items-center gap-2">
+          <fieldset className="border border-ink-200 dark:border-ink-800 rounded-lg p-3 space-y-2">
+            <legend className="px-1 text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider flex items-center gap-2">
               공급받는자 (거래처)
               <button
                 type="button"
@@ -553,13 +553,13 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
           </fieldset>
 
           {/* 품목 */}
-          <fieldset className="border border-ink-200 rounded-lg p-3 space-y-2">
-            <legend className="px-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+          <fieldset className="border border-ink-200 dark:border-ink-800 rounded-lg p-3 space-y-2">
+            <legend className="px-1 text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
               품목
             </legend>
             <table className="w-full text-2xs">
               <thead>
-                <tr className="text-ink-500">
+                <tr className="text-ink-500 dark:text-ink-400">
                   <th className="text-left pb-1 font-semibold w-32">품명</th>
                   <th className="text-right pb-1 font-semibold w-14">수량</th>
                   <th className="text-right pb-1 font-semibold w-24">단가</th>
@@ -568,7 +568,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
                   <th className="w-6"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-ink-100">
+              <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                 {items.map((it, idx) => (
                   <tr key={idx}>
                     <td className="py-1 pr-1">
@@ -597,10 +597,10 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
                         className="input w-full text-right font-mono"
                       />
                     </td>
-                    <td className="py-1 px-1 text-right font-mono text-ink-700">
+                    <td className="py-1 px-1 text-right font-mono text-ink-700 dark:text-ink-300">
                       {it.supplyAmount.toLocaleString()}
                     </td>
-                    <td className="py-1 px-1 text-right font-mono text-ink-500">
+                    <td className="py-1 px-1 text-right font-mono text-ink-500 dark:text-ink-400">
                       {it.taxAmount.toLocaleString()}
                     </td>
                     <td className="py-1 pl-1">
@@ -627,21 +627,21 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
           </fieldset>
 
           {/* 합계 */}
-          <div className="bg-canvas-50 rounded-lg p-3 flex gap-6 text-2xs justify-end">
+          <div className="bg-canvas-50 dark:bg-ink-950 rounded-lg p-3 flex gap-6 text-2xs justify-end">
             <div>
-              <span className="text-ink-500">공급가액</span>
-              <span className="ml-2 font-mono font-bold text-ink-900">
+              <span className="text-ink-500 dark:text-ink-400">공급가액</span>
+              <span className="ml-2 font-mono font-bold text-ink-900 dark:text-ink-50">
                 {totalSupplyAmount.toLocaleString()}
               </span>
             </div>
             <div>
-              <span className="text-ink-500">세액</span>
-              <span className="ml-2 font-mono font-bold text-ink-900">
+              <span className="text-ink-500 dark:text-ink-400">세액</span>
+              <span className="ml-2 font-mono font-bold text-ink-900 dark:text-ink-50">
                 {totalTaxAmount.toLocaleString()}
               </span>
             </div>
             <div>
-              <span className="text-ink-500">합계</span>
+              <span className="text-ink-500 dark:text-ink-400">합계</span>
               <span className="ml-2 font-mono font-bold text-primary-700 text-sm">
                 {totalAmount.toLocaleString()}
               </span>
@@ -674,7 +674,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
         </div>
 
         {/* 모달 푸터 */}
-        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-ink-200">
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-ink-200 dark:border-ink-800">
           <button onClick={onClose} className="btn-secondary">
             취소
           </button>
@@ -872,10 +872,10 @@ export default function TaxInvoicePage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <ReceiptPercentIcon className="h-4 w-4 text-ink-500" />
+            <ReceiptPercentIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             세금계산서
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             그랜터 TAX_INVOICE_TICKET — 매출(IN) / 매입(OUT) 자동 분리
           </p>
         </div>
@@ -927,27 +927,27 @@ export default function TaxInvoicePage() {
       </div>
 
       {/* 공급자(본인 회사) 정보 패널 */}
-      <div className="rounded-md border border-ink-200 bg-canvas-50 px-3 py-2 text-2xs text-ink-700">
+      <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 px-3 py-2 text-2xs text-ink-700 dark:text-ink-300">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-          <span className="font-semibold text-ink-900">{SUPPLIER_DEFAULT.companyName}</span>
-          <span className="text-ink-500">·</span>
+          <span className="font-semibold text-ink-900 dark:text-ink-50">{SUPPLIER_DEFAULT.companyName}</span>
+          <span className="text-ink-500 dark:text-ink-400">·</span>
           <span>{SUPPLIER_DEFAULT.representativeName} (대표)</span>
           <span className="text-ink-400">|</span>
           <span>사업자번호 <span className="font-mono">{SUPPLIER_DEFAULT.businessNumber}</span></span>
-          <span className="text-ink-500">·</span>
+          <span className="text-ink-500 dark:text-ink-400">·</span>
           <span>법인번호 <span className="font-mono">{SUPPLIER_DEFAULT.corporateNumber}</span></span>
           <span className="text-ink-400">|</span>
-          <span className="text-ink-600">{SUPPLIER_DEFAULT.address}</span>
+          <span className="text-ink-600 dark:text-ink-400">{SUPPLIER_DEFAULT.address}</span>
           <span className="text-ink-400">|</span>
           <span>업태 {SUPPLIER_DEFAULT.businessType}</span>
-          <span className="text-ink-500">·</span>
+          <span className="text-ink-500 dark:text-ink-400">·</span>
           <span>종목 {SUPPLIER_DEFAULT.businessItem}</span>
         </div>
       </div>
 
       {!healthQuery.isFetched ? (
-        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
@@ -971,13 +971,13 @@ export default function TaxInvoicePage() {
       {/* KPI */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">총 발행/수취</div>
-          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-ink-900">
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">총 발행/수취</div>
+          <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-ink-900 dark:text-ink-50">
             {allTickets.length}건
           </div>
         </div>
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider flex items-center gap-1">
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider flex items-center gap-1">
             <ArrowDownLeftIcon className="h-3 w-3 text-emerald-500" />
             매출 (발행)
           </div>
@@ -987,7 +987,7 @@ export default function TaxInvoicePage() {
           <div className="text-2xs text-ink-400 mt-0.5">{salesTickets.length}건</div>
         </div>
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider flex items-center gap-1">
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider flex items-center gap-1">
             <ArrowUpRightIcon className="h-3 w-3 text-rose-500" />
             매입 (수취)
           </div>
@@ -997,7 +997,7 @@ export default function TaxInvoicePage() {
           <div className="text-2xs text-ink-400 mt-0.5">{purchaseTickets.length}건</div>
         </div>
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">매출 − 매입</div>
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">매출 − 매입</div>
           <div
             className={`mt-0.5 font-mono tabular-nums font-bold text-base ${
               salesTotal - purchaseTotal >= 0 ? 'text-primary-700' : 'text-rose-700'
@@ -1010,13 +1010,13 @@ export default function TaxInvoicePage() {
 
       {/* Filter */}
       <div className="panel p-2 flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200">
+        <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800">
           {(['all', 'sales', 'purchase'] as Direction[]).map((d) => (
             <button
               key={d}
               onClick={() => setDirection(d)}
               className={`px-2.5 py-1 rounded text-2xs font-semibold ${
-                direction === d ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-white'
+                direction === d ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-white dark:hover:bg-ink-800'
               }`}
             >
               {d === 'all' ? '전체' : d === 'sales' ? '매출' : '매입'}
@@ -1038,29 +1038,29 @@ export default function TaxInvoicePage() {
       <div className="panel overflow-hidden">
         <div className="overflow-x-auto max-h-[calc(100vh-26rem)] overflow-y-auto">
           <table className="min-w-full">
-            <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-200">
+            <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10 border-b border-ink-200 dark:border-ink-800">
               <tr>
-                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   발행일자
                 </th>
-                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   구분
                 </th>
-                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   거래처
                 </th>
-                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   내용
                 </th>
-                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   공급가액
                 </th>
-                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   계정과목
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-ink-100">
+            <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
               {ticketsQuery.isLoading && (
                 <tr>
                   <td colSpan={6} className="text-center py-6 text-2xs text-ink-400">
@@ -1080,8 +1080,8 @@ export default function TaxInvoicePage() {
                   ? str(ti?.contractor, 'registrationNumber')
                   : str(ti?.supplier, 'registrationNumber')
                 return (
-                  <tr key={t.id || idx} className="hover:bg-canvas-50">
-                    <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono">
+                  <tr key={t.id || idx} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
+                    <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 dark:text-ink-300 font-mono">
                       {str(t, 'transactAt', 'date').slice(0, 10)}
                     </td>
                     <td className="px-3 py-1.5">
@@ -1095,13 +1095,13 @@ export default function TaxInvoicePage() {
                         {isSales ? '매출' : '매입'}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5 text-xs text-ink-900">
+                    <td className="px-3 py-1.5 text-xs text-ink-900 dark:text-ink-50">
                       <div className="font-medium">{contact || '-'}</div>
                       {counterRegNo && (
-                        <div className="text-2xs text-ink-500 font-mono">{counterRegNo}</div>
+                        <div className="text-2xs text-ink-500 dark:text-ink-400 font-mono">{counterRegNo}</div>
                       )}
                     </td>
-                    <td className="px-3 py-1.5 text-xs text-ink-700 max-w-md truncate">
+                    <td className="px-3 py-1.5 text-xs text-ink-700 dark:text-ink-300 max-w-md truncate">
                       {str(t, 'content', 'description')}
                     </td>
                     <td
@@ -1115,10 +1115,10 @@ export default function TaxInvoicePage() {
                       {str(cat, 'name') ? (
                         <span className="inline-flex items-center gap-1">
                           <span className="font-mono text-ink-400">{str(cat, 'code')}</span>
-                          <span className="text-ink-700">{str(cat, 'name')}</span>
+                          <span className="text-ink-700 dark:text-ink-300">{str(cat, 'name')}</span>
                         </span>
                       ) : (
-                        <span className="text-ink-300">-</span>
+                        <span className="text-ink-300 dark:text-ink-600">-</span>
                       )}
                     </td>
                   </tr>

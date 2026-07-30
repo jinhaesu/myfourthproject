@@ -20,13 +20,13 @@ const COLLECTION_LABEL: Record<string, { label: string; class: string }> = {
   healthy: { label: '정상', class: 'badge bg-emerald-100 text-emerald-700' },
   stale: { label: '지연', class: 'badge bg-amber-100 text-amber-700' },
   error: { label: '오류', class: 'badge bg-rose-100 text-rose-700' },
-  not_connected: { label: '미연결', class: 'badge bg-gray-100 text-gray-700' },
+  not_connected: { label: '미연결', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
 }
 
 const CLIENT_STATUS_LABEL: Record<string, { label: string; class: string }> = {
   active: { label: '운영 중', class: 'badge bg-emerald-100 text-emerald-700' },
   paused: { label: '일시중단', class: 'badge bg-amber-100 text-amber-700' },
-  terminated: { label: '해지', class: 'badge bg-gray-100 text-gray-700' },
+  terminated: { label: '해지', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
   onboarding: { label: '온보딩', class: 'badge bg-blue-100 text-blue-700' },
 }
 
@@ -57,8 +57,8 @@ export default function ConnectClientsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">수임고객 관리</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">수임고객 관리</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
             수임고객 거래 자동 수집부터 검토 대기 전표 처리까지 한 화면에서.
           </p>
         </div>
@@ -97,7 +97,7 @@ export default function ConnectClientsPage() {
       {/* Filters */}
       <div className="card">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          <div className="flex gap-1 bg-gray-100 dark:bg-ink-800 rounded-lg p-1">
             {[
               { key: undefined, label: '전체' },
               { key: 'active', label: '운영중' },
@@ -108,7 +108,7 @@ export default function ConnectClientsPage() {
                 key={t.label}
                 onClick={() => setStatusFilter(t.key)}
                 className={`px-3 py-1.5 rounded-md text-sm font-medium ${
-                  statusFilter === t.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
+                  statusFilter === t.key ? 'bg-white dark:bg-ink-900 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400'
                 }`}
               >
                 {t.label}
@@ -165,7 +165,7 @@ function ClientRow({
     <div className="card p-0 overflow-hidden">
       <button
         onClick={onToggle}
-        className="w-full p-5 flex items-center gap-4 hover:bg-gray-50 transition text-left"
+        className="w-full p-5 flex items-center gap-4 hover:bg-gray-50 dark:hover:bg-ink-800 transition text-left"
       >
         {expanded ? (
           <ChevronDownIcon className="h-4 w-4 text-gray-400 flex-shrink-0" />
@@ -174,34 +174,34 @@ function ClientRow({
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-gray-900 truncate">{client.company_name}</span>
+            <span className="font-semibold text-gray-900 dark:text-gray-100 truncate">{client.company_name}</span>
             <span className={status.class}>{status.label}</span>
             {client.is_clobe_ai_connected && (
               <span className="badge bg-teal-50 text-teal-700">SmartFinance 연결됨</span>
             )}
           </div>
-          <div className="text-xs text-gray-500 mt-0.5 font-mono">
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 font-mono">
             {maskBusinessNumber(client.business_number)} · {client.industry || '미분류'}
           </div>
         </div>
 
         <div className="hidden md:flex items-center gap-6 text-sm">
           <div className="text-center">
-            <div className="text-gray-500 text-xs">자동 수집</div>
+            <div className="text-gray-500 dark:text-gray-400 text-xs">자동 수집</div>
             <div className="mt-0.5">
               <span className={collect.class}>{collect.label}</span>
             </div>
           </div>
           <div className="text-center">
-            <div className="text-gray-500 text-xs">분류율</div>
-            <div className="mt-0.5 font-mono font-semibold text-gray-900">
+            <div className="text-gray-500 dark:text-gray-400 text-xs">분류율</div>
+            <div className="mt-0.5 font-mono font-semibold text-gray-900 dark:text-gray-100">
               {client.classification_rate
                 ? formatPct(client.classification_rate * 100)
                 : '-'}
             </div>
           </div>
           <div className="text-center">
-            <div className="text-gray-500 text-xs">검토 대기</div>
+            <div className="text-gray-500 dark:text-gray-400 text-xs">검토 대기</div>
             <div
               className={`mt-0.5 font-mono font-semibold ${
                 client.pending_voucher_count > 0 ? 'text-amber-600' : 'text-gray-400'
@@ -211,8 +211,8 @@ function ClientRow({
             </div>
           </div>
           <div className="text-center">
-            <div className="text-gray-500 text-xs">월 수임료</div>
-            <div className="mt-0.5 font-mono text-gray-900">
+            <div className="text-gray-500 dark:text-gray-400 text-xs">월 수임료</div>
+            <div className="mt-0.5 font-mono text-gray-900 dark:text-gray-100">
               {client.monthly_fee ? `${formatCompactWon(client.monthly_fee)}원` : '-'}
             </div>
           </div>
@@ -254,11 +254,11 @@ function ClientDetail({ clientId, userId }: { clientId: number; userId: number }
   })
 
   return (
-    <div className="border-t border-gray-200 bg-gray-50 p-5 space-y-5">
+    <div className="border-t border-gray-200 dark:border-ink-800 bg-gray-50 dark:bg-ink-900 p-5 space-y-5">
       {/* Collection sources */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <h4 className="font-semibold text-gray-900">자동 수집 소스</h4>
+          <h4 className="font-semibold text-gray-900 dark:text-gray-100">자동 수집 소스</h4>
           <button
             onClick={() => triggerMut.mutate()}
             disabled={triggerMut.isPending}
@@ -272,12 +272,12 @@ function ClientDetail({ clientId, userId }: { clientId: number; userId: number }
           {collectionQuery.data?.sources?.map((s: any) => {
             const meta = COLLECTION_LABEL[s.sync_status] || COLLECTION_LABEL.not_connected
             return (
-              <div key={s.id} className="bg-white border border-gray-200 rounded p-3">
+              <div key={s.id} className="bg-white dark:bg-ink-900 border border-gray-200 dark:border-ink-800 rounded p-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium text-gray-900">{s.label}</div>
+                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{s.label}</div>
                   <span className={meta.class}>{meta.label}</span>
                 </div>
-                <div className="text-xs text-gray-500 mt-1">{s.institution_name}</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">{s.institution_name}</div>
                 <div className="text-xs text-gray-400 mt-1">
                   {formatRelativeTime(s.last_synced_at)}
                 </div>
@@ -293,16 +293,16 @@ function ClientDetail({ clientId, userId }: { clientId: number; userId: number }
       {/* Pending vouchers */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <h4 className="font-semibold text-gray-900">
+          <h4 className="font-semibold text-gray-900 dark:text-gray-100">
             검토 대기 전표
             {pendingQuery.data && (
-              <span className="ml-2 text-xs text-gray-500">
+              <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
                 낮은 신뢰도 {pendingQuery.data.low_confidence_count}건 / 전체 {pendingQuery.data.total}건
               </span>
             )}
           </h4>
         </div>
-        <div className="bg-white border border-gray-200 rounded">
+        <div className="bg-white dark:bg-ink-900 border border-gray-200 dark:border-ink-800 rounded">
           <table className="table">
             <thead className="table-header">
               <tr>
@@ -320,12 +320,12 @@ function ClientDetail({ clientId, userId }: { clientId: number; userId: number }
                 const isLow = v.confidence < 0.8
                 return (
                   <tr key={v.voucher_id}>
-                    <td className="text-sm text-gray-700">{v.transaction_date}</td>
-                    <td className="text-sm text-gray-900">{v.counterparty || '-'}</td>
-                    <td className="text-sm text-gray-700 max-w-xs truncate">{v.description}</td>
+                    <td className="text-sm text-gray-700 dark:text-gray-300">{v.transaction_date}</td>
+                    <td className="text-sm text-gray-900 dark:text-gray-100">{v.counterparty || '-'}</td>
+                    <td className="text-sm text-gray-700 dark:text-gray-300 max-w-xs truncate">{v.description}</td>
                     <td className="text-sm">
-                      <div className="font-medium text-gray-900">{v.suggested_account_name}</div>
-                      <div className="text-xs text-gray-500 font-mono">{v.suggested_account_code}</div>
+                      <div className="font-medium text-gray-900 dark:text-gray-100">{v.suggested_account_name}</div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400 font-mono">{v.suggested_account_code}</div>
                     </td>
                     <td>
                       <span
@@ -347,7 +347,7 @@ function ClientDetail({ clientId, userId }: { clientId: number; userId: number }
                         >
                           승인
                         </button>
-                        <button className="text-xs text-gray-500 hover:underline">수정</button>
+                        <button className="text-xs text-gray-500 dark:text-gray-400 hover:underline">수정</button>
                       </div>
                     </td>
                   </tr>
@@ -399,10 +399,10 @@ function AddClientModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+      <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-md p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">수임고객 등록</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">수임고객 등록</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
             <XMarkIcon className="h-5 w-5" />
           </button>
         </div>

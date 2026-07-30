@@ -57,8 +57,8 @@ export default function DateRangePresets({
             onClick={() => onChange(r.from, r.to)}
             className={`px-2 py-1 text-2xs rounded-full border transition ${
               active
-                ? 'bg-ink-900 text-white border-ink-900'
-                : 'bg-white text-ink-600 border-ink-200 hover:border-ink-400'
+                ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900 border-ink-900 dark:border-ink-100'
+                : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-400 border-ink-200 dark:border-ink-800 hover:border-ink-400 dark:hover:border-ink-500'
             }`}
           >
             {p.label}

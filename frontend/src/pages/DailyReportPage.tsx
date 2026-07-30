@@ -73,10 +73,10 @@ export default function DailyReportPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <SunIcon className="h-4 w-4 text-ink-500" />
+            <SunIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             자금일보
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             그랜터 daily-financial-report 기반 — 자산별 일별 잔액·입출금·대출 분리
           </p>
         </div>
@@ -93,12 +93,12 @@ export default function DailyReportPage() {
               { label: '범위', presets: ['last_7d', 'last_30d'] },
             ]}
           />
-          <label className="flex items-center gap-1 text-2xs text-ink-600 cursor-pointer px-2">
+          <label className="flex items-center gap-1 text-2xs text-ink-600 dark:text-ink-400 cursor-pointer px-2">
             <input
               type="checkbox"
               checked={useCurrentRate}
               onChange={(e) => setUseCurrentRate(e.target.checked)}
-              className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3"
+              className="rounded border-ink-300 dark:border-ink-700 text-ink-900 dark:text-ink-50 focus:ring-ink-300 dark:focus:ring-ink-600 w-3 h-3"
             />
             현재 환율 통일
           </label>
@@ -121,8 +121,8 @@ export default function DailyReportPage() {
       </div>
 
       {!healthQuery.isFetched ? (
-        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
@@ -136,9 +136,9 @@ export default function DailyReportPage() {
             <span className="text-2xs text-emerald-800">그랜터 연결됨</span>
           </div>
           {data?.effectiveEndDate && data?.previousDate && (
-            <div className="text-2xs text-ink-500">
-              실제 종료일 <span className="font-mono text-ink-700">{data.effectiveEndDate}</span> · 이전 기준일{' '}
-              <span className="font-mono text-ink-700">{data.previousDate}</span>
+            <div className="text-2xs text-ink-500 dark:text-ink-400">
+              실제 종료일 <span className="font-mono text-ink-700 dark:text-ink-300">{data.effectiveEndDate}</span> · 이전 기준일{' '}
+              <span className="font-mono text-ink-700 dark:text-ink-300">{data.previousDate}</span>
             </div>
           )}
           {exceeds31 && (
@@ -170,14 +170,14 @@ export default function DailyReportPage() {
       {/* 통화별 합계 */}
       {currencyTotals.length > 1 && (
         <div className="panel p-3">
-          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+          <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-2">
             통화별 합계
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             {currencyTotals.map((c) => (
-              <div key={c.currencyCode} className="border border-ink-200 rounded p-2">
-                <div className="text-2xs text-ink-500">{c.currencyCode}</div>
-                <div className="font-mono tabular-nums font-semibold text-ink-900">
+              <div key={c.currencyCode} className="border border-ink-200 dark:border-ink-800 rounded p-2">
+                <div className="text-2xs text-ink-500 dark:text-ink-400">{c.currencyCode}</div>
+                <div className="font-mono tabular-nums font-semibold text-ink-900 dark:text-ink-50">
                   {formatCurrency(c.currentBalance, false)}
                 </div>
                 <div className="text-2xs text-ink-400 mt-0.5">
@@ -191,44 +191,44 @@ export default function DailyReportPage() {
 
       {/* 자산별 표 */}
       <div className="panel overflow-hidden">
-        <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
+        <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
           <h2 className="text-sm flex items-center gap-1.5">
-            <BuildingLibraryIcon className="h-3.5 w-3.5 text-ink-500" />
+            <BuildingLibraryIcon className="h-3.5 w-3.5 text-ink-500 dark:text-ink-400" />
             계좌별 잔액 (대출 제외)
           </h2>
           <span className="text-2xs text-ink-400">{nonLoanAssets.length}개 계좌</span>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full">
-            <thead className="bg-canvas-50">
+            <thead className="bg-canvas-50 dark:bg-ink-950">
               <tr>
-                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   자산
                 </th>
-                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   계좌번호
                 </th>
-                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   통화
                 </th>
-                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   이전 잔액
                 </th>
-                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   현재 잔액
                 </th>
-                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   증감
                 </th>
-                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   입금
                 </th>
-                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   출금
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-ink-100">
+            <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
               {reportQuery.isLoading && (
                 <tr>
                   <td colSpan={8} className="text-center py-6 text-2xs text-ink-400">
@@ -240,21 +240,21 @@ export default function DailyReportPage() {
                 nonLoanAssets.map((a) => {
                   const diff = Number(a.difference || 0)
                   return (
-                    <tr key={a.assetId} className="hover:bg-canvas-50">
+                    <tr key={a.assetId} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
                       <td className="px-3 py-1.5 text-xs">
-                        <div className="font-medium text-ink-900">{a.assetName}</div>
-                        <div className="text-2xs text-ink-500">{a.organizationName}</div>
+                        <div className="font-medium text-ink-900 dark:text-ink-50">{a.assetName}</div>
+                        <div className="text-2xs text-ink-500 dark:text-ink-400">{a.organizationName}</div>
                       </td>
-                      <td className="px-3 py-1.5 font-mono text-2xs text-ink-700">{a.assetNumber}</td>
+                      <td className="px-3 py-1.5 font-mono text-2xs text-ink-700 dark:text-ink-300">{a.assetNumber}</td>
                       <td className="px-3 py-1.5 text-2xs">
-                        <span className="badge bg-ink-50 text-ink-700 border-ink-200">
+                        <span className="badge bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800">
                           {a.currencyCode}
                         </span>
                       </td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-600">
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-600 dark:text-ink-400">
                         {formatCurrency(a.previousBalance, false)}
                       </td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900">
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900 dark:text-ink-50">
                         {formatCurrency(a.currentBalance, false)}
                       </td>
                       <td
@@ -266,10 +266,10 @@ export default function DailyReportPage() {
                         {formatCurrency(diff, false)}
                       </td>
                       <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-emerald-700">
-                        {Number(a.inAmount) > 0 ? formatCurrency(a.inAmount, false) : <span className="text-ink-200">-</span>}
+                        {Number(a.inAmount) > 0 ? formatCurrency(a.inAmount, false) : <span className="text-ink-200 dark:text-ink-700">-</span>}
                       </td>
                       <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-rose-700">
-                        {Number(a.outAmount) !== 0 ? formatCurrency(Math.abs(Number(a.outAmount)), false) : <span className="text-ink-200">-</span>}
+                        {Number(a.outAmount) !== 0 ? formatCurrency(Math.abs(Number(a.outAmount)), false) : <span className="text-ink-200 dark:text-ink-700">-</span>}
                       </td>
                     </tr>
                   )
@@ -289,41 +289,41 @@ export default function DailyReportPage() {
       {/* 대출 계좌 별도 표 */}
       {loanAssets.length > 0 && (
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 bg-amber-50/40">
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 bg-amber-50/40">
             <h2 className="text-sm">대출 계좌 (잔액 합계와 별도)</h2>
           </div>
           <div className="overflow-x-auto">
             <table className="min-w-full">
-              <thead className="bg-canvas-50">
+              <thead className="bg-canvas-50 dark:bg-ink-950">
                 <tr>
-                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     자산
                   </th>
-                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     계좌번호
                   </th>
-                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     이전
                   </th>
-                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     현재
                   </th>
-                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                  <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                     증감
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-ink-100">
+              <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                 {loanAssets.map((a) => {
                   const diff = Number(a.difference || 0)
                   return (
-                    <tr key={a.assetId} className="hover:bg-canvas-50">
+                    <tr key={a.assetId} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
                       <td className="px-3 py-1.5 text-xs">
-                        <div className="font-medium text-ink-900">{a.assetName}</div>
-                        <div className="text-2xs text-ink-500">{a.organizationName}</div>
+                        <div className="font-medium text-ink-900 dark:text-ink-50">{a.assetName}</div>
+                        <div className="text-2xs text-ink-500 dark:text-ink-400">{a.organizationName}</div>
                       </td>
-                      <td className="px-3 py-1.5 font-mono text-2xs text-ink-700">{a.assetNumber}</td>
-                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-600">
+                      <td className="px-3 py-1.5 font-mono text-2xs text-ink-700 dark:text-ink-300">{a.assetNumber}</td>
+                      <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-ink-600 dark:text-ink-400">
                         {formatCurrency(a.previousBalance, false)}
                       </td>
                       <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-amber-700">
@@ -368,7 +368,7 @@ function KPI({
 }) {
   const v = Number(value || 0)
   const toneClass: Record<string, string> = {
-    neutral: 'text-ink-900',
+    neutral: 'text-ink-900 dark:text-ink-50',
     primary: 'text-primary-700',
     success: 'text-emerald-700',
     danger: 'text-rose-700',
@@ -377,8 +377,8 @@ function KPI({
   let deltaClass = ''
   if (delta) deltaClass = v >= 0 ? 'text-emerald-700' : 'text-rose-700'
   return (
-    <div className={`panel px-3 py-2 ${highlight ? 'border-ink-900 border-2' : ''}`}>
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider flex items-center gap-1">
+    <div className={`panel px-3 py-2 ${highlight ? 'border-ink-900 dark:border-ink-100 border-2' : ''}`}>
+      <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider flex items-center gap-1">
         {icon}
         {label}
       </div>

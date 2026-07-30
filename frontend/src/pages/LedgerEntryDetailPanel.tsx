@@ -142,15 +142,15 @@ export default function LedgerEntryDetailPanel({
   })
 
   return (
-    <div className="border-t border-ink-200 bg-canvas-50 flex flex-col">
+    <div className="border-t border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 flex flex-col">
       {/* Header strip */}
-      <div className="px-4 py-2 border-b border-ink-200 bg-white flex items-center justify-between">
+      <div className="px-4 py-2 border-b border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 flex items-center justify-between">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-2xs font-mono text-ink-400">#{entry.id}</span>
           <span className="text-2xs text-ink-400">·</span>
-          <span className="text-xs text-ink-700">{entry.transaction_date}</span>
+          <span className="text-xs text-ink-700 dark:text-ink-300">{entry.transaction_date}</span>
           <span className="text-2xs text-ink-400">·</span>
-          <span className="text-xs font-medium text-ink-900 truncate max-w-xs">
+          <span className="text-xs font-medium text-ink-900 dark:text-ink-50 truncate max-w-xs">
             {description || entry.description || '거래 상세'}
           </span>
           {isDirty && (
@@ -160,7 +160,7 @@ export default function LedgerEntryDetailPanel({
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded border border-ink-200 bg-canvas-50 text-2xs font-mono text-ink-500">
+          <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 rounded border border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 text-2xs font-mono text-ink-500 dark:text-ink-400">
             ⌘S
           </kbd>
           <button
@@ -183,13 +183,13 @@ export default function LedgerEntryDetailPanel({
         <div className="col-span-12 md:col-span-4">
           <label className="label">구분 / 금액</label>
           <div className="flex gap-1.5">
-            <div className="flex bg-white border border-ink-200 rounded-md overflow-hidden">
+            <div className="flex bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 rounded-md overflow-hidden">
               <button
                 onClick={() => setDirection('debit')}
                 className={`px-2.5 py-1.5 text-xs font-semibold flex items-center gap-1 transition ${
                   direction === 'debit'
                     ? 'bg-primary-600 text-white'
-                    : 'text-ink-600 hover:bg-ink-50'
+                    : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
                 }`}
               >
                 <ArrowDownLeftIcon className="h-3 w-3" />
@@ -200,7 +200,7 @@ export default function LedgerEntryDetailPanel({
                 className={`px-2.5 py-1.5 text-xs font-semibold flex items-center gap-1 transition ${
                   direction === 'credit'
                     ? 'bg-rose-600 text-white'
-                    : 'text-ink-600 hover:bg-ink-50'
+                    : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
                 }`}
               >
                 <ArrowUpRightIcon className="h-3 w-3" />
@@ -299,22 +299,22 @@ export default function LedgerEntryDetailPanel({
 
         {/* T-account 시각화 */}
         <div className="col-span-12 mt-1">
-          <div className="rounded-md border border-ink-200 bg-white overflow-hidden">
-            <div className="grid grid-cols-2 divide-x divide-ink-200 text-2xs">
-              <div className="px-3 py-2 bg-canvas-50 font-semibold text-ink-500 uppercase tracking-wider text-center">
+          <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 overflow-hidden">
+            <div className="grid grid-cols-2 divide-x divide-ink-200 dark:divide-ink-800 text-2xs">
+              <div className="px-3 py-2 bg-canvas-50 dark:bg-ink-950 font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider text-center">
                 차변 (Debit)
               </div>
-              <div className="px-3 py-2 bg-canvas-50 font-semibold text-ink-500 uppercase tracking-wider text-center">
+              <div className="px-3 py-2 bg-canvas-50 dark:bg-ink-950 font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider text-center">
                 대변 (Credit)
               </div>
             </div>
-            <div className="grid grid-cols-2 divide-x divide-ink-200">
+            <div className="grid grid-cols-2 divide-x divide-ink-200 dark:divide-ink-800">
               <div className="px-3 py-2.5">
                 {direction === 'debit' ? (
                   <div className="flex items-center justify-between">
                     <span className="text-xs">
                       <span className="font-mono text-ink-400 mr-1.5">{sourceCode}</span>
-                      <span className="font-medium text-ink-900">{sourceName}</span>
+                      <span className="font-medium text-ink-900 dark:text-ink-50">{sourceName}</span>
                     </span>
                     <span className="font-mono tabular-nums font-semibold text-primary-700">
                       {formatCurrency(Number(amount) || 0, false)}
@@ -324,14 +324,14 @@ export default function LedgerEntryDetailPanel({
                   <div className="flex items-center justify-between">
                     <span className="text-xs">
                       <span className="font-mono text-ink-400 mr-1.5">{counterCode}</span>
-                      <span className="font-medium text-ink-900">{counterName}</span>
+                      <span className="font-medium text-ink-900 dark:text-ink-50">{counterName}</span>
                     </span>
                     <span className="font-mono tabular-nums font-semibold text-primary-700">
                       {formatCurrency(Number(amount) || 0, false)}
                     </span>
                   </div>
                 ) : (
-                  <span className="text-2xs text-ink-300">-</span>
+                  <span className="text-2xs text-ink-300 dark:text-ink-600">-</span>
                 )}
               </div>
               <div className="px-3 py-2.5">
@@ -339,7 +339,7 @@ export default function LedgerEntryDetailPanel({
                   <div className="flex items-center justify-between">
                     <span className="text-xs">
                       <span className="font-mono text-ink-400 mr-1.5">{sourceCode}</span>
-                      <span className="font-medium text-ink-900">{sourceName}</span>
+                      <span className="font-medium text-ink-900 dark:text-ink-50">{sourceName}</span>
                     </span>
                     <span className="font-mono tabular-nums font-semibold text-rose-700">
                       {formatCurrency(Number(amount) || 0, false)}
@@ -349,14 +349,14 @@ export default function LedgerEntryDetailPanel({
                   <div className="flex items-center justify-between">
                     <span className="text-xs">
                       <span className="font-mono text-ink-400 mr-1.5">{counterCode}</span>
-                      <span className="font-medium text-ink-900">{counterName}</span>
+                      <span className="font-medium text-ink-900 dark:text-ink-50">{counterName}</span>
                     </span>
                     <span className="font-mono tabular-nums font-semibold text-rose-700">
                       {formatCurrency(Number(amount) || 0, false)}
                     </span>
                   </div>
                 ) : (
-                  <span className="text-2xs text-ink-300">-</span>
+                  <span className="text-2xs text-ink-300 dark:text-ink-600">-</span>
                 )}
               </div>
             </div>
@@ -366,12 +366,12 @@ export default function LedgerEntryDetailPanel({
 
       {/* 전체 분개 라인 (voucher_id 있을 때) */}
       {entry.voucher_id && (
-        <div className="border-t border-ink-200 px-4 py-3 bg-white">
+        <div className="border-t border-ink-200 dark:border-ink-800 px-4 py-3 bg-white dark:bg-ink-900">
           <div className="flex items-center gap-1.5 mb-2">
-            <DocumentTextIcon className="h-3.5 w-3.5 text-ink-500" />
-            <span className="text-2xs font-semibold text-ink-700">이 전표의 전체 분개</span>
+            <DocumentTextIcon className="h-3.5 w-3.5 text-ink-500 dark:text-ink-400" />
+            <span className="text-2xs font-semibold text-ink-700 dark:text-ink-300">이 전표의 전체 분개</span>
             {voucherDetailQuery.data?.voucher_number && (
-              <span className="text-2xs font-mono text-ink-500">
+              <span className="text-2xs font-mono text-ink-500 dark:text-ink-400">
                 · {voucherDetailQuery.data.voucher_number}
               </span>
             )}
@@ -382,7 +382,7 @@ export default function LedgerEntryDetailPanel({
             <div className="text-2xs text-rose-600">전표 정보 조회 실패</div>
           ) : (
             <div>
-              <div className="grid grid-cols-12 gap-2 text-2xs text-ink-500 font-semibold border-b border-ink-100 pb-1 mb-1">
+              <div className="grid grid-cols-12 gap-2 text-2xs text-ink-500 dark:text-ink-400 font-semibold border-b border-ink-100 dark:border-ink-800 pb-1 mb-1">
                 <div className="col-span-1 text-center">구분</div>
                 <div className="col-span-2 font-mono">계정코드</div>
                 <div className="col-span-3">계정명</div>
@@ -398,7 +398,7 @@ export default function LedgerEntryDetailPanel({
                   l.id === entry.id - 10_000_000
                 return (
                   <div key={i}
-                    className={`grid grid-cols-12 gap-2 text-2xs py-1 border-b border-ink-50 ${
+                    className={`grid grid-cols-12 gap-2 text-2xs py-1 border-b border-ink-50 dark:border-ink-800 ${
                       isCurrentEntry ? 'bg-amber-50' : ''
                     }`}
                   >
@@ -409,20 +409,20 @@ export default function LedgerEntryDetailPanel({
                         {isDebit ? '차' : '대'}
                       </span>
                     </div>
-                    <div className="col-span-2 font-mono text-ink-700">{l.account_code || '-'}</div>
-                    <div className="col-span-3 text-ink-800">{l.account_name || '-'}</div>
-                    <div className="col-span-3 text-ink-600 truncate">{l.description || ''}</div>
+                    <div className="col-span-2 font-mono text-ink-700 dark:text-ink-300">{l.account_code || '-'}</div>
+                    <div className="col-span-3 text-ink-800 dark:text-ink-100">{l.account_name || '-'}</div>
+                    <div className="col-span-3 text-ink-600 dark:text-ink-400 truncate">{l.description || ''}</div>
                     <div className="col-span-1.5 text-right font-mono">
-                      {isDebit ? <span className="text-emerald-700 font-semibold">{formatCurrency(Number(l.debit_amount), false)}</span> : <span className="text-ink-300">-</span>}
+                      {isDebit ? <span className="text-emerald-700 font-semibold">{formatCurrency(Number(l.debit_amount), false)}</span> : <span className="text-ink-300 dark:text-ink-600">-</span>}
                     </div>
                     <div className="col-span-1.5 text-right font-mono">
-                      {!isDebit ? <span className="text-rose-700 font-semibold">{formatCurrency(Number(l.credit_amount), false)}</span> : <span className="text-ink-300">-</span>}
+                      {!isDebit ? <span className="text-rose-700 font-semibold">{formatCurrency(Number(l.credit_amount), false)}</span> : <span className="text-ink-300 dark:text-ink-600">-</span>}
                     </div>
                   </div>
                 )
               })}
-              <div className="grid grid-cols-12 gap-2 text-2xs pt-1.5 mt-1 border-t-2 border-ink-200 font-semibold">
-                <div className="col-span-9 text-right text-ink-700">합계</div>
+              <div className="grid grid-cols-12 gap-2 text-2xs pt-1.5 mt-1 border-t-2 border-ink-200 dark:border-ink-800 font-semibold">
+                <div className="col-span-9 text-right text-ink-700 dark:text-ink-300">합계</div>
                 <div className="col-span-1.5 text-right font-mono text-emerald-700">
                   {formatCurrency(Number(voucherDetailQuery.data?.total_debit || 0), false)}
                 </div>

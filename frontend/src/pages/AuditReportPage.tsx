@@ -19,6 +19,7 @@ import { usePeriodStore } from '@/store/periodStore'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatDateTime, isoLocal } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers, isSelfContact } from '@/utils/internalTransfer'
+import { useChartTheme } from '@/lib/chartTheme'
 
 // ─── 안전한 직렬화 ────────────────────────────────────────────────────────────
 
@@ -151,7 +152,7 @@ interface TabMeta {
 }
 
 const TAB_META: TabMeta[] = [
-  { key: 'all',           label: '전체',   severityColor: 'border-ink-900 text-ink-900',           badgeClass: 'bg-ink-100 text-ink-700 border-ink-200' },
+  { key: 'all',           label: '전체',   severityColor: 'border-ink-900 dark:border-ink-100 text-ink-900 dark:text-ink-50',           badgeClass: 'bg-ink-100 dark:bg-ink-800 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800' },
   { key: 'revenue',       label: '매출사이드', severityColor: 'border-emerald-500 text-emerald-700', badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   { key: 'expense',       label: '비용사이드', severityColor: 'border-rose-400 text-rose-600',       badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
   { key: 'anomaly',       label: '이상거래', severityColor: 'border-rose-500 text-rose-700',         badgeClass: 'bg-rose-50 text-rose-700 border-rose-200' },
@@ -161,7 +162,7 @@ const TAB_META: TabMeta[] = [
   { key: 'no_category',   label: '미분류',  severityColor: 'border-amber-500 text-amber-700',       badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
   { key: 'no_attachment', label: '증빙없음', severityColor: 'border-amber-500 text-amber-700',      badgeClass: 'bg-amber-50 text-amber-700 border-amber-200' },
   { key: 'long_pending',  label: '미확인',  severityColor: 'border-primary-500 text-primary-700',   badgeClass: 'bg-primary-50 text-primary-700 border-primary-200' },
-  { key: 'not_included',  label: '미포함',  severityColor: 'border-ink-500 text-ink-700',           badgeClass: 'bg-ink-50 text-ink-700 border-ink-200' },
+  { key: 'not_included',  label: '미포함',  severityColor: 'border-ink-500 dark:border-ink-400 text-ink-700 dark:text-ink-300',           badgeClass: 'bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800' },
 ]
 
 const RULE_COLOR: Record<RuleKey, string> = {
@@ -171,7 +172,7 @@ const RULE_COLOR: Record<RuleKey, string> = {
   no_category:    'bg-amber-50 text-amber-700 border-amber-200',
   no_attachment:  'bg-amber-50 text-amber-700 border-amber-200',
   long_pending:   'bg-primary-50 text-primary-700 border-primary-200',
-  not_included:   'bg-ink-50 text-ink-700 border-ink-200',
+  not_included:   'bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800',
   duplicate:      'bg-rose-50 text-rose-700 border-rose-200',
 }
 
@@ -591,10 +592,10 @@ export default function AuditReportPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <ShieldExclamationIcon className="h-4 w-4 text-ink-500" />
+            <ShieldExclamationIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             감사 대응 리포트
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             8가지 룰 자동 검출 — 이상거래 · 큰금액 · 새벽 · 미분류 · 증빙없음 · 미확인 · 미포함 · 중복
           </p>
           {filteredCount > 0 && (
@@ -631,8 +632,8 @@ export default function AuditReportPage() {
 
       {/* 연결 상태 배너 */}
       {!healthQuery.isFetched ? (
-        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
@@ -675,7 +676,7 @@ export default function AuditReportPage() {
       {/* 검출 금액 합계 배너 */}
       {!isLoading && issues.length > 0 && (
         <div className="panel px-4 py-2 flex items-center justify-between flex-wrap gap-2">
-          <span className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">검출 금액 합계 (중복 제외)</span>
+          <span className="text-2xs text-ink-500 dark:text-ink-400 font-semibold uppercase tracking-wider">검출 금액 합계 (중복 제외)</span>
           <span className="font-mono font-bold text-sm text-rose-700 tabular-nums">
             {formatCurrency(kpi.totalAmount, false)}
             <span className="text-2xs text-ink-400 ml-1 font-medium">원</span>
@@ -686,12 +687,12 @@ export default function AuditReportPage() {
       {/* 모두 정상 */}
       {isAllClean && (
         <div className="panel p-6 flex flex-col items-center gap-3 border-emerald-200 bg-emerald-50">
-          <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center border border-emerald-200">
+          <div className="w-10 h-10 rounded-full bg-white dark:bg-ink-900 flex items-center justify-center border border-emerald-200">
             <CheckCircleIcon className="h-5 w-5 text-emerald-600" />
           </div>
           <div className="text-center">
             <div className="text-sm font-semibold text-emerald-800">이상 없음</div>
-            <div className="text-2xs text-ink-500 mt-1">
+            <div className="text-2xs text-ink-500 dark:text-ink-400 mt-1">
               조회 기간 내 {tickets.length.toLocaleString('ko-KR')}건 거래 — 모든 검출 룰을 통과했습니다.
             </div>
           </div>
@@ -703,7 +704,7 @@ export default function AuditReportPage() {
         <div className="panel">
           <button
             onClick={() => setChartsOpen((v) => !v)}
-            className="w-full px-3 py-2 flex items-center justify-between text-2xs font-semibold text-ink-700 hover:bg-canvas-50"
+            className="w-full px-3 py-2 flex items-center justify-between text-2xs font-semibold text-ink-700 dark:text-ink-300 hover:bg-canvas-50 dark:hover:bg-ink-800"
           >
             <span>📊 시각화 (월별·룰별·사이드)</span>
             {chartsOpen ? <ChevronUpIcon className="h-3 w-3" /> : <ChevronDownIcon className="h-3 w-3" />}
@@ -719,7 +720,7 @@ export default function AuditReportPage() {
           <div className={selected ? 'col-span-7' : 'col-span-12'}>
             <div className="panel overflow-hidden">
               {/* 탭 바 */}
-              <div className="px-3 pt-2 pb-0 border-b border-ink-200 flex items-center overflow-x-auto">
+              <div className="px-3 pt-2 pb-0 border-b border-ink-200 dark:border-ink-800 flex items-center overflow-x-auto">
                 {TAB_META.map((tab) => {
                   const cnt = tabCounts[tab.key] || 0
                   const isActive = activeTab === tab.key
@@ -730,7 +731,7 @@ export default function AuditReportPage() {
                       className={`px-3 py-1.5 text-2xs font-semibold border-b-2 transition -mb-px whitespace-nowrap ${
                         isActive
                           ? tab.severityColor
-                          : 'border-transparent text-ink-500 hover:text-ink-700'
+                          : 'border-transparent text-ink-500 dark:text-ink-400 hover:text-ink-700 dark:hover:text-ink-200'
                       }`}
                     >
                       {tab.label}
@@ -745,31 +746,31 @@ export default function AuditReportPage() {
               {/* 테이블 */}
               <div className="overflow-x-auto max-h-[calc(100vh-32rem)] overflow-y-auto">
                 <table className="min-w-full">
-                  <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-200">
+                  <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10 border-b border-ink-200 dark:border-ink-800">
                     <tr>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        <button onClick={() => handleSort('date')} className="flex items-center gap-0.5 hover:text-ink-700">
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
+                        <button onClick={() => handleSort('date')} className="flex items-center gap-0.5 hover:text-ink-700 dark:hover:text-ink-200">
                           일시 <SortIcon k="date" />
                         </button>
                       </th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">거래처</th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">사이드</th>
-                      <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        <button onClick={() => handleSort('amount')} className="flex items-center gap-0.5 hover:text-ink-700 ml-auto">
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">거래처</th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">사이드</th>
+                      <th className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
+                        <button onClick={() => handleSort('amount')} className="flex items-center gap-0.5 hover:text-ink-700 dark:hover:text-ink-200 ml-auto">
                           금액 <SortIcon k="amount" />
                         </button>
                       </th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">룰</th>
-                      <th className="px-3 py-1.5 text-center text-2xs font-semibold text-ink-500 uppercase tracking-wider">
-                        <button onClick={() => handleSort('severity')} className="flex items-center gap-0.5 hover:text-ink-700 mx-auto">
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">룰</th>
+                      <th className="px-3 py-1.5 text-center text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
+                        <button onClick={() => handleSort('severity')} className="flex items-center gap-0.5 hover:text-ink-700 dark:hover:text-ink-200 mx-auto">
                           위험도 <SortIcon k="severity" />
                         </button>
                       </th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">사유</th>
-                      <th className="px-3 py-1.5 text-center text-2xs font-semibold text-ink-500 uppercase tracking-wider">확인</th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">사유</th>
+                      <th className="px-3 py-1.5 text-center text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">확인</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-ink-100">
+                  <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                     {isLoading && (
                       <tr>
                         <td colSpan={8} className="text-center py-8 text-2xs text-ink-400">
@@ -790,18 +791,18 @@ export default function AuditReportPage() {
                         <tr
                           key={`${group.ticketId || idx}`}
                           onClick={() => setSelected(group)}
-                          className={`cursor-pointer ${isSel ? 'bg-ink-50' : 'hover:bg-canvas-50'}`}
+                          className={`cursor-pointer ${isSel ? 'bg-ink-50 dark:bg-ink-900' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'}`}
                         >
-                          <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 font-mono align-top">
+                          <td className="px-3 py-1.5 whitespace-nowrap text-2xs text-ink-700 dark:text-ink-300 font-mono align-top">
                             {group.date ? formatDateTime(group.date) : '-'}
                           </td>
-                          <td className="px-3 py-1.5 text-xs text-ink-900 align-top">
+                          <td className="px-3 py-1.5 text-xs text-ink-900 dark:text-ink-50 align-top">
                             <div className="font-medium truncate max-w-[130px]">{group.contact}</div>
                           </td>
                           <td className="px-3 py-1.5 whitespace-nowrap align-top">
                             <SideBadge side={group.side} />
                           </td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900 align-top">
+                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900 dark:text-ink-50 align-top">
                             {group.amount > 0 ? formatCurrency(group.amount, false) : '-'}
                           </td>
                           <td className="px-3 py-1.5 align-top">
@@ -814,11 +815,11 @@ export default function AuditReportPage() {
                           <td className="px-3 py-1.5 text-center align-top">
                             <SeverityBadge severity={group.highestSeverity} />
                           </td>
-                          <td className="px-3 py-1.5 text-2xs text-ink-700 max-w-[260px] align-top">
+                          <td className="px-3 py-1.5 text-2xs text-ink-700 dark:text-ink-300 max-w-[260px] align-top">
                             <div className="space-y-0.5">
                               {group.issues.map((i, k) => (
                                 <div key={`${i.ruleKey}-${k}`} className="flex items-start gap-1" title={i.message}>
-                                  <span className="text-ink-300">·</span>
+                                  <span className="text-ink-300 dark:text-ink-600">·</span>
                                   <span className="truncate">{i.message}</span>
                                 </div>
                               ))}
@@ -841,10 +842,10 @@ export default function AuditReportPage() {
               </div>
               {/* 페이지네이션 컨트롤 */}
               {displayed.length > PAGE_SIZE && (
-                <div className="px-3 py-2 border-t border-ink-200 flex items-center justify-between text-2xs">
-                  <div className="text-ink-500">
+                <div className="px-3 py-2 border-t border-ink-200 dark:border-ink-800 flex items-center justify-between text-2xs">
+                  <div className="text-ink-500 dark:text-ink-400">
                     {(pageNum - 1) * PAGE_SIZE + 1}–{Math.min(pageNum * PAGE_SIZE, displayed.length)} /{' '}
-                    <span className="font-semibold text-ink-700">{displayed.length}</span>건
+                    <span className="font-semibold text-ink-700 dark:text-ink-300">{displayed.length}</span>건
                   </div>
                   <div className="flex items-center gap-1">
                     <button
@@ -861,7 +862,7 @@ export default function AuditReportPage() {
                     >
                       ‹
                     </button>
-                    <span className="px-2 text-ink-700 font-mono">
+                    <span className="px-2 text-ink-700 dark:text-ink-300 font-mono">
                       {pageNum} / {totalPages}
                     </span>
                     <button
@@ -934,19 +935,19 @@ function DetailPanel({ group, onClose }: { group: IssueGroup; onClose: () => voi
   return (
     <div className="panel overflow-hidden h-full flex flex-col">
       {/* 헤더 */}
-      <div className="px-3 py-2 border-b border-ink-200 flex items-start justify-between gap-2">
+      <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 flex-wrap">
             <h2 className="text-sm font-semibold truncate">{group.contact}</h2>
             <SideBadge side={group.side} />
           </div>
-          <div className="text-2xs text-ink-500 mt-0.5 font-mono">
+          <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5 font-mono">
             {group.date ? formatDateTime(group.date) : '-'}
           </div>
         </div>
         <button
           onClick={onClose}
-          className="text-ink-400 hover:text-ink-700 flex-shrink-0"
+          className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200 flex-shrink-0"
         >
           <XMarkIcon className="h-4 w-4" />
         </button>
@@ -956,7 +957,7 @@ function DetailPanel({ group, onClose }: { group: IssueGroup; onClose: () => voi
         {/* 핵심 정보 카드 */}
         <div className="px-3 pt-3 pb-0 grid grid-cols-2 gap-2">
           <InfoCard label="금액">
-            <span className="font-mono font-bold text-sm text-ink-900 tabular-nums">
+            <span className="font-mono font-bold text-sm text-ink-900 dark:text-ink-50 tabular-nums">
               {group.amount > 0 ? `${formatCurrency(group.amount, false)}원` : '-'}
             </span>
           </InfoCard>
@@ -964,18 +965,18 @@ function DetailPanel({ group, onClose }: { group: IssueGroup; onClose: () => voi
             <SideBadge side={group.side} />
           </InfoCard>
           <InfoCard label="계정과목">
-            <span className={`text-2xs ${catStr ? 'text-ink-800' : 'text-rose-500 font-medium'}`}>
+            <span className={`text-2xs ${catStr ? 'text-ink-800 dark:text-ink-100' : 'text-rose-500 font-medium'}`}>
               {catStr ?? '미분류'}
             </span>
           </InfoCard>
           <InfoCard label="자산명">
-            <span className="text-2xs text-ink-800 truncate">{assetName || '-'}</span>
+            <span className="text-2xs text-ink-800 dark:text-ink-100 truncate">{assetName || '-'}</span>
           </InfoCard>
         </div>
 
         {/* 검출된 룰 (모두 표시) */}
         <div className="px-3 pt-2">
-          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1">
+          <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-1">
             검출 룰 {group.issues.length > 1 && <span className="text-ink-400 font-normal">({group.issues.length}개)</span>}
           </div>
           <div className="flex flex-wrap gap-1">
@@ -986,9 +987,9 @@ function DetailPanel({ group, onClose }: { group: IssueGroup; onClose: () => voi
           </div>
           <div className="mt-1.5 space-y-1">
             {group.issues.map((i, k) => (
-              <div key={`${i.ruleKey}-${k}`} className="text-2xs text-ink-700 flex items-start gap-1">
+              <div key={`${i.ruleKey}-${k}`} className="text-2xs text-ink-700 dark:text-ink-300 flex items-start gap-1">
                 <span className="text-rose-400 mt-0.5">·</span>
-                <span><span className="font-semibold text-ink-900">[{i.ruleLabel}]</span> {i.message}</span>
+                <span><span className="font-semibold text-ink-900 dark:text-ink-50">[{i.ruleLabel}]</span> {i.message}</span>
               </div>
             ))}
           </div>
@@ -998,7 +999,7 @@ function DetailPanel({ group, onClose }: { group: IssueGroup; onClose: () => voi
         <div className="px-3 pt-3 pb-3">
           <button
             onClick={() => setRawOpen((v) => !v)}
-            className="flex items-center gap-1 text-2xs font-semibold text-ink-500 uppercase tracking-wider hover:text-ink-700 transition"
+            className="flex items-center gap-1 text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider hover:text-ink-700 dark:hover:text-ink-200 transition"
           >
             {rawOpen
               ? <ChevronUpIcon className="h-3 w-3" />
@@ -1007,7 +1008,7 @@ function DetailPanel({ group, onClose }: { group: IssueGroup; onClose: () => voi
             원본 JSON (감사용)
           </button>
           {rawOpen && (
-            <pre className="mt-2 text-2xs font-mono text-ink-700 bg-canvas-50 border border-ink-100 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-72 overflow-y-auto">
+            <pre className="mt-2 text-2xs font-mono text-ink-700 dark:text-ink-300 bg-canvas-50 dark:bg-ink-950 border border-ink-100 dark:border-ink-800 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all max-h-72 overflow-y-auto">
               {rawStr}
             </pre>
           )}
@@ -1019,7 +1020,7 @@ function DetailPanel({ group, onClose }: { group: IssueGroup; onClose: () => voi
 
 function InfoCard({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded border border-ink-100 bg-canvas-50 px-2 py-1.5">
+    <div className="rounded border border-ink-100 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 px-2 py-1.5">
       <div className="text-2xs text-ink-400 mb-0.5">{label}</div>
       <div className="flex items-center min-h-[18px]">{children}</div>
     </div>
@@ -1036,15 +1037,15 @@ function KpiCard({
   loading?: boolean
 }) {
   const cls: Record<string, string> = {
-    neutral: 'text-ink-900', danger: 'text-rose-700', warning: 'text-amber-700',
+    neutral: 'text-ink-900 dark:text-ink-50', danger: 'text-rose-700', warning: 'text-amber-700',
     primary: 'text-primary-700', emerald: 'text-emerald-700',
   }
   return (
     <div className="panel px-3 py-2">
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider truncate leading-tight">{label}</div>
+      <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider truncate leading-tight">{label}</div>
       <div className={`mt-0.5 font-mono tabular-nums font-bold text-sm ${cls[tone]}`}>
         {loading ? (
-          <span className="text-ink-300">—</span>
+          <span className="text-ink-300 dark:text-ink-600">—</span>
         ) : unit === '원' ? (
           <>{formatCurrency(value, false)}<span className="text-2xs text-ink-400 ml-1 font-medium">원</span></>
         ) : (
@@ -1064,7 +1065,7 @@ function SeverityBadge({ severity }: { severity: Severity }) {
 function SideBadge({ side }: { side: Side }) {
   if (side === 'revenue') return <span className="badge bg-emerald-50 text-emerald-700 border-emerald-200">매출 IN</span>
   if (side === 'expense') return <span className="badge bg-rose-50 text-rose-600 border-rose-200">비용 OUT</span>
-  return <span className="badge bg-ink-50 text-ink-500 border-ink-200">기타</span>
+  return <span className="badge bg-ink-50 dark:bg-ink-900 text-ink-500 dark:text-ink-400 border-ink-200 dark:border-ink-800">기타</span>
 }
 
 function RuleBadge({ ruleKey, label }: { ruleKey: RuleKey; label: string }) {
@@ -1082,20 +1083,21 @@ const ChartsSection = React.memo(function ChartsSection({
   ruleChartData: { name: string; value: number }[]
   sideChartData: { name: string; value: number; color: string }[]
 }) {
+  const chartTheme = useChartTheme()
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 p-3">
       {/* 월별 검출 */}
       <div className="panel p-3">
-        <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">월별 검출 건수</div>
+        <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">월별 검출 건수</div>
         {monthlyChartData.length === 0 ? (
           <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
         ) : (
           <ResponsiveContainer width="100%" height={140}>
             <BarChart data={monthlyChartData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="month" tick={{ fontSize: 9 }} />
-              <YAxis tick={{ fontSize: 9 }} allowDecimals={false} />
-              <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+              <XAxis dataKey="month" tick={{ fontSize: 9, fill: chartTheme.axisColor }} />
+              <YAxis tick={{ fontSize: 9, fill: chartTheme.axisColor }} allowDecimals={false} />
+              <Tooltip contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
               <Bar dataKey="count" fill="#6366f1" radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -1103,16 +1105,16 @@ const ChartsSection = React.memo(function ChartsSection({
       </div>
       {/* 룰별 */}
       <div className="panel p-3">
-        <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">룰별 검출 건수</div>
+        <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">룰별 검출 건수</div>
         {ruleChartData.length === 0 ? (
           <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
         ) : (
           <ResponsiveContainer width="100%" height={140}>
             <BarChart data={ruleChartData} layout="vertical" margin={{ top: 0, right: 12, left: 4, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis type="number" tick={{ fontSize: 9 }} allowDecimals={false} />
-              <YAxis dataKey="name" type="category" tick={{ fontSize: 9 }} width={52} />
-              <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+              <XAxis type="number" tick={{ fontSize: 9, fill: chartTheme.axisColor }} allowDecimals={false} />
+              <YAxis dataKey="name" type="category" tick={{ fontSize: 9, fill: chartTheme.axisColor }} width={52} />
+              <Tooltip contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
               <Bar dataKey="value" fill="#f43f5e" radius={[0, 2, 2, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -1120,7 +1122,7 @@ const ChartsSection = React.memo(function ChartsSection({
       </div>
       {/* 사이드 */}
       <div className="panel p-3">
-        <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">매출 / 비용 사이드</div>
+        <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">매출 / 비용 사이드</div>
         {sideChartData.length === 0 ? (
           <div className="h-32 flex items-center justify-center text-2xs text-ink-400">데이터 없음</div>
         ) : (
@@ -1141,7 +1143,7 @@ const ChartsSection = React.memo(function ChartsSection({
                 ))}
               </Pie>
               <Legend iconSize={8} formatter={(value) => <span style={{ fontSize: 10 }}>{value}</span>} />
-              <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
+              <Tooltip contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }} formatter={(v: number) => [v.toLocaleString('ko-KR') + '건', '건수']} />
             </PieChart>
           </ResponsiveContainer>
         )}

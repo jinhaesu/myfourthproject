@@ -78,7 +78,7 @@ function PasswordStrengthIndicator({ password }: { password: string }) {
             <div
               key={i}
               className={`h-1.5 flex-1 rounded-full transition-colors ${
-                i <= strength.level ? strength.color : 'bg-gray-200'
+                i <= strength.level ? strength.color : 'bg-gray-200 dark:bg-ink-700'
               }`}
             />
           ))}
@@ -99,7 +99,7 @@ function PasswordStrengthIndicator({ password }: { password: string }) {
             {check.met ? (
               <CheckCircleIcon className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
             ) : (
-              <XCircleIcon className="h-3.5 w-3.5 text-gray-300 flex-shrink-0" />
+              <XCircleIcon className="h-3.5 w-3.5 text-gray-300 dark:text-gray-600 flex-shrink-0" />
             )}
             <span className={check.met ? 'text-green-700' : 'text-gray-400'}>{check.label}</span>
           </li>
@@ -122,10 +122,10 @@ function NotificationToggle({
   onChange: (v: boolean) => void
 }) {
   return (
-    <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+    <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-ink-900 rounded-lg">
       <div>
-        <p className="font-medium text-gray-900">{label}</p>
-        <p className="text-sm text-gray-500">{description}</p>
+        <p className="font-medium text-gray-900 dark:text-gray-100">{label}</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">{description}</p>
       </div>
       <button
         type="button"
@@ -133,11 +133,11 @@ function NotificationToggle({
         aria-checked={enabled}
         onClick={() => onChange(!enabled)}
         className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-          enabled ? 'bg-blue-600' : 'bg-gray-200'
+          enabled ? 'bg-blue-600' : 'bg-gray-200 dark:bg-ink-700'
         }`}
       >
         <span
-          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white dark:bg-ink-900 shadow ring-0 transition duration-200 ease-in-out ${
             enabled ? 'translate-x-5' : 'translate-x-0'
           }`}
         />
@@ -220,8 +220,8 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">설정</h1>
-        <p className="text-gray-500 mt-1">계정 설정을 관리합니다.</p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">설정</h1>
+        <p className="text-gray-500 dark:text-gray-400 mt-1">계정 설정을 관리합니다.</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -240,7 +240,7 @@ export default function SettingsPage() {
                 className={`flex items-center w-full px-4 py-3 rounded-lg text-sm font-medium ${
                   activeTab === item.id
                     ? 'bg-primary-50 text-primary-700'
-                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-ink-800 hover:text-gray-900 dark:hover:text-gray-100'
                 }`}
               >
                 <item.icon className="h-5 w-5 mr-3" />
@@ -258,26 +258,26 @@ export default function SettingsPage() {
               <h3 className="card-header">프로필 정보</h3>
 
               {/* Read-only info */}
-              <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <div className="mb-6 p-4 bg-gray-50 dark:bg-ink-900 rounded-lg">
                 <dl className="grid grid-cols-2 gap-4 text-sm">
                   <div>
-                    <dt className="text-gray-500">사번</dt>
+                    <dt className="text-gray-500 dark:text-gray-400">사번</dt>
                     <dd className="font-medium">{user?.employeeId || '-'}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">사용자명</dt>
+                    <dt className="text-gray-500 dark:text-gray-400">사용자명</dt>
                     <dd className="font-medium">{user?.username || '-'}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">이메일</dt>
+                    <dt className="text-gray-500 dark:text-gray-400">이메일</dt>
                     <dd className="font-medium">{user?.email || '-'}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">부서</dt>
+                    <dt className="text-gray-500 dark:text-gray-400">부서</dt>
                     <dd className="font-medium">{user?.departmentName || '-'}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">역할</dt>
+                    <dt className="text-gray-500 dark:text-gray-400">역할</dt>
                     <dd className="font-medium">{user?.roleName || '-'}</dd>
                   </div>
                 </dl>
@@ -293,7 +293,7 @@ export default function SettingsPage() {
                   <input
                     type="text"
                     {...profileForm.register('full_name')}
-                    className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                   {profileForm.formState.errors.full_name && (
                     <p className="mt-1 text-sm text-red-600">
@@ -307,7 +307,7 @@ export default function SettingsPage() {
                   <input
                     type="tel"
                     {...profileForm.register('phone')}
-                    className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     placeholder="010-0000-0000"
                   />
                 </div>
@@ -317,7 +317,7 @@ export default function SettingsPage() {
                   <input
                     type="text"
                     {...profileForm.register('position')}
-                    className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     placeholder="예: 사원, 대리, 과장"
                   />
                 </div>
@@ -350,12 +350,12 @@ export default function SettingsPage() {
                     <input
                       type={showCurrentPassword ? 'text' : 'password'}
                       {...passwordForm.register('currentPassword')}
-                      className="w-full mt-1 px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full mt-1 px-4 py-2 pr-10 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     />
                     <button
                       type="button"
                       onClick={() => setShowCurrentPassword(!showCurrentPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 mt-0.5 text-gray-400 hover:text-gray-600"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 mt-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                       tabIndex={-1}
                     >
                       {showCurrentPassword ? (
@@ -379,13 +379,13 @@ export default function SettingsPage() {
                     <input
                       type={showNewPassword ? 'text' : 'password'}
                       {...passwordForm.register('newPassword')}
-                      className="w-full mt-1 px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full mt-1 px-4 py-2 pr-10 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       placeholder="8자 이상"
                     />
                     <button
                       type="button"
                       onClick={() => setShowNewPassword(!showNewPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 mt-0.5 text-gray-400 hover:text-gray-600"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 mt-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                       tabIndex={-1}
                     >
                       {showNewPassword ? (
@@ -411,12 +411,12 @@ export default function SettingsPage() {
                     <input
                       type={showConfirmPassword ? 'text' : 'password'}
                       {...passwordForm.register('confirmPassword')}
-                      className="w-full mt-1 px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full mt-1 px-4 py-2 pr-10 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     />
                     <button
                       type="button"
                       onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 mt-0.5 text-gray-400 hover:text-gray-600"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 mt-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                       tabIndex={-1}
                     >
                       {showConfirmPassword ? (
@@ -450,7 +450,7 @@ export default function SettingsPage() {
           {activeTab === 'notifications' && (
             <div className="card">
               <h3 className="card-header">알림 설정</h3>
-              <p className="text-sm text-gray-500 mb-6">
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
                 각 항목의 알림 수신 여부를 설정할 수 있습니다.
               </p>
               <div className="space-y-4">
@@ -499,10 +499,10 @@ export default function SettingsPage() {
             <div className="card">
               <h3 className="card-header">보안 설정</h3>
               <div className="space-y-6">
-                <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-ink-900 rounded-lg">
                   <div>
-                    <p className="font-medium text-gray-900">2단계 인증 (2FA)</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="font-medium text-gray-900 dark:text-gray-100">2단계 인증 (2FA)</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
                       로그인 시 추가 보안 인증을 요구합니다.
                     </p>
                   </div>
@@ -524,9 +524,9 @@ export default function SettingsPage() {
                   </button>
                 </div>
 
-                <div className="p-4 bg-gray-50 rounded-lg">
-                  <p className="font-medium text-gray-900">로그인 이력</p>
-                  <p className="text-sm text-gray-500 mt-1">
+                <div className="p-4 bg-gray-50 dark:bg-ink-900 rounded-lg">
+                  <p className="font-medium text-gray-900 dark:text-gray-100">로그인 이력</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                     최근 로그인 기록을 확인할 수 있습니다.
                   </p>
                   <p className="text-sm text-gray-400 mt-2">

@@ -38,13 +38,13 @@ export default function FiscalYearTabs({
   const padY = compact ? 'py-0.5' : 'py-1'
 
   return (
-    <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200 w-fit">
+    <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 w-fit">
       {years.map((y) => (
         <button
           key={y}
           onClick={() => onChange(y)}
           className={`${padX} ${padY} rounded text-2xs font-semibold transition ${
-            year === y ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+            year === y ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
           }`}
         >
           {y}

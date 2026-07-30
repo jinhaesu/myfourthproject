@@ -77,10 +77,10 @@ export default function VouchersPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <DocumentTextIcon className="h-4 w-4 text-ink-500" />
+            <DocumentTextIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             전표 관리
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             업로드된 전표 조회 · 인라인 수정 · 차변/대변 토글
           </p>
         </div>
@@ -112,11 +112,11 @@ export default function VouchersPage() {
             setMonth(1)
           }}
         />
-        <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200">
+        <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800">
           <button
             onClick={() => setViewMode('monthly')}
             className={`px-2.5 py-1 rounded text-2xs font-semibold transition ${
-              viewMode === 'monthly' ? 'bg-ink-900 text-white' : 'text-ink-600'
+              viewMode === 'monthly' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400'
             }`}
           >
             월별
@@ -124,7 +124,7 @@ export default function VouchersPage() {
           <button
             onClick={() => setViewMode('period')}
             className={`px-2.5 py-1 rounded text-2xs font-semibold transition ${
-              viewMode === 'period' ? 'bg-ink-900 text-white' : 'text-ink-600'
+              viewMode === 'period' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400'
             }`}
           >
             기간
@@ -148,13 +148,13 @@ export default function VouchersPage() {
                   </option>
                 ))}
             </select>
-            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200">
+            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800">
               {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
                 <button
                   key={m}
                   onClick={() => setMonth(m)}
                   className={`w-7 py-1 rounded text-2xs font-semibold transition ${
-                    month === m ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-white'
+                    month === m ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-white dark:hover:bg-ink-800'
                   }`}
                 >
                   {m}
@@ -163,31 +163,31 @@ export default function VouchersPage() {
             </div>
           </>
         ) : (
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-canvas-50 border border-ink-200">
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800">
             <CalendarDaysIcon className="h-3 w-3 text-ink-400" />
             <input
               type="date"
               value={from}
               onChange={(e) => setFrom(e.target.value)}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
+              className="bg-transparent text-2xs text-ink-700 dark:text-ink-300 w-24 focus:outline-none"
             />
-            <span className="text-ink-300">→</span>
+            <span className="text-ink-300 dark:text-ink-600">→</span>
             <input
               type="date"
               value={to}
               onChange={(e) => setTo(e.target.value)}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
+              className="bg-transparent text-2xs text-ink-700 dark:text-ink-300 w-24 focus:outline-none"
             />
           </div>
         )}
 
-        <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200 ml-auto">
+        <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800 ml-auto">
           {(['all', 'debit', 'credit'] as Direction[]).map((d) => (
             <button
               key={d}
               onClick={() => setDirection(d)}
               className={`px-2 py-1 rounded text-2xs font-semibold transition ${
-                direction === d ? 'bg-ink-900 text-white' : 'text-ink-600'
+                direction === d ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400'
               }`}
             >
               {d === 'all' ? '전체' : d === 'debit' ? '차변' : '대변'}
@@ -236,36 +236,36 @@ export default function VouchersPage() {
       <div className="panel overflow-hidden">
         <div className="overflow-x-auto max-h-[calc(100vh-22rem)] overflow-y-auto">
           <table className="min-w-full">
-            <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-200">
+            <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10 border-b border-ink-200 dark:border-ink-800">
               <tr>
-                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   날짜
                 </th>
-                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   구분
                 </th>
-                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   코드
                 </th>
-                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   계정과목
                 </th>
-                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   거래처
                 </th>
-                <th className="px-2.5 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-2.5 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   차변
                 </th>
-                <th className="px-2.5 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-2.5 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   대변
                 </th>
-                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                <th className="px-2.5 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                   적요
                 </th>
                 <th className="px-2.5 py-1.5"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-ink-100">
+            <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
               {txQuery.isLoading && (
                 <tr>
                   <td colSpan={9} className="text-center text-2xs text-ink-400 py-6">
@@ -302,7 +302,7 @@ export default function VouchersPage() {
                           <button
                             key={y}
                             onClick={() => setYear(y)}
-                            className="px-1.5 py-0.5 rounded border border-ink-200 bg-white text-ink-700 hover:bg-ink-50 text-2xs font-semibold"
+                            className="px-1.5 py-0.5 rounded border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 text-ink-700 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 text-2xs font-semibold"
                           >
                             {y}
                           </button>
@@ -336,7 +336,7 @@ function SummaryChip({
   tone?: 'neutral' | 'success' | 'danger' | 'mint' | 'warning'
 }) {
   const toneClass: Record<string, string> = {
-    neutral: 'text-ink-900',
+    neutral: 'text-ink-900 dark:text-ink-50',
     success: 'text-emerald-700',
     danger: 'text-rose-700',
     mint: 'text-primary-700',
@@ -344,7 +344,7 @@ function SummaryChip({
   }
   return (
     <div className="panel px-3 py-2">
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">{label}</div>
+      <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">{label}</div>
       <div className={`mt-0.5 font-mono tabular-nums font-bold text-base ${toneClass[tone]}`}>
         {value}
         {unit && <span className="text-2xs text-ink-400 ml-1 font-medium">{unit}</span>}
@@ -407,8 +407,8 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
     const sourceCode = raw.source_label?.match(/\((\d+)\)/)?.[1] || ''
     const sourceName = raw.source_label?.replace(/\s*\(\d+\)/, '') || ''
     return (
-      <tr className="hover:bg-canvas-50 cursor-pointer group" onClick={onEdit}>
-        <td className="px-2.5 py-1.5 text-2xs text-ink-700 font-mono whitespace-nowrap">
+      <tr className="hover:bg-canvas-50 dark:hover:bg-ink-800 cursor-pointer group" onClick={onEdit}>
+        <td className="px-2.5 py-1.5 text-2xs text-ink-700 dark:text-ink-300 font-mono whitespace-nowrap">
           {dateStr}
         </td>
         <td className="px-2.5 py-1.5 whitespace-nowrap">
@@ -422,16 +422,16 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
             {isDebit ? '차변' : '대변'}
           </span>
         </td>
-        <td className="px-2.5 py-1.5 text-2xs font-mono text-ink-500">{sourceCode || '-'}</td>
-        <td className="px-2.5 py-1.5 text-xs text-ink-700 font-medium">{sourceName || '-'}</td>
-        <td className="px-2.5 py-1.5 text-xs text-ink-900">{raw.counterparty || '-'}</td>
+        <td className="px-2.5 py-1.5 text-2xs font-mono text-ink-500 dark:text-ink-400">{sourceCode || '-'}</td>
+        <td className="px-2.5 py-1.5 text-xs text-ink-700 dark:text-ink-300 font-medium">{sourceName || '-'}</td>
+        <td className="px-2.5 py-1.5 text-xs text-ink-900 dark:text-ink-50">{raw.counterparty || '-'}</td>
         <td className="px-2.5 py-1.5 text-right font-mono tabular-nums text-xs whitespace-nowrap">
           {isDebit ? (
             <span className="text-primary-700 font-semibold">
               {formatCurrency(raw.amount, false)}
             </span>
           ) : (
-            <span className="text-ink-200">-</span>
+            <span className="text-ink-200 dark:text-ink-700">-</span>
           )}
         </td>
         <td className="px-2.5 py-1.5 text-right font-mono tabular-nums text-xs whitespace-nowrap">
@@ -440,14 +440,14 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
               {formatCurrency(raw.amount, false)}
             </span>
           ) : (
-            <span className="text-ink-200">-</span>
+            <span className="text-ink-200 dark:text-ink-700">-</span>
           )}
         </td>
-        <td className="px-2.5 py-1.5 text-xs text-ink-700 max-w-md truncate">
+        <td className="px-2.5 py-1.5 text-xs text-ink-700 dark:text-ink-300 max-w-md truncate">
           {raw.description}
         </td>
         <td className="px-2.5 py-1.5">
-          <PencilSquareIcon className="h-3 w-3 text-ink-300 group-hover:text-ink-700" />
+          <PencilSquareIcon className="h-3 w-3 text-ink-300 dark:text-ink-600 group-hover:text-ink-700 dark:group-hover:text-ink-200" />
         </td>
       </tr>
     )
@@ -455,15 +455,15 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
 
   return (
     <tr className="bg-amber-50/40">
-      <td className="px-2.5 py-1.5 text-2xs text-ink-700 font-mono whitespace-nowrap">
+      <td className="px-2.5 py-1.5 text-2xs text-ink-700 dark:text-ink-300 font-mono whitespace-nowrap">
         {dateStr}
       </td>
       <td className="px-2.5 py-1.5">
-        <div className="flex bg-white border border-ink-200 rounded overflow-hidden">
+        <div className="flex bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 rounded overflow-hidden">
           <button
             onClick={() => setDirection('debit')}
             className={`px-1.5 py-0.5 text-2xs font-semibold ${
-              direction === 'debit' ? 'bg-primary-600 text-white' : 'text-ink-600'
+              direction === 'debit' ? 'bg-primary-600 text-white' : 'text-ink-600 dark:text-ink-400'
             }`}
           >
             차
@@ -471,14 +471,14 @@ function VoucherRow({ id, raw, isDebit, isEditing, userId, onEdit, onClose }: Vo
           <button
             onClick={() => setDirection('credit')}
             className={`px-1.5 py-0.5 text-2xs font-semibold ${
-              direction === 'credit' ? 'bg-rose-600 text-white' : 'text-ink-600'
+              direction === 'credit' ? 'bg-rose-600 text-white' : 'text-ink-600 dark:text-ink-400'
             }`}
           >
             대
           </button>
         </div>
       </td>
-      <td colSpan={2} className="px-2.5 py-1.5 text-xs text-ink-500">
+      <td colSpan={2} className="px-2.5 py-1.5 text-xs text-ink-500 dark:text-ink-400">
         {raw.source_label}
       </td>
       <td className="px-2.5 py-1.5">

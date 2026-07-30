@@ -50,11 +50,11 @@ function AccountSearchSelect({
     <div className="relative">
       <div
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-1 px-2 py-1 border border-gray-300 rounded cursor-pointer hover:border-blue-400 min-w-[180px] text-sm"
+        className="flex items-center gap-1 px-2 py-1 border border-gray-300 dark:border-ink-700 rounded cursor-pointer hover:border-blue-400 min-w-[180px] text-sm"
       >
         {value.id ? (
           <span>
-            <span className="font-mono text-gray-500">{value.code}</span>{' '}
+            <span className="font-mono text-gray-500 dark:text-gray-400">{value.code}</span>{' '}
             {value.name}
           </span>
         ) : (
@@ -64,14 +64,14 @@ function AccountSearchSelect({
       </div>
 
       {isOpen && (
-        <div className="absolute z-50 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg">
+        <div className="absolute z-50 mt-1 w-72 bg-white dark:bg-ink-900 border border-gray-200 dark:border-ink-800 rounded-lg shadow-lg">
           <div className="p-2 border-b">
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="코드 또는 이름으로 검색..."
-              className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+              className="w-full px-3 py-1.5 text-sm border border-gray-300 dark:border-ink-700 rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
               autoFocus
             />
           </div>
@@ -82,7 +82,7 @@ function AccountSearchSelect({
                 onClick={() => handleSelect(acc)}
                 className="px-3 py-2 text-sm hover:bg-blue-50 cursor-pointer flex items-center gap-2"
               >
-                <span className="font-mono text-gray-500 text-xs">{acc.code}</span>
+                <span className="font-mono text-gray-500 dark:text-gray-400 text-xs">{acc.code}</span>
                 <span>{acc.name}</span>
               </div>
             ))}
@@ -258,7 +258,7 @@ export default function VoucherDetailPage() {
     return (
       <div className="text-center py-12">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto" />
-        <p className="text-gray-500 mt-2">로딩 중...</p>
+        <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
       </div>
     )
   }
@@ -271,7 +271,7 @@ export default function VoucherDetailPage() {
   const renderLineEditor = () => (
     <div className="card">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900">전표 명세 (분개)</h3>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">전표 명세 (분개)</h3>
         <button type="button" onClick={addLine} className="btn-secondary text-sm">
           <PlusIcon className="h-4 w-4 mr-1" /> 라인 추가
         </button>
@@ -280,7 +280,7 @@ export default function VoucherDetailPage() {
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b bg-gray-50">
+            <tr className="border-b bg-gray-50 dark:bg-ink-900">
               <th className="text-left px-2 py-2 w-[200px]">계정과목</th>
               <th className="text-right px-2 py-2 w-[130px]">차변(원)</th>
               <th className="text-right px-2 py-2 w-[130px]">대변(원)</th>
@@ -307,7 +307,7 @@ export default function VoucherDetailPage() {
                     type="number"
                     value={line.debit_amount || ''}
                     onChange={(e) => updateLine(idx, 'debit_amount', Number(e.target.value) || 0)}
-                    className="w-full text-right px-2 py-1 border border-gray-300 rounded text-sm"
+                    className="w-full text-right px-2 py-1 border border-gray-300 dark:border-ink-700 rounded text-sm"
                     placeholder="0"
                     min="0"
                   />
@@ -317,7 +317,7 @@ export default function VoucherDetailPage() {
                     type="number"
                     value={line.credit_amount || ''}
                     onChange={(e) => updateLine(idx, 'credit_amount', Number(e.target.value) || 0)}
-                    className="w-full text-right px-2 py-1 border border-gray-300 rounded text-sm"
+                    className="w-full text-right px-2 py-1 border border-gray-300 dark:border-ink-700 rounded text-sm"
                     placeholder="0"
                     min="0"
                   />
@@ -327,7 +327,7 @@ export default function VoucherDetailPage() {
                     type="text"
                     value={line.description}
                     onChange={(e) => updateLine(idx, 'description', e.target.value)}
-                    className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                    className="w-full px-2 py-1 border border-gray-300 dark:border-ink-700 rounded text-sm"
                     placeholder="적요"
                   />
                 </td>
@@ -336,7 +336,7 @@ export default function VoucherDetailPage() {
                     type="text"
                     value={line.counterparty_name || ''}
                     onChange={(e) => updateLine(idx, 'counterparty_name', e.target.value)}
-                    className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                    className="w-full px-2 py-1 border border-gray-300 dark:border-ink-700 rounded text-sm"
                     placeholder="거래처"
                   />
                 </td>
@@ -354,7 +354,7 @@ export default function VoucherDetailPage() {
             ))}
           </tbody>
           <tfoot>
-            <tr className="bg-gray-50 font-medium">
+            <tr className="bg-gray-50 dark:bg-ink-900 font-medium">
               <td className="px-2 py-2">합계</td>
               <td className={`text-right px-2 py-2 ${!isBalanced ? 'text-red-600' : ''}`}>
                 {formatNumber(totalDebit)}
@@ -386,15 +386,15 @@ export default function VoucherDetailPage() {
         <div className="flex items-center gap-4">
           <button
             onClick={() => { if (isEditing) setIsEditing(false); else navigate(-1); }}
-            className="p-2 hover:bg-gray-100 rounded-lg"
+            className="p-2 hover:bg-gray-100 dark:hover:bg-ink-800 rounded-lg"
           >
             <ArrowLeftIcon className="h-5 w-5" />
           </button>
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
               {isNew ? '새 전표' : `전표 수정: ${voucher?.voucher_number}`}
             </h1>
-            <p className="text-gray-500">{isNew ? '전표를 작성합니다.' : '전표를 수정합니다.'}</p>
+            <p className="text-gray-500 dark:text-gray-400">{isNew ? '전표를 작성합니다.' : '전표를 수정합니다.'}</p>
           </div>
         </div>
 
@@ -408,7 +408,7 @@ export default function VoucherDetailPage() {
                   type="date"
                   value={formData.voucher_date}
                   onChange={(e) => setFormData({ ...formData, voucher_date: e.target.value })}
-                  className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
               <div>
@@ -417,7 +417,7 @@ export default function VoucherDetailPage() {
                   type="date"
                   value={formData.transaction_date}
                   onChange={(e) => setFormData({ ...formData, transaction_date: e.target.value })}
-                  className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
               <div>
@@ -425,7 +425,7 @@ export default function VoucherDetailPage() {
                 <select
                   value={formData.transaction_type}
                   onChange={(e) => setFormData({ ...formData, transaction_type: e.target.value })}
-                  className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
                   <option value="expense">비용</option>
                   <option value="revenue">수익</option>
@@ -439,7 +439,7 @@ export default function VoucherDetailPage() {
                   type="text"
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="거래 내용을 입력하세요"
                 />
               </div>
@@ -474,12 +474,12 @@ export default function VoucherDetailPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <button onClick={() => navigate(-1)} className="p-2 hover:bg-gray-100 rounded-lg">
+        <button onClick={() => navigate(-1)} className="p-2 hover:bg-gray-100 dark:hover:bg-ink-800 rounded-lg">
           <ArrowLeftIcon className="h-5 w-5" />
         </button>
         <div className="flex-1">
-          <h1 className="text-2xl font-bold text-gray-900">{voucher.voucher_number}</h1>
-          <p className="text-gray-500">{voucher.description}</p>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{voucher.voucher_number}</h1>
+          <p className="text-gray-500 dark:text-gray-400">{voucher.description}</p>
         </div>
         {(voucher.status === 'draft' || voucher.status === 'rejected') && (
           <button
@@ -498,24 +498,24 @@ export default function VoucherDetailPage() {
             <h3 className="card-header">기본 정보</h3>
             <dl className="grid grid-cols-2 gap-4">
               <div>
-                <dt className="text-sm text-gray-500">전표일자</dt>
+                <dt className="text-sm text-gray-500 dark:text-gray-400">전표일자</dt>
                 <dd className="font-medium">{voucher.voucher_date}</dd>
               </div>
               <div>
-                <dt className="text-sm text-gray-500">거래일자</dt>
+                <dt className="text-sm text-gray-500 dark:text-gray-400">거래일자</dt>
                 <dd className="font-medium">{voucher.transaction_date}</dd>
               </div>
               <div>
-                <dt className="text-sm text-gray-500">거래유형</dt>
+                <dt className="text-sm text-gray-500 dark:text-gray-400">거래유형</dt>
                 <dd className="font-medium">{voucher.transaction_type}</dd>
               </div>
               <div>
-                <dt className="text-sm text-gray-500">부서</dt>
+                <dt className="text-sm text-gray-500 dark:text-gray-400">부서</dt>
                 <dd className="font-medium">{voucher.department_name}</dd>
               </div>
               {voucher.merchant_name && (
                 <div>
-                  <dt className="text-sm text-gray-500">가맹점</dt>
+                  <dt className="text-sm text-gray-500 dark:text-gray-400">가맹점</dt>
                   <dd className="font-medium">{voucher.merchant_name}</dd>
                 </div>
               )}
@@ -540,7 +540,7 @@ export default function VoucherDetailPage() {
                   {voucher.lines?.map((line: any) => (
                     <tr key={line.id}>
                       <td>
-                        <span className="font-mono text-sm text-gray-500">{line.account_code}</span>{' '}
+                        <span className="font-mono text-sm text-gray-500 dark:text-gray-400">{line.account_code}</span>{' '}
                         {line.account_name}
                       </td>
                       <td className="amount">
@@ -555,7 +555,7 @@ export default function VoucherDetailPage() {
                   ))}
                 </tbody>
                 <tfoot>
-                  <tr className="bg-gray-50 font-medium">
+                  <tr className="bg-gray-50 dark:bg-ink-900 font-medium">
                     <td>합계</td>
                     <td className="amount">{formatNumber(voucher.total_debit)}</td>
                     <td className="amount">{formatNumber(voucher.total_credit)}</td>
@@ -629,9 +629,9 @@ export default function VoucherDetailPage() {
               <h3 className="card-header">AI 분류 정보</h3>
               <div className="space-y-3">
                 <div>
-                  <p className="text-sm text-gray-500">신뢰도</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">신뢰도</p>
                   <div className="flex items-center gap-2 mt-1">
-                    <div className="flex-1 bg-gray-200 rounded-full h-2">
+                    <div className="flex-1 bg-gray-200 dark:bg-ink-700 rounded-full h-2">
                       <div
                         className={`h-2 rounded-full ${
                           voucher.ai_confidence_score >= 0.85 ? 'bg-green-500'
@@ -648,12 +648,12 @@ export default function VoucherDetailPage() {
                 </div>
                 {voucher.ai_suggested_account_name && (
                   <div>
-                    <p className="text-sm text-gray-500">추천 계정</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">추천 계정</p>
                     <p className="font-medium">{voucher.ai_suggested_account_name}</p>
                   </div>
                 )}
                 <div>
-                  <p className="text-sm text-gray-500">분류 상태</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">분류 상태</p>
                   <p className="font-medium">
                     {voucher.ai_classification_status === 'auto_confirmed' ? '자동 확정'
                       : voucher.ai_classification_status === 'needs_review' ? '검토 필요'
@@ -671,16 +671,16 @@ export default function VoucherDetailPage() {
             <h3 className="card-header">이력</h3>
             <dl className="space-y-2 text-sm">
               <div className="flex justify-between">
-                <dt className="text-gray-500">작성자</dt>
+                <dt className="text-gray-500 dark:text-gray-400">작성자</dt>
                 <dd>{voucher.creator_name}</dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-gray-500">작성일시</dt>
+                <dt className="text-gray-500 dark:text-gray-400">작성일시</dt>
                 <dd>{new Date(voucher.created_at).toLocaleString('ko-KR')}</dd>
               </div>
               {voucher.confirmed_at && (
                 <div className="flex justify-between">
-                  <dt className="text-gray-500">확정일시</dt>
+                  <dt className="text-gray-500 dark:text-gray-400">확정일시</dt>
                   <dd>{new Date(voucher.confirmed_at).toLocaleString('ko-KR')}</dd>
                 </div>
               )}
@@ -710,7 +710,7 @@ function ConfirmWithAccountSelect({
   if (showAccountSelect) {
     return (
       <div className="space-y-3">
-        <p className="text-sm text-gray-600">AI 분류를 수정하시겠습니까?</p>
+        <p className="text-sm text-gray-600 dark:text-gray-400">AI 분류를 수정하시겠습니까?</p>
         <AccountSearchSelect
           value={selectedAccount}
           onChange={setSelectedAccount}

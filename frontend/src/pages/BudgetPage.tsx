@@ -20,6 +20,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from 'recharts'
+import { useChartTheme } from '@/lib/chartTheme'
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('ko-KR', {
@@ -34,6 +35,7 @@ function formatPercent(value: number) {
 }
 
 export default function BudgetPage() {
+  const chartTheme = useChartTheme()
   const user = useAuthStore((state) => state.user)
   const queryClient = useQueryClient()
   const currentYear = new Date().getFullYear()
@@ -108,8 +110,8 @@ export default function BudgetPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">예산 관리</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">예산 관리</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
             부서별 예산을 설정하고 사용 현황을 관리합니다.
           </p>
         </div>
@@ -130,7 +132,7 @@ export default function BudgetPage() {
             onChange={setFiscalYear}
           />
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">회계연도</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">회계연도</label>
             <select
               value={fiscalYear}
               onChange={(e) => setFiscalYear(Number(e.target.value))}
@@ -144,7 +146,7 @@ export default function BudgetPage() {
             </select>
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-sm font-medium text-gray-700">부서</label>
+            <label className="text-sm font-medium text-gray-700 dark:text-gray-300">부서</label>
             <select
               value={selectedDepartmentId || ''}
               onChange={(e) =>
@@ -173,7 +175,7 @@ export default function BudgetPage() {
               <CalculatorIcon className="h-6 w-6 text-blue-600" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">총 예산</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">총 예산</p>
               <p className="text-xl font-bold">{formatCurrency(totalBudget)}</p>
             </div>
           </div>
@@ -185,7 +187,7 @@ export default function BudgetPage() {
               <ChartBarIcon className="h-6 w-6 text-green-600" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">사용액</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">사용액</p>
               <p className="text-xl font-bold text-green-600">
                 {formatCurrency(totalUsed)}
               </p>
@@ -195,7 +197,7 @@ export default function BudgetPage() {
 
         <div className="card">
           <div>
-            <p className="text-sm text-gray-500">잔여 예산</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">잔여 예산</p>
             <p
               className={`text-xl font-bold ${
                 totalRemaining >= 0 ? 'text-blue-600' : 'text-red-600'
@@ -208,9 +210,9 @@ export default function BudgetPage() {
 
         <div className="card">
           <div>
-            <p className="text-sm text-gray-500">사용률</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400">사용률</p>
             <div className="flex items-center gap-2 mt-1">
-              <div className="flex-1 bg-gray-200 rounded-full h-3">
+              <div className="flex-1 bg-gray-200 dark:bg-ink-700 rounded-full h-3">
                 <div
                   className={`h-3 rounded-full ${
                     usageRate >= 90
@@ -241,21 +243,22 @@ export default function BudgetPage() {
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData.slice(0, 10)}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
                 <XAxis
                   dataKey="account"
-                  stroke="#6b7280"
+                  stroke={chartTheme.axisColor}
                   fontSize={12}
                   angle={-45}
                   textAnchor="end"
                   height={80}
                 />
-                <YAxis stroke="#6b7280" fontSize={12} />
+                <YAxis stroke={chartTheme.axisColor} fontSize={12} />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: 'white',
-                    border: '1px solid #e5e7eb',
+                    backgroundColor: chartTheme.tooltipBg,
+                    border: `1px solid ${chartTheme.tooltipBorder}`,
                     borderRadius: '8px',
+                    color: chartTheme.tooltipText,
                   }}
                   formatter={(value: number) => formatCurrency(value)}
                 />
@@ -285,7 +288,7 @@ export default function BudgetPage() {
         {budgetsLoading ? (
           <div className="text-center py-8">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-            <p className="text-gray-500 mt-2">로딩 중...</p>
+            <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
           </div>
         ) : budgets?.length > 0 ? (
           <div className="table-container">
@@ -351,7 +354,7 @@ export default function BudgetPage() {
             </table>
           </div>
         ) : (
-          <div className="text-center py-8 text-gray-500">
+          <div className="text-center py-8 text-gray-500 dark:text-gray-400">
             등록된 예산이 없습니다.
           </div>
         )}
@@ -453,12 +456,12 @@ function CreateBudgetModal({
     })
   }
 
-  const inputClass = "w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+  const inputClass = "w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <h3 className="text-lg font-bold text-gray-900 mb-4">예산 생성</h3>
+      <div className="bg-white dark:bg-ink-900 rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">예산 생성</h3>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="label">
@@ -532,7 +535,7 @@ function CreateBudgetModal({
                     <select
                       value={line.account_id}
                       onChange={(e) => updateLine(idx, 'account_id', e.target.value)}
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-1 focus:ring-blue-500"
+                      className="flex-1 px-3 py-2 border border-gray-300 dark:border-ink-700 rounded-lg text-sm focus:ring-1 focus:ring-blue-500"
                     >
                       <option value="">계정 선택</option>
                       {accounts?.map((acc: any) => (
@@ -545,7 +548,7 @@ function CreateBudgetModal({
                       type="number"
                       value={line.annual_amount || ''}
                       onChange={(e) => updateLine(idx, 'annual_amount', Number(e.target.value) || 0)}
-                      className="w-40 px-3 py-2 border border-gray-300 rounded-lg text-sm text-right focus:ring-1 focus:ring-blue-500"
+                      className="w-40 px-3 py-2 border border-gray-300 dark:border-ink-700 rounded-lg text-sm text-right focus:ring-1 focus:ring-blue-500"
                       placeholder="금액"
                       min="0"
                     />
@@ -558,12 +561,12 @@ function CreateBudgetModal({
                     </button>
                   </div>
                 ))}
-                <div className="flex justify-end text-sm font-medium text-gray-700 pt-2 border-t">
+                <div className="flex justify-end text-sm font-medium text-gray-700 dark:text-gray-300 pt-2 border-t">
                   합계: {formatCurrency(totalBudget)}
                 </div>
               </div>
             ) : (
-              <div className="text-center py-4 text-gray-400 text-sm border border-dashed border-gray-300 rounded-lg">
+              <div className="text-center py-4 text-gray-400 text-sm border border-dashed border-gray-300 dark:border-ink-700 rounded-lg">
                 '계정 추가' 버튼을 눌러 예산 항목을 추가하세요.
               </div>
             )}
@@ -581,7 +584,7 @@ function CreateBudgetModal({
           </div>
 
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-ink-800 rounded-lg hover:bg-gray-200 dark:hover:bg-ink-700">
               취소
             </button>
             <button

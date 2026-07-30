@@ -22,6 +22,7 @@ import {
 import { ledgerApi } from '@/services/api'
 import { formatCurrency, formatCompactWon } from '@/utils/format'
 import FiscalYearTabs from '@/components/common/FiscalYearTabs'
+import { useChartTheme } from '@/lib/chartTheme'
 
 type ArApType = 'receivable' | 'payable'
 
@@ -91,6 +92,7 @@ const TYPE_HINT: Record<ArApType, string> = {
 }
 
 export default function ArApPage() {
+  const chartTheme = useChartTheme()
   const currentYear = new Date().getFullYear()
   const [year, setYear] = useState<number>(currentYear)
   const [type, setType] = useState<ArApType>('receivable')
@@ -181,10 +183,10 @@ export default function ArApPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <ScaleIcon className="h-4 w-4 text-ink-500" />
+            <ScaleIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             매출채권 · 매입채무 관리
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             계정별 원장 기반 거래처 잔액 + 월말 변화 분석
           </p>
         </div>
@@ -201,24 +203,24 @@ export default function ArApPage() {
       {/* 회계연도 선택 (5개년) + 타입 탭 */}
       <div className="panel p-3 space-y-3">
         <div>
-          <div className="text-2xs font-semibold text-ink-600 mb-1.5 uppercase tracking-wider">
+          <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1.5 uppercase tracking-wider">
             회계연도
           </div>
           <FiscalYearTabs year={year} onChange={setYear} />
         </div>
 
         <div>
-          <div className="text-2xs font-semibold text-ink-600 mb-1.5 uppercase tracking-wider">
+          <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 mb-1.5 uppercase tracking-wider">
             계정 구분
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
               {(['receivable', 'payable'] as ArApType[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => handleTypeChange(t)}
                   className={`px-3 py-1 rounded text-2xs font-semibold transition ${
-                    type === t ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+                    type === t ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
                   }`}
                 >
                   {TYPE_LABEL[t]}
@@ -227,7 +229,7 @@ export default function ArApPage() {
             </div>
             <span className="text-2xs text-ink-400">·</span>
             {/* 세부 계정 선택 (multi-toggle) */}
-            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+            <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
               {SUB_ACCOUNTS[type].map((s) => {
                 const active = selectedCodes.includes(s.code)
                 return (
@@ -237,7 +239,7 @@ export default function ArApPage() {
                     className={`px-2.5 py-1 rounded text-2xs font-medium transition ${
                       active
                         ? 'bg-primary-700 text-white'
-                        : 'text-ink-500 hover:bg-ink-50 hover:text-ink-700'
+                        : 'text-ink-500 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800 hover:text-ink-700 dark:hover:text-ink-200'
                     }`}
                     title={active ? '클릭하여 제외' : '클릭하여 포함'}
                   >
@@ -247,7 +249,7 @@ export default function ArApPage() {
                 )
               })}
             </div>
-            <span className="text-2xs text-ink-500">
+            <span className="text-2xs text-ink-500 dark:text-ink-400">
               {TYPE_HINT[type]} · 선택 계정 {selectedCodes.length}개
             </span>
           </div>
@@ -267,16 +269,16 @@ export default function ArApPage() {
 
       {/* 로딩 */}
       {isLoading && (
-        <div className="rounded-md border border-ink-200 bg-canvas-50 px-3 py-4 flex items-center justify-center gap-2">
-          <ArrowPathIcon className="h-4 w-4 text-ink-500 animate-spin" />
-          <span className="text-2xs text-ink-700">데이터 로드 중…</span>
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 px-3 py-4 flex items-center justify-center gap-2">
+          <ArrowPathIcon className="h-4 w-4 text-ink-500 dark:text-ink-400 animate-spin" />
+          <span className="text-2xs text-ink-700 dark:text-ink-300">데이터 로드 중…</span>
         </div>
       )}
 
       {/* 데이터 없음 */}
       {!isLoading && data && data.transaction_count === 0 && data.opening_balance === 0 && (
         <div className="panel px-4 py-8 text-center">
-          <p className="text-2xs text-ink-500">
+          <p className="text-2xs text-ink-500 dark:text-ink-400">
             {year}년 {TYPE_LABEL[type]} 데이터가 없습니다.
             다른 회계연도 또는 계정 구분을 선택해주세요.
           </p>
@@ -321,36 +323,36 @@ export default function ArApPage() {
           </div>
 
           {/* 거래처/거래 수 */}
-          <div className="text-2xs text-ink-500 flex items-center gap-4">
+          <div className="text-2xs text-ink-500 dark:text-ink-400 flex items-center gap-4">
             <span>
-              거래처 <span className="font-semibold text-ink-700">{data.counterparty_count}곳</span>
+              거래처 <span className="font-semibold text-ink-700 dark:text-ink-300">{data.counterparty_count}곳</span>
             </span>
             <span>
-              거래건수 <span className="font-semibold text-ink-700">{data.transaction_count.toLocaleString()}건</span>
+              거래건수 <span className="font-semibold text-ink-700 dark:text-ink-300">{data.transaction_count.toLocaleString()}건</span>
             </span>
             <span>
-              계정 <span className="font-semibold text-ink-700">{data.account_codes.join(', ')}</span>
+              계정 <span className="font-semibold text-ink-700 dark:text-ink-300">{data.account_codes.join(', ')}</span>
             </span>
           </div>
 
           {/* 월별 차트 — 잔액(라인) + 증감(바) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <div className="panel p-3">
-              <h2 className="text-sm font-semibold text-ink-800 mb-2">월말 잔액 추이</h2>
+              <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100 mb-2">월말 잔액 추이</h2>
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={data.monthly}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
-                  <XAxis dataKey="month" tick={{ fontSize: 9, fill: '#a1a1aa' }} tickLine={false} axisLine={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+                  <XAxis dataKey="month" tick={{ fontSize: 9, fill: chartTheme.axisColor }} tickLine={false} axisLine={false} />
                   <YAxis
                     tickFormatter={(v) => formatCompactWon(v)}
-                    tick={{ fontSize: 9, fill: '#a1a1aa' }}
+                    tick={{ fontSize: 9, fill: chartTheme.axisColor }}
                     tickLine={false}
                     axisLine={false}
                     width={56}
                   />
                   <Tooltip
                     formatter={(v: any) => formatCurrency(Number(v), false) + '원'}
-                    contentStyle={{ fontSize: 11 }}
+                    contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
                   />
                   <Line
                     type="monotone"
@@ -365,21 +367,21 @@ export default function ArApPage() {
             </div>
 
             <div className="panel p-3">
-              <h2 className="text-sm font-semibold text-ink-800 mb-2">월별 증감 (차변/대변)</h2>
+              <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100 mb-2">월별 증감 (차변/대변)</h2>
               <ResponsiveContainer width="100%" height={220}>
                 <BarChart data={data.monthly}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
-                  <XAxis dataKey="month" tick={{ fontSize: 9, fill: '#a1a1aa' }} tickLine={false} axisLine={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+                  <XAxis dataKey="month" tick={{ fontSize: 9, fill: chartTheme.axisColor }} tickLine={false} axisLine={false} />
                   <YAxis
                     tickFormatter={(v) => formatCompactWon(v)}
-                    tick={{ fontSize: 9, fill: '#a1a1aa' }}
+                    tick={{ fontSize: 9, fill: chartTheme.axisColor }}
                     tickLine={false}
                     axisLine={false}
                     width={56}
                   />
                   <Tooltip
                     formatter={(v: any) => formatCurrency(Number(v), false) + '원'}
-                    contentStyle={{ fontSize: 11 }}
+                    contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
                   />
                   <Legend wrapperStyle={{ fontSize: 10 }} />
                   <Bar
@@ -399,8 +401,8 @@ export default function ArApPage() {
 
           {/* 거래처 테이블 */}
           <div className="panel overflow-hidden">
-            <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between gap-2 flex-wrap">
-              <h2 className="text-sm font-semibold text-ink-800">
+            <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between gap-2 flex-wrap">
+              <h2 className="text-sm font-semibold text-ink-800 dark:text-ink-100">
                 거래처별 잔액 ({filteredCounterparties.length}곳)
               </h2>
               <input
@@ -413,7 +415,7 @@ export default function ArApPage() {
             </div>
             <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
               <table className="min-w-full">
-                <thead className="bg-canvas-50 sticky top-0 z-10">
+                <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10">
                   <tr>
                     <ThSort label="거래처" sk="name" curr={sortKey} dir={sortDir} onSort={handleSort} align="left" />
                     <ThSort label="기초" sk="opening" curr={sortKey} dir={sortDir} onSort={handleSort} align="right" />
@@ -439,7 +441,7 @@ export default function ArApPage() {
                     <ThSort label="최근거래" sk="latest" curr={sortKey} dir={sortDir} onSort={handleSort} align="right" />
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-ink-100">
+                <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                   {filteredCounterparties.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="px-3 py-6 text-center text-2xs text-ink-400">
@@ -448,8 +450,8 @@ export default function ArApPage() {
                     </tr>
                   ) : (
                     filteredCounterparties.map((c) => (
-                      <tr key={c.name} className="hover:bg-canvas-50">
-                        <td className="px-3 py-1.5 text-xs text-ink-800 max-w-[200px] truncate">{c.name}</td>
+                      <tr key={c.name} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
+                        <td className="px-3 py-1.5 text-xs text-ink-800 dark:text-ink-100 max-w-[200px] truncate">{c.name}</td>
                         <Td value={c.opening_balance} />
                         <Td value={c.period_debit} muted={c.period_debit === 0} />
                         <Td value={c.period_credit} muted={c.period_credit === 0} />
@@ -461,14 +463,14 @@ export default function ArApPage() {
                               ? 'text-emerald-700'
                               : c.period_change < 0
                               ? 'text-rose-700'
-                              : 'text-ink-300'
+                              : 'text-ink-300 dark:text-ink-600'
                           }
                         />
                         <Td value={c.closing_balance} bold />
-                        <td className="px-3 py-1.5 text-right text-2xs text-ink-600">
+                        <td className="px-3 py-1.5 text-right text-2xs text-ink-600 dark:text-ink-400">
                           {c.transaction_count.toLocaleString()}
                         </td>
-                        <td className="px-3 py-1.5 text-right text-2xs text-ink-500 font-mono">
+                        <td className="px-3 py-1.5 text-right text-2xs text-ink-500 dark:text-ink-400 font-mono">
                           {c.latest_date || '-'}
                         </td>
                       </tr>
@@ -511,15 +513,15 @@ function KPI({
   showSign?: boolean
 }) {
   const toneMap = {
-    neutral: 'text-ink-900',
+    neutral: 'text-ink-900 dark:text-ink-50',
     primary: 'text-primary-700',
     success: 'text-emerald-700',
     danger: 'text-rose-700',
   }
   const sign = showSign && value > 0 ? '+' : ''
   return (
-    <div className={`panel px-3 py-2.5 ${highlight ? 'border-2 border-ink-900' : ''}`}>
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider flex items-center gap-1 mb-0.5">
+    <div className={`panel px-3 py-2.5 ${highlight ? 'border-2 border-ink-900 dark:border-ink-100' : ''}`}>
+      <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider flex items-center gap-1 mb-0.5">
         {icon}
         {label}
       </div>
@@ -546,13 +548,13 @@ function Td({
   className?: string
 }) {
   if (muted) {
-    return <td className="px-3 py-1.5 text-right text-2xs text-ink-200">-</td>
+    return <td className="px-3 py-1.5 text-right text-2xs text-ink-200 dark:text-ink-700">-</td>
   }
   const sign = showSign && value > 0 ? '+' : ''
   return (
     <td
       className={`px-3 py-1.5 text-right font-mono tabular-nums text-2xs ${
-        bold ? 'font-semibold text-ink-900' : 'text-ink-700'
+        bold ? 'font-semibold text-ink-900 dark:text-ink-50' : 'text-ink-700 dark:text-ink-300'
       } ${className}`}
     >
       {sign}
@@ -583,7 +585,7 @@ function ThSort({
   return (
     <th
       className={`px-3 py-1.5 text-${align} text-2xs font-semibold uppercase tracking-wider cursor-pointer select-none transition ${
-        active ? 'text-ink-900 bg-canvas-100' : 'text-ink-500 hover:text-ink-700 hover:bg-canvas-100'
+        active ? 'text-ink-900 dark:text-ink-50 bg-canvas-100 dark:bg-ink-900' : 'text-ink-500 dark:text-ink-400 hover:text-ink-700 dark:hover:text-ink-200 hover:bg-canvas-100 dark:hover:bg-ink-800'
       }`}
       onClick={() => onSort(sk)}
     >

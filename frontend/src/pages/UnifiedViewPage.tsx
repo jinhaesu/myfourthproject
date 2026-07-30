@@ -416,19 +416,19 @@ export default function UnifiedViewPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1>통합 조회</h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             그랜터 실시간 — 활성 자산만 노출 · 카드·계좌·세금계산서·현금영수증 통합
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200">
+          <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
             {(['today', 'this_week', 'this_month', 'this_quarter', 'this_year'] as PeriodPreset[]).map(
               (p) => (
                 <button
                   key={p}
                   onClick={() => handlePreset(p)}
                   className={`px-2 py-1 rounded text-2xs font-semibold transition ${
-                    preset === p ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+                    preset === p ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
                   }`}
                 >
                   {PRESET_LABEL[p]}
@@ -436,23 +436,23 @@ export default function UnifiedViewPage() {
               )
             )}
           </div>
-          <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-white border border-ink-200">
+          <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
             <input
               type="date"
               value={from}
               onChange={(e) => {
                 setPeriod('custom', e.target.value, to)
               }}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
+              className="bg-transparent text-2xs text-ink-700 dark:text-ink-300 w-24 focus:outline-none"
             />
-            <span className="text-ink-300">→</span>
+            <span className="text-ink-300 dark:text-ink-600">→</span>
             <input
               type="date"
               value={to}
               onChange={(e) => {
                 setPeriod('custom', from, e.target.value)
               }}
-              className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
+              className="bg-transparent text-2xs text-ink-700 dark:text-ink-300 w-24 focus:outline-none"
             />
           </div>
           <button
@@ -494,8 +494,8 @@ export default function UnifiedViewPage() {
 
       {/* Status / 31일 제한 안내 */}
       {!healthQuery.isFetched ? (
-        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-start gap-2">
@@ -503,7 +503,7 @@ export default function UnifiedViewPage() {
           <div className="flex-1 text-2xs">
             <div className="font-semibold text-amber-900">그랜터 API 키 미설정</div>
             <div className="text-amber-800 mt-0.5">
-              Railway → Variables → <code className="font-mono bg-white px-1 rounded">GRANTER_API_KEY</code>{' '}
+              Railway → Variables → <code className="font-mono bg-white dark:bg-ink-900 px-1 rounded">GRANTER_API_KEY</code>{' '}
               등록 후 자동 활성화.
             </div>
           </div>
@@ -519,12 +519,12 @@ export default function UnifiedViewPage() {
               ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
-          <label className="ml-auto flex items-center gap-1.5 text-2xs text-ink-600 cursor-pointer">
+          <label className="ml-auto flex items-center gap-1.5 text-2xs text-ink-600 dark:text-ink-400 cursor-pointer">
             <input
               type="checkbox"
               checked={showInactive}
               onChange={(e) => setShowInactive(e.target.checked)}
-              className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3"
+              className="rounded border-ink-300 dark:border-ink-700 text-ink-900 dark:text-ink-50 focus:ring-ink-300 dark:focus:ring-ink-600 w-3 h-3"
             />
             만료/비활성 자산도 보기
           </label>
@@ -538,10 +538,10 @@ export default function UnifiedViewPage() {
           {/* 가용자금 + 카드 사용 + 증권 종합 카드 */}
           <div className="panel p-4 space-y-3">
             <div>
-              <div className="text-2xs text-ink-500 font-semibold uppercase tracking-wider">
+              <div className="text-2xs text-ink-500 dark:text-ink-400 font-semibold uppercase tracking-wider">
                 가용자금 (대출 제외)
               </div>
-              <div className="mt-1 text-xl font-bold text-ink-900 tabular-nums tracking-crisp">
+              <div className="mt-1 text-xl font-bold text-ink-900 dark:text-ink-50 tabular-nums tracking-crisp">
                 {formatCurrency(totalCash, false)}
                 <span className="text-xs text-ink-400 font-medium ml-1">원</span>
               </div>
@@ -552,7 +552,7 @@ export default function UnifiedViewPage() {
 
             {/* 대출 / 순포지션 */}
             {(loanAssets.length > 0 || totalLoan > 0) && (
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100">
+              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100 dark:border-ink-800">
                 <div>
                   <div className="text-2xs text-amber-700 font-semibold">대출 잔액</div>
                   <div className="mt-0.5 text-sm font-semibold text-amber-700 font-mono tabular-nums">
@@ -574,17 +574,17 @@ export default function UnifiedViewPage() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100">
+            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-ink-100 dark:border-ink-800">
               <div>
-                <div className="text-2xs text-ink-500">기간 카드 사용</div>
+                <div className="text-2xs text-ink-500 dark:text-ink-400">기간 카드 사용</div>
                 <div className="mt-0.5 text-sm font-semibold text-rose-700 font-mono tabular-nums">
                   {formatCurrency(totalCardUsed, false)}
                 </div>
                 <div className="text-2xs text-ink-400 mt-0.5">{usageQuery.isLoading ? '집계 중...' : 'EXPENSE_TICKET'}</div>
               </div>
               <div>
-                <div className="text-2xs text-ink-500">증권 평가</div>
-                <div className="mt-0.5 text-sm font-semibold text-ink-900 font-mono tabular-nums">
+                <div className="text-2xs text-ink-500 dark:text-ink-400">증권 평가</div>
+                <div className="mt-0.5 text-sm font-semibold text-ink-900 dark:text-ink-50 font-mono tabular-nums">
                   {formatCurrency(totalSecurities, false)}
                 </div>
                 <div className="text-2xs text-ink-400 mt-0.5">현재 시점</div>
@@ -634,27 +634,27 @@ export default function UnifiedViewPage() {
                     })
                   }
                   className={`w-full flex items-start justify-between px-2 py-1.5 rounded text-2xs transition gap-2 ${
-                    isActive ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+                    isActive ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'hover:bg-ink-50 dark:hover:bg-ink-800'
                   }`}
                 >
                   <div className="text-left min-w-0 flex-1">
-                    <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'}`}>
+                    <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 dark:text-ink-300 font-medium'}`}>
                       {alias || bankName}
                     </div>
-                    <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
+                    <div className={`text-2xs ${isActive ? 'text-ink-300 dark:text-ink-600' : 'text-ink-400'} truncate font-mono`}>
                       {bankName} · {acctNum} {currency !== 'KRW' && `(${currency})`}
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
                     <div
                       className={`font-mono tabular-nums font-semibold ${
-                        isActive ? '' : balance >= 0 ? 'text-ink-900' : 'text-rose-600'
+                        isActive ? '' : balance >= 0 ? 'text-ink-900 dark:text-ink-50' : 'text-rose-600'
                       }`}
                     >
                       {formatCurrency(balance, false)}
                     </div>
                     {periodFlow && periodFlow.count > 0 && (
-                      <div className={`text-2xs font-mono ${isActive ? 'text-ink-300' : 'text-ink-400'}`}>
+                      <div className={`text-2xs font-mono ${isActive ? 'text-ink-300 dark:text-ink-600' : 'text-ink-400'}`}>
                         +{formatCurrency(periodFlow.inAmt, false).replace('₩ ', '')} / -
                         {formatCurrency(periodFlow.outAmt, false).replace('₩ ', '')}
                       </div>
@@ -696,14 +696,14 @@ export default function UnifiedViewPage() {
                       })
                     }
                     className={`w-full flex items-start justify-between px-2 py-1.5 rounded text-2xs transition gap-2 ${
-                      isActive ? 'bg-ink-900 text-white' : 'hover:bg-amber-50'
+                      isActive ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'hover:bg-amber-50'
                     }`}
                   >
                     <div className="text-left min-w-0 flex-1">
-                      <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'}`}>
+                      <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 dark:text-ink-300 font-medium'}`}>
                         {alias || bankName}
                       </div>
-                      <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
+                      <div className={`text-2xs ${isActive ? 'text-ink-300 dark:text-ink-600' : 'text-ink-400'} truncate font-mono`}>
                         {bankName} · {acctNum}
                       </div>
                     </div>
@@ -771,24 +771,24 @@ export default function UnifiedViewPage() {
                     })
                   }
                   className={`w-full flex items-start justify-between px-2 py-1.5 rounded text-2xs transition gap-2 ${
-                    isActive ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+                    isActive ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'hover:bg-ink-50 dark:hover:bg-ink-800'
                   }`}
                 >
                   <div className="text-left min-w-0 flex-1">
-                    <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 font-medium'} flex items-center gap-1.5`}>
+                    <div className={`truncate ${isActive ? 'font-semibold' : 'text-ink-700 dark:text-ink-300 font-medium'} flex items-center gap-1.5`}>
                       <span>{issuer}</span>
                       {cardNum && (
-                        <span className={`text-2xs font-mono ${isActive ? 'text-ink-300' : 'text-ink-500'}`}>
+                        <span className={`text-2xs font-mono ${isActive ? 'text-ink-300 dark:text-ink-600' : 'text-ink-500 dark:text-ink-400'}`}>
                           ({cardNum.replace(/\D/g, '').slice(-4)})
                         </span>
                       )}
                       {userAlias && (
-                        <span className={`text-2xs px-1.5 py-0.5 rounded font-semibold ${isActive ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
+                        <span className={`text-2xs px-1.5 py-0.5 rounded font-semibold ${isActive ? 'bg-white/20 dark:bg-ink-900/20 text-white' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
                           {userAlias}
                         </span>
                       )}
                     </div>
-                    <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'} truncate font-mono`}>
+                    <div className={`text-2xs ${isActive ? 'text-ink-300 dark:text-ink-600' : 'text-ink-400'} truncate font-mono`}>
                       {issuer} · {cardNum}
                       {txCount > 0 && ` · ${txCount}건`}
                     </div>
@@ -798,7 +798,7 @@ export default function UnifiedViewPage() {
                       {formatCurrency(used, false)}
                     </div>
                     {limit > 0 && (
-                      <div className={`text-2xs ${isActive ? 'text-ink-300' : 'text-ink-400'}`}>
+                      <div className={`text-2xs ${isActive ? 'text-ink-300 dark:text-ink-600' : 'text-ink-400'}`}>
                         한도 {formatCurrency(limit, false)}
                       </div>
                     )}
@@ -821,14 +821,14 @@ export default function UnifiedViewPage() {
               const bizNo = str(ht, 'registrationNumber')
               const category = str(ht, 'category')
               return (
-                <div key={id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 mb-1">
+                <div key={id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 dark:border-ink-800 mb-1">
                   <div className="flex items-center justify-between">
-                    <div className="font-medium text-ink-900 truncate">{company}</div>
-                    <span className="badge bg-ink-50 text-ink-700 border-ink-200">
+                    <div className="font-medium text-ink-900 dark:text-ink-50 truncate">{company}</div>
+                    <span className="badge bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800">
                       {category === 'TAX_INVOICE' ? '세금계산서' : category === 'CASH_RECEIPT' ? '현금영수증' : category || '홈택스'}
                     </span>
                   </div>
-                  <div className="text-2xs text-ink-500 font-mono mt-0.5">{bizNo}</div>
+                  <div className="text-2xs text-ink-500 dark:text-ink-400 font-mono mt-0.5">{bizNo}</div>
                 </div>
               )
             })}
@@ -841,7 +841,7 @@ export default function UnifiedViewPage() {
                 })
               }
               className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition mt-1 ${
-                selected.ticketType === 'TAX_INVOICE_TICKET' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+                selected.ticketType === 'TAX_INVOICE_TICKET' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'hover:bg-ink-50 dark:hover:bg-ink-800'
               }`}
             >
               <span>세금계산서 거래 보기</span>
@@ -856,7 +856,7 @@ export default function UnifiedViewPage() {
                 })
               }
               className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-2xs transition mt-1 ${
-                selected.ticketType === 'CASH_RECEIPT_TICKET' ? 'bg-ink-900 text-white' : 'hover:bg-ink-50'
+                selected.ticketType === 'CASH_RECEIPT_TICKET' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'hover:bg-ink-50 dark:hover:bg-ink-800'
               }`}
             >
               <span>현금영수증 거래 보기</span>
@@ -874,14 +874,14 @@ export default function UnifiedViewPage() {
               {securitiesAssets.map((s, idx) => {
                 const sa = s.securitiesAccount || {}
                 return (
-                  <div key={s.id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 mb-1">
+                  <div key={s.id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 dark:border-ink-800 mb-1">
                     <div className="flex items-center justify-between">
-                      <div className="font-medium text-ink-900 truncate">{str(s, 'name')}</div>
-                      <div className="font-mono text-ink-700 font-semibold">
+                      <div className="font-medium text-ink-900 dark:text-ink-50 truncate">{str(s, 'name')}</div>
+                      <div className="font-mono text-ink-700 dark:text-ink-300 font-semibold">
                         {formatCurrency(num(sa, 'totalAmount'), false)}
                       </div>
                     </div>
-                    <div className="text-2xs text-ink-500 mt-0.5 font-mono">
+                    <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5 font-mono">
                       예수금 {formatCurrency(num(sa, 'depositAmount'), false)} · 평가{' '}
                       {formatCurrency(num(sa, 'totalValuationAmount'), false)}
                     </div>
@@ -889,9 +889,9 @@ export default function UnifiedViewPage() {
                 )
               })}
               {ecommerceAssets.map((e, idx) => (
-                <div key={e.id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 mb-1">
-                  <div className="font-medium text-ink-900 truncate">{str(e, 'name', 'organizationName')}</div>
-                  <div className="text-2xs text-ink-500 mt-0.5">{str(e, 'organizationName')}</div>
+                <div key={e.id || idx} className="px-2 py-1.5 rounded text-2xs border border-ink-100 dark:border-ink-800 mb-1">
+                  <div className="font-medium text-ink-900 dark:text-ink-50 truncate">{str(e, 'name', 'organizationName')}</div>
+                  <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">{str(e, 'organizationName')}</div>
                 </div>
               ))}
             </Section>
@@ -900,21 +900,21 @@ export default function UnifiedViewPage() {
           {/* 전체 통합 */}
           <button
             onClick={() => setSelected({ scope: 'all', label: '전체 거래' })}
-            className={`w-full panel px-3 py-2 text-left text-2xs hover:bg-ink-50 transition ${
-              !selected.ticketType && selected.scope === 'all' ? 'border-ink-900 border-2' : ''
+            className={`w-full panel px-3 py-2 text-left text-2xs hover:bg-ink-50 dark:hover:bg-ink-800 transition ${
+              !selected.ticketType && selected.scope === 'all' ? 'border-ink-900 dark:border-ink-100 border-2' : ''
             }`}
           >
-            <div className="font-semibold text-ink-900">전체 거래 통합</div>
-            <div className="text-ink-500 mt-0.5">카드 + 계좌 + 세금계산서 + 현금영수증 한 번에</div>
+            <div className="font-semibold text-ink-900 dark:text-ink-50">전체 거래 통합</div>
+            <div className="text-ink-500 dark:text-ink-400 mt-0.5">카드 + 계좌 + 세금계산서 + 현금영수증 한 번에</div>
           </button>
         </aside>
 
         {/* Right — tickets */}
         <main className="col-span-12 lg:col-span-7 xl:col-span-8">
           <div className="panel h-full flex flex-col overflow-hidden">
-            <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
+            <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
               <div className="flex items-center gap-2 min-w-0">
-                <ArrowsRightLeftIcon className="h-3.5 w-3.5 text-ink-500" />
+                <ArrowsRightLeftIcon className="h-3.5 w-3.5 text-ink-500 dark:text-ink-400" />
                 <div className="min-w-0">
                   <h2 className="text-sm">{selected.label}</h2>
                   {selected.sublabel && (
@@ -949,7 +949,7 @@ export default function UnifiedViewPage() {
             ) : ticketsQuery.isError ? (
               <div className="flex-1 flex flex-col items-center justify-center text-2xs p-6 text-center gap-2">
                 <div className="text-rose-500">그랜터 API 호출 실패</div>
-                <div className="text-ink-500 max-w-md break-all font-mono text-2xs">
+                <div className="text-ink-500 dark:text-ink-400 max-w-md break-all font-mono text-2xs">
                   {(() => {
                     const e: any = ticketsQuery.error
                     const detail = e?.response?.data?.detail || e?.response?.data?.error || e?.message || '알 수 없는 오류'
@@ -972,7 +972,7 @@ export default function UnifiedViewPage() {
               /* 세금계산서 / 현금영수증: 좌측 합계 카드 + 우측 컴팩트 리스트 */
               <div className="flex-1 overflow-hidden flex">
                 {/* 좌측: 매출/매입 합계 */}
-                <div className="w-44 flex-shrink-0 border-r border-ink-200 p-3 space-y-3 overflow-y-auto">
+                <div className="w-44 flex-shrink-0 border-r border-ink-200 dark:border-ink-800 p-3 space-y-3 overflow-y-auto">
                   {(taxSummary || cashReceiptSummary) && (() => {
                     const s = (taxSummary || cashReceiptSummary)!
                     return (
@@ -1011,15 +1011,15 @@ export default function UnifiedViewPage() {
                       <col className="w-[96px]" />
                       <col className="w-[44px]" />
                     </colgroup>
-                    <thead className="bg-canvas-50 sticky top-0 z-10">
+                    <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10">
                       <tr>
-                        <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">일시</th>
-                        <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">거래처</th>
-                        <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500">금액</th>
-                        <th className="px-2 py-1 text-center text-2xs font-semibold text-ink-500">구분</th>
+                        <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400">일시</th>
+                        <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400">거래처</th>
+                        <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400">금액</th>
+                        <th className="px-2 py-1 text-center text-2xs font-semibold text-ink-500 dark:text-ink-400">구분</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-ink-100">
+                    <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                       {tickets.map((t, idx) => {
                         const txType = str(t, 'transactionType')
                         const amount = Math.abs(num(t, 'amount'))
@@ -1040,9 +1040,9 @@ export default function UnifiedViewPage() {
                         const dtHM = dtRaw.length >= 16 ? dtRaw.slice(11, 16) : ''
                         const dateShort = dtHM ? `${dtMD} ${dtHM}` : dtMD
                         return (
-                          <tr key={t.id || idx} className="hover:bg-canvas-50">
-                            <td className="px-2 py-1 whitespace-nowrap text-2xs text-ink-500 font-mono">{dateShort}</td>
-                            <td className="px-2 py-1 text-2xs text-ink-900 overflow-hidden">
+                          <tr key={t.id || idx} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
+                            <td className="px-2 py-1 whitespace-nowrap text-2xs text-ink-500 dark:text-ink-400 font-mono">{dateShort}</td>
+                            <td className="px-2 py-1 text-2xs text-ink-900 dark:text-ink-50 overflow-hidden">
                               <div className="truncate font-medium">{contact}</div>
                             </td>
                             <td className={`px-2 py-1 text-right font-mono tabular-nums text-2xs font-semibold whitespace-nowrap ${isSales ? 'text-emerald-700' : 'text-rose-700'}`}>
@@ -1071,24 +1071,24 @@ export default function UnifiedViewPage() {
                     <col className="w-[96px]" />
                     <col className="w-[96px]" />
                   </colgroup>
-                  <thead className="bg-canvas-50 sticky top-0 z-10">
+                  <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10">
                     <tr>
-                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">일시</th>
-                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">유형</th>
-                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500">거래처/적요</th>
-                      <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500">
+                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400">일시</th>
+                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400">유형</th>
+                      <th className="px-2 py-1 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400">거래처/적요</th>
+                      <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400">
                         <span className="inline-flex items-center gap-0.5 justify-end">
                           <ArrowDownLeftIcon className="h-2.5 w-2.5 text-emerald-500" />입금
                         </span>
                       </th>
-                      <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500">
+                      <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400">
                         <span className="inline-flex items-center gap-0.5 justify-end">
                           <ArrowUpRightIcon className="h-2.5 w-2.5 text-rose-500" />출금
                         </span>
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-ink-100">
+                  <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                     {tickets.map((t, idx) => {
                       const txType = str(t, 'transactionType')
                       const amount = num(t, 'amount')
@@ -1121,29 +1121,29 @@ export default function UnifiedViewPage() {
                       const dtHM = dtRaw.length >= 16 ? dtRaw.slice(11, 16) : ''
                       const dateShort = dtHM ? `${dtMD} ${dtHM}` : dtMD
                       return (
-                        <tr key={t.id || idx} className="hover:bg-canvas-50">
-                          <td className="px-2 py-1 whitespace-nowrap text-2xs text-ink-500 font-mono">{dateShort}</td>
+                        <tr key={t.id || idx} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
+                          <td className="px-2 py-1 whitespace-nowrap text-2xs text-ink-500 dark:text-ink-400 font-mono">{dateShort}</td>
                           <td className="px-2 py-1 whitespace-nowrap">
-                            <span className="badge bg-ink-50 text-ink-700 border-ink-200 text-2xs">
+                            <span className="badge bg-ink-50 dark:bg-ink-900 text-ink-700 dark:text-ink-300 border-ink-200 dark:border-ink-800 text-2xs">
                               {TICKET_TYPE_LABEL[ticketType] || ticketType.replace('_TICKET', '')}
                             </span>
                           </td>
                           <td className="px-2 py-1 overflow-hidden">
-                            <div className="text-2xs font-medium text-ink-900 truncate">{contact || '-'}</div>
+                            <div className="text-2xs font-medium text-ink-900 dark:text-ink-50 truncate">{contact || '-'}</div>
                             {memo && <div className="text-2xs text-ink-400 truncate">{memo}</div>}
                           </td>
                           <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
                             {inAmount > 0 ? (
                               <span className="text-emerald-700 font-semibold">{formatCurrency(inAmount, false)}</span>
                             ) : (
-                              <span className="text-ink-200">-</span>
+                              <span className="text-ink-200 dark:text-ink-700">-</span>
                             )}
                           </td>
                           <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
                             {outAmount > 0 ? (
                               <span className="text-rose-700 font-semibold">{formatCurrency(outAmount, false)}</span>
                             ) : (
-                              <span className="text-ink-200">-</span>
+                              <span className="text-ink-200 dark:text-ink-700">-</span>
                             )}
                           </td>
                         </tr>
@@ -1181,8 +1181,8 @@ function Section({
 }) {
   return (
     <div className="panel">
-      <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
-        <div className="flex items-center gap-1.5 text-2xs font-semibold text-ink-700 uppercase tracking-wider">
+      <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-2xs font-semibold text-ink-700 dark:text-ink-300 uppercase tracking-wider">
           {icon}
           <span>{title}</span>
         </div>
@@ -1191,7 +1191,7 @@ function Section({
             <button
               onClick={onClickAll}
               className={`text-2xs font-semibold ${
-                isAllActive ? 'text-ink-900' : 'text-ink-400 hover:text-ink-700'
+                isAllActive ? 'text-ink-900 dark:text-ink-50' : 'text-ink-400 hover:text-ink-700 dark:hover:text-ink-200'
               }`}
             >
               {allLabel || '전체'}
@@ -1231,25 +1231,25 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-pop w-full max-w-3xl max-h-[80vh] overflow-y-auto border border-ink-200">
-        <div className="sticky top-0 bg-white border-b border-ink-200 px-4 py-2.5 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink-900">데이터 소스 (그랜터 자산)</h3>
-          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+      <div className="bg-white dark:bg-ink-900 rounded-lg shadow-pop w-full max-w-3xl max-h-[80vh] overflow-y-auto border border-ink-200 dark:border-ink-800">
+        <div className="sticky top-0 bg-white dark:bg-ink-900 border-b border-ink-200 dark:border-ink-800 px-4 py-2.5 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-ink-900 dark:text-ink-50">데이터 소스 (그랜터 자산)</h3>
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
             <XMarkIcon className="h-4 w-4" />
           </button>
         </div>
 
         <div className="p-4 space-y-3">
           <div className="flex items-center justify-between">
-            <div className="rounded-md bg-canvas-50 border border-ink-200 px-3 py-2 text-2xs text-ink-600 leading-relaxed flex-1 mr-3">
+            <div className="rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800 px-3 py-2 text-2xs text-ink-600 dark:text-ink-400 leading-relaxed flex-1 mr-3">
               그랜터에 연동된 자산입니다. 새 연결은 그랜터 대시보드에서 추가합니다.
             </div>
-            <label className="flex items-center gap-1.5 text-2xs text-ink-600 cursor-pointer">
+            <label className="flex items-center gap-1.5 text-2xs text-ink-600 dark:text-ink-400 cursor-pointer">
               <input
                 type="checkbox"
                 checked={!showInactive}
                 onChange={(e) => setShowInactive(!e.target.checked)}
-                className="rounded border-ink-300 text-ink-900 focus:ring-ink-300 w-3 h-3"
+                className="rounded border-ink-300 dark:border-ink-700 text-ink-900 dark:text-ink-50 focus:ring-ink-300 dark:focus:ring-ink-600 w-3 h-3"
               />
               활성만
             </label>
@@ -1260,10 +1260,10 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
               return (
                 <div
                   key={`${a._typeKey}-${a.id || idx}`}
-                  className="flex items-center justify-between px-3 py-2 border border-ink-200 rounded"
+                  className="flex items-center justify-between px-3 py-2 border border-ink-200 dark:border-ink-800 rounded"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs font-medium text-ink-900 truncate flex items-center gap-1.5">
+                    <div className="text-xs font-medium text-ink-900 dark:text-ink-50 truncate flex items-center gap-1.5">
                       {str(a, 'nickname') || str(a, 'name')}
                       {!isActive && (
                         <span className="badge bg-rose-50 text-rose-700 border-rose-200">비활성</span>
@@ -1272,7 +1272,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
                         <span className="badge bg-amber-50 text-amber-700 border-amber-200">휴면</span>
                       )}
                     </div>
-                    <div className="text-2xs text-ink-500 font-mono">
+                    <div className="text-2xs text-ink-500 dark:text-ink-400 font-mono">
                       {a._typeKey} · {str(a, 'organizationName')} · {str(a, 'number') || str(a?.bankAccount, 'accountNumber')}
                     </div>
                   </div>

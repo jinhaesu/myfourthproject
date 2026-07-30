@@ -24,6 +24,7 @@ import {
   Sector,
 } from 'recharts'
 import type { PieSectorDataItem } from 'recharts/types/polar/Pie'
+import { useChartTheme, getChartTheme, type ChartTheme } from '@/lib/chartTheme'
 import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, formatPct, isoLocal } from '@/utils/format'
 import PeriodPicker from '@/components/common/PeriodPicker'
@@ -161,7 +162,8 @@ interface ContactRow {
 }
 
 // ─── Recharts 커스텀 ActiveShape ──────────────────────────────────────────────
-function renderActiveShape(props: PieSectorDataItem) {
+// theme은 훅이 아닌 클로저 인자로 주입 (호출 빈도가 hover 상태에 따라 달라지므로 useChartTheme 훅 사용 불가)
+function renderActiveShape(props: PieSectorDataItem, theme: ChartTheme = getChartTheme(false)) {
   const {
     cx = 0, cy = 0,
     innerRadius = 0, outerRadius = 0,
@@ -192,10 +194,10 @@ function renderActiveShape(props: PieSectorDataItem) {
       />
       <path d={`M${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" strokeWidth={1.5} />
       <circle cx={ex} cy={ey} r={2} fill={fill} />
-      <text x={ex + (cos >= 0 ? 4 : -4)} y={ey} textAnchor={anchor} fill="#374151" fontSize={9} fontWeight={600}>
+      <text x={ex + (cos >= 0 ? 4 : -4)} y={ey} textAnchor={anchor} fill={theme.labelColor} fontSize={9} fontWeight={600}>
         {name}
       </text>
-      <text x={ex + (cos >= 0 ? 4 : -4)} y={ey + 12} textAnchor={anchor} fill="#6b7280" fontSize={8}>
+      <text x={ex + (cos >= 0 ? 4 : -4)} y={ey + 12} textAnchor={anchor} fill={theme.mutedLabelColor} fontSize={8}>
         {formatCompactWon(value)} ({(percent * 100).toFixed(1)}%)
       </text>
     </g>
@@ -204,6 +206,7 @@ function renderActiveShape(props: PieSectorDataItem) {
 
 // ─── 메인 컴포넌트 ────────────────────────────────────────────────────────────
 export default function ChannelProfitabilityPage() {
+  const chartTheme = useChartTheme()
   const [tab, setTab] = useState<AnalysisTab>('bank')
   const preset = usePeriodStore((s) => s.preset)
   const from = usePeriodStore((s) => s.from)
@@ -544,10 +547,10 @@ export default function ChannelProfitabilityPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <ChartBarIcon className="h-4 w-4 text-ink-500" />
+            <ChartBarIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             채널별 수익성 분석
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             채널별 매출 - 직접비용 - 안분비용 = 마진 분석
           </p>
           {internalFilteredCount > 0 && (
@@ -579,8 +582,8 @@ export default function ChannelProfitabilityPage() {
 
       {/* ── 상태 배너 ── */}
       {!healthQuery.isFetched ? (
-        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
@@ -604,11 +607,11 @@ export default function ChannelProfitabilityPage() {
       )}
 
       {/* ── 분석 기준 탭 ── */}
-      <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-white border border-ink-200 w-fit">
+      <div className="flex items-center gap-0.5 p-0.5 rounded-lg bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 w-fit">
         <button
           onClick={() => { setTab('bank'); setSelectedKey(null) }}
           className={`px-3 py-1.5 rounded text-xs font-semibold transition ${
-            tab === 'bank' ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+            tab === 'bank' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
           }`}
         >
           현금 기준 (입금)
@@ -616,7 +619,7 @@ export default function ChannelProfitabilityPage() {
         <button
           onClick={() => { setTab('tax'); setSelectedKey(null) }}
           className={`px-3 py-1.5 rounded text-xs font-semibold transition ${
-            tab === 'tax' ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+            tab === 'tax' ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
           }`}
         >
           세금계산서 기준
@@ -626,34 +629,34 @@ export default function ChannelProfitabilityPage() {
       {/* ── KPI 카드 ── */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">총 매출</div>
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">총 매출</div>
           <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-emerald-700">
             {formatCompactWon(summary.totalRevenue)}
           </div>
           <div className="text-2xs text-ink-400">{formatCurrency(summary.totalRevenue, false)}원</div>
         </div>
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">총 비용</div>
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">총 비용</div>
           <div className="mt-0.5 font-mono tabular-nums font-bold text-base text-rose-700">
             {formatCompactWon(summary.totalCost)}
           </div>
           <div className="text-2xs text-ink-400">{formatCurrency(summary.totalCost, false)}원</div>
         </div>
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">마진</div>
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">마진</div>
           <div className={`mt-0.5 font-mono tabular-nums font-bold text-base ${summary.totalMargin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
             {formatCompactWon(summary.totalMargin)}
           </div>
           <div className="text-2xs text-ink-400">{formatCurrency(summary.totalMargin, false)}원</div>
         </div>
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">평균 마진율</div>
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">평균 마진율</div>
           <div className={`mt-0.5 font-mono tabular-nums font-bold text-base ${summary.avgMarginPct >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
             {formatPct(summary.avgMarginPct)}
           </div>
         </div>
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">1위 채널</div>
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">1위 채널</div>
           <div className="mt-0.5 font-bold text-sm text-amber-700 truncate">
             {summary.topChannel?.label ?? '-'}
           </div>
@@ -670,7 +673,7 @@ export default function ChannelProfitabilityPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* A. 채널별 매출/마진 비교 BarChart */}
             <div className="panel p-3">
-              <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+              <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">
                 채널별 매출 vs 마진
               </div>
               <div className="h-48">
@@ -687,7 +690,7 @@ export default function ChannelProfitabilityPage() {
                   >
                     <XAxis
                       dataKey="label"
-                      tick={{ fontSize: 9, fill: '#9ca3af' }}
+                      tick={{ fontSize: 9, fill: chartTheme.axisColor }}
                       tickLine={false}
                       axisLine={false}
                     />
@@ -698,7 +701,7 @@ export default function ChannelProfitabilityPage() {
                         name === 'revenue' ? '매출' : '마진',
                       ]}
                       labelStyle={{ fontSize: 10 }}
-                      contentStyle={{ fontSize: 10, padding: '4px 8px' }}
+                      contentStyle={{ fontSize: 10, padding: '4px 8px', backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
                     />
                     <Legend
                       iconSize={8}
@@ -734,7 +737,7 @@ export default function ChannelProfitabilityPage() {
 
             {/* C. 채널 매출 점유율 도넛 PieChart */}
             <div className="panel p-3">
-              <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+              <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">
                 채널 매출 점유율
               </div>
               <div className="h-48">
@@ -742,7 +745,7 @@ export default function ChannelProfitabilityPage() {
                   <PieChart>
                     <Pie
                       activeIndex={pieActiveIdx}
-                      activeShape={renderActiveShape}
+                      activeShape={(p: PieSectorDataItem) => renderActiveShape(p, chartTheme)}
                       data={pieData}
                       cx="50%"
                       cy="50%"
@@ -764,7 +767,7 @@ export default function ChannelProfitabilityPage() {
           {/* B. 일별 매출 추이 stacked BarChart */}
           {dailyStackedData.length > 0 && (
             <div className="panel p-3">
-              <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+              <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">
                 일별 채널 매출 추이 (기간: {from} ~ {to})
               </div>
               <div className="h-48">
@@ -772,7 +775,7 @@ export default function ChannelProfitabilityPage() {
                   <BarChart data={dailyStackedData} margin={{ top: 4, right: 4, bottom: 2, left: 0 }}>
                     <XAxis
                       dataKey="date"
-                      tick={{ fontSize: 8, fill: '#9ca3af' }}
+                      tick={{ fontSize: 8, fill: chartTheme.axisColor }}
                       tickLine={false}
                       axisLine={false}
                       interval="preserveStartEnd"
@@ -781,7 +784,7 @@ export default function ChannelProfitabilityPage() {
                     <Tooltip
                       formatter={(v: number) => [formatCurrency(v, false) + '원']}
                       labelStyle={{ fontSize: 10 }}
-                      contentStyle={{ fontSize: 10, padding: '4px 8px' }}
+                      contentStyle={{ fontSize: 10, padding: '4px 8px', backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
                     />
                     <Legend iconSize={8} wrapperStyle={{ fontSize: 9 }} />
                     {stackedChannelKeys.map((ch) => (
@@ -806,8 +809,8 @@ export default function ChannelProfitabilityPage() {
         {/* 좌측: 채널 리스트 */}
         <div className={selected ? 'col-span-5' : 'col-span-12'}>
           <div className="panel overflow-hidden">
-            <div className="px-3 py-2 border-b border-ink-200">
-              <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
+            <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800">
+              <span className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider">
                 채널별 수익성 순위
               </span>
             </div>
@@ -840,24 +843,24 @@ export default function ChannelProfitabilityPage() {
                   <div
                     key={ch.key}
                     onClick={() => setSelectedKey(isSel ? null : ch.key)}
-                    className={`px-3 py-2.5 border-b border-ink-100 cursor-pointer ${
-                      isSel ? 'bg-ink-50' : 'hover:bg-canvas-50'
+                    className={`px-3 py-2.5 border-b border-ink-100 dark:border-ink-800 cursor-pointer ${
+                      isSel ? 'bg-ink-50 dark:bg-ink-900' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
                     }`}
                   >
                     <div className="flex items-center gap-3">
                       <span className="text-2xs font-mono text-ink-400 w-4 shrink-0">{idx + 1}</span>
                       <span className="h-2 w-2 rounded-full shrink-0" style={{ background: ch.color }} />
                       <div className="flex-1 min-w-0">
-                        <div className={`text-xs font-semibold ${isSel ? 'text-ink-900' : 'text-ink-800'}`}>
+                        <div className={`text-xs font-semibold ${isSel ? 'text-ink-900 dark:text-ink-50' : 'text-ink-800 dark:text-ink-100'}`}>
                           {ch.label}
                         </div>
-                        <div className="text-2xs text-ink-500">{ch.revenueCount}건</div>
+                        <div className="text-2xs text-ink-500 dark:text-ink-400">{ch.revenueCount}건</div>
                       </div>
                       <span className={`badge text-2xs shrink-0 ${marginColor}`}>
                         {formatPct(ch.marginPct)}
                       </span>
                       <div className="text-right shrink-0">
-                        <div className="font-mono tabular-nums text-xs font-semibold text-ink-900">
+                        <div className="font-mono tabular-nums text-xs font-semibold text-ink-900 dark:text-ink-50">
                           {formatCompactWon(ch.revenue)}
                         </div>
                         <div className={`text-2xs font-mono ${ch.margin >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
@@ -866,7 +869,7 @@ export default function ChannelProfitabilityPage() {
                       </div>
                       {!selected && (
                         <div className="w-16 shrink-0">
-                          <div className="h-1.5 rounded-full bg-ink-100 overflow-hidden">
+                          <div className="h-1.5 rounded-full bg-ink-100 dark:bg-ink-800 overflow-hidden">
                             <div
                               className="h-full rounded-full"
                               style={{
@@ -881,9 +884,9 @@ export default function ChannelProfitabilityPage() {
                     {ch.totalCost > 0 && (
                       <div className="mt-1.5 ml-7 flex items-center gap-1.5 text-2xs text-ink-400">
                         <span>비용 {formatCompactWon(ch.totalCost)}</span>
-                        <span className="text-ink-200">|</span>
+                        <span className="text-ink-200 dark:text-ink-700">|</span>
                         <span>직접 {formatCompactWon(ch.directCost)}</span>
-                        <span className="text-ink-200">+</span>
+                        <span className="text-ink-200 dark:text-ink-700">+</span>
                         <span>안분 {formatCompactWon(ch.allocatedCost)}</span>
                       </div>
                     )}
@@ -899,17 +902,17 @@ export default function ChannelProfitabilityPage() {
           <div className="col-span-7">
             <div className="panel overflow-hidden h-full flex flex-col">
               {/* 상세 헤더 */}
-              <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
+              <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: selected.color }} />
                   <div className="min-w-0">
-                    <span className="text-sm font-semibold text-ink-900">{selected.label}</span>
-                    <span className="text-2xs text-ink-500 ml-2">
+                    <span className="text-sm font-semibold text-ink-900 dark:text-ink-50">{selected.label}</span>
+                    <span className="text-2xs text-ink-500 dark:text-ink-400 ml-2">
                       {selected.revenueCount}건 · 마진율 {formatPct(selected.marginPct)}
                     </span>
                   </div>
                 </div>
-                <button onClick={() => setSelectedKey(null)} className="text-ink-400 hover:text-ink-700">
+                <button onClick={() => setSelectedKey(null)} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
                   <XMarkIcon className="h-4 w-4" />
                 </button>
               </div>
@@ -918,31 +921,31 @@ export default function ChannelProfitabilityPage() {
                 {/* KPI 소계 (5개) */}
                 <div className="grid grid-cols-5 gap-1.5">
                   <div className="panel px-2 py-2 text-center">
-                    <div className="text-2xs text-ink-500">매출</div>
+                    <div className="text-2xs text-ink-500 dark:text-ink-400">매출</div>
                     <div className="font-mono font-bold text-xs text-emerald-700 mt-0.5">
                       {formatCompactWon(selected.revenue)}
                     </div>
                   </div>
                   <div className="panel px-2 py-2 text-center">
-                    <div className="text-2xs text-ink-500">직접비용</div>
+                    <div className="text-2xs text-ink-500 dark:text-ink-400">직접비용</div>
                     <div className="font-mono font-bold text-xs text-rose-700 mt-0.5">
                       {formatCompactWon(selected.directCost)}
                     </div>
                   </div>
                   <div className="panel px-2 py-2 text-center">
-                    <div className="text-2xs text-ink-500">안분비용</div>
+                    <div className="text-2xs text-ink-500 dark:text-ink-400">안분비용</div>
                     <div className="font-mono font-bold text-xs text-rose-600 mt-0.5">
                       {formatCompactWon(selected.allocatedCost)}
                     </div>
                   </div>
                   <div className="panel px-2 py-2 text-center">
-                    <div className="text-2xs text-ink-500">마진</div>
+                    <div className="text-2xs text-ink-500 dark:text-ink-400">마진</div>
                     <div className={`font-mono font-bold text-xs mt-0.5 ${selected.margin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
                       {formatCompactWon(selected.margin)}
                     </div>
                   </div>
                   <div className="panel px-2 py-2 text-center">
-                    <div className="text-2xs text-ink-500">마진율</div>
+                    <div className="text-2xs text-ink-500 dark:text-ink-400">마진율</div>
                     <div className={`font-mono font-bold text-xs mt-0.5 ${selected.marginPct >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
                       {formatPct(selected.marginPct)}
                     </div>
@@ -952,7 +955,7 @@ export default function ChannelProfitabilityPage() {
                 {/* 일별 매출 추이 BarChart */}
                 {selected.dailySales.length > 0 && (
                   <div>
-                    <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+                    <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">
                       일별 매출 추이
                     </div>
                     <div className="h-40">
@@ -960,7 +963,7 @@ export default function ChannelProfitabilityPage() {
                         <BarChart data={selected.dailySales} margin={{ top: 2, right: 4, bottom: 2, left: 0 }}>
                           <XAxis
                             dataKey="date"
-                            tick={{ fontSize: 9, fill: '#9ca3af' }}
+                            tick={{ fontSize: 9, fill: chartTheme.axisColor }}
                             tickLine={false}
                             axisLine={false}
                             interval="preserveStartEnd"
@@ -969,7 +972,7 @@ export default function ChannelProfitabilityPage() {
                           <Tooltip
                             formatter={(v: number) => [formatCurrency(v, false) + '원', '매출']}
                             labelStyle={{ fontSize: 10 }}
-                            contentStyle={{ fontSize: 10, padding: '4px 8px' }}
+                            contentStyle={{ fontSize: 10, padding: '4px 8px', backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
                           />
                           <Bar dataKey="revenue" radius={[2, 2, 0, 0]} name="매출">
                             {selected.dailySales.map((_, i) => (
@@ -985,7 +988,7 @@ export default function ChannelProfitabilityPage() {
                 {/* 거래 종류별 분포 PieChart */}
                 {detailTypePieData.length > 0 && (
                   <div>
-                    <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+                    <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">
                       거래 종류별 분포
                     </div>
                     <div className="h-32">
@@ -993,7 +996,7 @@ export default function ChannelProfitabilityPage() {
                         <PieChart>
                           <Pie
                             activeIndex={detailPieActiveIdx}
-                            activeShape={renderActiveShape}
+                            activeShape={(p: PieSectorDataItem) => renderActiveShape(p, chartTheme)}
                             data={detailTypePieData}
                             cx="50%"
                             cy="50%"
@@ -1008,7 +1011,7 @@ export default function ChannelProfitabilityPage() {
                           </Pie>
                           <Tooltip
                             formatter={(v: number) => [`${v}건`]}
-                            contentStyle={{ fontSize: 10, padding: '4px 8px' }}
+                            contentStyle={{ fontSize: 10, padding: '4px 8px', backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
                           />
                         </PieChart>
                       </ResponsiveContainer>
@@ -1053,8 +1056,8 @@ export default function ChannelProfitabilityPage() {
       {/* ── 거래처별 매출 표 (상위 50) ── */}
       {!selected && contactRows.length > 0 && (
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between">
-            <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
+            <span className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider">
               거래처별 매출 {showAllContacts ? '(상위 50)' : '(상위 10)'}
             </span>
             <span className="text-2xs text-ink-400">매출 큰 순 — '기타'가 크면 여기서 어떤 거래처인지 확인하세요</span>
@@ -1062,36 +1065,36 @@ export default function ChannelProfitabilityPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-2xs">
               <thead>
-                <tr className="border-b border-ink-100">
-                  <th className="px-3 py-1.5 text-left text-ink-500 font-semibold w-6">#</th>
-                  <th className="px-3 py-1.5 text-left text-ink-500 font-semibold">거래처명</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold w-16">건수</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold w-24">매출 합계</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold w-24">평균 단가</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold w-16">점유율</th>
+                <tr className="border-b border-ink-100 dark:border-ink-800">
+                  <th className="px-3 py-1.5 text-left text-ink-500 dark:text-ink-400 font-semibold w-6">#</th>
+                  <th className="px-3 py-1.5 text-left text-ink-500 dark:text-ink-400 font-semibold">거래처명</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold w-16">건수</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold w-24">매출 합계</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold w-24">평균 단가</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold w-16">점유율</th>
                 </tr>
               </thead>
               <tbody>
                 {(showAllContacts ? contactRows : contactRows.slice(0, 10)).map((row, idx) => (
-                  <tr key={idx} className="border-b border-ink-50 hover:bg-canvas-50">
+                  <tr key={idx} className="border-b border-ink-50 dark:border-ink-800 hover:bg-canvas-50 dark:hover:bg-ink-800">
                     <td className="px-3 py-1.5 font-mono text-ink-400">{idx + 1}</td>
-                    <td className="px-3 py-1.5 font-medium text-ink-800 max-w-[12rem] truncate">{row.name}</td>
-                    <td className="px-3 py-1.5 text-right font-mono text-ink-600">{row.count.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 font-medium text-ink-800 dark:text-ink-100 max-w-[12rem] truncate">{row.name}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{row.count.toLocaleString()}</td>
                     <td className="px-3 py-1.5 text-right font-mono font-semibold text-emerald-700">
                       {formatCurrency(row.revenue, false)}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-ink-600">
+                    <td className="px-3 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">
                       {formatCurrency(row.avgPrice, false)}
                     </td>
                     <td className="px-3 py-1.5 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        <div className="w-12 h-1.5 rounded-full bg-ink-100 overflow-hidden">
+                        <div className="w-12 h-1.5 rounded-full bg-ink-100 dark:bg-ink-800 overflow-hidden">
                           <div
                             className="h-full rounded-full bg-primary-500"
                             style={{ width: `${Math.min(row.sharePct, 100)}%` }}
                           />
                         </div>
-                        <span className="font-mono text-ink-600">{formatPct(row.sharePct)}</span>
+                        <span className="font-mono text-ink-600 dark:text-ink-400">{formatPct(row.sharePct)}</span>
                       </div>
                     </td>
                   </tr>
@@ -1101,7 +1104,7 @@ export default function ChannelProfitabilityPage() {
             {contactRows.length > 10 && (
               <button
                 onClick={() => setShowAllContacts(!showAllContacts)}
-                className="w-full py-1.5 text-2xs border-t border-ink-100 text-ink-600 hover:bg-ink-50 font-medium"
+                className="w-full py-1.5 text-2xs border-t border-ink-100 dark:border-ink-800 text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800 font-medium"
               >
                 {showAllContacts ? '접기' : `더 보기 (+${contactRows.length - 10}곳)`}
               </button>
@@ -1113,39 +1116,39 @@ export default function ChannelProfitabilityPage() {
       {/* ── 기간별 채널 합계 표 ── */}
       {!selected && channels.length > 0 && (
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200">
-            <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800">
+            <span className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider">
               기간 합계 ({from} ~ {to})
             </span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-2xs">
               <thead>
-                <tr className="border-b border-ink-100">
-                  <th className="px-3 py-1.5 text-left text-ink-500 font-semibold">채널</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">건수</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">매출 합계</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">직접 비용</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">안분 비용</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">총 비용</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">마진</th>
-                  <th className="px-3 py-1.5 text-right text-ink-500 font-semibold">마진율</th>
+                <tr className="border-b border-ink-100 dark:border-ink-800">
+                  <th className="px-3 py-1.5 text-left text-ink-500 dark:text-ink-400 font-semibold">채널</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold">건수</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold">매출 합계</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold">직접 비용</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold">안분 비용</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold">총 비용</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold">마진</th>
+                  <th className="px-3 py-1.5 text-right text-ink-500 dark:text-ink-400 font-semibold">마진율</th>
                 </tr>
               </thead>
               <tbody>
                 {channels.map((ch) => (
                   <tr
                     key={ch.key}
-                    className="border-b border-ink-50 hover:bg-canvas-50 cursor-pointer"
+                    className="border-b border-ink-50 dark:border-ink-800 hover:bg-canvas-50 dark:hover:bg-ink-800 cursor-pointer"
                     onClick={() => setSelectedKey(ch.key)}
                   >
                     <td className="px-3 py-1.5">
                       <div className="flex items-center gap-1.5">
                         <span className="h-2 w-2 rounded-full shrink-0" style={{ background: ch.color }} />
-                        <span className="font-semibold text-ink-800">{ch.label}</span>
+                        <span className="font-semibold text-ink-800 dark:text-ink-100">{ch.label}</span>
                       </div>
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-ink-600">{ch.revenueCount}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{ch.revenueCount}</td>
                     <td className="px-3 py-1.5 text-right font-mono font-semibold text-emerald-700">
                       {formatCurrency(ch.revenue, false)}
                     </td>
@@ -1175,9 +1178,9 @@ export default function ChannelProfitabilityPage() {
                   </tr>
                 ))}
                 {/* 합계 행 */}
-                <tr className="border-t-2 border-ink-200 bg-ink-50 font-semibold">
-                  <td className="px-3 py-1.5 text-ink-700">합계</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-ink-700">
+                <tr className="border-t-2 border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 font-semibold">
+                  <td className="px-3 py-1.5 text-ink-700 dark:text-ink-300">합계</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-ink-700 dark:text-ink-300">
                     {channels.reduce((s, c) => s + c.revenueCount, 0)}
                   </td>
                   <td className="px-3 py-1.5 text-right font-mono text-emerald-700">
@@ -1195,7 +1198,7 @@ export default function ChannelProfitabilityPage() {
                   <td className={`px-3 py-1.5 text-right font-mono ${summary.totalMargin >= 0 ? 'text-primary-700' : 'text-rose-700'}`}>
                     {summary.totalMargin >= 0 ? '+' : ''}{formatCurrency(summary.totalMargin, false)}
                   </td>
-                  <td className="px-3 py-1.5 text-right font-mono text-ink-700">
+                  <td className="px-3 py-1.5 text-right font-mono text-ink-700 dark:text-ink-300">
                     {formatPct(summary.avgMarginPct)}
                   </td>
                 </tr>
@@ -1238,7 +1241,7 @@ function TxTable({
 
   return (
     <div>
-      <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-1.5">
+      <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-1.5">
         {title}
       </div>
       <div className="space-y-1">
@@ -1251,11 +1254,11 @@ function TxTable({
           return (
             <div
               key={idx}
-              className="flex items-start justify-between text-2xs border border-ink-100 bg-canvas-50 rounded p-1.5 gap-2"
+              className="flex items-start justify-between text-2xs border border-ink-100 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 rounded p-1.5 gap-2"
             >
               <div className="min-w-0 flex-1 space-y-0.5">
                 <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-ink-500">{date}</span>
+                  <span className="font-mono text-ink-500 dark:text-ink-400">{date}</span>
                   <span
                     className="badge text-2xs"
                     style={{
@@ -1267,7 +1270,7 @@ function TxTable({
                     {type}
                   </span>
                 </div>
-                <div className="text-ink-700 font-medium truncate">{contact}</div>
+                <div className="text-ink-700 dark:text-ink-300 font-medium truncate">{contact}</div>
                 {desc && <div className="text-ink-400 truncate">{desc}</div>}
               </div>
               <div className={`font-mono font-semibold shrink-0 pt-0.5 ${amountColor}`}>
@@ -1279,7 +1282,7 @@ function TxTable({
         {sorted.length > 20 && (
           <button
             onClick={() => setShowAll(!showAll)}
-            className="w-full py-1.5 text-2xs rounded border border-ink-200 text-ink-600 hover:bg-ink-50 font-medium"
+            className="w-full py-1.5 text-2xs rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800 font-medium"
           >
             {showAll ? '접기' : `더 보기 (+${sorted.length - 20}건)`}
           </button>

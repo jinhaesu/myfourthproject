@@ -166,8 +166,8 @@ function CreateBatchModal({ onClose, onCreate, isPending }: CreateBatchModalProp
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-5 space-y-4">
-        <h2 className="text-base font-semibold text-ink-900">신규 급여 배치 생성</h2>
+      <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-sm p-5 space-y-4">
+        <h2 className="text-base font-semibold text-ink-900 dark:text-ink-50">신규 급여 배치 생성</h2>
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
             <label className="label">귀속월 *</label>
@@ -272,8 +272,8 @@ function AddRecordForm({ onAdd, isPending }: AddRecordFormProps) {
   )
 
   return (
-    <div className="card border border-ink-200 mt-3">
-      <p className="text-xs font-semibold text-ink-700 mb-3">사원 급여 입력</p>
+    <div className="card border border-ink-200 dark:border-ink-800 mt-3">
+      <p className="text-xs font-semibold text-ink-700 dark:text-ink-300 mb-3">사원 급여 입력</p>
       <form onSubmit={handleSubmit}>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-3">
           <div>
@@ -371,7 +371,7 @@ function JournalPanel({ batchId, status, userId, onStatusChange }: JournalPanelP
   return (
     <div className="card space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-ink-900">계정 분류 · 분개</h3>
+        <h3 className="text-sm font-semibold text-ink-900 dark:text-ink-50">계정 분류 · 분개</h3>
         <div className="flex items-center gap-2">
           <button
             className="btn-secondary gap-1"
@@ -428,8 +428,8 @@ function JournalPanel({ batchId, status, userId, onStatusChange }: JournalPanelP
               { label: '인원', value: preview.summary.headcount, isCnt: true },
             ].map((s) => (
               <div key={s.label} className="card-tight text-center">
-                <p className="text-2xs text-ink-500">{s.label}</p>
-                <p className="text-xs font-semibold text-ink-900 tabular-nums">
+                <p className="text-2xs text-ink-500 dark:text-ink-400">{s.label}</p>
+                <p className="text-xs font-semibold text-ink-900 dark:text-ink-50 tabular-nums">
                   {s.isCnt ? `${s.value}명` : formatCurrency(s.value, false)}
                 </p>
               </div>
@@ -440,7 +440,7 @@ function JournalPanel({ batchId, status, userId, onStatusChange }: JournalPanelP
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* 차변 */}
             <div>
-              <p className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1">차변 (Debit)</p>
+              <p className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-1">차변 (Debit)</p>
               <div className="table-container">
                 <table className="table">
                   <thead className="table-header">
@@ -457,11 +457,11 @@ function JournalPanel({ batchId, status, userId, onStatusChange }: JournalPanelP
                         <td className="font-mono text-2xs">{line.account_code}</td>
                         <td>{line.account_name}</td>
                         <td className="amount">{formatCurrency(line.amount, false)}</td>
-                        <td className="text-ink-500 text-2xs">{line.memo}</td>
+                        <td className="text-ink-500 dark:text-ink-400 text-2xs">{line.memo}</td>
                       </tr>
                     ))}
-                    <tr className="bg-canvas-50 font-semibold">
-                      <td colSpan={2} className="text-right text-2xs text-ink-600">합계</td>
+                    <tr className="bg-canvas-50 dark:bg-ink-950 font-semibold">
+                      <td colSpan={2} className="text-right text-2xs text-ink-600 dark:text-ink-400">합계</td>
                       <td className="amount">{formatCurrency(preview.total_debit, false)}</td>
                       <td />
                     </tr>
@@ -472,7 +472,7 @@ function JournalPanel({ batchId, status, userId, onStatusChange }: JournalPanelP
 
             {/* 대변 */}
             <div>
-              <p className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1">대변 (Credit)</p>
+              <p className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-1">대변 (Credit)</p>
               <div className="table-container">
                 <table className="table">
                   <thead className="table-header">
@@ -489,11 +489,11 @@ function JournalPanel({ batchId, status, userId, onStatusChange }: JournalPanelP
                         <td className="font-mono text-2xs">{line.account_code}</td>
                         <td>{line.account_name}</td>
                         <td className="amount">{formatCurrency(line.amount, false)}</td>
-                        <td className="text-ink-500 text-2xs">{line.memo}</td>
+                        <td className="text-ink-500 dark:text-ink-400 text-2xs">{line.memo}</td>
                       </tr>
                     ))}
-                    <tr className="bg-canvas-50 font-semibold">
-                      <td colSpan={2} className="text-right text-2xs text-ink-600">합계</td>
+                    <tr className="bg-canvas-50 dark:bg-ink-950 font-semibold">
+                      <td colSpan={2} className="text-right text-2xs text-ink-600 dark:text-ink-400">합계</td>
                       <td className="amount">{formatCurrency(preview.total_credit, false)}</td>
                       <td />
                     </tr>
@@ -656,10 +656,10 @@ export default function PayrollPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <BanknotesIcon className="h-5 w-5 text-ink-500" />
+            <BanknotesIcon className="h-5 w-5 text-ink-500 dark:text-ink-400" />
             급여 관리
           </h1>
-          <p className="text-xs text-ink-500 mt-0.5">인건비 배치 생성 · 사원 급여 입력 · 분개 전표 반영</p>
+          <p className="text-xs text-ink-500 dark:text-ink-400 mt-0.5">인건비 배치 생성 · 사원 급여 입력 · 분개 전표 반영</p>
         </div>
         <div className="flex items-center gap-2">
           {/* 연도 필터 */}
@@ -687,8 +687,8 @@ export default function PayrollPage() {
 
       {/* (A) 배치 목록 */}
       <div className="card p-0 overflow-hidden">
-        <div className="px-3.5 py-2.5 border-b border-ink-100 flex items-center justify-between">
-          <span className="text-xs font-semibold text-ink-700">{filterYear}년 급여 배치</span>
+        <div className="px-3.5 py-2.5 border-b border-ink-100 dark:border-ink-800 flex items-center justify-between">
+          <span className="text-xs font-semibold text-ink-700 dark:text-ink-300">{filterYear}년 급여 배치</span>
           {batchesQuery.isFetching && (
             <ArrowPathIcon className="h-3.5 w-3.5 animate-spin text-ink-400" />
           )}
@@ -720,13 +720,13 @@ export default function PayrollPage() {
                   <tr
                     key={batch.id}
                     className={`cursor-pointer transition-colors ${
-                      selectedBatchId === batch.id ? 'bg-ink-50 ring-1 ring-inset ring-ink-300' : ''
+                      selectedBatchId === batch.id ? 'bg-ink-50 dark:bg-ink-900 ring-1 ring-inset ring-ink-300 dark:ring-ink-600' : ''
                     }`}
                     onClick={() => setSelectedBatchId(batch.id)}
                   >
                     <td className="font-medium">{batch.period}</td>
                     <td>{batch.pay_date}</td>
-                    <td className="text-ink-600">{batch.title || '-'}</td>
+                    <td className="text-ink-600 dark:text-ink-400">{batch.title || '-'}</td>
                     <td className="amount">{formatCurrency(batch.total_gross, false)}</td>
                     <td className="amount text-rose-600">{formatCurrency(batch.total_deduction, false)}</td>
                     <td className="amount text-emerald-700 font-semibold">{formatCurrency(batch.total_net, false)}</td>
@@ -773,7 +773,7 @@ export default function PayrollPage() {
           {/* 상단: 배치 정보 바 */}
           <div className="flex items-center gap-2 flex-wrap">
             <button
-              className="btn-ghost gap-1 text-ink-500"
+              className="btn-ghost gap-1 text-ink-500 dark:text-ink-400"
               onClick={() => setSelectedBatchId(null)}
             >
               <ChevronLeftIcon className="h-3.5 w-3.5" />
@@ -782,10 +782,10 @@ export default function PayrollPage() {
             {batchDetail && (
               <>
                 <span className="text-xs text-ink-400">/</span>
-                <span className="text-xs font-semibold text-ink-900">
+                <span className="text-xs font-semibold text-ink-900 dark:text-ink-50">
                   {batchDetail.period} — {batchDetail.title || '급여배치'}
                 </span>
-                <span className="text-xs text-ink-500">지급일 {batchDetail.pay_date}</span>
+                <span className="text-xs text-ink-500 dark:text-ink-400">지급일 {batchDetail.pay_date}</span>
                 {statusBadge(batchDetail.status)}
               </>
             )}
@@ -796,8 +796,8 @@ export default function PayrollPage() {
 
           {/* (B) 사원 급여 테이블 */}
           <div className="card p-0 overflow-hidden">
-            <div className="px-3.5 py-2.5 border-b border-ink-100 flex items-center justify-between gap-2 flex-wrap">
-              <span className="text-xs font-semibold text-ink-700">사원별 급여 명세</span>
+            <div className="px-3.5 py-2.5 border-b border-ink-100 dark:border-ink-800 flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-ink-700 dark:text-ink-300">사원별 급여 명세</span>
               <div className="flex items-center gap-2">
                 {/* 엑셀 업로드 — UI만, 실제 파싱은 추후 */}
                 <input
@@ -857,8 +857,8 @@ export default function PayrollPage() {
                       <tr key={r.id}>
                         <td className="font-mono text-2xs">{r.employee_code || '-'}</td>
                         <td className="font-medium">{r.employee_name}</td>
-                        <td className="text-ink-600">{r.department || '-'}</td>
-                        <td className="text-ink-600">{r.position || '-'}</td>
+                        <td className="text-ink-600 dark:text-ink-400">{r.department || '-'}</td>
+                        <td className="text-ink-600 dark:text-ink-400">{r.position || '-'}</td>
                         <td>
                           {r.cost_type === 'COGS' ? (
                             <span className="badge-info">COGS</span>
@@ -893,16 +893,16 @@ export default function PayrollPage() {
                   </tbody>
                   {/* 합계 행 */}
                   <tfoot>
-                    <tr className="bg-canvas-50 border-t border-ink-200">
-                      <td colSpan={5} className="px-2.5 py-1.5 text-right text-2xs font-semibold text-ink-600">
+                    <tr className="bg-canvas-50 dark:bg-ink-950 border-t border-ink-200 dark:border-ink-800">
+                      <td colSpan={5} className="px-2.5 py-1.5 text-right text-2xs font-semibold text-ink-600 dark:text-ink-400">
                         합계 ({records.length}명)
                       </td>
-                      <td className="amount font-semibold text-ink-900 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'base_pay'), false)}</td>
-                      <td className="amount font-semibold text-ink-900 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'meal_allowance'), false)}</td>
-                      <td className="amount font-semibold text-ink-900 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'overtime_pay'), false)}</td>
-                      <td className="amount font-semibold text-ink-900 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'bonus'), false)}</td>
-                      <td className="amount font-semibold text-ink-900 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'other_allowance'), false)}</td>
-                      <td className="amount font-bold text-ink-900 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalGross, false)}</td>
+                      <td className="amount font-semibold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'base_pay'), false)}</td>
+                      <td className="amount font-semibold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'meal_allowance'), false)}</td>
+                      <td className="amount font-semibold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'overtime_pay'), false)}</td>
+                      <td className="amount font-semibold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'bonus'), false)}</td>
+                      <td className="amount font-semibold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(sum(records, 'other_allowance'), false)}</td>
+                      <td className="amount font-bold text-ink-900 dark:text-ink-50 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalGross, false)}</td>
                       <td className="amount font-bold text-rose-600 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalDeduction, false)}</td>
                       <td className="amount font-bold text-emerald-700 px-2.5 py-1.5 whitespace-nowrap">{formatCurrency(totalNet, false)}</td>
                       {!isPosted && <td />}
@@ -914,7 +914,7 @@ export default function PayrollPage() {
 
             {/* 사원 추가 폼 */}
             {!isPosted && (
-              <div className="px-3.5 py-3 border-t border-ink-100">
+              <div className="px-3.5 py-3 border-t border-ink-100 dark:border-ink-800">
                 <AddRecordForm
                   onAdd={(form) => addRecordMut.mutate(form)}
                   isPending={addRecordMut.isPending}

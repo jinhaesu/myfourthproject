@@ -8,7 +8,7 @@ const toneClasses: Record<Tone, { dot: string; text: string }> = {
   success: { dot: 'bg-emerald-500', text: 'text-emerald-700' },
   warning: { dot: 'bg-amber-500', text: 'text-amber-700' },
   danger: { dot: 'bg-rose-500', text: 'text-rose-700' },
-  neutral: { dot: 'bg-ink-400', text: 'text-ink-700' },
+  neutral: { dot: 'bg-ink-400 dark:bg-ink-500', text: 'text-ink-700 dark:text-ink-300' },
   mint: { dot: 'bg-primary-500', text: 'text-primary-700' },
 }
 
@@ -40,9 +40,9 @@ export default function StatCard({
   if (loading) {
     return (
       <div className="card animate-pulse">
-        <div className="h-3 bg-ink-100 rounded w-20" />
-        <div className="h-7 bg-ink-100 rounded mt-3 w-32" />
-        <div className="h-2.5 bg-ink-100 rounded mt-2 w-24" />
+        <div className="h-3 bg-ink-100 dark:bg-ink-800 rounded w-20" />
+        <div className="h-7 bg-ink-100 dark:bg-ink-800 rounded mt-3 w-32" />
+        <div className="h-2.5 bg-ink-100 dark:bg-ink-800 rounded mt-2 w-24" />
       </div>
     )
   }
@@ -58,11 +58,11 @@ export default function StatCard({
   const spark = sparkColors[tone]
 
   return (
-    <div className="card hover:border-ink-300 transition-colors duration-150">
+    <div className="card hover:border-ink-300 dark:hover:border-ink-600 transition-colors duration-150">
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-1.5 min-w-0">
           <span className={`w-1 h-1 rounded-full ${t.dot} flex-shrink-0`} />
-          <span className="text-2xs font-medium text-ink-500 uppercase tracking-wider truncate">
+          <span className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider truncate">
             {label}
           </span>
         </div>
@@ -70,7 +70,7 @@ export default function StatCard({
       </div>
 
       <div className="mt-2.5 flex items-baseline gap-1">
-        <span className="text-xl font-semibold text-ink-900 tabular-nums tracking-tightish">
+        <span className="text-xl font-semibold text-ink-900 dark:text-ink-50 tabular-nums tracking-tightish">
           {value}
         </span>
         {unit && <span className="text-xs text-ink-400 font-medium">{unit}</span>}

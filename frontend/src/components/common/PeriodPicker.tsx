@@ -164,14 +164,14 @@ export default function PeriodPicker({
       {groups.map((g, gi) => (
         <div
           key={gi}
-          className="flex items-center gap-0.5 p-0.5 rounded-md bg-white border border-ink-200"
+          className="flex items-center gap-0.5 p-0.5 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800"
         >
           {g.presets.map((p) => (
             <button
               key={p}
               onClick={() => handlePreset(p)}
               className={`px-2 py-1 rounded text-2xs font-semibold transition ${
-                preset === p ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-ink-50'
+                preset === p ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'
               }`}
             >
               {PRESET_LABEL[p]}
@@ -179,20 +179,20 @@ export default function PeriodPicker({
           ))}
         </div>
       ))}
-      <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white border border-ink-200">
+      <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800">
         <CalendarDaysIcon className="h-3 w-3 text-ink-400" />
         <input
           type="date"
           value={from}
           onChange={(e) => onChange('custom', e.target.value, to)}
-          className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
+          className="bg-transparent text-2xs text-ink-700 dark:text-ink-300 w-24 focus:outline-none"
         />
-        <span className="text-ink-300">→</span>
+        <span className="text-ink-300 dark:text-ink-600">→</span>
         <input
           type="date"
           value={to}
           onChange={(e) => onChange('custom', from, e.target.value)}
-          className="bg-transparent text-2xs text-ink-700 w-24 focus:outline-none"
+          className="bg-transparent text-2xs text-ink-700 dark:text-ink-300 w-24 focus:outline-none"
         />
       </div>
     </div>

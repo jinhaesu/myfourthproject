@@ -125,8 +125,8 @@ export default function ReportsPage() {
     <div className="space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">보고서</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">보고서</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
             다양한 재무 보고서를 생성하고 내보냅니다.
           </p>
         </div>
@@ -157,8 +157,8 @@ export default function ReportsPage() {
               <DocumentTextIcon className="h-6 w-6 text-blue-600" />
             </div>
             <div>
-              <h3 className="font-semibold text-gray-900">전표 목록 보고서</h3>
-              <p className="text-sm text-gray-500">기간별 전표를 엑셀로 내보냅니다.</p>
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100">전표 목록 보고서</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400">기간별 전표를 엑셀로 내보냅니다.</p>
             </div>
           </div>
           <div className="space-y-3">
@@ -215,8 +215,8 @@ export default function ReportsPage() {
               <DocumentChartBarIcon className="h-6 w-6 text-green-600" />
             </div>
             <div>
-              <h3 className="font-semibold text-gray-900">예산 대비 실적 보고서</h3>
-              <p className="text-sm text-gray-500">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100">예산 대비 실적 보고서</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
                 연도별 예산 대비 실적을 비교합니다.
               </p>
             </div>
@@ -253,8 +253,8 @@ export default function ReportsPage() {
               <DocumentChartBarIcon className="h-6 w-6 text-yellow-600" />
             </div>
             <div>
-              <h3 className="font-semibold text-gray-900">채권/채무 연령 분석</h3>
-              <p className="text-sm text-gray-500">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100">채권/채무 연령 분석</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
                 매출채권 또는 매입채무의 연령 분석을 제공합니다.
               </p>
             </div>
@@ -266,7 +266,7 @@ export default function ReportsPage() {
                 className={`flex-1 py-2 rounded-lg text-sm font-medium ${
                   agingType === 'receivables'
                     ? 'bg-blue-100 text-blue-700'
-                    : 'bg-gray-100 text-gray-600'
+                    : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
                 }`}
               >
                 매출채권
@@ -276,7 +276,7 @@ export default function ReportsPage() {
                 className={`flex-1 py-2 rounded-lg text-sm font-medium ${
                   agingType === 'payables'
                     ? 'bg-blue-100 text-blue-700'
-                    : 'bg-gray-100 text-gray-600'
+                    : 'bg-gray-100 dark:bg-ink-800 text-gray-600 dark:text-gray-400'
                 }`}
               >
                 매입채무
@@ -300,8 +300,8 @@ export default function ReportsPage() {
               <DocumentTextIcon className="h-6 w-6 text-purple-600" />
             </div>
             <div>
-              <h3 className="font-semibold text-gray-900">더존 양식 내보내기</h3>
-              <p className="text-sm text-gray-500">
+              <h3 className="font-semibold text-gray-900 dark:text-gray-100">더존 양식 내보내기</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
                 더존 호환 형식으로 전표를 내보냅니다.
               </p>
             </div>

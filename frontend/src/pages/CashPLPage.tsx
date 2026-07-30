@@ -9,6 +9,7 @@ import { cashPLApi } from '@/services/api'
 import StatCard from '@/components/common/StatCard'
 import { formatCurrency, formatCompactWon, formatPct, todayISO, isoLocal } from '@/utils/format'
 import FiscalYearTabs from '@/components/common/FiscalYearTabs'
+import { useChartTheme } from '@/lib/chartTheme'
 
 type Basis = 'cash' | 'accrual'
 type Period = 'monthly' | 'weekly' | 'quarterly' | 'yearly' | 'daily'
@@ -22,6 +23,7 @@ const PERIOD_LABEL: Record<Period, string> = {
 }
 
 export default function CashPLPage() {
+  const chartTheme = useChartTheme()
   const currentYear = new Date().getFullYear()
   const [fiscalYear, setFiscalYear] = useState(currentYear)
   const [basis, setBasis] = useState<Basis>('cash')
@@ -75,8 +77,8 @@ export default function CashPLPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">현금주의 손익 분석</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">현금주의 손익 분석</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
             현금이 실제 들어온/나간 시점 기준 손익. 발생주의와의 차이까지 한 화면에서.
           </p>
         </div>
@@ -93,11 +95,11 @@ export default function CashPLPage() {
               setToDate(y === currentYear ? todayISO() : `${y}-12-31`)
             }}
           />
-          <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
+          <div className="flex gap-1 bg-gray-100 dark:bg-ink-800 rounded-lg p-1">
             <button
               onClick={() => setBasis('cash')}
               className={`px-3 py-1.5 rounded-md text-sm font-medium ${
-                basis === 'cash' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
+                basis === 'cash' ? 'bg-white dark:bg-ink-900 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400'
               }`}
             >
               현금주의
@@ -105,7 +107,7 @@ export default function CashPLPage() {
             <button
               onClick={() => setBasis('accrual')}
               className={`px-3 py-1.5 rounded-md text-sm font-medium ${
-                basis === 'accrual' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'
+                basis === 'accrual' ? 'bg-white dark:bg-ink-900 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400'
               }`}
             >
               발생주의
@@ -171,16 +173,16 @@ export default function CashPLPage() {
 
       {/* Trend chart */}
       <div className="card">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">기간별 추이 (단위: 만원)</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">기간별 추이 (단위: 만원)</h2>
         <div className="h-80">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+              <XAxis dataKey="label" tick={{ fontSize: 12, fill: chartTheme.axisColor }} />
+              <YAxis tick={{ fontSize: 12, fill: chartTheme.axisColor }} />
               <Tooltip
                 formatter={(v: number) => `${v.toLocaleString()} 만원`}
-                contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb' }}
+                contentStyle={{ borderRadius: 8, border: `1px solid ${chartTheme.tooltipBorder}`, backgroundColor: chartTheme.tooltipBg, color: chartTheme.tooltipText }}
               />
               <Legend />
               <Bar dataKey="매출" fill="#3b82f6" radius={[4, 4, 0, 0]} />
@@ -193,14 +195,17 @@ export default function CashPLPage() {
 
       {/* Margin trend */}
       <div className="card">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">영업이익률 추이</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">영업이익률 추이</h2>
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} unit="%" />
-              <Tooltip formatter={(v: number) => `${v.toFixed(1)}%`} />
+              <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+              <XAxis dataKey="label" tick={{ fontSize: 12, fill: chartTheme.axisColor }} />
+              <YAxis tick={{ fontSize: 12, fill: chartTheme.axisColor }} unit="%" />
+              <Tooltip
+                formatter={(v: number) => `${v.toFixed(1)}%`}
+                contentStyle={{ borderRadius: 8, border: `1px solid ${chartTheme.tooltipBorder}`, backgroundColor: chartTheme.tooltipBg, color: chartTheme.tooltipText }}
+              />
               <Line type="monotone" dataKey="마진율" stroke="#0d9488" strokeWidth={2} dot={{ r: 3 }} />
             </LineChart>
           </ResponsiveContainer>
@@ -210,7 +215,7 @@ export default function CashPLPage() {
       {/* Comparison cash vs accrual */}
       {compare && (
         <div className="card">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">
             현금주의 vs 발생주의 비교 ({compare.period_label})
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -223,19 +228,19 @@ export default function CashPLPage() {
               const a = Number(compare.accrual_basis[row.key])
               const diff = c - a
               return (
-                <div key={row.key} className="border border-gray-200 rounded-lg p-4">
-                  <div className="text-sm text-gray-500">{row.label}</div>
+                <div key={row.key} className="border border-gray-200 dark:border-ink-800 rounded-lg p-4">
+                  <div className="text-sm text-gray-500 dark:text-gray-400">{row.label}</div>
                   <div className="mt-2 space-y-1">
                     <div className="flex justify-between text-sm">
-                      <span className="text-gray-600">현금주의</span>
+                      <span className="text-gray-600 dark:text-gray-400">현금주의</span>
                       <span className="font-mono font-medium">{formatCurrency(c, false)}</span>
                     </div>
                     <div className="flex justify-between text-sm">
-                      <span className="text-gray-600">발생주의</span>
+                      <span className="text-gray-600 dark:text-gray-400">발생주의</span>
                       <span className="font-mono font-medium">{formatCurrency(a, false)}</span>
                     </div>
-                    <div className="flex justify-between text-sm border-t border-gray-100 pt-1 mt-1">
-                      <span className="text-gray-600">차이</span>
+                    <div className="flex justify-between text-sm border-t border-gray-100 dark:border-ink-800 pt-1 mt-1">
+                      <span className="text-gray-600 dark:text-gray-400">차이</span>
                       <span className={`font-mono font-semibold ${diff >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                         {diff >= 0 ? '+' : ''}{formatCurrency(diff, false)}
                       </span>
@@ -250,7 +255,7 @@ export default function CashPLPage() {
 
       {/* Line items */}
       <div className="card">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">계정과목별 합계 (전 기간)</h2>
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4">계정과목별 합계 (전 기간)</h2>
         <div className="table-container">
           <table className="table">
             <thead className="table-header">
@@ -274,7 +279,7 @@ export default function CashPLPage() {
                           ? 'badge bg-amber-100 text-amber-700'
                           : it.category === 'opex'
                           ? 'badge bg-purple-100 text-purple-700'
-                          : 'badge bg-gray-100 text-gray-700'
+                          : 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300'
                       }
                     >
                       {it.category === 'revenue'
@@ -288,10 +293,10 @@ export default function CashPLPage() {
                         : '세금'}
                     </span>
                   </td>
-                  <td className="text-sm font-mono text-gray-600">{it.account_code}</td>
-                  <td className="text-sm font-medium text-gray-900">{it.account_name}</td>
+                  <td className="text-sm font-mono text-gray-600 dark:text-gray-400">{it.account_code}</td>
+                  <td className="text-sm font-medium text-gray-900 dark:text-gray-100">{it.account_name}</td>
                   <td className="text-right font-mono tabular-nums">{formatCurrency(it.amount, false)}</td>
-                  <td className="text-right text-sm text-gray-500 tabular-nums">
+                  <td className="text-right text-sm text-gray-500 dark:text-gray-400 tabular-nums">
                     {formatPct(it.pct_of_revenue)}
                   </td>
                 </tr>

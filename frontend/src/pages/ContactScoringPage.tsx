@@ -33,6 +33,7 @@ import { granterApi } from '@/services/api'
 import { formatCurrency, formatCompactWon, isoLocal, flattenTickets } from '@/utils/format'
 import PeriodPicker, { type PeriodPreset } from '@/components/common/PeriodPicker'
 import { usePeriodStore } from '@/store/periodStore'
+import { useChartTheme } from '@/lib/chartTheme'
 
 // ─────────────────────────────────────────────
 // 유틸
@@ -351,7 +352,7 @@ function TypeBadge({ type }: { type: ContactType }) {
       </span>
     )
   return (
-    <span className="badge bg-ink-50 text-ink-600 border-ink-200 gap-0.5">
+    <span className="badge bg-ink-50 dark:bg-ink-900 text-ink-600 dark:text-ink-400 border-ink-200 dark:border-ink-800 gap-0.5">
       <ArrowsRightLeftIcon className="h-2.5 w-2.5" />양방향
     </span>
   )
@@ -371,7 +372,7 @@ function KPI({
   sub?: string
 }) {
   const toneClass: Record<string, string> = {
-    neutral: 'text-ink-900',
+    neutral: 'text-ink-900 dark:text-ink-50',
     emerald: 'text-emerald-700',
     primary: 'text-primary-700',
     amber:   'text-amber-700',
@@ -379,7 +380,7 @@ function KPI({
   }
   return (
     <div className="panel px-3 py-2">
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">{label}</div>
+      <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">{label}</div>
       <div className={`mt-0.5 font-mono tabular-nums font-bold text-sm ${toneClass[tone]}`}>
         {value.toLocaleString()}
         <span className="text-2xs text-ink-400 ml-1 font-medium">{unit}</span>
@@ -396,13 +397,13 @@ function ScoreBar({ score }: { score: number }) {
     score >= 50 ? '#f59e0b' : '#f43f5e'
   return (
     <div className="flex items-center gap-1.5">
-      <div className="flex-1 h-1.5 rounded-full bg-ink-100 overflow-hidden">
+      <div className="flex-1 h-1.5 rounded-full bg-ink-100 dark:bg-ink-800 overflow-hidden">
         <div
           className="h-full rounded-full transition-all"
           style={{ width: `${score}%`, backgroundColor: color }}
         />
       </div>
-      <span className="text-2xs font-mono font-semibold w-6 text-right text-ink-700">{score}</span>
+      <span className="text-2xs font-mono font-semibold w-6 text-right text-ink-700 dark:text-ink-300">{score}</span>
     </div>
   )
 }
@@ -422,13 +423,13 @@ function ScoreBreakRow({
   return (
     <div>
       <div className="flex justify-between items-center mb-0.5">
-        <span className="text-2xs text-ink-600">{label}</span>
-        <span className="text-2xs font-mono font-semibold text-ink-700">
+        <span className="text-2xs text-ink-600 dark:text-ink-400">{label}</span>
+        <span className="text-2xs font-mono font-semibold text-ink-700 dark:text-ink-300">
           {value}/{max}
           <span className="text-ink-400 font-normal ml-1">({hint})</span>
         </span>
       </div>
-      <div className="h-1 rounded-full bg-ink-100 overflow-hidden">
+      <div className="h-1 rounded-full bg-ink-100 dark:bg-ink-800 overflow-hidden">
         <div className="h-full rounded-full bg-primary-500" style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -438,8 +439,8 @@ function ScoreBreakRow({
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between items-center text-2xs">
-      <span className="text-ink-500">{label}</span>
-      <span className="font-mono text-ink-700 font-medium">{value}</span>
+      <span className="text-ink-500 dark:text-ink-400">{label}</span>
+      <span className="font-mono text-ink-700 dark:text-ink-300 font-medium">{value}</span>
     </div>
   )
 }
@@ -450,13 +451,13 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 function ChartTooltip({ active, payload, label, formatter }: any) {
   if (!active || !payload || !payload.length) return null
   return (
-    <div className="rounded-md border border-ink-200 bg-white shadow-md px-2.5 py-2 text-2xs">
-      {label && <div className="font-semibold text-ink-700 mb-1">{label}</div>}
+    <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 shadow-md px-2.5 py-2 text-2xs">
+      {label && <div className="font-semibold text-ink-700 dark:text-ink-300 mb-1">{label}</div>}
       {payload.map((p: any, i: number) => (
         <div key={i} className="flex items-center gap-1.5">
           <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: p.color || p.fill }} />
-          <span className="text-ink-600">{p.name}:</span>
-          <span className="font-mono font-semibold text-ink-900">
+          <span className="text-ink-600 dark:text-ink-400">{p.name}:</span>
+          <span className="font-mono font-semibold text-ink-900 dark:text-ink-50">
             {formatter ? formatter(p.value, p.name) : p.value}
           </span>
         </div>
@@ -483,7 +484,7 @@ function GradeDistributionChart({ scores }: { scores: ContactScore[] }) {
 
   return (
     <div className="panel px-3 py-2.5">
-      <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+      <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-2">
         등급별 분포
       </div>
       <div className="flex items-center gap-3">
@@ -519,10 +520,10 @@ function GradeDistributionChart({ scores }: { scores: ContactScore[] }) {
                   className="inline-block w-2 h-2 rounded-full flex-shrink-0"
                   style={{ backgroundColor: GRADE_HEX[d.name as Grade] }}
                 />
-                <span className="text-2xs font-bold text-ink-700">{d.name}</span>
+                <span className="text-2xs font-bold text-ink-700 dark:text-ink-300">{d.name}</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-16 h-1 rounded-full bg-ink-100 overflow-hidden">
+                <div className="w-16 h-1 rounded-full bg-ink-100 dark:bg-ink-800 overflow-hidden">
                   <div
                     className="h-full rounded-full"
                     style={{
@@ -531,7 +532,7 @@ function GradeDistributionChart({ scores }: { scores: ContactScore[] }) {
                     }}
                   />
                 </div>
-                <span className="text-2xs font-mono text-ink-600 w-8 text-right">
+                <span className="text-2xs font-mono text-ink-600 dark:text-ink-400 w-8 text-right">
                   {d.value}곳
                 </span>
               </div>
@@ -545,6 +546,7 @@ function GradeDistributionChart({ scores }: { scores: ContactScore[] }) {
 
 /** B. 상위 거래처 매출 가로 막대 차트 */
 function TopContactsBarChart({ scores }: { scores: ContactScore[] }) {
+  const chartTheme = useChartTheme()
   const top10 = [...scores]
     .sort((a, b) => b.totalAmount - a.totalAmount)
     .slice(0, 10)
@@ -562,7 +564,7 @@ function TopContactsBarChart({ scores }: { scores: ContactScore[] }) {
 
   return (
     <div className="panel px-3 py-2.5">
-      <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+      <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-2">
         상위 거래처 거래액 (TOP 10, 만원)
       </div>
       <ResponsiveContainer width="100%" height={220}>
@@ -571,16 +573,16 @@ function TopContactsBarChart({ scores }: { scores: ContactScore[] }) {
           layout="vertical"
           margin={{ top: 0, right: 8, left: 4, bottom: 0 }}
         >
-          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e5e7eb" />
+          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={chartTheme.gridColor} />
           <XAxis
             type="number"
-            tick={{ fontSize: 9, fill: '#9ca3af' }}
+            tick={{ fontSize: 9, fill: chartTheme.axisColor }}
             tickFormatter={(v) => `${v.toLocaleString()}만`}
           />
           <YAxis
             type="category"
             dataKey="name"
-            tick={{ fontSize: 9, fill: '#374151' }}
+            tick={{ fontSize: 9, fill: chartTheme.labelColor }}
             width={64}
           />
           <Tooltip
@@ -606,6 +608,7 @@ function TopContactsBarChart({ scores }: { scores: ContactScore[] }) {
 
 /** C. 점수 분포 히스토그램 */
 function ScoreHistogram({ scores }: { scores: ContactScore[] }) {
+  const chartTheme = useChartTheme()
   const bins = [
     { label: '0~50', min: 0,  max: 50,  fill: '#f43f5e' },
     { label: '50~60', min: 50, max: 60, fill: '#fb923c' },
@@ -625,14 +628,14 @@ function ScoreHistogram({ scores }: { scores: ContactScore[] }) {
 
   return (
     <div className="panel px-3 py-2.5">
-      <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+      <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-2">
         점수 구간별 분포
       </div>
       <ResponsiveContainer width="100%" height={130}>
         <BarChart data={data} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
-          <XAxis dataKey="label" tick={{ fontSize: 9, fill: '#9ca3af' }} />
-          <YAxis tick={{ fontSize: 9, fill: '#9ca3af' }} allowDecimals={false} />
+          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={chartTheme.gridColor} />
+          <XAxis dataKey="label" tick={{ fontSize: 9, fill: chartTheme.axisColor }} />
+          <YAxis tick={{ fontSize: 9, fill: chartTheme.axisColor }} allowDecimals={false} />
           <Tooltip
             content={
               <ChartTooltip formatter={(v: number) => `${v}곳`} />
@@ -681,7 +684,7 @@ function TopContactsPanel({
         ) : (
           <TruckIcon className="h-3 w-3 text-amber-600" />
         )}
-        <span className="text-2xs font-semibold text-ink-600 uppercase tracking-wider">
+        <span className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider">
           {isSales ? '매출처 TOP 5' : '매입처 TOP 5'}
         </span>
       </div>
@@ -694,7 +697,7 @@ function TopContactsPanel({
               <span className="text-2xs text-ink-400 font-mono w-3">{i + 1}</span>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-2xs font-medium text-ink-800 truncate">{c.name}</span>
+                  <span className="text-2xs font-medium text-ink-800 dark:text-ink-100 truncate">{c.name}</span>
                   <GradeBadge grade={c.grade} />
                 </div>
                 <div className="text-2xs text-ink-400 font-mono">
@@ -730,6 +733,7 @@ function ContactDetail({
   tickets: any[]
   onClose: () => void
 }) {
+  const chartTheme = useChartTheme()
   const dailyTx = useMemo(
     () => buildDailyTx(tickets, contact.name),
     [tickets, contact.name]
@@ -762,7 +766,7 @@ function ContactDetail({
   return (
     <div className="panel overflow-hidden flex flex-col sticky top-4 max-h-[calc(100vh-8rem)]">
       {/* 헤더 */}
-      <div className="px-3 py-2 border-b border-ink-200 flex items-center justify-between gap-2 flex-shrink-0">
+      <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between gap-2 flex-shrink-0">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-white text-xs font-bold flex-shrink-0 ${GRADE_BG[contact.grade]}`}>
@@ -772,18 +776,18 @@ function ContactDetail({
           </div>
           <div className="flex items-center gap-1.5 mt-1">
             <TypeBadge type={contact.type} />
-            <span className="text-2xs text-ink-500">신용점수 {contact.score}점</span>
+            <span className="text-2xs text-ink-500 dark:text-ink-400">신용점수 {contact.score}점</span>
           </div>
         </div>
-        <button onClick={onClose} className="text-ink-400 hover:text-ink-700 flex-shrink-0 p-0.5">
+        <button onClick={onClose} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200 flex-shrink-0 p-0.5">
           <XMarkIcon className="h-4 w-4" />
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto">
         {/* 점수 분해 */}
-        <div className="px-3 py-2 border-b border-ink-100">
-          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+        <div className="px-3 py-2 border-b border-ink-100 dark:border-ink-800">
+          <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-2">
             점수 분해
           </div>
           <div className="space-y-2">
@@ -816,8 +820,8 @@ function ContactDetail({
 
         {/* 거래 추이 LineChart */}
         {chartData.length > 0 && (
-          <div className="px-3 py-2 border-b border-ink-100">
-            <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+          <div className="px-3 py-2 border-b border-ink-100 dark:border-ink-800">
+            <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-2">
               거래 추이 (일별, 만원)
             </div>
             <ResponsiveContainer width="100%" height={110}>
@@ -825,13 +829,13 @@ function ContactDetail({
                 data={chartData}
                 margin={{ top: 4, right: 4, left: -20, bottom: 0 }}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
                 <XAxis
                   dataKey="date"
-                  tick={{ fontSize: 8, fill: '#9ca3af' }}
+                  tick={{ fontSize: 8, fill: chartTheme.axisColor }}
                   interval="preserveStartEnd"
                 />
-                <YAxis tick={{ fontSize: 8, fill: '#9ca3af' }} allowDecimals={false} />
+                <YAxis tick={{ fontSize: 8, fill: chartTheme.axisColor }} allowDecimals={false} />
                 <Tooltip
                   content={
                     <ChartTooltip
@@ -862,18 +866,18 @@ function ContactDetail({
         )}
 
         {/* 거래 내역 요약 */}
-        <div className="px-3 py-2 border-b border-ink-100">
-          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+        <div className="px-3 py-2 border-b border-ink-100 dark:border-ink-800">
+          <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-2">
             거래 내역
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-md bg-canvas-50 border border-ink-100 px-2.5 py-2">
-              <div className="text-2xs text-ink-500 mb-0.5">총 거래 건수</div>
-              <div className="text-sm font-bold font-mono text-ink-900">{contact.txCount}건</div>
+            <div className="rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-100 dark:border-ink-800 px-2.5 py-2">
+              <div className="text-2xs text-ink-500 dark:text-ink-400 mb-0.5">총 거래 건수</div>
+              <div className="text-sm font-bold font-mono text-ink-900 dark:text-ink-50">{contact.txCount}건</div>
             </div>
-            <div className="rounded-md bg-canvas-50 border border-ink-100 px-2.5 py-2">
-              <div className="text-2xs text-ink-500 mb-0.5">총 거래 금액</div>
-              <div className="text-sm font-bold font-mono text-ink-900">{formatCompactWon(contact.totalAmount)}</div>
+            <div className="rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-100 dark:border-ink-800 px-2.5 py-2">
+              <div className="text-2xs text-ink-500 dark:text-ink-400 mb-0.5">총 거래 금액</div>
+              <div className="text-sm font-bold font-mono text-ink-900 dark:text-ink-50">{formatCompactWon(contact.totalAmount)}</div>
             </div>
             {contact.inAmount > 0 && (
               <div className="rounded-md bg-emerald-50 border border-emerald-100 px-2.5 py-2">
@@ -901,11 +905,11 @@ function ContactDetail({
 
         {/* 권장 사항 */}
         <div className="px-3 py-2">
-          <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-2">
+          <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-2">
             평가 및 권장 사항
           </div>
-          <div className="rounded-md border border-ink-100 bg-canvas-50 px-2.5 py-2 space-y-1.5">
-            <p className="text-2xs text-ink-600 leading-relaxed">{gradeDesc[contact.grade]}</p>
+          <div className="rounded-md border border-ink-100 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950 px-2.5 py-2 space-y-1.5">
+            <p className="text-2xs text-ink-600 dark:text-ink-400 leading-relaxed">{gradeDesc[contact.grade]}</p>
             <p className="text-2xs text-primary-700 font-medium leading-relaxed">
               권장: {recommend[contact.grade]}
             </p>
@@ -1073,10 +1077,10 @@ export default function ContactScoringPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <StarIcon className="h-4 w-4 text-ink-500" />
+            <StarIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             거래처 신용도 평가
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             결제 이력(OUT) + 거래 데이터 기반 자동 스코어링
           </p>
           {filteredCount > 0 && (
@@ -1116,8 +1120,8 @@ export default function ContactScoringPage() {
 
       {/* 상태 배너 */}
       {!healthQuery.isFetched ? (
-        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
@@ -1189,25 +1193,25 @@ export default function ContactScoringPage() {
           {/* 매출처/매입처 합산 미니 KPI */}
           <div className="col-span-12 md:col-span-4 flex flex-col gap-2">
             <div className="panel px-3 py-2.5 flex-1">
-              <div className="text-2xs font-semibold text-ink-500 uppercase tracking-wider mb-1.5">
+              <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider mb-1.5">
                 기간 합계
               </div>
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center">
-                  <span className="text-2xs text-ink-500">총 매출 (IN 합계)</span>
+                  <span className="text-2xs text-ink-500 dark:text-ink-400">총 매출 (IN 합계)</span>
                   <span className="text-xs font-mono font-bold text-emerald-700">
                     {formatCompactWon(kpi.totalInAmount)}
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-2xs text-ink-500">총 매입 (OUT 합계)</span>
+                  <span className="text-2xs text-ink-500 dark:text-ink-400">총 매입 (OUT 합계)</span>
                   <span className="text-xs font-mono font-bold text-amber-700">
                     {formatCompactWon(kpi.totalOutAmount)}
                   </span>
                 </div>
-                <div className="h-px bg-ink-100" />
+                <div className="h-px bg-ink-100 dark:bg-ink-800" />
                 <div className="flex justify-between items-center">
-                  <span className="text-2xs text-ink-500">순차액 (IN-OUT)</span>
+                  <span className="text-2xs text-ink-500 dark:text-ink-400">순차액 (IN-OUT)</span>
                   <span
                     className={`text-xs font-mono font-bold ${
                       kpi.totalInAmount - kpi.totalOutAmount >= 0
@@ -1219,7 +1223,7 @@ export default function ContactScoringPage() {
                   </span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-2xs text-ink-500">평균 신용점수</span>
+                  <span className="text-2xs text-ink-500 dark:text-ink-400">평균 신용점수</span>
                   <span className="text-xs font-mono font-bold text-primary-700">
                     {scores.length > 0
                       ? Math.round(scores.reduce((s, c) => s + c.score, 0) / scores.length)
@@ -1253,13 +1257,13 @@ export default function ContactScoringPage() {
             {/* 필터 바 */}
             <div className="panel p-2 flex flex-wrap items-center gap-2">
               {/* 구분 필터 */}
-              <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200">
+              <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800">
                 {(['all', 'sales', 'purchase', 'both'] as const).map((f) => (
                   <button
                     key={f}
                     onClick={() => setTypeFilter(f)}
                     className={`px-2.5 py-1 rounded text-2xs font-semibold transition ${
-                      typeFilter === f ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-white'
+                      typeFilter === f ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-white dark:hover:bg-ink-800'
                     }`}
                   >
                     {f === 'all' ? '전체' : f === 'sales' ? '매출처' : f === 'purchase' ? '매입처' : '양방향'}
@@ -1267,13 +1271,13 @@ export default function ContactScoringPage() {
                 ))}
               </div>
               {/* 등급 필터 */}
-              <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200">
+              <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800">
                 {(['all', 'A+', 'A', 'B+', 'B', 'C', 'D'] as const).map((g) => (
                   <button
                     key={g}
                     onClick={() => setGradeFilter(g)}
                     className={`px-2 py-1 rounded text-2xs font-bold transition ${
-                      gradeFilter === g ? 'bg-ink-900 text-white' : 'text-ink-500 hover:bg-white'
+                      gradeFilter === g ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-500 dark:text-ink-400 hover:bg-white dark:hover:bg-ink-800'
                     }`}
                   >
                     {g === 'all' ? '전체' : g}
@@ -1295,51 +1299,51 @@ export default function ContactScoringPage() {
             <div className="panel overflow-hidden">
               <div className="overflow-x-auto max-h-[calc(100vh-26rem)] overflow-y-auto">
                 <table className="min-w-full">
-                  <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-200">
+                  <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10 border-b border-ink-200 dark:border-ink-800">
                     <tr>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider w-6">#</th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">등급</th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">거래처명</th>
-                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">구분</th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider w-6">#</th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">등급</th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">거래처명</th>
+                      <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">구분</th>
                       <th
-                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider cursor-pointer hover:text-ink-700"
+                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider cursor-pointer hover:text-ink-700 dark:hover:text-ink-200"
                         onClick={() => toggleSort('txCount')}
                       >
                         거래 건수<SortArrow k="txCount" />
                       </th>
                       <th
-                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider cursor-pointer hover:text-ink-700"
+                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider cursor-pointer hover:text-ink-700 dark:hover:text-ink-200"
                         onClick={() => toggleSort('totalAmount')}
                       >
                         총 거래액<SortArrow k="totalAmount" />
                       </th>
                       <th
-                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider cursor-pointer hover:text-ink-700"
+                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider cursor-pointer hover:text-ink-700 dark:hover:text-ink-200"
                         onClick={() => toggleSort('outCount')}
                       >
                         결제 횟수<SortArrow k="outCount" />
                       </th>
                       <th
-                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider cursor-pointer hover:text-ink-700"
+                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider cursor-pointer hover:text-ink-700 dark:hover:text-ink-200"
                         onClick={() => toggleSort('avgPayDays')}
                       >
                         평균 결제일<SortArrow k="avgPayDays" />
                       </th>
                       <th
-                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider cursor-pointer hover:text-ink-700"
+                        className="px-3 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider cursor-pointer hover:text-ink-700 dark:hover:text-ink-200"
                         onClick={() => toggleSort('lastDate')}
                       >
                         마지막 거래<SortArrow k="lastDate" />
                       </th>
                       <th
-                        className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider cursor-pointer hover:text-ink-700 w-32"
+                        className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider cursor-pointer hover:text-ink-700 dark:hover:text-ink-200 w-32"
                         onClick={() => toggleSort('score')}
                       >
                         점수<SortArrow k="score" />
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-ink-100">
+                  <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                     {isLoading && (
                       <tr>
                         <td colSpan={10} className="text-center py-8 text-2xs text-ink-400">
@@ -1375,28 +1379,28 @@ export default function ContactScoringPage() {
                           key={c.name}
                           onClick={() => setSelected(isSel ? null : c)}
                           className={`cursor-pointer transition-colors ${
-                            isSel ? 'bg-primary-50' : 'hover:bg-canvas-50'
+                            isSel ? 'bg-primary-50' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
                           }`}
                         >
                           <td className="px-3 py-1.5 text-2xs text-ink-400 font-mono">{rank}</td>
                           <td className="px-3 py-1.5"><GradeBadge grade={c.grade} /></td>
                           <td className="px-3 py-1.5">
-                            <div className="text-xs font-medium text-ink-900 leading-tight">{c.name}</div>
+                            <div className="text-xs font-medium text-ink-900 dark:text-ink-50 leading-tight">{c.name}</div>
                           </td>
                           <td className="px-3 py-1.5"><TypeBadge type={c.type} /></td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-ink-700">
+                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-ink-700 dark:text-ink-300">
                             {c.txCount.toLocaleString()}건
                           </td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900">
+                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-semibold text-ink-900 dark:text-ink-50">
                             {formatCompactWon(c.totalAmount)}
                           </td>
-                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-ink-700">
+                          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-2xs text-ink-700 dark:text-ink-300">
                             {c.outCount > 0 ? `${c.outCount}회` : '-'}
                           </td>
-                          <td className="px-3 py-1.5 text-right text-2xs font-mono text-ink-600">
+                          <td className="px-3 py-1.5 text-right text-2xs font-mono text-ink-600 dark:text-ink-400">
                             {c.avgPayDays > 0 ? `${c.avgPayDays}일` : '-'}
                           </td>
-                          <td className="px-3 py-1.5 text-right text-2xs text-ink-500 font-mono">
+                          <td className="px-3 py-1.5 text-right text-2xs text-ink-500 dark:text-ink-400 font-mono">
                             {c.lastDate || '-'}
                           </td>
                           <td className="px-3 py-1.5 min-w-[7rem]">
@@ -1409,7 +1413,7 @@ export default function ContactScoringPage() {
                 </table>
               </div>
               {filtered.length > 0 && (
-                <div className="px-3 py-1.5 border-t border-ink-100 bg-canvas-50">
+                <div className="px-3 py-1.5 border-t border-ink-100 dark:border-ink-800 bg-canvas-50 dark:bg-ink-950">
                   <span className="text-2xs text-ink-400">
                     {filtered.length}개 거래처 표시 (전체 {scores.length}개 / 원본 {tickets.length}건)
                   </span>

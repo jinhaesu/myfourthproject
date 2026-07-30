@@ -119,7 +119,7 @@ export default function CashDigestPage() {
           <SparklesIcon className="h-5 w-5 text-emerald-500" />
           AI 자금 다이제스트
         </h1>
-        <p className="text-xs text-ink-500 mt-1">
+        <p className="text-xs text-ink-500 dark:text-ink-400 mt-1">
           매일 아침, 우리 회사 자금 상황을 한눈에 — 항목과 순서를 자유롭게 커스텀하세요.
         </p>
       </div>
@@ -127,20 +127,20 @@ export default function CashDigestPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-3">
         {/* 좌측: 미리보기 */}
         <div className="panel overflow-hidden">
-          <div className="bg-canvas-50 border-b border-ink-200 px-4 py-2 text-2xs font-semibold text-ink-500 text-center">
+          <div className="bg-canvas-50 dark:bg-ink-950 border-b border-ink-200 dark:border-ink-800 px-4 py-2 text-2xs font-semibold text-ink-500 dark:text-ink-400 text-center">
             미리보기
           </div>
           <div className="p-6 max-w-2xl mx-auto">
             {/* 헤더 */}
             <div className="text-center mb-5">
-              <div className="text-lg font-bold text-ink-900">Smart Finance Core</div>
+              <div className="text-lg font-bold text-ink-900 dark:text-ink-50">Smart Finance Core</div>
             </div>
 
             <div className="mb-5">
-              <div className="text-2xl font-extrabold text-ink-900">
+              <div className="text-2xl font-extrabold text-ink-900 dark:text-ink-50">
                 {todayDateLabel(preview?.target_date)}
               </div>
-              <div className="text-2xs text-ink-500 mt-0.5">
+              <div className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
                 {refDateLabel(preview?.target_date)}
               </div>
             </div>
@@ -164,37 +164,37 @@ export default function CashDigestPage() {
 
         {/* 우측: 설정 */}
         <div className="panel p-4 self-start sticky top-3">
-          <div className="text-base font-bold text-ink-900 mb-1">매일 아침, 자금 현황을 보내드려요</div>
-          <p className="text-2xs text-ink-500 mb-3 leading-relaxed">
+          <div className="text-base font-bold text-ink-900 dark:text-ink-50 mb-1">매일 아침, 자금 현황을 보내드려요</div>
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mb-3 leading-relaxed">
             설정한 시각에 로그인 이메일로 자동 발송됩니다.
           </p>
 
           {/* 수신 on/off + 발송 시각 */}
           {localCfg && (
-            <div className="flex items-center gap-3 mb-3 p-2.5 rounded-md bg-canvas-50 border border-ink-200">
+            <div className="flex items-center gap-3 mb-3 p-2.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800">
               <button
                 onClick={() => { setLocalCfg({ ...localCfg, enabled: !localCfg.enabled }); setDirty(true) }}
-                className={`relative w-9 h-5 rounded-full transition flex-shrink-0 ${localCfg.enabled ? 'bg-emerald-500' : 'bg-ink-200'}`}
+                className={`relative w-9 h-5 rounded-full transition flex-shrink-0 ${localCfg.enabled ? 'bg-emerald-500' : 'bg-ink-200 dark:bg-ink-700'}`}
                 title="정기 발송 켜기/끄기"
               >
-                <span className={`absolute top-0.5 ${localCfg.enabled ? 'right-0.5' : 'left-0.5'} w-4 h-4 rounded-full bg-white shadow transition-all`} />
+                <span className={`absolute top-0.5 ${localCfg.enabled ? 'right-0.5' : 'left-0.5'} w-4 h-4 rounded-full bg-white dark:bg-ink-900 shadow transition-all`} />
               </button>
-              <span className="text-xs font-medium text-ink-800 flex-1">
+              <span className="text-xs font-medium text-ink-800 dark:text-ink-100 flex-1">
                 {localCfg.enabled ? '정기 발송 켜짐' : '정기 발송 꺼짐'}
               </span>
               <div className="flex items-center gap-1">
-                <span className="text-2xs text-ink-500">매일</span>
+                <span className="text-2xs text-ink-500 dark:text-ink-400">매일</span>
                 <input
                   type="time"
                   value={localCfg.delivery_time || '09:00'}
                   onChange={(e) => { setLocalCfg({ ...localCfg, delivery_time: e.target.value }); setDirty(true) }}
-                  className="px-1.5 py-0.5 text-xs rounded border border-ink-200 focus:border-emerald-400 focus:outline-none"
+                  className="px-1.5 py-0.5 text-xs rounded border border-ink-200 dark:border-ink-800 focus:border-emerald-400 focus:outline-none"
                 />
               </div>
             </div>
           )}
 
-          <div className="text-2xs font-semibold text-ink-700 mb-2">
+          <div className="text-2xs font-semibold text-ink-700 dark:text-ink-300 mb-2">
             항목과 순서를 원하는 대로 설정할 수 있어요
           </div>
 
@@ -210,28 +210,28 @@ export default function CashDigestPage() {
                 return (
                   <div
                     key={key}
-                    className={`flex items-center gap-2 px-2 py-2 border rounded-md ${enabled ? 'bg-white border-ink-200' : 'bg-ink-50 border-ink-100'}`}
+                    className={`flex items-center gap-2 px-2 py-2 border rounded-md ${enabled ? 'bg-white dark:bg-ink-900 border-ink-200 dark:border-ink-800' : 'bg-ink-50 dark:bg-ink-900 border-ink-100 dark:border-ink-800'}`}
                   >
                     {/* 위/아래 화살표 (드래그 대신) */}
                     <div className="flex flex-col gap-0.5 -mr-0.5">
                       <button onClick={() => move(key, -1)} disabled={i === 0}
-                        className="text-ink-300 hover:text-ink-700 disabled:opacity-30">
+                        className="text-ink-300 dark:text-ink-600 hover:text-ink-700 dark:hover:text-ink-200 disabled:opacity-30">
                         <ChevronUpIcon className="h-3 w-3" />
                       </button>
                       <button onClick={() => move(key, 1)} disabled={i === orderedKeys.length - 1}
-                        className="text-ink-300 hover:text-ink-700 disabled:opacity-30">
+                        className="text-ink-300 dark:text-ink-600 hover:text-ink-700 dark:hover:text-ink-200 disabled:opacity-30">
                         <ChevronDownIcon className="h-3 w-3" />
                       </button>
                     </div>
-                    <Icon className="h-4 w-4 text-ink-500" />
+                    <Icon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-semibold text-ink-800">{meta.label}</span>
+                        <span className="text-xs font-semibold text-ink-800 dark:text-ink-100">{meta.label}</span>
                         {meta.required && (
                           <span className="text-2xs text-ink-400">필수</span>
                         )}
                       </div>
-                      <div className="text-2xs text-ink-500 leading-tight">{meta.description}</div>
+                      <div className="text-2xs text-ink-500 dark:text-ink-400 leading-tight">{meta.description}</div>
                     </div>
                     {/* 토글 */}
                     {meta.required ? (
@@ -241,9 +241,9 @@ export default function CashDigestPage() {
                     ) : (
                       <button
                         onClick={() => toggleSection(key)}
-                        className={`relative w-9 h-5 rounded-full transition ${enabled ? 'bg-emerald-500' : 'bg-ink-200'}`}
+                        className={`relative w-9 h-5 rounded-full transition ${enabled ? 'bg-emerald-500' : 'bg-ink-200 dark:bg-ink-700'}`}
                       >
-                        <span className={`absolute top-0.5 ${enabled ? 'right-0.5' : 'left-0.5'} w-4 h-4 rounded-full bg-white shadow transition-all`} />
+                        <span className={`absolute top-0.5 ${enabled ? 'right-0.5' : 'left-0.5'} w-4 h-4 rounded-full bg-white dark:bg-ink-900 shadow transition-all`} />
                       </button>
                     )}
                   </div>
@@ -283,22 +283,22 @@ export default function CashDigestPage() {
 
 function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any }) {
   const Icon = SECTION_ICON[sectionKey] || SparklesIcon
-  const accent = SECTION_ACCENT[sectionKey] || 'from-ink-50 to-white border-ink-200'
+  const accent = SECTION_ACCENT[sectionKey] || 'from-ink-50 dark:from-ink-900 to-white dark:to-ink-900 border-ink-200 dark:border-ink-800'
 
   if (sectionKey === 'ai_cashflow') {
     return (
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
           <Icon className="h-4 w-4 text-emerald-600" />
-          <h3 className="text-sm font-bold text-ink-900">{data.title}</h3>
+          <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">{data.title}</h3>
         </div>
         <div className={`rounded-lg border bg-gradient-to-br ${accent} p-4`}>
-          <div className="text-xs font-semibold text-ink-700 mb-2">{data.balance_trend?.title}</div>
-          <div className="text-2xs text-ink-700 leading-relaxed">{data.balance_trend?.summary}</div>
+          <div className="text-xs font-semibold text-ink-700 dark:text-ink-300 mb-2">{data.balance_trend?.title}</div>
+          <div className="text-2xs text-ink-700 dark:text-ink-300 leading-relaxed">{data.balance_trend?.summary}</div>
         </div>
         {(data.top_movements?.outflows?.length > 0 || data.top_movements?.inflows?.length > 0) && (
-          <div className="rounded-lg border border-ink-200 bg-white p-4">
-            <div className="text-xs font-semibold text-ink-700 mb-2">{data.top_movements.title}</div>
+          <div className="rounded-lg border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 p-4">
+            <div className="text-xs font-semibold text-ink-700 dark:text-ink-300 mb-2">{data.top_movements.title}</div>
             <div className="space-y-1">
               {(data.top_movements.outflows || []).map((m: any, i: number) => {
                 const cp = m.counterparty && m.counterparty !== '(미지정)' ? m.counterparty : ''
@@ -306,7 +306,7 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
                 return (
                   <div key={`o${i}`} className="flex items-start gap-1.5 text-2xs">
                     <ArrowUpRightIcon className="h-3 w-3 text-rose-500 mt-0.5 flex-shrink-0" />
-                    <span className="text-ink-700">
+                    <span className="text-ink-700 dark:text-ink-300">
                       어제 주요 출금 내역으로는 <strong>{label}</strong>로 <strong>{formatCurrency(m.amount, false)}</strong> 등이 있어요.
                     </span>
                   </div>
@@ -318,7 +318,7 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
                 return (
                   <div key={`i${i}`} className="flex items-start gap-1.5 text-2xs">
                     <ArrowDownLeftIcon className="h-3 w-3 text-emerald-500 mt-0.5 flex-shrink-0" />
-                    <span className="text-ink-700">
+                    <span className="text-ink-700 dark:text-ink-300">
                       어제 주요 입금 내역으로는 <strong>{label}</strong>로 <strong>{formatCurrency(m.amount, false)}</strong> 등이 있어요.
                     </span>
                   </div>
@@ -339,22 +339,22 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
           <Icon className="h-4 w-4 text-amber-600" />
-          <h3 className="text-sm font-bold text-ink-900">{data.title}</h3>
+          <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">{data.title}</h3>
         </div>
         <div className={`rounded-lg border bg-gradient-to-br ${accent} p-4`}>
-          <div className="text-xs font-semibold text-ink-700 mb-2">{data.trend?.title}</div>
-          <div className="text-2xs text-ink-700 leading-relaxed">{data.trend?.summary}</div>
+          <div className="text-xs font-semibold text-ink-700 dark:text-ink-300 mb-2">{data.trend?.title}</div>
+          <div className="text-2xs text-ink-700 dark:text-ink-300 leading-relaxed">{data.trend?.summary}</div>
         </div>
         {(data.top_payments?.length || 0) > 0 && (
-          <div className="rounded-lg border border-ink-200 bg-white p-4">
-            <div className="text-xs font-semibold text-ink-700 mb-2">어제 주요 결제 내역</div>
+          <div className="rounded-lg border border-ink-200 dark:border-ink-800 bg-white dark:bg-ink-900 p-4">
+            <div className="text-xs font-semibold text-ink-700 dark:text-ink-300 mb-2">어제 주요 결제 내역</div>
             <div className="space-y-1 text-2xs">
               {data.top_payments.map((p: any, i: number) => (
                 <div key={i} className="flex items-center justify-between">
-                  <span className="text-ink-700 truncate">
+                  <span className="text-ink-700 dark:text-ink-300 truncate">
                     {p.counterparty}{p.description ? ` (${p.description})` : ''}
                   </span>
-                  <span className="font-mono font-semibold text-ink-900 ml-2">
+                  <span className="font-mono font-semibold text-ink-900 dark:text-ink-50 ml-2">
                     {formatCurrency(p.amount, false)}
                   </span>
                 </div>
@@ -371,22 +371,22 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
           <Icon className="h-4 w-4 text-blue-600" />
-          <h3 className="text-sm font-bold text-ink-900">{data.title}</h3>
+          <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">{data.title}</h3>
         </div>
         <div className={`rounded-lg border bg-gradient-to-br ${accent} p-4 space-y-2`}>
-          <div className="text-2xs text-ink-700 leading-relaxed">{data.summary}</div>
+          <div className="text-2xs text-ink-700 dark:text-ink-300 leading-relaxed">{data.summary}</div>
           <div className="grid grid-cols-3 gap-2 text-center mt-2">
-            <div className="bg-white/60 rounded p-2">
-              <div className="text-2xs text-ink-500">입금</div>
+            <div className="bg-white/60 dark:bg-ink-900/60 rounded p-2">
+              <div className="text-2xs text-ink-500 dark:text-ink-400">입금</div>
               <div className="text-xs font-bold text-emerald-700 mt-0.5">{formatCurrency(data.inflow, false)}</div>
             </div>
-            <div className="bg-white/60 rounded p-2">
-              <div className="text-2xs text-ink-500">출금</div>
+            <div className="bg-white/60 dark:bg-ink-900/60 rounded p-2">
+              <div className="text-2xs text-ink-500 dark:text-ink-400">출금</div>
               <div className="text-xs font-bold text-rose-700 mt-0.5">{formatCurrency(data.outflow, false)}</div>
             </div>
-            <div className="bg-white/60 rounded p-2">
-              <div className="text-2xs text-ink-500">잔액</div>
-              <div className="text-xs font-bold text-ink-900 mt-0.5">{formatCurrency(data.balance, false)}</div>
+            <div className="bg-white/60 dark:bg-ink-900/60 rounded p-2">
+              <div className="text-2xs text-ink-500 dark:text-ink-400">잔액</div>
+              <div className="text-xs font-bold text-ink-900 dark:text-ink-50 mt-0.5">{formatCurrency(data.balance, false)}</div>
             </div>
           </div>
         </div>
@@ -399,22 +399,22 @@ function PreviewSection({ sectionKey, data }: { sectionKey: string; data: any })
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
           <Icon className="h-4 w-4 text-purple-600" />
-          <h3 className="text-sm font-bold text-ink-900">{data.title}</h3>
+          <h3 className="text-sm font-bold text-ink-900 dark:text-ink-50">{data.title}</h3>
         </div>
         <div className={`rounded-lg border bg-gradient-to-br ${accent} p-4`}>
-          <div className="text-2xs text-ink-700">{data.summary}</div>
+          <div className="text-2xs text-ink-700 dark:text-ink-300">{data.summary}</div>
           {(data.items?.length || 0) > 0 && (
             <div className="mt-2 space-y-0.5 text-2xs">
               {data.items.slice(0, 5).map((p: any, i: number) => (
-                <div key={i} className="flex items-center justify-between bg-white/60 rounded px-2 py-1">
-                  <span className="text-ink-700 truncate">
+                <div key={i} className="flex items-center justify-between bg-white/60 dark:bg-ink-900/60 rounded px-2 py-1">
+                  <span className="text-ink-700 dark:text-ink-300 truncate">
                     {p.counterparty}{p.description ? ` (${p.description})` : ''}
                   </span>
-                  <span className="font-mono font-semibold text-ink-900 ml-2">{formatCurrency(p.amount, false)}</span>
+                  <span className="font-mono font-semibold text-ink-900 dark:text-ink-50 ml-2">{formatCurrency(p.amount, false)}</span>
                 </div>
               ))}
               {data.items.length > 5 && (
-                <div className="text-2xs text-ink-500 text-center pt-1">외 {data.items.length - 5}건</div>
+                <div className="text-2xs text-ink-500 dark:text-ink-400 text-center pt-1">외 {data.items.length - 5}건</div>
               )}
             </div>
           )}

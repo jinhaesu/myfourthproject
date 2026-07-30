@@ -18,6 +18,7 @@ import {
   Area,
   AreaChart,
 } from 'recharts'
+import { useChartTheme } from '@/lib/chartTheme'
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('ko-KR', {
@@ -30,6 +31,7 @@ function formatCurrency(value: number) {
 type TabType = 'dashboard' | 'pl' | 'cashflow' | 'scenario'
 
 export default function ForecastPage() {
+  const chartTheme = useChartTheme()
   const [activeTab, setActiveTab] = useState<TabType>('dashboard')
   const currentDate = new Date()
   const currentYear = currentDate.getFullYear()
@@ -99,8 +101,8 @@ export default function ForecastPage() {
     <div className="space-y-6">
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">예측 / 시뮬레이션</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">예측 / 시뮬레이션</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
             손익 예측 및 시나리오 시뮬레이션을 수행합니다.
           </p>
         </div>
@@ -117,7 +119,7 @@ export default function ForecastPage() {
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200">
+      <div className="border-b border-gray-200 dark:border-ink-800">
         <nav className="flex space-x-8">
           {[
             { id: 'dashboard' as TabType, label: '대시보드' },
@@ -131,7 +133,7 @@ export default function ForecastPage() {
               className={`py-3 px-1 border-b-2 font-medium text-sm ${
                 activeTab === tab.id
                   ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:border-gray-300 dark:hover:border-ink-600'
               }`}
             >
               {tab.label}
@@ -146,7 +148,7 @@ export default function ForecastPage() {
           {dashboardLoading ? (
             <div className="text-center py-12">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-              <p className="text-gray-500 mt-2">로딩 중...</p>
+              <p className="text-gray-500 dark:text-gray-400 mt-2">로딩 중...</p>
             </div>
           ) : (
             <>
@@ -157,7 +159,7 @@ export default function ForecastPage() {
                       <ArrowTrendingUpIcon className="h-6 w-6 text-green-600" />
                     </div>
                     <div>
-                      <p className="text-sm text-gray-500">당월 매출</p>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">당월 매출</p>
                       <p className="text-xl font-bold">
                         {formatCurrency(dashboardData?.mtd_revenue || 0)}
                       </p>
@@ -171,7 +173,7 @@ export default function ForecastPage() {
                       <ArrowTrendingUpIcon className="h-6 w-6 text-blue-600" />
                     </div>
                     <div>
-                      <p className="text-sm text-gray-500">영업이익</p>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">영업이익</p>
                       <p className="text-xl font-bold">
                         {formatCurrency(dashboardData?.mtd_operating_income || 0)}
                       </p>
@@ -181,7 +183,7 @@ export default function ForecastPage() {
 
                 <div className="card">
                   <div>
-                    <p className="text-sm text-gray-500">영업이익률</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">영업이익률</p>
                     <p className="text-xl font-bold">
                       {dashboardData?.operating_margin
                         ? `${dashboardData.operating_margin.toFixed(1)}%`
@@ -196,7 +198,7 @@ export default function ForecastPage() {
                       <ArrowTrendingDownIcon className="h-6 w-6 text-yellow-600" />
                     </div>
                     <div>
-                      <p className="text-sm text-gray-500">당월 비용</p>
+                      <p className="text-sm text-gray-500 dark:text-gray-400">당월 비용</p>
                       <p className="text-xl font-bold text-red-600">
                         {formatCurrency(dashboardData?.mtd_expenses || 0)}
                       </p>
@@ -240,7 +242,7 @@ export default function ForecastPage() {
           <div className="card">
             <div className="flex items-center gap-4 mb-4">
               <div className="flex items-center gap-2">
-                <label className="text-sm font-medium text-gray-700">기간</label>
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300">기간</label>
                 <input
                   type="date"
                   value={plPeriod.start}
@@ -268,13 +270,13 @@ export default function ForecastPage() {
                 {/* P&L Summary */}
                 <div className="grid grid-cols-3 gap-4 text-center">
                   <div className="p-4 bg-green-50 rounded-lg">
-                    <p className="text-sm text-gray-500">총 수익</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">총 수익</p>
                     <p className="text-2xl font-bold text-green-600">
                       {formatCurrency(plData.total_revenue || 0)}
                     </p>
                   </div>
                   <div className="p-4 bg-red-50 rounded-lg">
-                    <p className="text-sm text-gray-500">총 비용</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">총 비용</p>
                     <p className="text-2xl font-bold text-red-600">
                       {formatCurrency(plData.total_expenses || 0)}
                     </p>
@@ -284,7 +286,7 @@ export default function ForecastPage() {
                       (plData.net_income || 0) >= 0 ? 'bg-blue-50' : 'bg-red-50'
                     }`}
                   >
-                    <p className="text-sm text-gray-500">순이익</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">순이익</p>
                     <p
                       className={`text-2xl font-bold ${
                         (plData.net_income || 0) >= 0
@@ -334,7 +336,7 @@ export default function ForecastPage() {
                 )}
               </div>
             ) : (
-              <div className="text-center py-8 text-gray-500">
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                 데이터가 없습니다.
               </div>
             )}
@@ -349,7 +351,7 @@ export default function ForecastPage() {
             <div className="flex items-center justify-between mb-4">
               <h3 className="card-header mb-0">자금 수지 예측</h3>
               <div className="flex items-center gap-2">
-                <label className="text-sm text-gray-600">예측 기간:</label>
+                <label className="text-sm text-gray-600 dark:text-gray-400">예측 기간:</label>
                 <select
                   value={cashFlowDays}
                   onChange={(e) => setCashFlowDays(Number(e.target.value))}
@@ -371,19 +373,19 @@ export default function ForecastPage() {
                 {/* Summary */}
                 <div className="grid grid-cols-3 gap-4 text-center">
                   <div className="p-4 bg-blue-50 rounded-lg">
-                    <p className="text-sm text-gray-500">현재 잔액</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">현재 잔액</p>
                     <p className="text-2xl font-bold text-blue-600">
                       {formatCurrency(cashFlowData.current_balance || 0)}
                     </p>
                   </div>
                   <div className="p-4 bg-green-50 rounded-lg">
-                    <p className="text-sm text-gray-500">예상 입금</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">예상 입금</p>
                     <p className="text-2xl font-bold text-green-600">
                       {formatCurrency(cashFlowData.total_inflow || 0)}
                     </p>
                   </div>
                   <div className="p-4 bg-red-50 rounded-lg">
-                    <p className="text-sm text-gray-500">예상 출금</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">예상 출금</p>
                     <p className="text-2xl font-bold text-red-600">
                       {formatCurrency(cashFlowData.total_outflow || 0)}
                     </p>
@@ -395,18 +397,19 @@ export default function ForecastPage() {
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
                       <AreaChart data={cashFlowData.daily_forecast}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
                         <XAxis
                           dataKey="date"
-                          stroke="#6b7280"
+                          stroke={chartTheme.axisColor}
                           fontSize={12}
                         />
-                        <YAxis stroke="#6b7280" fontSize={12} />
+                        <YAxis stroke={chartTheme.axisColor} fontSize={12} />
                         <Tooltip
                           contentStyle={{
-                            backgroundColor: 'white',
-                            border: '1px solid #e5e7eb',
+                            backgroundColor: chartTheme.tooltipBg,
+                            border: `1px solid ${chartTheme.tooltipBorder}`,
                             borderRadius: '8px',
+                            color: chartTheme.tooltipText,
                           }}
                           formatter={(value: number) => formatCurrency(value)}
                         />
@@ -425,7 +428,7 @@ export default function ForecastPage() {
                 )}
               </div>
             ) : (
-              <div className="text-center py-8 text-gray-500">
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                 데이터가 없습니다.
               </div>
             )}
@@ -438,7 +441,7 @@ export default function ForecastPage() {
         <div className="space-y-6">
           <div className="card">
             <h3 className="card-header">시나리오 시뮬레이션</h3>
-            <p className="text-sm text-gray-600 mb-6">
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
               가상의 매출/비용 변동을 적용하여 손익에 미치는 영향을 분석합니다.
             </p>
 
@@ -454,7 +457,7 @@ export default function ForecastPage() {
                       revenue_change_percent: Number(e.target.value),
                     })
                   }
-                  className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="예: 10 (10% 증가)"
                 />
                 <p className="text-xs text-gray-400 mt-1">
@@ -473,7 +476,7 @@ export default function ForecastPage() {
                       cost_change_percent: Number(e.target.value),
                     })
                   }
-                  className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="예: -5 (5% 감소)"
                 />
                 <p className="text-xs text-gray-400 mt-1">
@@ -492,7 +495,7 @@ export default function ForecastPage() {
                     description: e.target.value,
                   })
                 }
-                className="w-full mt-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full mt-1 px-4 py-2 border border-gray-300 dark:border-ink-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 rows={3}
                 placeholder="이 시나리오에 대한 설명을 입력하세요..."
               />
@@ -515,20 +518,20 @@ export default function ForecastPage() {
             <div className="card">
               <h3 className="card-header">시뮬레이션 결과</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-                <div className="p-4 bg-gray-50 rounded-lg">
-                  <p className="text-sm text-gray-500">기존 매출</p>
+                <div className="p-4 bg-gray-50 dark:bg-ink-900 rounded-lg">
+                  <p className="text-sm text-gray-500 dark:text-gray-400">기존 매출</p>
                   <p className="text-lg font-bold">
                     {formatCurrency(scenarioMutation.data.data?.base_revenue || 0)}
                   </p>
                 </div>
                 <div className="p-4 bg-green-50 rounded-lg">
-                  <p className="text-sm text-gray-500">시나리오 매출</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">시나리오 매출</p>
                   <p className="text-lg font-bold text-green-600">
                     {formatCurrency(scenarioMutation.data.data?.scenario_revenue || 0)}
                   </p>
                 </div>
-                <div className="p-4 bg-gray-50 rounded-lg">
-                  <p className="text-sm text-gray-500">기존 이익</p>
+                <div className="p-4 bg-gray-50 dark:bg-ink-900 rounded-lg">
+                  <p className="text-sm text-gray-500 dark:text-gray-400">기존 이익</p>
                   <p className="text-lg font-bold">
                     {formatCurrency(scenarioMutation.data.data?.base_profit || 0)}
                   </p>
@@ -540,7 +543,7 @@ export default function ForecastPage() {
                       : 'bg-red-50'
                   }`}
                 >
-                  <p className="text-sm text-gray-500">시나리오 이익</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">시나리오 이익</p>
                   <p
                     className={`text-lg font-bold ${
                       (scenarioMutation.data.data?.scenario_profit || 0) >= 0

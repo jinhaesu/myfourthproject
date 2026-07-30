@@ -78,12 +78,12 @@ export default function ApprovalsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">결재함</h1>
-        <p className="text-gray-500 mt-1">결재 요청을 검토하고 처리합니다.</p>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">결재함</h1>
+        <p className="text-gray-500 dark:text-gray-400 mt-1">결재 요청을 검토하고 처리합니다.</p>
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200">
+      <div className="border-b border-gray-200 dark:border-ink-800">
         <nav className="flex gap-4">
           {tabs.map((tab) => (
             <button
@@ -92,7 +92,7 @@ export default function ApprovalsPage() {
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === tab.id
                   ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >
               {tab.label}
@@ -116,17 +116,17 @@ export default function ApprovalsPage() {
                     <div
                       key={approval.id}
                       onClick={() => setSelectedApproval(approval)}
-                      className={`p-4 cursor-pointer hover:bg-gray-50 ${
+                      className={`p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-ink-800 ${
                         selectedApproval?.id === approval.id ? 'bg-primary-50' : ''
                       }`}
                     >
                       <div className="flex items-start justify-between">
                         <div>
                           <div className="flex items-center gap-2">
-                            <p className="font-medium text-gray-900">{approval.title}</p>
+                            <p className="font-medium text-gray-900 dark:text-gray-100">{approval.title}</p>
                             {approval.is_urgent && <span className="badge-danger">긴급</span>}
                           </div>
-                          <p className="text-sm text-gray-500 mt-1">
+                          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                             {approval.requester_name} · {approval.department_name}
                           </p>
                           <p className="text-xs text-gray-400 mt-1">
@@ -134,7 +134,7 @@ export default function ApprovalsPage() {
                           </p>
                         </div>
                         <div className="text-right">
-                          <p className="text-sm text-gray-500">
+                          <p className="text-sm text-gray-500 dark:text-gray-400">
                             {approval.current_step}/{approval.total_steps} 단계
                           </p>
                           {!approval.budget_available && (
@@ -146,7 +146,7 @@ export default function ApprovalsPage() {
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                   결재 대기 중인 건이 없습니다.
                 </div>
               )}
@@ -160,18 +160,18 @@ export default function ApprovalsPage() {
                 <h3 className="card-header">결재 처리</h3>
 
                 <div>
-                  <p className="text-sm text-gray-500">기안번호</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">기안번호</p>
                   <p className="font-medium">{selectedApproval.request_number}</p>
                 </div>
 
                 <div>
-                  <p className="text-sm text-gray-500">제목</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">제목</p>
                   <p className="font-medium">{selectedApproval.title}</p>
                 </div>
 
                 {selectedApproval.description && (
                   <div>
-                    <p className="text-sm text-gray-500">설명</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">설명</p>
                     <p className="text-sm">{selectedApproval.description}</p>
                   </div>
                 )}
@@ -188,7 +188,7 @@ export default function ApprovalsPage() {
                 )}
 
                 <div>
-                  <p className="text-sm text-gray-500">예산 상태</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">예산 상태</p>
                   <p className={`font-medium ${selectedApproval.budget_available ? 'text-green-600' : 'text-red-600'}`}>
                     {selectedApproval.budget_message || '확인됨'}
                   </p>
@@ -197,7 +197,7 @@ export default function ApprovalsPage() {
                 {/* Approval Timeline */}
                 {approvalHistory && approvalHistory.length > 0 && (
                   <div>
-                    <p className="text-sm text-gray-500 mb-2">결재 이력</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">결재 이력</p>
                     <div className="space-y-2">
                       {approvalHistory.map((h: any, idx: number) => (
                         <div key={idx} className="flex items-start gap-2">
@@ -205,14 +205,14 @@ export default function ApprovalsPage() {
                             h.action === 'approve' ? 'bg-green-500'
                             : h.action === 'reject' ? 'bg-red-500'
                             : h.action === 'submit' ? 'bg-blue-500'
-                            : 'bg-gray-400'
+                            : 'bg-gray-400 dark:bg-ink-600'
                           }`} />
                           <div className="text-xs">
                             <p className="font-medium">
                               {h.action === 'approve' ? '승인' : h.action === 'reject' ? '반려' : h.action === 'submit' ? '기안' : h.action}
                               {' · '}{h.user_name}
                             </p>
-                            {h.comment && <p className="text-gray-500 mt-0.5">{h.comment}</p>}
+                            {h.comment && <p className="text-gray-500 dark:text-gray-400 mt-0.5">{h.comment}</p>}
                             <p className="text-gray-400">{new Date(h.created_at).toLocaleString('ko-KR')}</p>
                           </div>
                         </div>
@@ -262,7 +262,7 @@ export default function ApprovalsPage() {
               </div>
             ) : (
               <div className="card">
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
                   결재할 건을 선택하세요.
                 </div>
               </div>
@@ -280,11 +280,11 @@ export default function ApprovalsPage() {
                 <div
                   key={v.id}
                   onClick={() => navigate(`/vouchers/${v.id}`)}
-                  className="p-4 cursor-pointer hover:bg-gray-50 flex items-center justify-between"
+                  className="p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-ink-800 flex items-center justify-between"
                 >
                   <div>
                     <div className="flex items-center gap-2">
-                      <p className="font-medium text-gray-900">{v.voucher_number}</p>
+                      <p className="font-medium text-gray-900 dark:text-gray-100">{v.voucher_number}</p>
                       <span className={`badge ${
                         v.status === 'approved' ? 'badge-success'
                         : v.status === 'rejected' ? 'badge-danger'
@@ -297,7 +297,7 @@ export default function ApprovalsPage() {
                           : v.status}
                       </span>
                     </div>
-                    <p className="text-sm text-gray-500 mt-1">{v.description}</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{v.description}</p>
                   </div>
                   <div className="text-right">
                     <p className="font-mono text-sm">
@@ -312,7 +312,7 @@ export default function ApprovalsPage() {
               ))}
             </div>
           ) : (
-            <div className="text-center py-8 text-gray-500">기안한 건이 없습니다.</div>
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">기안한 건이 없습니다.</div>
           )}
         </div>
       )}

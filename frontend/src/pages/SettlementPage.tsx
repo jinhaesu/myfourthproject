@@ -32,6 +32,7 @@ import { formatCurrency, formatCompactWon } from '@/utils/format'
 import PeriodPicker from '@/components/common/PeriodPicker'
 import { usePeriodStore } from '@/store/periodStore'
 import { buildOwnAccountSet, filterOutInternalTransfers, isSelfCompany } from '@/utils/internalTransfer'
+import { useChartTheme } from '@/lib/chartTheme'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 타입 정의
@@ -248,7 +249,7 @@ function KPICard({
   unit?: string
 }) {
   const colorMap: Record<string, string> = {
-    neutral: 'text-ink-900',
+    neutral: 'text-ink-900 dark:text-ink-50',
     emerald: 'text-emerald-700',
     rose: 'text-rose-700',
     blue: 'text-blue-700',
@@ -256,7 +257,7 @@ function KPICard({
   }
   return (
     <div className="panel px-3 py-2">
-      <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">{label}</div>
+      <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">{label}</div>
       <div className={`mt-0.5 font-mono tabular-nums font-bold text-sm ${colorMap[tone]}`}>
         {unit === '원' ? formatCurrency(value, false) : `${value.toLocaleString('ko-KR')}${unit}`}
       </div>
@@ -291,6 +292,7 @@ function DetailPanel({
   onClose: () => void
   onIssueInvoice: (row: ContactRow) => void
 }) {
+  const chartTheme = useChartTheme()
   const chartData = useMemo(() => buildMonthlyChart(row), [row])
 
   // 거래 내역 통합 (시간 역순)
@@ -345,18 +347,18 @@ function DetailPanel({
   return (
     <div className="panel flex flex-col h-full overflow-hidden">
       {/* A. 헤더 */}
-      <div className="px-3 py-2 border-b border-ink-200 flex items-start justify-between gap-2 flex-shrink-0">
+      <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-start justify-between gap-2 flex-shrink-0">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-ink-900 truncate">
+          <h2 className="text-sm font-semibold text-ink-900 dark:text-ink-50 truncate">
             {row.companyName || row.key}
           </h2>
           {row.businessNumber && (
-            <div className="text-2xs text-ink-500 font-mono">{row.businessNumber}</div>
+            <div className="text-2xs text-ink-500 dark:text-ink-400 font-mono">{row.businessNumber}</div>
           )}
         </div>
         <button
           onClick={onClose}
-          className="text-ink-400 hover:text-ink-700 flex-shrink-0"
+          className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200 flex-shrink-0"
           aria-label="패널 닫기"
         >
           <XMarkIcon className="h-4 w-4" />
@@ -383,18 +385,18 @@ function DetailPanel({
         {/* C. 월별 그래프 */}
         {chartData.length > 0 && (
           <div>
-            <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+            <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">
               월별 거래 추이
             </div>
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={chartData} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
                 <XAxis
                   dataKey="month"
-                  tick={{ fontSize: 9 }}
+                  tick={{ fontSize: 9, fill: chartTheme.axisColor }}
                   tickFormatter={(v: string) => v.slice(5)}
                 />
                 <YAxis
-                  tick={{ fontSize: 9 }}
+                  tick={{ fontSize: 9, fill: chartTheme.axisColor }}
                   tickFormatter={(v: number) => formatCompactWon(v)}
                   width={46}
                 />
@@ -403,8 +405,8 @@ function DetailPanel({
                     formatCurrency(value, false),
                     name,
                   ]}
-                  labelStyle={{ fontSize: 10 }}
-                  contentStyle={{ fontSize: 10 }}
+                  labelStyle={{ fontSize: 10, color: chartTheme.tooltipText }}
+                  contentStyle={{ fontSize: 10, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}` }}
                 />
                 <Legend wrapperStyle={{ fontSize: 9 }} iconSize={8} />
                 <Bar dataKey="salesInv" name="매출세금계산서" fill="#10b981" radius={[2, 2, 0, 0]} />
@@ -418,14 +420,14 @@ function DetailPanel({
 
         {/* D. 거래처 상세정보 */}
         <div>
-          <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+          <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">
             거래처 정보
           </div>
-          <div className="rounded-lg border border-ink-100 divide-y divide-ink-100">
+          <div className="rounded-lg border border-ink-100 dark:border-ink-800 divide-y divide-ink-100 dark:divide-ink-800">
             {infoFields.map(({ label, value }) => (
               <div key={label} className="flex gap-2 px-3 py-1.5">
-                <span className="text-2xs text-ink-500 w-16 flex-shrink-0">{label}</span>
-                <span className="text-2xs text-ink-900 break-all">{value}</span>
+                <span className="text-2xs text-ink-500 dark:text-ink-400 w-16 flex-shrink-0">{label}</span>
+                <span className="text-2xs text-ink-900 dark:text-ink-50 break-all">{value}</span>
               </div>
             ))}
           </div>
@@ -442,20 +444,20 @@ function DetailPanel({
 
         {/* F. 거래 내역 테이블 */}
         <div>
-          <div className="text-2xs font-semibold text-ink-600 uppercase tracking-wider mb-2">
+          <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2">
             거래 내역 ({allTxs.length}건)
           </div>
-          <div className="max-h-72 overflow-y-auto rounded-lg border border-ink-100">
+          <div className="max-h-72 overflow-y-auto rounded-lg border border-ink-100 dark:border-ink-800">
             <table className="min-w-full">
-              <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-100">
+              <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10 border-b border-ink-100 dark:border-ink-800">
                 <tr>
-                  <th className="px-2 py-1.5 text-left text-2xs font-semibold text-ink-500">일자</th>
-                  <th className="px-2 py-1.5 text-left text-2xs font-semibold text-ink-500">유형</th>
-                  <th className="px-2 py-1.5 text-right text-2xs font-semibold text-ink-500">금액</th>
-                  <th className="px-2 py-1.5 text-left text-2xs font-semibold text-ink-500">적요</th>
+                  <th className="px-2 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400">일자</th>
+                  <th className="px-2 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400">유형</th>
+                  <th className="px-2 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400">금액</th>
+                  <th className="px-2 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400">적요</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-ink-50">
+              <tbody className="divide-y divide-ink-50 dark:divide-ink-800">
                 {allTxs.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="text-center py-4 text-2xs text-ink-400">
@@ -464,17 +466,17 @@ function DetailPanel({
                   </tr>
                 ) : (
                   allTxs.map((tx) => (
-                    <tr key={tx.id} className="hover:bg-canvas-50">
-                      <td className="px-2 py-1 text-2xs font-mono text-ink-700 whitespace-nowrap">
+                    <tr key={tx.id} className="hover:bg-canvas-50 dark:hover:bg-ink-800">
+                      <td className="px-2 py-1 text-2xs font-mono text-ink-700 dark:text-ink-300 whitespace-nowrap">
                         {tx.date ? tx.date.slice(5).replace('-', '/') : '-'}
                       </td>
                       <td className="px-2 py-1">
                         <TxTypeBadge type={tx.txType} />
                       </td>
-                      <td className="px-2 py-1 text-right font-mono text-2xs font-semibold text-ink-900 whitespace-nowrap">
+                      <td className="px-2 py-1 text-right font-mono text-2xs font-semibold text-ink-900 dark:text-ink-50 whitespace-nowrap">
                         {formatCurrency(tx.amount, false)}
                       </td>
-                      <td className="px-2 py-1 text-2xs text-ink-600 truncate max-w-[100px]">
+                      <td className="px-2 py-1 text-2xs text-ink-600 dark:text-ink-400 truncate max-w-[100px]">
                         {tx.note || '-'}
                       </td>
                     </tr>
@@ -623,10 +625,10 @@ export default function SettlementPage() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h1 className="flex items-center gap-2">
-            <ArrowsRightLeftIcon className="h-4 w-4 text-ink-500" />
+            <ArrowsRightLeftIcon className="h-4 w-4 text-ink-500 dark:text-ink-400" />
             거래처 정산
           </h1>
-          <p className="text-2xs text-ink-500 mt-0.5">
+          <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
             매출·매입 세금계산서 + 통장 거래를 거래처별로 양방향 정산
           </p>
           {internalFilteredCount > 0 && (
@@ -660,8 +662,8 @@ export default function SettlementPage() {
 
       {/* 연결 상태 */}
       {!healthQuery.isFetched ? (
-        <div className="rounded-md border border-ink-200 bg-ink-50 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600">그랜터 연결 확인 중…</span>
+        <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
+          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 flex items-center gap-2">
@@ -690,8 +692,8 @@ export default function SettlementPage() {
         <KPICard label="통장 입금" value={summary.totalBankIn} tone="blue" />
         <KPICard label="통장 출금" value={summary.totalBankOut} tone="amber" />
         <div className="panel px-3 py-2">
-          <div className="text-2xs font-medium text-ink-500 uppercase tracking-wider">미정산</div>
-          <div className="mt-0.5 text-sm font-bold text-ink-900">
+          <div className="text-2xs font-medium text-ink-500 dark:text-ink-400 uppercase tracking-wider">미정산</div>
+          <div className="mt-0.5 text-sm font-bold text-ink-900 dark:text-ink-50">
             <span className="text-amber-700">{summary.receivableCount}</span>
             <span className="text-ink-400 text-2xs font-normal mx-1">미수</span>
             <span className="text-rose-700">{summary.payableCount}</span>
@@ -702,7 +704,7 @@ export default function SettlementPage() {
 
       {/* 필터 바 */}
       <div className="panel p-2 flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 border border-ink-200">
+        <div className="flex items-center gap-0.5 p-0.5 rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800">
           {(
             [
               { key: 'all', label: '전체' },
@@ -715,7 +717,7 @@ export default function SettlementPage() {
               key={key}
               onClick={() => setFilterMode(key)}
               className={`px-2.5 py-1 rounded text-2xs font-semibold ${
-                filterMode === key ? 'bg-ink-900 text-white' : 'text-ink-600 hover:bg-white'
+                filterMode === key ? 'bg-ink-900 text-white dark:bg-ink-100 dark:text-ink-900' : 'text-ink-600 dark:text-ink-400 hover:bg-white dark:hover:bg-ink-800'
               }`}
             >
               {label}
@@ -743,9 +745,9 @@ export default function SettlementPage() {
           <div className="panel overflow-hidden">
             <div className="overflow-x-auto max-h-[calc(100vh-26rem)] overflow-y-auto">
               <table className="min-w-full">
-                <thead className="bg-canvas-50 sticky top-0 z-10 border-b border-ink-200">
+                <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10 border-b border-ink-200 dark:border-ink-800">
                   <tr>
-                    <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 uppercase tracking-wider">
+                    <th className="px-3 py-1.5 text-left text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider">
                       거래처
                     </th>
                     <th className="px-2 py-1.5 text-right text-2xs font-semibold text-emerald-600 uppercase tracking-wider whitespace-nowrap">
@@ -760,15 +762,15 @@ export default function SettlementPage() {
                     <th className="px-2 py-1.5 text-right text-2xs font-semibold text-amber-600 uppercase tracking-wider whitespace-nowrap">
                       통장출금
                     </th>
-                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider whitespace-nowrap">
+                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider whitespace-nowrap">
                       매출잔액
                     </th>
-                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-ink-500 uppercase tracking-wider whitespace-nowrap">
+                    <th className="px-2 py-1.5 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wider whitespace-nowrap">
                       매입잔액
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-ink-100">
+                <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
                   {dataQuery.isLoading && (
                     <tr>
                       <td colSpan={7} className="text-center py-8 text-2xs text-ink-400">
@@ -779,9 +781,9 @@ export default function SettlementPage() {
                   {!dataQuery.isLoading && displayRows.length === 0 && (
                     <tr>
                       <td colSpan={7} className="text-center py-8 text-2xs text-ink-400">
-                        <BuildingOffice2Icon className="h-6 w-6 mx-auto mb-2 text-ink-300" />
+                        <BuildingOffice2Icon className="h-6 w-6 mx-auto mb-2 text-ink-300 dark:text-ink-600" />
                         <div>조건에 맞는 거래처가 없습니다.</div>
-                        <div className="mt-1 text-ink-300">기간을 변경하거나 필터를 조정해보세요.</div>
+                        <div className="mt-1 text-ink-300 dark:text-ink-600">기간을 변경하거나 필터를 조정해보세요.</div>
                       </td>
                     </tr>
                   )}
@@ -792,12 +794,12 @@ export default function SettlementPage() {
                         key={row.key}
                         onClick={() => setSelectedKey(isSel ? null : row.key)}
                         className={`cursor-pointer transition-colors ${
-                          isSel ? 'bg-primary-50' : 'hover:bg-canvas-50'
+                          isSel ? 'bg-primary-50' : 'hover:bg-canvas-50 dark:hover:bg-ink-800'
                         }`}
                       >
                         {/* 거래처명 */}
                         <td className="px-3 py-1.5 max-w-[120px]">
-                          <div className={`text-xs font-medium truncate ${isSel ? 'text-primary-800' : 'text-ink-900'}`}>
+                          <div className={`text-xs font-medium truncate ${isSel ? 'text-primary-800' : 'text-ink-900 dark:text-ink-50'}`}>
                             {row.companyName || row.key}
                           </div>
                           {row.businessNumber && (
@@ -810,25 +812,25 @@ export default function SettlementPage() {
                         <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-emerald-700 font-semibold whitespace-nowrap">
                           {row.salesInvoiceAmount > 0
                             ? formatCurrency(row.salesInvoiceAmount, false)
-                            : <span className="text-ink-200">-</span>}
+                            : <span className="text-ink-200 dark:text-ink-700">-</span>}
                         </td>
                         {/* 매입 세금계산서 */}
                         <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-rose-700 font-semibold whitespace-nowrap">
                           {row.purchaseInvoiceAmount > 0
                             ? formatCurrency(row.purchaseInvoiceAmount, false)
-                            : <span className="text-ink-200">-</span>}
+                            : <span className="text-ink-200 dark:text-ink-700">-</span>}
                         </td>
                         {/* 통장 입금 */}
                         <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-blue-700 font-semibold whitespace-nowrap">
                           {row.bankInAmount > 0
                             ? formatCurrency(row.bankInAmount, false)
-                            : <span className="text-ink-200">-</span>}
+                            : <span className="text-ink-200 dark:text-ink-700">-</span>}
                         </td>
                         {/* 통장 출금 */}
                         <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs text-amber-700 font-semibold whitespace-nowrap">
                           {row.bankOutAmount > 0
                             ? formatCurrency(row.bankOutAmount, false)
-                            : <span className="text-ink-200">-</span>}
+                            : <span className="text-ink-200 dark:text-ink-700">-</span>}
                         </td>
                         {/* 매출 잔액 */}
                         <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs font-semibold whitespace-nowrap">
@@ -844,7 +846,7 @@ export default function SettlementPage() {
                               {formatCurrency(row.salesBalance, false)}
                             </span>
                           ) : (
-                            <span className="text-ink-200">-</span>
+                            <span className="text-ink-200 dark:text-ink-700">-</span>
                           )}
                         </td>
                         {/* 매입 잔액 */}
@@ -861,7 +863,7 @@ export default function SettlementPage() {
                               {formatCurrency(row.purchaseBalance, false)}
                             </span>
                           ) : (
-                            <span className="text-ink-200">-</span>
+                            <span className="text-ink-200 dark:text-ink-700">-</span>
                           )}
                         </td>
                       </tr>

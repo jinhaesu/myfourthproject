@@ -20,7 +20,7 @@ export default function Sparkline({
   showDots = false,
 }: SparklineProps) {
   if (!values || values.length === 0) {
-    return <div style={{ width, height }} className="bg-ink-50 rounded" />
+    return <div style={{ width, height }} className="bg-ink-50 dark:bg-ink-900 rounded" />
   }
 
   const min = Math.min(...values)

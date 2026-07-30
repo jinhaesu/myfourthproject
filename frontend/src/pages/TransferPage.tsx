@@ -15,14 +15,14 @@ import StatCard from '@/components/common/StatCard'
 import { formatCurrency, formatCompactWon, formatDate, formatDateTime } from '@/utils/format'
 
 const STATUS_META: Record<string, { label: string; class: string }> = {
-  draft: { label: '임시', class: 'badge bg-gray-100 text-gray-700' },
+  draft: { label: '임시', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
   pending_approval: { label: '결재대기', class: 'badge bg-amber-100 text-amber-700' },
   approved: { label: '결재완료', class: 'badge bg-blue-100 text-blue-700' },
   scheduled: { label: '예약', class: 'badge bg-indigo-100 text-indigo-700' },
   executing: { label: '실행중', class: 'badge bg-blue-100 text-blue-700' },
   completed: { label: '완료', class: 'badge bg-emerald-100 text-emerald-700' },
   failed: { label: '실패', class: 'badge bg-rose-100 text-rose-700' },
-  cancelled: { label: '취소', class: 'badge bg-gray-100 text-gray-700' },
+  cancelled: { label: '취소', class: 'badge bg-gray-100 dark:bg-ink-800 text-gray-700 dark:text-gray-300' },
 }
 
 export default function TransferPage() {
@@ -51,8 +51,8 @@ export default function TransferPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">계좌 이체</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">계좌 이체</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
             단건/대량 이체, 예약 이체, 즐겨찾기. OTP 인증으로 안전하게.
           </p>
         </div>
@@ -72,7 +72,7 @@ export default function TransferPage() {
       {/* Bookmarks */}
       <div className="card">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">자주 쓰는 계좌</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">자주 쓰는 계좌</h2>
           <button className="btn-secondary text-sm">
             <PlusIcon className="h-4 w-4 mr-1" />
             등록
@@ -83,13 +83,13 @@ export default function TransferPage() {
             <button
               key={b.id}
               onClick={() => setShowCreateModal(true)}
-              className="text-left rounded-lg border border-gray-200 p-3 hover:border-primary-400 hover:shadow-sm transition"
+              className="text-left rounded-lg border border-gray-200 dark:border-ink-800 p-3 hover:border-primary-400 hover:shadow-sm transition"
             >
               <div className="flex items-start gap-2">
                 <StarIcon className="h-4 w-4 text-amber-400 flex-shrink-0 mt-1" />
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-gray-900 truncate">{b.nickname}</div>
-                  <div className="text-xs text-gray-500">
+                  <div className="font-medium text-gray-900 dark:text-gray-100 truncate">{b.nickname}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
                     {b.bank_name} {b.account_number_masked}
                   </div>
                   <div className="text-xs text-gray-400 mt-1">
@@ -109,9 +109,9 @@ export default function TransferPage() {
 
       {/* History */}
       <div className="card p-0 overflow-hidden">
-        <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-gray-900">이체 내역</h2>
-          <span className="text-sm text-gray-500">{data?.total ?? 0}건</span>
+        <div className="p-4 border-b border-gray-200 dark:border-ink-800 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">이체 내역</h2>
+          <span className="text-sm text-gray-500 dark:text-gray-400">{data?.total ?? 0}건</span>
         </div>
         <div className="table-container border-0">
           <table className="table">
@@ -139,16 +139,16 @@ export default function TransferPage() {
                       )}
                     </td>
                     <td>
-                      <div className="text-sm font-medium text-gray-900">{it.from_account_alias}</div>
-                      <div className="text-xs text-gray-500">{it.from_bank_name}</div>
+                      <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{it.from_account_alias}</div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">{it.from_bank_name}</div>
                     </td>
                     <td>
-                      <div className="text-sm font-medium text-gray-900">{it.to_account_holder}</div>
-                      <div className="text-xs text-gray-500 font-mono">
+                      <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{it.to_account_holder}</div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400 font-mono">
                         {it.to_bank_name} {it.to_account_number_masked}
                       </div>
                     </td>
-                    <td className="text-sm text-gray-700 max-w-xs truncate">{it.description}</td>
+                    <td className="text-sm text-gray-700 dark:text-gray-300 max-w-xs truncate">{it.description}</td>
                     <td className="text-right font-mono tabular-nums font-semibold">
                       {formatCurrency(it.amount, false)}
                     </td>
@@ -167,7 +167,7 @@ export default function TransferPage() {
                           </button>
                         )}
                         {['pending_approval', 'approved', 'scheduled'].includes(it.status) && (
-                          <button className="text-gray-500 hover:text-rose-600" title="취소">
+                          <button className="text-gray-500 dark:text-gray-400 hover:text-rose-600" title="취소">
                             <XCircleIcon className="h-4 w-4" />
                           </button>
                         )}
@@ -240,10 +240,10 @@ function CreateTransferModal({ userId, onClose }: { userId: number; onClose: () 
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="sticky top-0 bg-white border-b border-gray-200 p-4 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-gray-900">이체 신청</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+      <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white dark:bg-ink-900 border-b border-gray-200 dark:border-ink-800 p-4 flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">이체 신청</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
             <XMarkIcon className="h-5 w-5" />
           </button>
         </div>
@@ -292,7 +292,7 @@ function CreateTransferModal({ userId, onClose }: { userId: number; onClose: () 
               className="input text-right font-mono"
             />
             {Number(amount) > 0 && (
-              <div className="text-xs text-gray-500 mt-1">
+              <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                 {formatCompactWon(Number(amount))}원
               </div>
             )}
@@ -334,7 +334,7 @@ function CreateTransferModal({ userId, onClose }: { userId: number; onClose: () 
           </div>
         </div>
 
-        <div className="sticky bottom-0 bg-white border-t border-gray-200 p-4 flex justify-end gap-2">
+        <div className="sticky bottom-0 bg-white dark:bg-ink-900 border-t border-gray-200 dark:border-ink-800 p-4 flex justify-end gap-2">
           <button onClick={onClose} className="btn-secondary">
             취소
           </button>
@@ -372,12 +372,12 @@ function OTPModal({ transferId, userId, onClose }: { transferId: number; userId:
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-6">
+      <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl w-full max-w-sm p-6">
         <div className="flex items-center gap-2 mb-4">
           <ShieldCheckIcon className="h-6 w-6 text-primary-600" />
-          <h3 className="text-lg font-semibold text-gray-900">OTP 인증</h3>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">OTP 인증</h3>
         </div>
-        <p className="text-sm text-gray-600 mb-4">
+        <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
           등록된 휴대폰으로 발송된 6자리 OTP를 입력하세요.
         </p>
         <input
