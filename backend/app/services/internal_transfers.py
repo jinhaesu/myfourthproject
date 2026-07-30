@@ -251,6 +251,43 @@ def _parse_dt(t: Dict[str, Any]) -> Optional[datetime]:
         return None
 
 
+async def get_internal_ticket_ids(
+    start_date: date, end_date: date,
+    role_overrides: Optional[Dict[str, str]] = None,
+) -> List[int]:
+    """
+    기간 내 '내부거래(자기계좌 간 이체)'로 판별되는 BANK_TRANSACTION_TICKET id 목록.
+
+    build_internal_transfers와 동일한 판별(_resolve_counterparty: 우리 계좌 은행+뒷자리
+    또는 회사명 매칭)을 사용하되, 짝짓기 없이 내부로 분류된 개별 티켓 id만 반환.
+    디제스트·채널수익성·거래처스코어링 등에서 내부거래를 제외할 때 쓰는 공용 단일 소스.
+    """
+    accounts = await _fetch_accounts(role_overrides)
+    by_asset = {a.asset_id: a for a in accounts if a.asset_id is not None}
+    tickets = await _fetch_bank_tickets(start_date, end_date)
+
+    ids: List[int] = []
+    for t in tickets:
+        try:
+            amt = abs(float(t.get("amount") or 0))
+        except (ValueError, TypeError):
+            continue
+        if amt <= 0:
+            continue
+        direction = (t.get("transactionType") or "").upper()
+        if direction not in ("OUT", "OUTBOUND", "WITHDRAW", "IN", "INBOUND", "DEPOSIT") \
+                and "출금" not in direction and "입금" not in direction:
+            continue
+        bt = t.get("bankTransaction") or {}
+        memo = (bt.get("content") or bt.get("counterparty") or bt.get("description") or "").strip()
+        aid = t.get("assetId")
+        my = by_asset.get(int(aid)) if aid is not None and str(aid).isdigit() and int(aid) in by_asset else None
+        _counter, is_internal = _resolve_counterparty(memo, accounts, my)
+        if is_internal and t.get("id") is not None:
+            ids.append(t.get("id"))
+    return ids
+
+
 async def build_internal_transfers(
     start_date: date, end_date: date,
     role_overrides: Optional[Dict[str, str]] = None,

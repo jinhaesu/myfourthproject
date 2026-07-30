@@ -397,6 +397,29 @@ async def internal_transfers(
     return await build_internal_transfers(start_date, end_date, role_overrides=overrides)
 
 
+@router.get("/internal-transfer-ids")
+async def internal_transfer_ids(
+    start_date: date = Query(...),
+    end_date: date = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    기간 내 내부거래(자기계좌 간 이체)로 판별된 통장거래 ticket id 목록.
+    채널수익성·거래처스코어링 등 프론트 분석에서 내부거래를 제외할 때 사용하는 공용 소스.
+    """
+    if end_date < start_date:
+        raise HTTPException(status_code=400, detail="기간이 올바르지 않습니다.")
+    if (end_date - start_date).days > 400:
+        raise HTTPException(status_code=400, detail="조회 기간은 최대 1년입니다.")
+    from app.services.internal_transfers import get_internal_ticket_ids
+    from app.models.account_role import BankAccountRole
+    from sqlalchemy import select as _select
+    rows = (await db.execute(_select(BankAccountRole))).scalars().all()
+    overrides = {r.account_label: r.role for r in rows}
+    ids = await get_internal_ticket_ids(start_date, end_date, role_overrides=overrides)
+    return {"ticket_ids": ids, "count": len(ids)}
+
+
 class AccountRoleBody(BaseModel):
     account_label: str
     role: str  # reservoir/operating/savings/other

@@ -239,34 +239,24 @@ async def _section_ai_cashflow(target_date: date, report: Optional[Dict[str, Any
     bal_prev_month = float(prev_total.get("currentBalance") or 0)
     delta_month = bal_today - bal_prev_month
 
-    # 어제 통장 거래
+    # 어제 통장 거래 — 내부거래(자기계좌 간 이체) 제외 후 당일만 엄격히 집계.
+    # (과거엔 3건 미만이면 최근 7일까지 확장해 채웠으나, '어제' 다이제스트에 며칠 전
+    #  큰 거래가 섞여 실제와 안 맞아 보이는 문제로 제거 — 당일 기준만 표시.)
     day_tickets = await _granter_bank_tickets(target_date, target_date)
+    try:
+        from app.services.internal_transfers import get_internal_ticket_ids
+        internal_ids = set(await get_internal_ticket_ids(target_date, target_date))
+    except Exception:
+        logger.exception("내부거래 id 조회 실패 — 내부거래 미제외로 진행")
+        internal_ids = set()
+    if internal_ids:
+        day_tickets = [t for t in day_tickets if t.get("id") not in internal_ids]
+
     inflows, outflows = _split_inflow_outflow(day_tickets)
     inflows.sort(key=lambda x: x["amount"], reverse=True)
     outflows.sort(key=lambda x: x["amount"], reverse=True)
 
-    # 어제만으로 3건 미만이면 최근 7일까지 확장
-    if len(inflows) < 3 or len(outflows) < 3:
-        wider_start = target_date - timedelta(days=7)
-        wider_tickets = await _granter_bank_tickets(wider_start, target_date)
-        wider_in, wider_out = _split_inflow_outflow(wider_tickets)
-        # 어제 항목 보존, 추가만 채움
-        existing_in = {(e["counterparty"], e["amount"], e["date"]) for e in inflows}
-        existing_out = {(e["counterparty"], e["amount"], e["date"]) for e in outflows}
-        for e in sorted(wider_in, key=lambda x: x["amount"], reverse=True):
-            if (e["counterparty"], e["amount"], e["date"]) not in existing_in:
-                inflows.append(e)
-                existing_in.add((e["counterparty"], e["amount"], e["date"]))
-                if len(inflows) >= 5:
-                    break
-        for e in sorted(wider_out, key=lambda x: x["amount"], reverse=True):
-            if (e["counterparty"], e["amount"], e["date"]) not in existing_out:
-                outflows.append(e)
-                existing_out.add((e["counterparty"], e["amount"], e["date"]))
-                if len(outflows) >= 5:
-                    break
-
-    # top 5씩 자름
+    # top 5씩 자름 (당일 기준)
     inflows = inflows[:5]
     outflows = outflows[:5]
 
