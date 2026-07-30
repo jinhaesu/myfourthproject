@@ -51,7 +51,8 @@ export default function CashDigestPage() {
   })
   const previewQuery = useQuery({
     queryKey: ['cash-digest-preview'],
-    queryFn: () => cashDigestApi.preview().then((r) => r.data),
+    // refresh=true — 최신 로직으로 재생성(내부거래 제외·당일 기준). 오래된 스냅샷 표시 방지.
+    queryFn: () => cashDigestApi.preview(undefined, true).then((r) => r.data),
   })
 
   useEffect(() => {

@@ -1194,8 +1194,11 @@ export const cashDigestApi = {
   getConfig: () => api.get<CashDigestConfig>('/daily-cash-report/config'),
   updateConfig: (patch: Partial<CashDigestConfig>) =>
     api.put<CashDigestConfig>('/daily-cash-report/config', patch),
-  preview: (date?: string) =>
-    api.get('/daily-cash-report/preview', { params: date ? { date } : {} }),
+  preview: (date?: string, refresh?: boolean) =>
+    api.get('/daily-cash-report/preview', {
+      params: { ...(date ? { date } : {}), ...(refresh ? { refresh: true } : {}) },
+      timeout: 60_000,
+    }),
   today: () => api.get('/daily-cash-report/today'),
   dashboardLive: () => api.get('/daily-cash-report/dashboard-live', { timeout: 60_000 }),
   sendNow: (targetDate?: string) =>
