@@ -172,7 +172,6 @@ export default function MyCardsPage() {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-semibold text-ink-900 truncate flex items-center gap-1">
                       {card.nickname || card.issuer || card.card_key}
-                      {card.last4 && <span className="text-2xs font-mono text-ink-500">····{card.last4}</span>}
                       {cardClosing && (
                         <span className="inline-flex items-center gap-0.5 text-2xs px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
                           <LockClosedIcon className="h-2.5 w-2.5" />마감
@@ -184,8 +183,11 @@ export default function MyCardsPage() {
                         </span>
                       )}
                     </div>
-                    <div className="text-2xs text-ink-500 mt-0.5">
-                      {month} 사용 {formatCurrency(card.total_amount, false)} · {card.transaction_count.toLocaleString()}건
+                    <div className="text-2xs text-ink-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-canvas-100 text-ink-700 font-medium">
+                        {card.issuer || '카드사 미상'}{card.last4 ? ` ····${card.last4}` : ''}
+                      </span>
+                      <span>{month} 사용 {formatCurrency(card.total_amount, false)} · {card.transaction_count.toLocaleString()}건</span>
                     </div>
                     {card.memo && <div className="text-2xs text-blue-700 mt-0.5">{card.memo}</div>}
                   </div>
