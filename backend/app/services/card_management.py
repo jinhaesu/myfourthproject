@@ -358,6 +358,7 @@ async def migrate_card_keys(db: AsyncSession) -> Dict[str, Any]:
         "aliases": {"updated": 0, "already_id": 0, "skipped_ambiguous": 0,
                      "skipped_unmatched": 0, "skipped_target_taken": 0, "issuer_cleaned": 0},
         "closings": {"updated": 0, "already_id": 0, "skipped": 0},
+        "ambiguous_details": [],   # 수동 재배정 필요한 별칭 상세
     }
 
     aliases = (await db.execute(select(CardAlias))).scalars().all()
@@ -375,8 +376,24 @@ async def migrate_card_keys(db: AsyncSession) -> Dict[str, Any]:
             continue
         nid = resolve(k)
         if nid is None:
-            if legacy_to_ids.get(k) and len(legacy_to_ids[k]) > 1:
+            cand_ids = sorted(legacy_to_ids.get(k) or [])
+            if len(cand_ids) > 1:
                 report["aliases"]["skipped_ambiguous"] += 1
+                # 후보 카드들의 이름을 붙여 어느 물리 카드인지 사용자가 고를 수 있게
+                cands = []
+                for x in items:
+                    if str(x.get("id")) in cand_ids:
+                        cands.append({
+                            "id": str(x.get("id")),
+                            "name": (str(x.get("name") or "").split("|")[0].strip()),
+                            "number": x.get("number"),
+                        })
+                report["ambiguous_details"].append({
+                    "card_key": k,
+                    "nickname": al.nickname,
+                    "assigned_email": al.assigned_email,
+                    "candidates": cands,
+                })
             else:
                 report["aliases"]["skipped_unmatched"] += 1
             continue
