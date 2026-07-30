@@ -165,10 +165,21 @@ def _split_inflow_outflow(bank_tickets: List[Dict[str, Any]]) -> tuple:
             or "입금" in str(direction)
             or "입금" in str(in_out)
         )
+        # 거래처명: 그랜터 통장거래는 구조화된 counterparty가 비어있는 경우가 많고,
+        # 실제 상대방/적요는 bankTransaction.content 에 들어있음(예: 'CJ제일제당(주)',
+        # 'Toss페이0729'). content 우선, 없으면 구조화 필드/설명 순으로 폴백.
+        counterparty = (
+            (bt.get("counterparty") or "").strip()
+            or (bt.get("content") or "").strip()
+            or (bt.get("opponent") or bt.get("opponentName") or "").strip()
+            or (bt.get("description") or "").strip()
+            or (t.get("content") or "").strip()
+            or "(미지정)"
+        )
         entry = {
-            "counterparty": (bt.get("opponent") or bt.get("counterparty")
-                             or bt.get("opponentName") or "(미지정)"),
-            "description": bt.get("content") or bt.get("memo") or "",
+            "counterparty": counterparty,
+            "description": (bt.get("descriptionType") or bt.get("description")
+                            or bt.get("memo") or "").strip(),
             "amount": amt,
             "date": t.get("transactAt") or t.get("createdAt") or "",
         }
