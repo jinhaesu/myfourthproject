@@ -1259,6 +1259,10 @@ export const cardsApi = {
     account_code?: string; account_name?: string; memo?: string
     transact_at?: string; store_name?: string; amount?: number
   }) => api.put('/cards/transactions/classify', data),
+  classifyBulk: (card_key: string, items: {
+    ticket_id: string; account_code: string; account_name: string; memo: string
+    transact_at?: string; store_name?: string; amount?: number
+  }[]) => api.put('/cards/transactions/classify-bulk', { card_key, items }, { timeout: 120_000 }),
   analysis: (card_key: string, start_date?: string, end_date?: string) =>
     api.get('/cards/analysis', { params: { card_key, start_date, end_date }, timeout: 180_000 }),
   monthly: (card_key?: string, months: number = 6) =>

@@ -5,7 +5,7 @@
 - 일반 직원: 본인에게 배정된 카드만 조회 + 사용내역 분류 입력
 """
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, Body, Query, HTTPException, status
 from pydantic import BaseModel, EmailStr
@@ -17,7 +17,7 @@ from app.services.card_management import (
     list_cards, upsert_alias, get_card_analysis, get_monthly_summary,
     assign_card, list_transactions, classify_transaction, get_assigned_card_keys,
     get_closing, close_month, list_closings, reopen_closing, _month_range,
-    migrate_card_keys,
+    migrate_card_keys, classify_transactions_bulk,
 )
 
 router = APIRouter()
@@ -218,6 +218,64 @@ async def classify_transaction_api(
         "memo": cls.memo,
         "classified_by": cls.classified_by,
     }
+
+
+class BulkClassifyItem(BaseModel):
+    ticket_id: str
+    account_code: str
+    account_name: str
+    memo: str
+    transact_at: Optional[str] = None
+    store_name: Optional[str] = None
+    amount: Optional[float] = None
+
+
+class BulkClassifyBody(BaseModel):
+    card_key: str
+    items: List[BulkClassifyItem]
+
+
+@router.put("/transactions/classify-bulk")
+async def classify_bulk_api(
+    body: BulkClassifyBody,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    카드 사용 건 분류 일괄 저장 (엑셀형 그리드 일괄저장용).
+    계정과목·메모 필수. 직원은 배정 카드만. 마감된 월은 잠금(관리자 제외).
+    """
+    await _ensure_card_access(db, user, body.card_key)
+    if not body.items:
+        return {"saved": 0}
+
+    # 필수 입력 검증
+    for it in body.items:
+        if not (it.account_code or "").strip() or not (it.memo or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="계정과목과 메모는 모두 필수입니다.",
+            )
+
+    # 월 마감 잠금 검증 (관리자 제외)
+    if not is_accounting_admin(user):
+        months = {
+            it.transact_at[:7] for it in body.items
+            if it.transact_at and len(it.transact_at) >= 7
+        }
+        for m in months:
+            closing = await get_closing(db, body.card_key, m)
+            if closing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{m}월은 마감되어 수정할 수 없습니다. 관리자에게 마감 해제를 요청하세요.",
+                )
+
+    return await classify_transactions_bulk(
+        db, body.card_key,
+        [it.model_dump() for it in body.items],
+        user.email,
+    )
 
 
 @router.get("/closings")

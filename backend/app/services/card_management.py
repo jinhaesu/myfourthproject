@@ -639,6 +639,67 @@ async def classify_transaction(
     return cls
 
 
+async def classify_transactions_bulk(
+    db: AsyncSession,
+    card_key: str,
+    items: List[Dict[str, Any]],
+    classified_by: str,
+) -> Dict[str, Any]:
+    """
+    여러 카드 사용 건 분류를 한 번에 upsert (단일 커밋).
+    items: [{ticket_id, account_code, account_name, memo, transact_at?, store_name?, amount?}, ...]
+    """
+    ids = [str(it.get("ticket_id")) for it in items if it.get("ticket_id")]
+    existing: Dict[str, CardUsageClassification] = {}
+    if ids:
+        rows = (await db.execute(
+            select(CardUsageClassification).where(
+                CardUsageClassification.ticket_id.in_(ids)
+            )
+        )).scalars().all()
+        existing = {r.ticket_id: r for r in rows}
+
+    saved = 0
+    for it in items:
+        tid = str(it.get("ticket_id") or "").strip()
+        if not tid:
+            continue
+        acc_code = it.get("account_code")
+        acc_name = it.get("account_name")
+        memo = it.get("memo")
+        cls = existing.get(tid)
+        if cls is None:
+            cls = CardUsageClassification(
+                ticket_id=tid,
+                card_key=card_key,
+                category=acc_name or "",
+                account_code=acc_code,
+                account_name=acc_name,
+                memo=memo,
+                classified_by=classified_by,
+                transact_at=it.get("transact_at"),
+                store_name=it.get("store_name"),
+                amount=it.get("amount"),
+            )
+            db.add(cls)
+        else:
+            cls.category = acc_name or cls.category
+            cls.account_code = acc_code
+            cls.account_name = acc_name
+            cls.memo = memo
+            cls.classified_by = classified_by
+            if it.get("transact_at"):
+                cls.transact_at = it.get("transact_at")
+            if it.get("store_name"):
+                cls.store_name = it.get("store_name")
+            if it.get("amount") is not None:
+                cls.amount = it.get("amount")
+        saved += 1
+
+    await db.commit()
+    return {"saved": saved}
+
+
 # ==================== 월별 분류 마감 ====================
 
 def _month_range(month: str) -> tuple:
