@@ -109,7 +109,7 @@ class Settings(BaseSettings):
 
     # AI Analysis (LLM) - Claude
     ANTHROPIC_API_KEY: Optional[str] = None
-    ANTHROPIC_MODEL: str = "claude-opus-4-8"
+    ANTHROPIC_MODEL: str = "claude-fable-5"
 
     # Douzone Integration
     DOUZONE_API_URL: Optional[str] = None

@@ -695,7 +695,7 @@ class AIClassifierService:
 
             try:
                 response = client.messages.create(
-                    model=settings.ANTHROPIC_MODEL or "claude-opus-4-8",
+                    model=settings.ANTHROPIC_MODEL or "claude-fable-5",
                     max_tokens=4000,
                     system=[
                         {
@@ -775,7 +775,7 @@ class AIClassifierService:
 {{"account_code": "계정코드", "account_name": "계정과목명", "confidence": 0.0~1.0, "reasoning": "분류 근거 한 줄"}}"""
 
             response = client.messages.create(
-                model=settings.ANTHROPIC_MODEL or "claude-opus-4-8",
+                model=settings.ANTHROPIC_MODEL or "claude-fable-5",
                 max_tokens=2048,
                 system=[
                     {

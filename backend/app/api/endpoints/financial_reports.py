@@ -1289,7 +1289,6 @@ async def get_ai_analysis(
         message = client.messages.create(
             model=settings.ANTHROPIC_MODEL,
             max_tokens=8000,
-            temperature=0.3,
             system="당신은 한국 중소기업 전문 공인회계사입니다. 반드시 요청된 JSON 형식으로만 응답하세요. JSON 외 다른 텍스트는 절대 포함하지 마세요.",
             messages=[
                 {"role": "user", "content": prompt},
@@ -1488,7 +1487,6 @@ async def ai_account_check(
         message = client.messages.create(
             model=settings.ANTHROPIC_MODEL,
             max_tokens=8000,
-            temperature=0.3,
             system="당신은 한국 중소기업 전문 공인회계사이자 내부감사/포렌식 회계 전문가입니다. 분개의 정확성뿐 아니라 자금 유출, 횡령, 담당자 부정행위 징후를 날카롭게 포착해야 합니다. 의심스러운 패턴이 있으면 반드시 지적하세요. 반드시 요청된 JSON 형식으로만 응답하세요. JSON 외 다른 텍스트는 절대 포함하지 마세요.",
             messages=[
                 {"role": "user", "content": prompt},
