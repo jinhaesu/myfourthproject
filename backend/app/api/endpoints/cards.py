@@ -32,7 +32,8 @@ class AliasUpdate(BaseModel):
 
 class AssignBody(BaseModel):
     card_key: str
-    email: Optional[EmailStr] = None  # None이면 배정 해제
+    email: Optional[EmailStr] = None  # (하위호환) 단일 배정 — None이면 해제
+    emails: Optional[List[EmailStr]] = None  # 공동관리 다중 배정 — 빈 리스트면 해제
 
 
 class ClassifyBody(BaseModel):
@@ -152,13 +153,16 @@ async def assign_card_api(
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """카드를 이메일에 배정/해제 (관리자 전용)."""
+    """카드를 이메일에 배정/해제 (관리자 전용). 공동관리 다중 배정 지원."""
     if not is_accounting_admin(user):
         raise HTTPException(status_code=403, detail="회계 관리자 권한이 필요합니다.")
-    alias = await assign_card(db, body.card_key, body.email)
+    emails = [str(e) for e in body.emails] if body.emails is not None else None
+    alias = await assign_card(db, body.card_key, email=body.email, emails=emails)
+    from app.services.card_management import _alias_emails
     return {
         "card_key": alias.card_key,
         "assigned_email": alias.assigned_email,
+        "assigned_emails": _alias_emails(alias),
     }
 
 

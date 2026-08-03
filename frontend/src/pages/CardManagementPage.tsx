@@ -36,9 +36,10 @@ export default function CardManagementPage() {
   const [to, setTo] = useState(todayISO())
   const [selectedCard, setSelectedCard] = useState<string | null>(null)
   const [editingKey, setEditingKey] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState<{ nickname: string; color: string; memo: string; assignedEmail: string }>({
-    nickname: '', color: '#3B82F6', memo: '', assignedEmail: '',
+  const [editForm, setEditForm] = useState<{ nickname: string; color: string; memo: string; assignedEmails: string[] }>({
+    nickname: '', color: '#3B82F6', memo: '', assignedEmails: [],
   })
+  const [emailInput, setEmailInput] = useState('')
 
   const listQuery = useQuery({
     queryKey: ['cards-list', from, to],
@@ -57,14 +58,15 @@ export default function CardManagementPage() {
   })
 
   const saveAliasMut = useMutation({
-    mutationFn: async (vars: { card_key: string; patch: any; assignedEmail: string }) => {
+    mutationFn: async (vars: { card_key: string; patch: any; assignedEmails: string[] }) => {
       await cardsApi.updateAlias(vars.card_key, vars.patch)
-      // 배정 이메일 반영 (빈 값이면 배정 해제)
-      await cardsApi.assign(vars.card_key, vars.assignedEmail.trim() || null)
+      // 배정 이메일 반영 (공동관리 다중 배정 — 빈 목록이면 배정 해제)
+      await cardsApi.assignMany(vars.card_key, vars.assignedEmails)
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['cards-list'] })
       setEditingKey(null)
+      setEmailInput('')
     },
   })
 
@@ -73,24 +75,42 @@ export default function CardManagementPage() {
 
   function startEdit(card: CardInfo) {
     setEditingKey(card.card_key)
+    setEmailInput('')
     // nickname이 card_key와 같으면 비워두기 — 새 별칭 입력 유도
     const nick = card.nickname && card.nickname !== card.card_key ? card.nickname : ''
+    const emails = card.assigned_emails && card.assigned_emails.length
+      ? card.assigned_emails
+      : (card.assigned_email ? [card.assigned_email] : [])
     setEditForm({
       nickname: nick,
       color: card.color || COLOR_PRESETS[0],
       memo: card.memo || '',
-      assignedEmail: card.assigned_email || '',
+      assignedEmails: emails,
     })
+  }
+
+  function addEmail() {
+    const v = emailInput.trim().toLowerCase()
+    if (!v) return
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { toast.error('이메일 형식이 아닙니다'); return }
+    if (editForm.assignedEmails.includes(v)) { toast('이미 추가된 이메일입니다'); setEmailInput(''); return }
+    setEditForm({ ...editForm, assignedEmails: [...editForm.assignedEmails, v] })
+    setEmailInput('')
+  }
+  function removeEmail(e: string) {
+    setEditForm({ ...editForm, assignedEmails: editForm.assignedEmails.filter((x) => x !== e) })
   }
 
   function saveEdit() {
     if (!editingKey) return
-    const { assignedEmail, ...patch } = editForm
-    saveAliasMut.mutate({
-      card_key: editingKey,
-      patch,
-      assignedEmail,
-    })
+    // 입력창에 남은 이메일도 포함
+    const pending = emailInput.trim().toLowerCase()
+    let emails = editForm.assignedEmails
+    if (pending && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pending) && !emails.includes(pending)) {
+      emails = [...emails, pending]
+    }
+    const { assignedEmails: _ignore, ...patch } = editForm
+    saveAliasMut.mutate({ card_key: editingKey, patch, assignedEmails: emails })
   }
 
   return (
@@ -147,7 +167,8 @@ export default function CardManagementPage() {
                 if (!cards.length) { toast('내보낼 카드가 없습니다'); return }
                 const header = ['카드사', '뒷4자리', '별칭', '배정직원', `사용액(${from}~${to})`, '거래건수', '최근사용']
                 const rows = cards.map((c) => [
-                  c.issuer || '', c.last4 || '', c.nickname || '', c.assigned_email || '',
+                  c.issuer || '', c.last4 || '', c.nickname || '',
+                  (c.assigned_emails && c.assigned_emails.length ? c.assigned_emails.join(', ') : (c.assigned_email || '')),
                   c.total_amount || 0, c.transaction_count || 0, c.last_used || '',
                 ])
                 downloadXlsx(`카드목록_사용액_${from}_${to}`, [{ name: '카드목록', rows: [header, ...rows] }])
@@ -195,13 +216,35 @@ export default function CardManagementPage() {
                               placeholder="메모 (예: 직원 식대용)"
                               className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
                             />
-                            <input
-                              type="email"
-                              value={editForm.assignedEmail}
-                              onChange={(e) => setEditForm({ ...editForm, assignedEmail: e.target.value })}
-                              placeholder="배정 이메일 (예: hong@joinandjoin.com) — 비우면 배정 해제"
-                              className="w-full px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
-                            />
+                            <div>
+                              <div className="text-2xs text-ink-500 dark:text-ink-400 mb-0.5">배정 직원 (여러 명 공동관리 가능 — 모두에게 보이고 분류·마감 공유)</div>
+                              {editForm.assignedEmails.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mb-1">
+                                  {editForm.assignedEmails.map((em) => (
+                                    <span key={em} className="inline-flex items-center gap-1 px-1.5 py-0.5 text-2xs rounded-full bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                                      <UserIcon className="h-2.5 w-2.5" />{em}
+                                      <button onClick={() => removeEmail(em)} className="hover:text-red-500">
+                                        <XMarkIcon className="h-2.5 w-2.5" />
+                                      </button>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="email"
+                                  value={emailInput}
+                                  onChange={(e) => setEmailInput(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addEmail() } }}
+                                  placeholder="이메일 입력 후 Enter/추가 (비우면 배정 해제)"
+                                  className="flex-1 px-2 py-1 text-xs rounded border border-ink-300 dark:border-ink-700 focus:border-blue-400 focus:outline-none"
+                                />
+                                <button onClick={addEmail}
+                                  className="px-2 py-1 text-2xs rounded border border-ink-300 dark:border-ink-700 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800">
+                                  추가
+                                </button>
+                              </div>
+                            </div>
                             <div className="flex items-center gap-1">
                               <span className="text-2xs text-ink-500 dark:text-ink-400 mr-1">색상</span>
                               {COLOR_PRESETS.map((c) => (
@@ -248,7 +291,14 @@ export default function CardManagementPage() {
                               <span>· {card.transaction_count.toLocaleString()}건</span>
                               {card.last_used && <span>· 최근 {card.last_used}</span>}
                               {card.memo && <span className="text-blue-700 dark:text-blue-300">· {card.memo}</span>}
-                              {card.assigned_email ? (
+                              {(card.assigned_emails && card.assigned_emails.length > 0) ? (
+                                card.assigned_emails.map((em) => (
+                                  <span key={em} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                                    <UserIcon className="h-2.5 w-2.5" />
+                                    {em}
+                                  </span>
+                                ))
+                              ) : card.assigned_email ? (
                                 <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                                   <UserIcon className="h-2.5 w-2.5" />
                                   {card.assigned_email}
@@ -412,7 +462,11 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
 
   const closings: CardClosing[] = closingsQuery.data || []
   const cardName = (key: string) => cardLabel(cards.find((x) => x.card_key === key), key)
-  const cardAssignee = (key: string) => cards.find((x) => x.card_key === key)?.assigned_email
+  const cardAssignee = (key: string) => {
+    const c = cards.find((x) => x.card_key === key)
+    if (c?.assigned_emails && c.assigned_emails.length) return c.assigned_emails.join(', ')
+    return c?.assigned_email
+  }
 
   // 미제출자 = 그 달 사용(거래 있음)이 있으나 아직 마감 제출 안 한 카드
   const closedKeys = new Set(closings.map((c) => c.card_key))
@@ -442,7 +496,7 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
     const header = ['카드', '카드사', '뒷4자리', '배정직원', '사용액', '거래건수']
     const rows = nonSubmitters.map((c) => [
       c.nickname || c.issuer || c.card_key, c.issuer || '', c.last4 || '',
-      c.assigned_email || '(미배정)', c.total_amount || 0, c.transaction_count || 0,
+      (c.assigned_emails && c.assigned_emails.length ? c.assigned_emails.join(', ') : (c.assigned_email || '(미배정)')), c.total_amount || 0, c.transaction_count || 0,
     ])
     downloadXlsx(`미제출자_${month}`, [{ name: '미제출자', rows: [header, ...rows] }])
   }
@@ -596,7 +650,7 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                       <tr key={c.card_key} className="hover:bg-canvas-50 dark:hover:bg-ink-800/50">
                         <td className="px-3 py-1.5 font-medium text-ink-900 dark:text-ink-50">{c.nickname || c.issuer || c.card_key}</td>
                         <td className="px-3 py-1.5 text-ink-600 dark:text-ink-300 whitespace-nowrap">{c.issuer || '카드사 미상'}{c.last4 ? ` ····${c.last4}` : ''}</td>
-                        <td className="px-3 py-1.5 text-ink-600 dark:text-ink-300">{c.assigned_email || <span className="text-amber-600 dark:text-amber-400">(미배정)</span>}</td>
+                        <td className="px-3 py-1.5 text-ink-600 dark:text-ink-300">{(c.assigned_emails && c.assigned_emails.length ? c.assigned_emails.join(', ') : c.assigned_email) || <span className="text-amber-600 dark:text-amber-400">(미배정)</span>}</td>
                         <td className="px-3 py-1.5 text-right font-mono font-semibold text-ink-900 dark:text-ink-50 whitespace-nowrap">{formatCurrency(c.total_amount, false)}</td>
                         <td className="px-3 py-1.5 text-right text-ink-600 dark:text-ink-300">{c.transaction_count.toLocaleString()}</td>
                       </tr>

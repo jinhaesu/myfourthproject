@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import Integer, String, Boolean, DateTime
+from sqlalchemy import Integer, String, Boolean, DateTime, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -28,8 +28,10 @@ class CardAlias(Base):
     # 용도 메모 (예: '직원 식대용')
     memo: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    # 카드 배정 — 관리자가 이메일 기준으로 배정, 직원은 본인 배정 카드만 조회 가능
+    # 카드 배정 — 관리자가 이메일 기준으로 배정, 직원은 본인 배정 카드만 조회 가능.
+    # assigned_email = 단일(하위호환·대표 배정자), assigned_emails = JSON 리스트(공동관리 다중 배정).
     assigned_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    assigned_emails: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON list of emails
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

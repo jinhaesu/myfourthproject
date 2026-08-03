@@ -1217,6 +1217,7 @@ export interface CardInfo {
   memo: string | null
   is_active: boolean
   assigned_email: string | null
+  assigned_emails?: string[]
   total_amount: number
   transaction_count: number
   last_used: string | null
@@ -1248,6 +1249,8 @@ export const cardsApi = {
     api.put('/cards/alias', patch, { params: { card_key } }),
   assign: (card_key: string, email: string | null) =>
     api.put('/cards/assign', { card_key, email }),
+  assignMany: (card_key: string, emails: string[]) =>
+    api.put('/cards/assign', { card_key, emails }),
   transactions: (card_key: string, start_date?: string, end_date?: string) =>
     api.get<{ card_key: string; transactions: CardTransaction[] }>('/cards/transactions', {
       params: { card_key, start_date, end_date }, timeout: 180_000,

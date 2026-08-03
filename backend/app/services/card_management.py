@@ -20,12 +20,37 @@ from app.models.card_classification import CardUsageClassification, CardMonthlyC
 logger = logging.getLogger(__name__)
 
 
+def _alias_emails(alias: "CardAlias") -> List[str]:
+    """카드에 배정된 이메일 목록 (공동관리 다중 배정). assigned_emails(JSON) 우선, 없으면 assigned_email."""
+    import json as _json
+    emails: List[str] = []
+    raw = getattr(alias, "assigned_emails", None)
+    if raw:
+        try:
+            parsed = _json.loads(raw)
+            if isinstance(parsed, list):
+                emails = [str(e).strip().lower() for e in parsed if e and str(e).strip()]
+        except (ValueError, TypeError):
+            emails = []
+    if not emails and alias.assigned_email:
+        emails = [alias.assigned_email.strip().lower()]
+    # dedup, 순서 보존
+    seen: set = set()
+    out: List[str] = []
+    for e in emails:
+        if e and e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
+
+
 async def get_assigned_card_keys(db: AsyncSession, email: str) -> List[str]:
-    """이메일에 배정된 카드 key 목록."""
-    rows = (await db.execute(
-        select(CardAlias.card_key).where(CardAlias.assigned_email == email.lower())
-    )).scalars().all()
-    return list(rows)
+    """이메일에 배정된 카드 key 목록 (공동관리 다중 배정 포함)."""
+    email_l = (email or "").strip().lower()
+    if not email_l:
+        return []
+    aliases = (await db.execute(select(CardAlias))).scalars().all()
+    return [a.card_key for a in aliases if email_l in _alias_emails(a)]
 
 
 def _extract_card_meta(card_key: str) -> Dict[str, Optional[str]]:
@@ -271,12 +296,12 @@ async def list_cards(
     aliases = (await db.execute(select(CardAlias))).scalars().all()
     alias_map = {a.card_key: a for a in aliases}
 
-    # 직원용: 배정된 카드만 (사용내역 없어도 배정 카드는 표시)
+    # 직원용: 배정된 카드만 (사용내역 없어도 배정 카드는 표시). 공동관리 다중 배정 포함.
     if only_assigned_to:
         email_lower = only_assigned_to.lower()
         assigned_keys = {
             a.card_key for a in aliases
-            if (a.assigned_email or "").lower() == email_lower
+            if email_lower in _alias_emails(a)
         }
         by_card = {k: v for k, v in by_card.items() if k in assigned_keys}
         for k in assigned_keys:
@@ -300,6 +325,7 @@ async def list_cards(
             "memo": alias.memo if alias else None,
             "is_active": alias.is_active if alias else True,
             "assigned_email": alias.assigned_email if alias else None,
+            "assigned_emails": _alias_emails(alias) if alias else [],
             "total_amount": agg["total_amount"],
             "transaction_count": agg["transaction_count"],
             "last_used": agg["last_used"],
@@ -531,9 +557,16 @@ async def upsert_alias(
 async def assign_card(
     db: AsyncSession,
     card_key: str,
-    email: Optional[str],
+    email: Optional[str] = None,
+    emails: Optional[List[str]] = None,
 ) -> CardAlias:
-    """카드를 이메일에 배정 (email=None이면 배정 해제). 관리자 전용에서 호출."""
+    """
+    카드를 이메일에 배정 (관리자 전용). 공동관리 다중 배정 지원.
+    - emails 지정 시: 그 목록 전체로 배정(빈 목록이면 해제).
+    - email만 지정 시: 하위호환 단일 배정.
+    assigned_emails(JSON 리스트)에 저장하고, assigned_email엔 대표(첫 번째)를 보관.
+    """
+    import json as _json
     alias = (await db.execute(
         select(CardAlias).where(CardAlias.card_key == card_key)
     )).scalar_one_or_none()
@@ -547,7 +580,25 @@ async def assign_card(
             is_active=True,
         )
         db.add(alias)
-    alias.assigned_email = email.lower().strip() if email else None
+
+    if emails is not None:
+        raw_list = emails
+    elif email is not None:
+        raw_list = [email] if email else []
+    else:
+        raw_list = _alias_emails(alias)  # 변경 없음
+
+    # 정규화 + dedup
+    seen: set = set()
+    norm: List[str] = []
+    for e in raw_list:
+        v = (e or "").strip().lower()
+        if v and v not in seen:
+            seen.add(v)
+            norm.append(v)
+
+    alias.assigned_emails = _json.dumps(norm) if norm else None
+    alias.assigned_email = norm[0] if norm else None
     await db.commit()
     await db.refresh(alias)
     return alias
@@ -683,7 +734,7 @@ async def export_month_classifications(
     for r in rows:
         al = amap.get(r.card_key)
         out.append({
-            "assigned_email": (al.assigned_email if al else None) or "",
+            "assigned_email": ", ".join(_alias_emails(al)) if al else "",
             "card_label": (al.nickname if al else None) or (al.issuer if al else None) or r.card_key,
             "issuer": al.issuer if al else None,
             "last4": al.last4 if al else None,

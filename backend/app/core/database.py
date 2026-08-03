@@ -262,6 +262,8 @@ async def init_db():
         # card_aliases.assigned_email — 카드 배정 (관리자가 이메일 기준 배정, 직원은 본인 카드만 조회)
         "ALTER TABLE card_aliases ADD COLUMN IF NOT EXISTS assigned_email VARCHAR(255)",
         "CREATE INDEX IF NOT EXISTS ix_card_aliases_assigned_email ON card_aliases(assigned_email) WHERE assigned_email IS NOT NULL",
+        # 공동관리 다중 배정 — 여러 직원이 한 카드를 함께 분류/마감
+        "ALTER TABLE card_aliases ADD COLUMN IF NOT EXISTS assigned_emails TEXT",
         # 급여 세금 설정/오버라이드 (외부 확정값 입력)
         """CREATE TABLE IF NOT EXISTS payroll_tax_settings (
             id SERIAL PRIMARY KEY,
