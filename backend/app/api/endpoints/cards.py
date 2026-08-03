@@ -17,7 +17,7 @@ from app.services.card_management import (
     list_cards, upsert_alias, get_card_analysis, get_monthly_summary,
     assign_card, list_transactions, classify_transaction, get_assigned_card_keys,
     get_closing, close_month, list_closings, reopen_closing, _month_range,
-    migrate_card_keys, classify_transactions_bulk,
+    migrate_card_keys, classify_transactions_bulk, export_month_classifications,
 )
 
 router = APIRouter()
@@ -276,6 +276,19 @@ async def classify_bulk_api(
         [it.model_dump() for it in body.items],
         user.email,
     )
+
+
+@router.get("/classifications/export")
+async def export_classifications_api(
+    month: str = Query(..., description="YYYY-MM"),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """월별 전체 카드 분류 라인아이템 (관리자 엑셀 다운로드용) — 직원별·카드별 전건."""
+    if not is_accounting_admin(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="관리자 전용")
+    rows = await export_month_classifications(db, month)
+    return {"month": month, "rows": rows, "count": len(rows)}
 
 
 @router.get("/closings")

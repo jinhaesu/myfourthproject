@@ -639,6 +639,51 @@ async def classify_transaction(
     return cls
 
 
+async def export_month_classifications(
+    db: AsyncSession,
+    month: str,
+    only_keys: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    한 달(YYYY-MM) 전체 카드 분류 라인아이템 — 관리자 엑셀 다운로드용.
+    CardUsageClassification(transact_at LIKE 'YYYY-MM%') + 카드 별칭/배정자 + 마감여부 조인.
+    only_keys 지정 시 해당 card_key만.
+    """
+    stmt = select(CardUsageClassification).where(
+        CardUsageClassification.transact_at.like(f"{month}%")
+    )
+    if only_keys is not None:
+        stmt = stmt.where(CardUsageClassification.card_key.in_(only_keys))
+    rows = (await db.execute(stmt)).scalars().all()
+
+    aliases = (await db.execute(select(CardAlias))).scalars().all()
+    amap = {a.card_key: a for a in aliases}
+    closings = (await db.execute(
+        select(CardMonthlyClosing).where(CardMonthlyClosing.month == month)
+    )).scalars().all()
+    closed_keys = {c.card_key for c in closings}
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        al = amap.get(r.card_key)
+        out.append({
+            "assigned_email": (al.assigned_email if al else None) or "",
+            "card_label": (al.nickname if al else None) or (al.issuer if al else None) or r.card_key,
+            "issuer": al.issuer if al else None,
+            "last4": al.last4 if al else None,
+            "transact_at": r.transact_at,
+            "store_name": r.store_name,
+            "amount": r.amount,
+            "account_code": r.account_code,
+            "account_name": r.account_name or r.category,
+            "memo": r.memo,
+            "classified_by": r.classified_by,
+            "closed": r.card_key in closed_keys,
+        })
+    out.sort(key=lambda x: (x["assigned_email"], str(x["card_label"]), str(x["transact_at"] or "")))
+    return out
+
+
 async def classify_transactions_bulk(
     db: AsyncSession,
     card_key: str,

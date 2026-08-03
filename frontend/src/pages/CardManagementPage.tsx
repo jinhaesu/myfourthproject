@@ -4,10 +4,13 @@ import {
   CreditCardIcon, PencilIcon, CheckIcon, XMarkIcon,
   ChartBarIcon, MapPinIcon, CalendarDaysIcon, UserIcon,
   LockClosedIcon, LockOpenIcon, ChevronDownIcon, ChevronRightIcon,
+  ArrowDownTrayIcon, ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline'
 import { cardsApi, CardInfo, CardClosing } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
+import { downloadXlsx } from '@/utils/exportXlsx'
 import DateRangePresets from '@/components/common/DateRangePresets'
+import toast from 'react-hot-toast'
 
 const COLOR_PRESETS = [
   '#3B82F6', '#10B981', '#F59E0B', '#EF4444',
@@ -135,8 +138,24 @@ export default function CardManagementPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-3">
         {/* 카드 목록 */}
         <div className="panel overflow-hidden">
-          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">
-            카드 목록 · 총 사용액 큰 순
+          <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between gap-2">
+            <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">
+              카드 목록 · 총 사용액 큰 순
+            </span>
+            <button
+              onClick={() => {
+                if (!cards.length) { toast('내보낼 카드가 없습니다'); return }
+                const header = ['카드사', '뒷4자리', '별칭', '배정직원', `사용액(${from}~${to})`, '거래건수', '최근사용']
+                const rows = cards.map((c) => [
+                  c.issuer || '', c.last4 || '', c.nickname || '', c.assigned_email || '',
+                  c.total_amount || 0, c.transaction_count || 0, c.last_used || '',
+                ])
+                downloadXlsx(`카드목록_사용액_${from}_${to}`, [{ name: '카드목록', rows: [header, ...rows] }])
+              }}
+              className="px-2 py-1 text-2xs rounded border border-ink-200 dark:border-ink-700 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 flex items-center gap-1 flex-shrink-0"
+            >
+              <ArrowDownTrayIcon className="h-3 w-3" />엑셀
+            </button>
           </div>
           {listQuery.isLoading ? (
             <div className="p-8 text-center text-2xs text-ink-400">불러오는 중…</div>
@@ -347,14 +366,31 @@ function currentMonthStr() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
+function monthBounds(month: string) {
+  const [y, m] = month.split('-').map(Number)
+  const from = `${month}-01`
+  const last = new Date(y, m, 0).getDate()
+  const today = new Date()
+  const end = new Date(y, m - 1, last) > today ? today : new Date(y, m - 1, last)
+  return { from, to: isoLocal(end) }
+}
+
 function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
   const qc = useQueryClient()
   const [month, setMonth] = useState(currentMonthStr())
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  const [showNonSubmitters, setShowNonSubmitters] = useState(false)
 
   const closingsQuery = useQuery({
     queryKey: ['card-closings', month],
     queryFn: () => cardsApi.listClosings(month).then((r) => r.data.closings),
+  })
+
+  // 해당 월 카드별 사용액 (미제출자 판별 — 페이지 상단 기간과 무관하게 이 달 기준)
+  const { from: mFrom, to: mTo } = monthBounds(month)
+  const monthCardsQuery = useQuery({
+    queryKey: ['card-closings-monthcards', month],
+    queryFn: () => cardsApi.list(mFrom, mTo).then((r) => r.data.cards),
   })
 
   const detailQuery = useQuery({
@@ -378,6 +414,39 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
   const cardName = (key: string) => cardLabel(cards.find((x) => x.card_key === key), key)
   const cardAssignee = (key: string) => cards.find((x) => x.card_key === key)?.assigned_email
 
+  // 미제출자 = 그 달 사용(거래 있음)이 있으나 아직 마감 제출 안 한 카드
+  const closedKeys = new Set(closings.map((c) => c.card_key))
+  const nonSubmitters = (monthCardsQuery.data || [])
+    .filter((c) => c.transaction_count > 0 && !closedKeys.has(c.card_key))
+    .sort((a, b) => b.total_amount - a.total_amount)
+
+  const exportAllMut = useMutation({
+    mutationFn: () => cardsApi.exportClassifications(month),
+    onSuccess: (res) => {
+      const rows = res.data.rows
+      if (!rows.length) { toast(`${month} 분류 내역이 없습니다`); return }
+      const header = ['배정직원', '카드', '카드사', '뒷4자리', '거래일시', '가맹점', '금액', '계정코드', '계정명', '메모', '분류자', '마감여부']
+      const aoa = rows.map((r) => [
+        r.assigned_email || '', r.card_label || '', r.issuer || '', r.last4 || '',
+        (r.transact_at || '').replace('T', ' '), r.store_name || '', r.amount || 0,
+        r.account_code || '', r.account_name || '', r.memo || '', r.classified_by || '', r.closed ? '마감' : '미마감',
+      ])
+      downloadXlsx(`카드분류내역_전직원_${month}`, [{ name: month, rows: [header, ...aoa] }])
+      toast.success(`${rows.length}건 다운로드`)
+    },
+    onError: (e: any) => toast.error(e.response?.data?.detail || '내보내기 실패'),
+  })
+
+  const exportNonSubmitters = () => {
+    if (!nonSubmitters.length) { toast('미제출자가 없습니다'); return }
+    const header = ['카드', '카드사', '뒷4자리', '배정직원', '사용액', '거래건수']
+    const rows = nonSubmitters.map((c) => [
+      c.nickname || c.issuer || c.card_key, c.issuer || '', c.last4 || '',
+      c.assigned_email || '(미배정)', c.total_amount || 0, c.transaction_count || 0,
+    ])
+    downloadXlsx(`미제출자_${month}`, [{ name: '미제출자', rows: [header, ...rows] }])
+  }
+
   return (
     <div className="panel overflow-hidden">
       <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
@@ -385,8 +454,25 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
           <LockClosedIcon className="h-3 w-3" />
           월별 분류 마감 현황 (직원 제출분)
         </span>
-        <input type="month" value={month} onChange={(e) => { setMonth(e.target.value); setExpandedId(null) }}
-          className="px-2 py-0.5 text-2xs rounded border border-ink-200 dark:border-ink-800 focus:border-blue-400 focus:outline-none" />
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => exportAllMut.mutate()}
+            disabled={exportAllMut.isPending}
+            className="px-2 py-0.5 text-2xs rounded border border-ink-200 dark:border-ink-700 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-50 flex items-center gap-1"
+          >
+            <ArrowDownTrayIcon className="h-3 w-3" />{exportAllMut.isPending ? '생성 중…' : '전직원 내역 엑셀'}
+          </button>
+          <button
+            onClick={() => setShowNonSubmitters(true)}
+            className={`px-2 py-0.5 text-2xs rounded border flex items-center gap-1 ${nonSubmitters.length > 0
+              ? 'border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/40'
+              : 'border-ink-200 dark:border-ink-700 text-ink-500 dark:text-ink-400 hover:bg-ink-50 dark:hover:bg-ink-800'}`}
+          >
+            <ExclamationTriangleIcon className="h-3 w-3" />미제출자 {nonSubmitters.length}
+          </button>
+          <input type="month" value={month} onChange={(e) => { setMonth(e.target.value); setExpandedId(null) }}
+            className="px-2 py-0.5 text-2xs rounded border border-ink-200 dark:border-ink-800 focus:border-blue-400 focus:outline-none" />
+        </div>
       </div>
       {closingsQuery.isLoading ? (
         <div className="p-6 text-center text-2xs text-ink-400">불러오는 중…</div>
@@ -467,6 +553,62 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* 미제출자 팝업 */}
+      {showNonSubmitters && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowNonSubmitters(false)}>
+          <div className="bg-white dark:bg-ink-900 rounded-lg shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-ink-200 dark:border-ink-800 flex items-center justify-between">
+              <span className="text-sm font-semibold text-ink-900 dark:text-ink-50 flex items-center gap-1.5">
+                <ExclamationTriangleIcon className="h-4 w-4 text-amber-500" />
+                {month} 미제출자 {nonSubmitters.length}건
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button onClick={exportNonSubmitters}
+                  className="px-2 py-1 text-2xs rounded border border-ink-200 dark:border-ink-700 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 flex items-center gap-1">
+                  <ArrowDownTrayIcon className="h-3 w-3" />엑셀
+                </button>
+                <button onClick={() => setShowNonSubmitters(false)} className="p-1 rounded hover:bg-ink-100 dark:hover:bg-ink-800">
+                  <XMarkIcon className="h-4 w-4 text-ink-400" />
+                </button>
+              </div>
+            </div>
+            <div className="overflow-y-auto">
+              {monthCardsQuery.isLoading ? (
+                <div className="p-6 text-center text-2xs text-ink-400">불러오는 중…</div>
+              ) : nonSubmitters.length === 0 ? (
+                <div className="p-6 text-center text-2xs text-emerald-600 dark:text-emerald-400">이 달 사용 카드 전부 마감 제출 완료 🎉</div>
+              ) : (
+                <table className="w-full text-xs">
+                  <thead className="bg-canvas-50 dark:bg-ink-900 text-2xs text-ink-500 dark:text-ink-400 uppercase sticky top-0">
+                    <tr>
+                      <th className="px-3 py-1.5 text-left">카드</th>
+                      <th className="px-3 py-1.5 text-left">카드번호</th>
+                      <th className="px-3 py-1.5 text-left">배정직원</th>
+                      <th className="px-3 py-1.5 text-right">사용액</th>
+                      <th className="px-3 py-1.5 text-right">건수</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
+                    {nonSubmitters.map((c) => (
+                      <tr key={c.card_key} className="hover:bg-canvas-50 dark:hover:bg-ink-800/50">
+                        <td className="px-3 py-1.5 font-medium text-ink-900 dark:text-ink-50">{c.nickname || c.issuer || c.card_key}</td>
+                        <td className="px-3 py-1.5 text-ink-600 dark:text-ink-300 whitespace-nowrap">{c.issuer || '카드사 미상'}{c.last4 ? ` ····${c.last4}` : ''}</td>
+                        <td className="px-3 py-1.5 text-ink-600 dark:text-ink-300">{c.assigned_email || <span className="text-amber-600 dark:text-amber-400">(미배정)</span>}</td>
+                        <td className="px-3 py-1.5 text-right font-mono font-semibold text-ink-900 dark:text-ink-50 whitespace-nowrap">{formatCurrency(c.total_amount, false)}</td>
+                        <td className="px-3 py-1.5 text-right text-ink-600 dark:text-ink-300">{c.transaction_count.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="px-4 py-2 border-t border-ink-200 dark:border-ink-800 text-2xs text-ink-400">
+              미제출 = 이 달 사용 내역이 있으나 직원이 아직 전건 분류·마감 제출하지 않은 카드입니다.
+            </div>
+          </div>
         </div>
       )}
     </div>

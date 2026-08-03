@@ -1267,6 +1267,13 @@ export const cardsApi = {
     api.get('/cards/analysis', { params: { card_key, start_date, end_date }, timeout: 180_000 }),
   monthly: (card_key?: string, months: number = 6) =>
     api.get('/cards/monthly', { params: { card_key, months }, timeout: 120_000 }),
+  exportClassifications: (month: string) =>
+    api.get<{ month: string; count: number; rows: {
+      assigned_email: string; card_label: string; issuer: string | null; last4: string | null
+      transact_at: string | null; store_name: string | null; amount: number | null
+      account_code: string | null; account_name: string | null; memo: string | null
+      classified_by: string; closed: boolean
+    }[] }>('/cards/classifications/export', { params: { month }, timeout: 120_000 }),
   // 월별 분류 마감
   listClosings: (month?: string) =>
     api.get<{ closings: CardClosing[] }>('/cards/closings', { params: { month } }),
