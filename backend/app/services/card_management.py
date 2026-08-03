@@ -425,6 +425,22 @@ async def migrate_card_keys(
         cl.card_key = nid
         report["closings"]["updated"] += 1
 
+    # 카드 사용 분류(card_key 비정규화 컬럼) — 관리자 집계/엑셀 조인이 id 기준으로 맞도록 이관.
+    # (분류는 ticket_id로 조인되므로 기능엔 영향 없지만, 배정직원/카드 표시 일치를 위해 정리)
+    report["classifications"] = {"updated": 0, "already_id": 0, "skipped": 0}
+    cls_rows = (await db.execute(select(CardUsageClassification))).scalars().all()
+    for c in cls_rows:
+        k = c.card_key or ""
+        if k in id_set:
+            report["classifications"]["already_id"] += 1
+            continue
+        nid = resolve(k)
+        if nid is None:
+            report["classifications"]["skipped"] += 1
+            continue
+        c.card_key = nid
+        report["classifications"]["updated"] += 1
+
     # 구매요청 결제완료 카드(card_key) — 대사 매칭이 id 기준으로 유지되도록 함께 이관
     from app.models.purchase import PurchaseRequest
     report["purchase_requests"] = {"updated": 0, "already_id": 0, "skipped": 0, "empty": 0}
