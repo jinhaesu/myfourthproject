@@ -80,6 +80,7 @@ async def login_request_otp(
     2. OTP 생성 및 Resend로 발송
     3. 사용자가 없으면 자동 생성
     """
+    raise HTTPException(status_code=403, detail="이메일 코드 로그인은 비활성화되었습니다. 회사 Google 계정(SSO)으로 로그인하세요.")
     email = login_data.email.lower()
 
     # 화이트리스트 확인
@@ -116,6 +117,7 @@ async def verify_email_otp(
     - OTP 검증 성공 시 JWT 토큰 반환
     - 사용자가 DB에 없으면 자동 생성 (화이트리스트에 있는 이메일)
     """
+    raise HTTPException(status_code=403, detail="이메일 코드 로그인은 비활성화되었습니다. 회사 Google 계정(SSO)으로 로그인하세요.")
     email = otp_data.email.lower()
     import logging as _log
     _logger = _log.getLogger(__name__)
