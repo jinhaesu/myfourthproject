@@ -15,11 +15,13 @@ import {
   CheckCircleIcon,
   ChartPieIcon,
   ClockIcon,
+  ArrowDownTrayIcon,
 } from '@heroicons/react/24/outline'
 import { granterApi, cardsApi } from '@/services/api'
 import { formatCurrency, isoLocal, formatLastUpdated } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 import { usePeriodStore } from '@/store/periodStore'
+import { downloadXlsx } from '@/utils/exportXlsx'
 
 type PeriodPreset = 'today' | 'this_week' | 'this_month' | 'this_quarter' | 'this_year' | 'custom'
 
@@ -400,6 +402,65 @@ export default function UnifiedViewPage() {
     }
     return { salesAmount, salesCount, purchaseAmount, purchaseCount, net: salesAmount - purchaseAmount }
   }, [tickets, selected.ticketType])
+
+  // 일반 거래 리스트(카드/계좌/전체) 입금/출금 합계
+  // 통합조회는 실제 통장 내역 조회이므로 법인 계좌 간 이체도 포함해 합산(원본 tickets 기준)
+  const listTotals = useMemo(() => {
+    let inAmt = 0, inCnt = 0, outAmt = 0, outCnt = 0
+    for (const t of tickets) {
+      const amt = num(t, 'amount')
+      if (str(t, 'transactionType') === 'IN') { inAmt += amt; inCnt++ }
+      else { outAmt += amt; outCnt++ }
+    }
+    return { inAmt, inCnt, outAmt, outCnt, net: inAmt - outAmt }
+  }, [tickets])
+
+  // 현재 우측 리스트를 엑셀로 다운로드 (선택한 계좌/카드/전체 그대로)
+  const exportTicketsXlsx = () => {
+    const header = ['일시', '유형', '거래처', '적요', '입금', '출금', '구분']
+    const rows: (string | number)[][] = [header]
+    for (const t of tickets) {
+      const txType = str(t, 'transactionType')
+      const amount = num(t, 'amount')
+      const ticketType = str(t, 'ticketType')
+      let contact = str(t, 'contact')
+      let memo = ''
+      if (t?.taxInvoice) {
+        const isSales = txType === 'IN'
+        contact = contact || (isSales
+          ? str(t.taxInvoice?.contractor, 'companyName')
+          : str(t.taxInvoice?.supplier, 'companyName'))
+        memo = str(t.taxInvoice, 'content')
+      } else if (t?.cashReceipt) {
+        contact = contact || str(t.cashReceipt?.issuer, 'companyName', 'userName')
+        memo = str(t.cashReceipt, 'content')
+      } else if (t?.bankTransaction) {
+        contact = contact || str(t.bankTransaction, 'counterparty')
+        memo = str(t.bankTransaction, 'descriptionType', 'description')
+      } else if (t?.cardUsage) {
+        contact = contact || str(t.cardUsage, 'storeName')
+        memo = str(t.cardUsage, 'storeAddress')
+      }
+      contact = contact || str(t, 'content') || '-'
+      memo = memo || str(t, 'description', 'memo', 'content')
+      const dt = str(t, 'transactAt', 'transactionDate', 'date')
+      rows.push([
+        dt,
+        TICKET_TYPE_LABEL[ticketType] || ticketType.replace('_TICKET', ''),
+        contact,
+        memo,
+        txType === 'IN' ? amount : '',
+        txType === 'OUT' ? amount : '',
+        txType === 'IN' ? '입금' : '출금',
+      ])
+    }
+    // 합계 행 (법인간 이체 포함)
+    rows.push([])
+    rows.push(['합계', '', `입금 ${listTotals.inCnt}건 · 출금 ${listTotals.outCnt}건`, '', listTotals.inAmt, listTotals.outAmt, ''])
+    rows.push(['순액(입금−출금)', '', '', '', listTotals.net, '', ''])
+    const safeLabel = (selected.label || '거래내역').replace(/[\\/:*?"<>|]/g, '_')
+    downloadXlsx(`통합조회_${safeLabel}_${from}_${to}`, [{ name: '거래내역', rows }])
+  }
 
   const handlePreset = (p: PeriodPreset) => {
     if (p !== 'custom') {
@@ -928,10 +989,20 @@ export default function UnifiedViewPage() {
                 )}
                 {internalFilteredCount > 0 && (
                   <span className="text-2xs text-ink-400 ml-1">
-                    · 법인 계좌 간 이체 {internalFilteredCount}건 합계 제외됨
+                    · 법인 계좌 간 이체 {internalFilteredCount}건 포함
                   </span>
                 )}
               </div>
+              {tickets.length > 0 && (
+                <button
+                  onClick={exportTicketsXlsx}
+                  className="btn-secondary flex-shrink-0"
+                  title="현재 리스트를 엑셀로 다운로드"
+                >
+                  <ArrowDownTrayIcon className="h-3 w-3 mr-1" />
+                  엑셀
+                </button>
+              )}
             </div>
 
             {!healthQuery.isFetched ? (
@@ -1150,6 +1221,31 @@ export default function UnifiedViewPage() {
                       )
                     })}
                   </tbody>
+                  <tfoot className="sticky bottom-0 z-10">
+                    <tr className="bg-canvas-50 dark:bg-ink-950 border-t-2 border-ink-300 dark:border-ink-700">
+                      <td colSpan={3} className="px-2 py-1.5 text-2xs font-semibold text-ink-700 dark:text-ink-300">
+                        합계
+                        <span className="text-ink-400 font-normal ml-1">
+                          입금 {listTotals.inCnt}건 · 출금 {listTotals.outCnt}건
+                          {internalFilteredCount > 0 && ` · 법인간 이체 ${internalFilteredCount}건 포함`}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs font-bold text-emerald-700 dark:text-emerald-300 whitespace-nowrap">
+                        {formatCurrency(listTotals.inAmt, false)}
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs font-bold text-rose-700 dark:text-rose-300 whitespace-nowrap">
+                        {formatCurrency(listTotals.outAmt, false)}
+                      </td>
+                    </tr>
+                    <tr className="bg-canvas-50 dark:bg-ink-950 border-t border-ink-200 dark:border-ink-800">
+                      <td colSpan={3} className="px-2 py-1 text-2xs font-semibold text-ink-500 dark:text-ink-400">
+                        순액 (입금 − 출금)
+                      </td>
+                      <td colSpan={2} className={`px-2 py-1 text-right font-mono tabular-nums text-2xs font-bold whitespace-nowrap ${listTotals.net >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
+                        {listTotals.net < 0 ? '-' : '+'}{formatCurrency(Math.abs(listTotals.net), false)}
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             )}
