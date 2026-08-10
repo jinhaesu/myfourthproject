@@ -1288,6 +1288,41 @@ export const cardsApi = {
     api.get('/cards/closings/detail', { params: { card_key, month }, timeout: 60_000 }),
 }
 
+// ==================== 하이픈(hyphen.im) 은행 연동 ====================
+export interface HyphenCredential {
+  id: number
+  label: string | null
+  bank_cd: string
+  acct_last4: string | null
+  login_method: string
+  cert_subject: string | null
+  cert_expires_at: string | null
+  created_by: string | null
+  created_at: string | null
+  expires_at: string | null
+  days_left: number
+  is_expired: boolean
+  last_used_at: string | null
+  last_status: string | null
+  has_cert: boolean
+}
+
+export const hyphenApi = {
+  health: () => api.get<{ configured: boolean; can_encrypt: boolean; base_url: string }>('/hyphen/health'),
+  listCredentials: () =>
+    api.get<{ credentials: HyphenCredential[] }>('/hyphen/credentials'),
+  registerCredential: (body: {
+    bank_cd: string; acct_no: string; login_method?: string; label?: string
+    acct_pw?: string; sign_cert_b64?: string; sign_pri_b64?: string; sign_pw?: string
+    user_id?: string; user_pw?: string
+  }) => api.post<HyphenCredential>('/hyphen/credentials', body, { timeout: 60_000 }),
+  deleteCredential: (id: number) => api.delete(`/hyphen/credentials/${id}`),
+  queryCredential: (
+    id: number,
+    body: { start_date: string; end_date: string; gustation?: boolean; sort?: string; filter_type?: string; gubun?: string },
+  ) => api.post<{ elapsed_sec: number; data: any }>(`/hyphen/credentials/${id}/query`, body, { timeout: 180_000 }),
+}
+
 export interface CardClosing {
   id: number
   card_key: string

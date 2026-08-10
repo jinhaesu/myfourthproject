@@ -13,14 +13,19 @@ HYPHEN (하이픈) 라우터 — 그랜터 대체 PoC (계좌 속도 벤치마�
 시크릿(HYPHEN_USER_ID/HKEY/EKEY)은 서버 환경변수로만.
 """
 import time
+import base64
 import logging
 from typing import Optional, Dict, Any, List
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Depends
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db
+from app.core.security import get_current_user
 from app.services.hyphen_client import get_hyphen_client, HyphenAPIError
 from app.services.granter_client import get_granter_client, GranterAPIError
+from app.services import hyphen_credentials as creds_svc
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -227,3 +232,105 @@ async def hyphen_benchmark_account(body: BenchmarkBody):
             "speedup_x": round(g / h, 2) if h > 0 else None,
         }
     return result
+
+
+# ============ 인증정보 (암호화 보관, 30일 TTL) ============
+
+class RegisterCredBody(BaseModel):
+    bank_cd: str
+    acct_no: str
+    login_method: str = "CERT"
+    label: Optional[str] = None
+    # 공통
+    acct_pw: Optional[str] = None
+    # CERT: 인증서 파일(base64 of der/key) 또는 PEM 문자열(base64로 감싸서 전달해도 됨)
+    sign_cert_b64: Optional[str] = None
+    sign_pri_b64: Optional[str] = None
+    sign_pw: Optional[str] = None
+    # ID 로그인
+    user_id: Optional[str] = None
+    user_pw: Optional[str] = None
+
+
+def _b64_to_bytes(s: Optional[str]) -> Optional[bytes]:
+    if not s:
+        return None
+    # data URL(예: data:application/octet-stream;base64,....) 지원
+    if "," in s and s.strip().startswith("data:"):
+        s = s.split(",", 1)[1]
+    try:
+        return base64.b64decode(s)
+    except Exception:
+        # 이미 원문(PEM 등)일 수 있음
+        return s.encode()
+
+
+@router.post("/credentials")
+async def hyphen_register_credential(
+    body: RegisterCredBody,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """인증서/비밀번호를 암호화 보관(30일 TTL). CERT: sign_cert_b64+sign_pri_b64+sign_pw+acct_pw."""
+    created_by = getattr(user, "email", None) if user else None
+    try:
+        cred = await creds_svc.register_credential(
+            db,
+            bank_cd=body.bank_cd,
+            acct_no=body.acct_no,
+            acct_pw=body.acct_pw,
+            login_method=body.login_method,
+            sign_cert_bytes=_b64_to_bytes(body.sign_cert_b64),
+            sign_pri_bytes=_b64_to_bytes(body.sign_pri_b64),
+            sign_pw=body.sign_pw,
+            user_id=body.user_id,
+            user_pw=body.user_pw,
+            label=body.label,
+            created_by=created_by,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"인증정보 등록 실패: {e}")
+    return creds_svc.to_public(cred)
+
+
+@router.get("/credentials")
+async def hyphen_list_credentials(db: AsyncSession = Depends(get_db)):
+    return {"credentials": await creds_svc.list_credentials(db)}
+
+
+@router.delete("/credentials/{cred_id}")
+async def hyphen_delete_credential(cred_id: int, db: AsyncSession = Depends(get_db)):
+    ok = await creds_svc.delete_credential(db, cred_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="인증정보 없음")
+    return {"deleted": True}
+
+
+class CredQueryBody(BaseModel):
+    start_date: str
+    end_date: str
+    gubun: str = "01"
+    sort: str = "OLD"
+    filter_type: str = "all"
+    gustation: bool = False  # True=테스트베드(무료·샘플)
+
+
+@router.post("/credentials/{cred_id}/query")
+async def hyphen_credential_query(
+    cred_id: int,
+    body: CredQueryBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """저장된 인증정보로 계좌 거래내역 조회 (복호화→하이픈 호출)."""
+    cred = await creds_svc.get_credential(db, cred_id)
+    if not cred:
+        raise HTTPException(status_code=404, detail="인증정보 없음")
+    try:
+        return await creds_svc.run_account_transactions(
+            db, cred,
+            start_date=body.start_date, end_date=body.end_date,
+            gubun=body.gubun, sort=body.sort, filter_type=body.filter_type,
+            gustation=body.gustation,
+        )
+    except HyphenAPIError as e:
+        raise _err(e)

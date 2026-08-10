@@ -95,6 +95,7 @@ const baseNavigation: NavItem[] = [
   { name: '결산 자동화', href: '/connect/closing', icon: ArchiveBoxArrowDownIcon },
 
   { name: '시스템', section: true },
+  { name: '하이픈 은행연동', href: '/hyphen', icon: BuildingLibraryIcon },
   { name: '설정', href: '/settings', icon: Cog6ToothIcon },
 ]
 

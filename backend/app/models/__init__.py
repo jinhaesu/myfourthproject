@@ -116,4 +116,8 @@ __all__ = [
     "PurchaseRequestItem",
     "PurchaseRequestStatus",
     "PurchaseSetting",
+    # Hyphen
+    "HyphenCredential",
 ]
+
+from app.models.hyphen_credential import HyphenCredential  # noqa: E402

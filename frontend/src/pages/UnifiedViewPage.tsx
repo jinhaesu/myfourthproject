@@ -1141,6 +1141,7 @@ export default function UnifiedViewPage() {
                     <col />
                     <col className="w-[96px]" />
                     <col className="w-[96px]" />
+                    <col className="w-[96px]" />
                   </colgroup>
                   <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0 z-10">
                     <tr>
@@ -1157,6 +1158,7 @@ export default function UnifiedViewPage() {
                           <ArrowUpRightIcon className="h-2.5 w-2.5 text-rose-500" />출금
                         </span>
                       </th>
+                      <th className="px-2 py-1 text-right text-2xs font-semibold text-ink-500 dark:text-ink-400">잔액</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
@@ -1186,6 +1188,17 @@ export default function UnifiedViewPage() {
                       }
                       contact = contact || str(t, 'content')
                       memo = memo || str(t, 'description', 'memo', 'content')
+                      // 계좌 거래명세 잔액 (거래 후 잔액) — 원본에 필드가 없으면 null
+                      const balanceKeys = ['balanceAfter', 'afterBalance', 'balance', 'balanceAmount']
+                      const hasBalance = t?.bankTransaction
+                        ? balanceKeys.some((k) => {
+                            const v = t.bankTransaction?.[k]
+                            return v !== undefined && v !== null && v !== ''
+                          })
+                        : false
+                      const balanceAfter = hasBalance
+                        ? num(t.bankTransaction, ...balanceKeys)
+                        : null
                       // 일시 MM/DD HH:MM
                       const dtRaw = str(t, 'transactAt', 'transactionDate', 'date')
                       const dtMD = dtRaw.length >= 10 ? dtRaw.slice(5, 10).replace('-', '/') : dtRaw
@@ -1217,6 +1230,13 @@ export default function UnifiedViewPage() {
                               <span className="text-ink-200 dark:text-ink-700">-</span>
                             )}
                           </td>
+                          <td className="px-2 py-1 text-right font-mono tabular-nums whitespace-nowrap text-2xs">
+                            {balanceAfter !== null ? (
+                              <span className="text-ink-700 dark:text-ink-300">{formatCurrency(balanceAfter, false)}</span>
+                            ) : (
+                              <span className="text-ink-200 dark:text-ink-700">-</span>
+                            )}
+                          </td>
                         </tr>
                       )
                     })}
@@ -1236,12 +1256,13 @@ export default function UnifiedViewPage() {
                       <td className="px-2 py-1.5 text-right font-mono tabular-nums text-2xs font-bold text-rose-700 dark:text-rose-300 whitespace-nowrap">
                         {formatCurrency(listTotals.outAmt, false)}
                       </td>
+                      <td className="px-2 py-1.5" />
                     </tr>
                     <tr className="bg-canvas-50 dark:bg-ink-950 border-t border-ink-200 dark:border-ink-800">
                       <td colSpan={3} className="px-2 py-1 text-2xs font-semibold text-ink-500 dark:text-ink-400">
                         순액 (입금 − 출금)
                       </td>
-                      <td colSpan={2} className={`px-2 py-1 text-right font-mono tabular-nums text-2xs font-bold whitespace-nowrap ${listTotals.net >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
+                      <td colSpan={3} className={`px-2 py-1 text-right font-mono tabular-nums text-2xs font-bold whitespace-nowrap ${listTotals.net >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
                         {listTotals.net < 0 ? '-' : '+'}{formatCurrency(Math.abs(listTotals.net), false)}
                       </td>
                     </tr>

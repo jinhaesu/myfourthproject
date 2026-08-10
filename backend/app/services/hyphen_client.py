@@ -225,9 +225,52 @@ class HyphenClient:
         except Exception:
             return resp.text
 
-    # ============ 계좌 거래내역 (PoC 대상) ============
-    # 정확한 path/파라미터는 상품별 로그인 개발가이드 기준.
-    # 발견 즉시 아래 기본값을 확정하거나 HYPHEN_ACCT_TX_PATH 로 override.
+    # ============ 은행 API (Hkey 헤더 인증) ============
+    # 은행 상품(/in0087xxx)은 OAuth Bearer가 아니라 user-id + Hkey 헤더로 인증.
+    # 테스트베드는 hyphen-gustation:Y (실사용 시 제거 — 실데이터/실속도 반영).
+
+    def _bank_headers(self, gustation: bool = False, user_tr_no: Optional[str] = None) -> Dict[str, str]:
+        h = {"user-id": self.user_id, "Hkey": self.hkey}
+        if gustation:
+            h["hyphen-gustation"] = "Y"
+        if user_tr_no:
+            h["user-tr-no"] = user_tr_no
+        return h
+
+    async def call_bank(
+        self,
+        path: str,
+        payload: Dict[str, Any],
+        gustation: bool = False,
+        user_tr_no: Optional[str] = None,
+    ) -> Any:
+        """은행 API 호출 (Hkey 헤더 인증). payload는 이미 암호화 처리된 상태로 전달."""
+        if not self.is_configured:
+            raise HyphenAPIError("HYPHEN_USER_ID / HYPHEN_HKEY 미설정", status_code=500)
+        client = self._get_client()
+        headers = self._bank_headers(gustation, user_tr_no)
+        try:
+            resp = await client.post(path, json=payload, headers=headers)
+        except httpx.TimeoutException as e:
+            raise HyphenAPIError(f"하이픈 타임아웃: {path}", status_code=504) from e
+        except httpx.HTTPError as e:
+            raise HyphenAPIError(f"하이픈 통신 오류: {e}", status_code=502) from e
+        if resp.status_code >= 400:
+            try:
+                rbody = resp.json()
+            except Exception:
+                rbody = resp.text
+            raise HyphenAPIError(f"하이픈 API {resp.status_code}: {rbody}", status_code=resp.status_code, body=rbody)
+        if resp.status_code == 204 or not resp.content:
+            return None
+        try:
+            return resp.json()
+        except Exception:
+            return resp.text
+
+    # ============ 기업계좌 거래내역조회 (POST /in0087000483) — PoC 대상 ============
+
+    ACCT_TX_PATH = "/in0087000483"
 
     async def account_transactions(
         self,
@@ -236,42 +279,72 @@ class HyphenClient:
         acct_no: str,
         start_date: str,
         end_date: str,
-        # [암호화] 대상 — 은행사이트/계좌 인증정보 (스크래핑/빠른뱅킹 기준)
-        user_id_enc: Optional[str] = None,
-        user_pw_enc: Optional[str] = None,
-        acct_pw_enc: Optional[str] = None,
-        id_no: Optional[str] = None,
+        login_method: str = "ID",       # ID: 아이디로그인 / CERT: 인증서로그인
+        user_id: Optional[str] = None,   # 은행사이트 사용자 아이디
+        user_pw: Optional[str] = None,   # 은행사이트 비밀번호 (평문 → userPwEnc로 암호화)
+        acct_pw: Optional[str] = None,   # 계좌 비밀번호 (평문 → acctPwEnc로 암호화)
+        sign_cert: Optional[str] = None, # 인증서 PEM (CERT 로그인)
+        sign_pri: Optional[str] = None,  # 개인키 PEM (CERT 로그인)
+        sign_pw: Optional[str] = None,   # 인증서 비밀번호 (평문 → signPwEnc로 암호화)
+        gubun: str = "01",               # 01:입출금,외화 / 02:대출 / 03:펀드(우리은행)
+        detail_yn: str = "Y",            # 상세조회(입출금 계좌정보 출력)
+        sort: str = "OLD",               # NEW:최신 / OLD:과거
+        filter_type: str = "all",        # all / in / out
+        use_channel: Optional[str] = None,
+        cur_cd: Optional[str] = None,
+        encrypt_secrets: bool = True,    # 민감필드 ekey 암호화(*Enc 필드로 전송)
+        gustation: bool = False,         # True면 테스트베드(샘플응답)
         path: Optional[str] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        """기업계좌/빠른뱅킹 거래내역 조회 (PoC).
+        """기업계좌 거래내역조회 — /in0087000483 명세 기준.
 
-        payload 필드명은 개발가이드 확정 전 잠정값 — 실제 가이드에 맞춰 조정 필요.
-        평문으로 넘긴 인증정보(userId/userPw/acctPw)는 여기서 ekey 암호화됨.
+        평문으로 넘긴 userPw/acctPw/signPw는 encrypt_secrets=True면 ekey로 AES 암호화되어
+        각각 userPwEnc/acctPwEnc/signPwEnc 필드로 전송됨.
         """
-        p = path or os.getenv("HYPHEN_ACCT_TX_PATH", "/bank/account/transaction")
+        p = path or os.getenv("HYPHEN_ACCT_TX_PATH", self.ACCT_TX_PATH)
         payload: Dict[str, Any] = {
+            "gubun": gubun,
             "bankCd": bank_cd,
+            "loginMethod": login_method,
             "acctNo": acct_no,
-            "startDate": start_date.replace("-", ""),
-            "endDate": end_date.replace("-", ""),
+            "sdate": start_date.replace("-", ""),
+            "edate": end_date.replace("-", ""),
+            "detailYn": detail_yn,
+            "sort": sort,
+            "filterType": filter_type,
         }
-        if id_no:
-            payload["idNo"] = id_no
-        # 평문 인증정보 → 암호화 필드로 매핑
-        enc_targets = []
-        if user_id_enc is not None:
-            payload["userId"] = user_id_enc
-            enc_targets.append("userId")
-        if user_pw_enc is not None:
-            payload["userPw"] = user_pw_enc
-            enc_targets.append("userPw")
-        if acct_pw_enc is not None:
-            payload["acctPw"] = acct_pw_enc
-            enc_targets.append("acctPw")
+        if use_channel:
+            payload["useChannel"] = use_channel
+        if cur_cd:
+            payload["curCd"] = cur_cd
+
+        def _enc_or_plain(plain_key: str, enc_key: str, value: str):
+            if encrypt_secrets:
+                payload[enc_key] = self.encrypt(value)
+            else:
+                payload[plain_key] = value
+
+        if login_method.upper() == "ID":
+            if user_id is not None:
+                payload["userId"] = user_id
+            if user_pw is not None:
+                _enc_or_plain("userPw", "userPwEnc", user_pw)
+            if acct_pw is not None:
+                _enc_or_plain("acctPw", "acctPwEnc", acct_pw)
+        else:  # CERT
+            if sign_cert is not None:
+                payload["signCert"] = sign_cert
+            if sign_pri is not None:
+                payload["signPri"] = sign_pri
+            if sign_pw is not None:
+                _enc_or_plain("signPw", "signPwEnc", sign_pw)
+            if acct_pw is not None:
+                _enc_or_plain("acctPw", "acctPwEnc", acct_pw)
+
         if extra:
             payload.update(extra)
-        return await self.call(p, payload, encrypt_fields=enc_targets or None)
+        return await self.call_bank(p, payload, gustation=gustation)
 
 
 # 싱글톤

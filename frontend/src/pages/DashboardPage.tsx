@@ -1,21 +1,54 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+} from 'recharts'
+import {
   BanknotesIcon, ArrowDownLeftIcon, ArrowUpRightIcon, CreditCardIcon,
   ArrowTrendingUpIcon, ArrowTrendingDownIcon, SparklesIcon, ArrowRightIcon,
+  BuildingLibraryIcon,
 } from '@heroicons/react/24/outline'
-import { cashDigestApi } from '@/services/api'
+import { cashDigestApi, granterApi } from '@/services/api'
 import { useAuthStore } from '@/store/authStore'
 import { formatCurrency } from '@/utils/format'
+import { useChartTheme } from '@/lib/chartTheme'
 
 export default function DashboardPage() {
   const { user } = useAuthStore()
+  const chartTheme = useChartTheme()
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['dashboard-live'],
     queryFn: () => cashDigestApi.dashboardLive().then((r) => r.data),
     staleTime: 60_000,
   })
+
+  // 통장별 잔액 — 그랜터 자산(활성만) 조회, 대출 계좌 제외
+  const assetsQuery = useQuery({
+    queryKey: ['granter-assets-all', false],
+    queryFn: () => granterApi.listAllAssets(true).then((r) => r.data),
+    staleTime: 60_000,
+    retry: false,
+  })
+
+  const bankBalanceData = useMemo(() => {
+    const bankAssets: any[] = (assetsQuery.data as any)?.BANK_ACCOUNT || []
+    const isLoanAccount = (a: any) => {
+      const accType = String(a?.bankAccount?.accountType || '').toUpperCase()
+      return accType === 'LOAN' || a?.bankAccount?.isLoan === true
+    }
+    return bankAssets
+      .filter((a) => !isLoanAccount(a))
+      .map((a) => {
+        const ba = a?.bankAccount || {}
+        const label = String(a?.nickname || a?.organizationName || '통장').trim()
+        const balance = Number(ba?.accountBalance || 0)
+        const currency = String(ba?.currencyCode || 'KRW').toUpperCase()
+        return { label, balance, currency }
+      })
+      .sort((x, y) => y.balance - x.balance)
+  }, [assetsQuery.data])
 
   const cardDelta = data?.card?.delta_pct || 0
 
@@ -72,6 +105,53 @@ export default function DashboardPage() {
                 전월 대비 {cardDelta >= 0 ? '+' : ''}{cardDelta.toFixed(0)}%
               </div>
             </div>
+          </div>
+
+          {/* 통장별 잔액 */}
+          <div className="panel p-3">
+            <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+              <BuildingLibraryIcon className="h-3.5 w-3.5" />통장별 잔액
+              {bankBalanceData.length > 0 && (
+                <span className="text-ink-400 normal-case font-normal">· {bankBalanceData.length}개 계좌</span>
+              )}
+            </div>
+            {assetsQuery.isLoading ? (
+              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">불러오는 중…</div>
+            ) : assetsQuery.isError ? (
+              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">통장 잔액을 불러오지 못했습니다.</div>
+            ) : bankBalanceData.length === 0 ? (
+              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">활성 계좌 없음</div>
+            ) : (
+              <ResponsiveContainer width="100%" height={Math.max(140, bankBalanceData.length * 32)}>
+                <BarChart
+                  data={bankBalanceData}
+                  layout="vertical"
+                  margin={{ top: 0, right: 24, left: 4, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} horizontal={false} />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 9, fill: chartTheme.axisColor }}
+                    tickFormatter={(v: number) => formatCurrency(v, false)}
+                  />
+                  <YAxis
+                    dataKey="label"
+                    type="category"
+                    tick={{ fontSize: 9, fill: chartTheme.axisColor }}
+                    width={96}
+                  />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
+                    formatter={(v: number) => [formatCurrency(v, false), '잔액']}
+                  />
+                  <Bar dataKey="balance" radius={[0, 3, 3, 0]}>
+                    {bankBalanceData.map((d, i) => (
+                      <Cell key={i} fill={d.balance >= 0 ? '#10b981' : '#f43f5e'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
 
           {/* 최근 입출금 */}

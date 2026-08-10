@@ -264,6 +264,29 @@ async def init_db():
         "CREATE INDEX IF NOT EXISTS ix_card_aliases_assigned_email ON card_aliases(assigned_email) WHERE assigned_email IS NOT NULL",
         # 공동관리 다중 배정 — 여러 직원이 한 카드를 함께 분류/마감
         "ALTER TABLE card_aliases ADD COLUMN IF NOT EXISTS assigned_emails TEXT",
+        # 하이픈 은행 스크래핑 인증정보 (암호화 보관, 30일 TTL)
+        """CREATE TABLE IF NOT EXISTS hyphen_credentials (
+            id SERIAL PRIMARY KEY,
+            label VARCHAR(100),
+            bank_cd VARCHAR(10) NOT NULL,
+            acct_no VARCHAR(50) NOT NULL,
+            acct_last4 VARCHAR(8),
+            login_method VARCHAR(10) DEFAULT 'CERT',
+            enc_sign_cert TEXT,
+            enc_sign_pri TEXT,
+            enc_sign_pw TEXT,
+            enc_acct_pw TEXT,
+            enc_user_id TEXT,
+            enc_user_pw TEXT,
+            cert_subject VARCHAR(300),
+            cert_expires_at TIMESTAMP,
+            created_by VARCHAR(255),
+            created_at TIMESTAMP DEFAULT NOW(),
+            expires_at TIMESTAMP NOT NULL,
+            last_used_at TIMESTAMP,
+            last_status VARCHAR(300)
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_hyphen_credentials_bank ON hyphen_credentials(bank_cd)",
         # 급여 세금 설정/오버라이드 (외부 확정값 입력)
         """CREATE TABLE IF NOT EXISTS payroll_tax_settings (
             id SERIAL PRIMARY KEY,

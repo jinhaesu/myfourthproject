@@ -34,6 +34,7 @@ const BudgetPage = lazyRetry(() => import('@/pages/BudgetPage'))
 const ForecastPage = lazyRetry(() => import('@/pages/ForecastPage'))
 const ReportsPage = lazyRetry(() => import('@/pages/ReportsPage'))
 const SettingsPage = lazyRetry(() => import('@/pages/SettingsPage'))
+const HyphenIntegrationPage = lazyRetry(() => import('@/pages/HyphenIntegrationPage'))
 const AdminPage = lazyRetry(() => import('@/pages/AdminPage'))
 const AIClassificationPage = lazyRetry(() => import('@/pages/AIClassificationPage'))
 const SalesAutomationPage = lazyRetry(() => import('@/pages/SalesAutomationPage'))
@@ -139,6 +140,7 @@ function App() {
           <Route path="payroll" element={<AdminRoute><PayrollPage /></AdminRoute>} />
           <Route path="payroll-import" element={<AdminRoute><PayrollImportPage /></AdminRoute>} />
           <Route path="settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
+          <Route path="hyphen" element={<AdminRoute><HyphenIntegrationPage /></AdminRoute>} />
           <Route path="admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
         </Route>
       </Routes>
