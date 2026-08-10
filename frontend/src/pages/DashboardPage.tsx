@@ -1,8 +1,8 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import {
   BanknotesIcon, ArrowDownLeftIcon, ArrowUpRightIcon, CreditCardIcon,
@@ -24,7 +24,27 @@ export default function DashboardPage() {
     staleTime: 60_000,
   })
 
-  // 통장별 잔액 — 그랜터 자산(활성만) 조회, 대출 계좌 제외
+  // 통장별 잔액 시계열 — 현재 잔액(자산) + 30일 거래금액 역산으로 일별 EOD 잔액 재구성
+  const BAL_PALETTE = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#14b8a6']
+  const [hiddenAccts, setHiddenAccts] = useState<Set<string>>(new Set())
+
+  const balDays = useMemo(() => {
+    const isoLocal = (d: Date) => {
+      const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+      return z.toISOString().slice(0, 10)
+    }
+    const arr: string[] = []
+    const t = new Date()
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(t)
+      d.setDate(t.getDate() - i)
+      arr.push(isoLocal(d))
+    }
+    return arr
+  }, [])
+  const balFrom = balDays[0]
+  const balTo = balDays[balDays.length - 1]
+
   const assetsQuery = useQuery({
     queryKey: ['granter-assets-all', false],
     queryFn: () => granterApi.listAllAssets(true).then((r) => r.data),
@@ -32,23 +52,69 @@ export default function DashboardPage() {
     retry: false,
   })
 
-  const bankBalanceData = useMemo(() => {
+  // 30일 계좌 거래내역 (역산용)
+  const bankTxQuery = useQuery({
+    queryKey: ['dash-bank-tx', balFrom, balTo],
+    queryFn: () =>
+      granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: balFrom, endDate: balTo }).then((r) => r.data),
+    staleTime: 60_000,
+    retry: false,
+  })
+
+  const { balAccounts, balChartData } = useMemo(() => {
     const bankAssets: any[] = (assetsQuery.data as any)?.BANK_ACCOUNT || []
     const isLoanAccount = (a: any) => {
       const accType = String(a?.bankAccount?.accountType || '').toUpperCase()
       return accType === 'LOAN' || a?.bankAccount?.isLoan === true
     }
-    return bankAssets
+    const accs = bankAssets
       .filter((a) => !isLoanAccount(a))
-      .map((a) => {
+      .map((a, i) => {
         const ba = a?.bankAccount || {}
-        const label = String(a?.nickname || a?.organizationName || '통장').trim()
-        const balance = Number(ba?.accountBalance || 0)
-        const currency = String(ba?.currencyCode || 'KRW').toUpperCase()
-        return { label, balance, currency }
+        const acctNo = String(ba?.accountNumber || a?.number || '')
+        const last3 = acctNo.replace(/\D/g, '').slice(-3)
+        const org = String(a?.organizationName || a?.nickname || '통장').trim()
+        return {
+          id: String(a?.id),
+          label: last3 ? `${org}(${last3})` : org,
+          balance: Number(ba?.accountBalance || 0),
+          color: BAL_PALETTE[i % BAL_PALETTE.length],
+        }
       })
       .sort((x, y) => y.balance - x.balance)
-  }, [assetsQuery.data])
+
+    // 계좌×일자 순변동 집계
+    const raw = bankTxQuery.data
+    const tickets: any[] = Array.isArray(raw) ? raw : ((raw as any)?.data || [])
+    const net: Record<string, Record<string, number>> = {}
+    for (const t of tickets) {
+      const aid = String(t?.assetId || t?.asset?.id || '')
+      if (!aid) continue
+      const dt = String(t?.transactAt || t?.transactionDate || t?.date || '').slice(0, 10)
+      if (!dt) continue
+      const amt = Number(t?.amount || 0)
+      const signed = String(t?.transactionType) === 'IN' ? amt : -amt
+      if (!net[aid]) net[aid] = {}
+      net[aid][dt] = (net[aid][dt] || 0) + signed
+    }
+    // EOD 잔액 역산: 오늘 EOD = 현재잔액, EOD[전일] = EOD[당일] - net(당일)
+    const eod: Record<string, Record<string, number>> = {}
+    for (const a of accs) {
+      eod[a.id] = {}
+      let bal = a.balance
+      for (let i = balDays.length - 1; i >= 0; i--) {
+        const d = balDays[i]
+        eod[a.id][d] = bal
+        bal = bal - (net[a.id]?.[d] || 0)
+      }
+    }
+    const data = balDays.map((d) => {
+      const row: any = { date: d.slice(5).replace('-', '/') }
+      for (const a of accs) row[a.id] = eod[a.id]?.[d]
+      return row
+    })
+    return { balAccounts: accs, balChartData: data }
+  }, [assetsQuery.data, bankTxQuery.data, balDays])
 
   const cardDelta = data?.card?.delta_pct || 0
 
@@ -107,50 +173,81 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* 통장별 잔액 */}
+          {/* 통장별 잔액 추이 (최근 30일, 일별) */}
           <div className="panel p-3">
             <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-              <BuildingLibraryIcon className="h-3.5 w-3.5" />통장별 잔액
-              {bankBalanceData.length > 0 && (
-                <span className="text-ink-400 normal-case font-normal">· {bankBalanceData.length}개 계좌</span>
+              <BuildingLibraryIcon className="h-3.5 w-3.5" />통장별 잔액 추이
+              <span className="text-ink-400 normal-case font-normal">· 최근 30일</span>
+              {balAccounts.length > 0 && (
+                <span className="text-ink-400 normal-case font-normal">· {balAccounts.length}개 계좌</span>
               )}
             </div>
-            {assetsQuery.isLoading ? (
-              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">불러오는 중…</div>
+            {assetsQuery.isLoading || bankTxQuery.isLoading ? (
+              <div className="h-56 flex items-center justify-center text-2xs text-ink-400">불러오는 중…</div>
             ) : assetsQuery.isError ? (
-              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">통장 잔액을 불러오지 못했습니다.</div>
-            ) : bankBalanceData.length === 0 ? (
-              <div className="h-32 flex items-center justify-center text-2xs text-ink-400">활성 계좌 없음</div>
+              <div className="h-56 flex items-center justify-center text-2xs text-ink-400">통장 잔액을 불러오지 못했습니다.</div>
+            ) : balAccounts.length === 0 ? (
+              <div className="h-56 flex items-center justify-center text-2xs text-ink-400">활성 계좌 없음</div>
             ) : (
-              <ResponsiveContainer width="100%" height={Math.max(140, bankBalanceData.length * 32)}>
-                <BarChart
-                  data={bankBalanceData}
-                  layout="vertical"
-                  margin={{ top: 0, right: 24, left: 4, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} horizontal={false} />
-                  <XAxis
-                    type="number"
-                    tick={{ fontSize: 9, fill: chartTheme.axisColor }}
-                    tickFormatter={(v: number) => formatCurrency(v, false)}
-                  />
-                  <YAxis
-                    dataKey="label"
-                    type="category"
-                    tick={{ fontSize: 9, fill: chartTheme.axisColor }}
-                    width={96}
-                  />
-                  <Tooltip
-                    contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
-                    formatter={(v: number) => [formatCurrency(v, false), '잔액']}
-                  />
-                  <Bar dataKey="balance" radius={[0, 3, 3, 0]}>
-                    {bankBalanceData.map((d, i) => (
-                      <Cell key={i} fill={d.balance >= 0 ? '#10b981' : '#f43f5e'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+              <>
+                {/* 계좌 선택 토글 */}
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {balAccounts.map((a) => {
+                    const on = !hiddenAccts.has(a.id)
+                    return (
+                      <button
+                        key={a.id}
+                        onClick={() =>
+                          setHiddenAccts((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(a.id)) next.delete(a.id)
+                            else next.add(a.id)
+                            return next
+                          })
+                        }
+                        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs border transition ${
+                          on
+                            ? 'border-ink-200 dark:border-ink-700 text-ink-700 dark:text-ink-200'
+                            : 'border-ink-100 dark:border-ink-800 text-ink-300 dark:text-ink-600 line-through'
+                        }`}
+                        title={on ? '숨기기' : '표시'}
+                      >
+                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: on ? a.color : 'transparent', border: `1px solid ${a.color}` }} />
+                        {a.label}
+                      </button>
+                    )
+                  })}
+                </div>
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart data={balChartData} margin={{ top: 4, right: 16, left: 4, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
+                    <XAxis dataKey="date" tick={{ fontSize: 9, fill: chartTheme.axisColor }} minTickGap={24} />
+                    <YAxis
+                      tick={{ fontSize: 9, fill: chartTheme.axisColor }}
+                      width={64}
+                      tickFormatter={(v: number) => formatCurrency(v, false)}
+                    />
+                    <Tooltip
+                      contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
+                      formatter={(v: number, name: string) => [formatCurrency(v, false), name]}
+                    />
+                    {balAccounts
+                      .filter((a) => !hiddenAccts.has(a.id))
+                      .map((a) => (
+                        <Line
+                          key={a.id}
+                          type="monotone"
+                          dataKey={a.id}
+                          name={a.label}
+                          stroke={a.color}
+                          strokeWidth={1.5}
+                          dot={false}
+                          connectNulls
+                        />
+                      ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </>
             )}
           </div>
 
