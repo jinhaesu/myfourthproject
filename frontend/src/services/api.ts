@@ -1316,6 +1316,7 @@ export const hyphenApi = {
     acct_pw?: string; sign_cert_b64?: string; sign_pri_b64?: string; sign_pw?: string
     user_id?: string; user_pw?: string
   }) => api.post<HyphenCredential>('/hyphen/credentials', body, { timeout: 60_000 }),
+  registerCode: () => api.post<{ code: string; expires_in: number }>('/hyphen/register-code'),
   deleteCredential: (id: number) => api.delete(`/hyphen/credentials/${id}`),
   queryCredential: (
     id: number,

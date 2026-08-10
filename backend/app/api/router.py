@@ -85,6 +85,8 @@ api_router.include_router(connect.router, prefix="/connect", tags=["세무대리
 api_router.include_router(ledger.router, prefix="/ledger", tags=["계정원장"], dependencies=ADMIN_ONLY)
 api_router.include_router(granter.router, prefix="/granter", tags=["Granter"], dependencies=ADMIN_ONLY)
 api_router.include_router(hyphen.router, prefix="/hyphen", tags=["Hyphen"], dependencies=ADMIN_ONLY)
+# 로컬 등록도구용 공개 엔드포인트 (1회용 코드로 게이트, ADMIN_ONLY 미적용)
+api_router.include_router(hyphen.public_router, prefix="/hyphen", tags=["Hyphen"])
 api_router.include_router(exchange_rates.router, tags=["exchange-rates"], dependencies=ADMIN_ONLY)
 api_router.include_router(daily_cash_report.router, prefix="/daily-cash-report", tags=["자금일보"], dependencies=ADMIN_ONLY)
 api_router.include_router(auto_voucher.router, prefix="/auto-voucher", tags=["자동전표"], dependencies=ADMIN_ONLY)

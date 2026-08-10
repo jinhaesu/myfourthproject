@@ -15,13 +15,16 @@ HYPHEN (하이픈) 라우터 — 그랜터 대체 PoC (계좌 속도 벤치마�
 import time
 import base64
 import logging
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Body, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from jose import JWTError, jwt
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.security import get_current_user
 from app.services.hyphen_client import get_hyphen_client, HyphenAPIError
 from app.services.granter_client import get_granter_client, GranterAPIError
@@ -29,6 +32,11 @@ from app.services import hyphen_credentials as creds_svc
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+# 로컬 등록도구용 공개 라우터 (1회용 코드로 게이트 — ADMIN_ONLY 미적용)
+public_router = APIRouter()
+
+_REG_CODE_PURPOSE = "hyphen_reg"
+_REG_CODE_TTL_SEC = 600  # 10분
 
 
 def _err(e: HyphenAPIError):
@@ -334,3 +342,52 @@ async def hyphen_credential_query(
         )
     except HyphenAPIError as e:
         raise _err(e)
+
+
+# ============ 로컬 등록도구 (1회용 코드) ============
+
+@router.post("/register-code")
+async def hyphen_register_code(user=Depends(get_current_user)):
+    """로컬 인증서 등록도구용 1회용 코드 발급 (관리자 세션). 10분 유효."""
+    email = getattr(user, "email", None) if user else None
+    exp = datetime.utcnow() + timedelta(seconds=_REG_CODE_TTL_SEC)
+    code = jwt.encode(
+        {"purpose": _REG_CODE_PURPOSE, "created_by": email, "exp": exp},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    return {"code": code, "expires_in": _REG_CODE_TTL_SEC}
+
+
+class RegisterByCodeBody(RegisterCredBody):
+    code: str
+
+
+@public_router.post("/credentials/by-code")
+async def hyphen_register_by_code(body: RegisterByCodeBody, db: AsyncSession = Depends(get_db)):
+    """로컬 등록도구가 1회용 코드로 인증서/비번을 암호화 등록 (SSO 불필요, 코드로 게이트)."""
+    try:
+        payload = jwt.decode(body.code, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="등록 코드가 유효하지 않거나 만료되었습니다.")
+    if payload.get("purpose") != _REG_CODE_PURPOSE:
+        raise HTTPException(status_code=401, detail="잘못된 등록 코드입니다.")
+    created_by = payload.get("created_by")
+    try:
+        cred = await creds_svc.register_credential(
+            db,
+            bank_cd=body.bank_cd,
+            acct_no=body.acct_no,
+            acct_pw=body.acct_pw,
+            login_method=body.login_method,
+            sign_cert_bytes=_b64_to_bytes(body.sign_cert_b64),
+            sign_pri_bytes=_b64_to_bytes(body.sign_pri_b64),
+            sign_pw=body.sign_pw,
+            user_id=body.user_id,
+            user_pw=body.user_pw,
+            label=body.label,
+            created_by=created_by,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"인증정보 등록 실패: {e}")
+    return creds_svc.to_public(cred)

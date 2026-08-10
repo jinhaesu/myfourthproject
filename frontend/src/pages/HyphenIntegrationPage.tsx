@@ -80,6 +80,13 @@ export default function HyphenIntegrationPage() {
     onError: () => toast.error('삭제 실패'),
   })
 
+  const [regCode, setRegCode] = useState<string | null>(null)
+  const codeMut = useMutation({
+    mutationFn: () => hyphenApi.registerCode().then((r) => r.data),
+    onSuccess: (d) => setRegCode(d.code),
+    onError: () => toast.error('코드 발급 실패'),
+  })
+
   const creds = credsQuery.data || []
 
   return (
@@ -97,7 +104,7 @@ export default function HyphenIntegrationPage() {
           className="btn-primary"
         >
           <ShieldCheckIcon className="h-3.5 w-3.5 mr-1" />
-          인증서 등록
+          파일로 직접 등록
         </button>
       </div>
 
@@ -119,6 +126,43 @@ export default function HyphenIntegrationPage() {
           )}
         </div>
       )}
+
+      {/* 이 PC에서 인증서로 등록 (로컬 등록도구) */}
+      <div className="panel p-3">
+        <div className="text-2xs font-semibold text-ink-700 dark:text-ink-300 uppercase tracking-wider flex items-center gap-1.5 mb-2">
+          <ShieldCheckIcon className="h-3.5 w-3.5" />이 PC에서 인증서로 등록 (권장)
+        </div>
+        <div className="text-2xs text-ink-500 dark:text-ink-400 leading-relaxed space-y-1">
+          <p>파일 위치를 찾을 필요 없이, 이 PC에 설치된 공동인증서를 <b>자동으로 목록에서 골라</b> 등록합니다. 비밀번호는 <b>내 PC에서만</b> 입력됩니다.</p>
+          <ol className="list-decimal ml-4 space-y-0.5">
+            <li>아래 <b>등록 코드 생성</b> 클릭 → 코드 복사</li>
+            <li>PC에서 등록도구 실행:{' '}
+              <code className="font-mono bg-ink-100 dark:bg-ink-800 px-1 rounded">python C:\Users\lion9\myfourthproject\tools\hyphen_cert_register.py</code>
+            </li>
+            <li>인증서 선택 → 계좌정보·비밀번호 입력 → 붙여넣은 코드로 등록</li>
+          </ol>
+        </div>
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <button onClick={() => codeMut.mutate()} disabled={codeMut.isPending} className="btn-primary">
+            {codeMut.isPending ? '발급 중…' : '등록 코드 생성 (10분 유효)'}
+          </button>
+          {regCode && (
+            <div className="flex items-center gap-1.5">
+              <input
+                readOnly
+                value={regCode}
+                className="font-mono text-2xs bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 w-64"
+              />
+              <button
+                onClick={() => { navigator.clipboard.writeText(regCode); toast.success('코드 복사됨') }}
+                className="btn-secondary"
+              >
+                복사
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* 등록된 인증정보 */}
       <div className="panel">
