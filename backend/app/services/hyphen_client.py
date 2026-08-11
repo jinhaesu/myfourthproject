@@ -47,6 +47,16 @@ def _to_16(raw: bytes) -> bytes:
     return raw + b"\x00" * (16 - len(raw))
 
 
+def _pem_body(s: Optional[str]) -> Optional[str]:
+    """하이픈 signCert/signPri 입력형식 — PEM 헤더/푸터와 모든 공백·개행 제거한 순수 base64."""
+    if not s:
+        return s
+    import re
+    s2 = re.sub(r"-----BEGIN [^-]+-----", "", s)
+    s2 = re.sub(r"-----END [^-]+-----", "", s2)
+    return "".join(s2.split())
+
+
 class HyphenClient:
     """하이픈 비동기 클라이언트 (OAuth 캐싱 + ekey AES 암호화)."""
 
@@ -314,9 +324,9 @@ class HyphenClient:
                 _enc_or_plain("userPw", "userPwEnc", user_pw)
         else:  # CERT
             if sign_cert is not None:
-                payload["signCert"] = sign_cert
+                payload["signCert"] = _pem_body(sign_cert)
             if sign_pri is not None:
-                payload["signPri"] = sign_pri
+                payload["signPri"] = _pem_body(sign_pri)
             if sign_pw is not None:
                 _enc_or_plain("signPw", "signPwEnc", sign_pw)
         # 일부 은행(우리 등) 아이디로그인 시 계좌 추가인증 필요
@@ -390,9 +400,9 @@ class HyphenClient:
                 _enc_or_plain("acctPw", "acctPwEnc", acct_pw)
         else:  # CERT
             if sign_cert is not None:
-                payload["signCert"] = sign_cert
+                payload["signCert"] = _pem_body(sign_cert)
             if sign_pri is not None:
-                payload["signPri"] = sign_pri
+                payload["signPri"] = _pem_body(sign_pri)
             if sign_pw is not None:
                 _enc_or_plain("signPw", "signPwEnc", sign_pw)
             if acct_pw is not None:
