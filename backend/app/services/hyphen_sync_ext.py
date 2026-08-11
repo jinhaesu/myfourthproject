@@ -188,21 +188,30 @@ async def sync_cards(db: AsyncSession, *, start_date: str, end_date: str, gustat
     accts = (await db.execute(select(HyphenCardAccount))).scalars().all()
     total_inserted = 0
     results = []
+    import asyncio
     for a in accts:
         sign = cert if (a.login_method == "CERT" and cert) else (None, None, None)
-        try:
-            data = await client.card_transactions(
+
+        async def _call():
+            return await client.card_transactions(
                 card_cd=a.card_cd, card_no=a.card_no, biz_no=COMPANY_BIZ_NO,
                 start_date=start_date, end_date=end_date,
                 sign_cert=sign[0], sign_pri=sign[1], sign_pw=sign[2],
                 user_id=_dec(a.enc_user_id), user_pw=_dec(a.enc_user_pw),
                 login_method=a.login_method, gustation=gustation,
             )
+        try:
+            data = await _call()
+            common = (data or {}).get("common") if isinstance(data, dict) else {}
+            # C0005(데이터 조회 중 오류 — 잠시 후 재시도) 시 1회 재시도
+            if isinstance(common, dict) and common.get("errYn") == "Y" and "C0005" in str(common.get("errMsg") or ""):
+                await asyncio.sleep(3)
+                data = await _call()
+                common = (data or {}).get("common") if isinstance(data, dict) else {}
         except HyphenAPIError as e:
             a.last_status = f"오류: {str(e)[:280]}"
             results.append({"card_no": a.card_no, "ok": False, "error": str(e)[:120]})
             continue
-        common = (data or {}).get("common") if isinstance(data, dict) else {}
         if isinstance(common, dict) and common.get("errYn") == "Y":
             a.last_status = f"실패: {common.get('errMsg')}"
             results.append({"card_no": a.card_no, "ok": False, "error": common.get("errMsg")})

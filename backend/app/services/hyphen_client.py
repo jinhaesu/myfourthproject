@@ -383,7 +383,7 @@ class HyphenClient:
         payload: Dict[str, Any] = {
             "cardCd": card_cd, "loginMethod": login_method, "cardNo": card_no, "bizNo": biz_no,
             "sdate": start_date.replace("-", ""), "edate": end_date.replace("-", ""),
-            "useArea": "N", "cardNoFilter": "Y",
+            "useArea": os.getenv("HYPHEN_CARD_USEAREA", "D"), "cardNoFilter": "Y", "orApprYn": "N",
         }
         if login_method.upper() == "CERT":
             self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
