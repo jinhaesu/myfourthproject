@@ -116,6 +116,70 @@ async def sync_all(db: AsyncSession, *, start_date: str, end_date: str) -> Dict[
     return {"synced": len([r for r in results if r.get("ok")]), "results": results}
 
 
+async def dashboard_bank_aggregates(db: AsyncSession, *, as_of=None) -> Optional[Dict[str, Any]]:
+    """대시보드용 은행 집계(하이픈 원장) — 가용자금·어제·최근7일 입출금+상위 거래처.
+    등록 계좌가 없으면 None(그랜터 폴백)."""
+    from datetime import date as _date, timedelta as _td
+    today = as_of or _date.today()
+    yesterday = today - _td(days=1)
+    week_start = today - _td(days=6)
+
+    creds = (await db.execute(select(HyphenCredential).order_by(HyphenCredential.id))).scalars().all()
+    bal_by_acct: Dict[str, Any] = {}
+    active_accts = set()
+    for c in creds:
+        if c.is_expired:
+            continue
+        active_accts.add(c.acct_no)
+        prev = bal_by_acct.get(c.acct_no)
+        if prev is None or (c.last_synced_at and (prev[1] is None or c.last_synced_at > prev[1])):
+            bal_by_acct[c.acct_no] = (float(c.last_balance or 0), c.last_synced_at)
+    if not active_accts:
+        return None
+    balance = sum(v[0] for v in bal_by_acct.values())
+
+    def _n(d: str) -> str:
+        return (d or "").replace("-", "")
+
+    y = _n(yesterday.isoformat())
+    ws = _n(week_start.isoformat())
+    te = _n(today.isoformat())
+
+    rows = (await db.execute(
+        select(HyphenBankTx).where(HyphenBankTx.acct_no.in_(list(active_accts)))
+    )).scalars().all()
+
+    y_in = y_out = w_in = w_out = 0.0
+    inflows: List[Dict[str, Any]] = []
+    outflows: List[Dict[str, Any]] = []
+    for t in rows:
+        d = _n(t.tr_date)
+        ia = float(t.in_amt or 0)
+        oa = float(t.out_amt or 0)
+        iso = f"{d[0:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else t.tr_date
+        cp = t.tr_name or t.counterparty_name or "(미지정)"
+        if d == y:
+            y_in += ia
+            y_out += oa
+        if ws <= d <= te:
+            w_in += ia
+            w_out += oa
+            if ia > 0:
+                inflows.append({"counterparty": cp, "description": "", "amount": ia, "date": iso})
+            if oa > 0:
+                outflows.append({"counterparty": cp, "description": "", "amount": oa, "date": iso})
+    inflows.sort(key=lambda x: x["amount"], reverse=True)
+    outflows.sort(key=lambda x: x["amount"], reverse=True)
+    return {
+        "balance": balance,
+        "yesterday": {"inflow": y_in, "outflow": y_out},
+        "week": {
+            "inflow": w_in, "outflow": w_out,
+            "top_inflows": inflows[:5], "top_outflows": outflows[:5],
+        },
+    }
+
+
 async def balance_series(db: AsyncSession, *, days: int = 30) -> Dict[str, Any]:
     """하이픈 원장 기반 계좌별 일별 EOD 잔액 시계열 (대시보드용).
     현재 잔액(last_balance) + 일별 순변동 역산으로 재구성. 계좌는 acct_no로 중복 제거.

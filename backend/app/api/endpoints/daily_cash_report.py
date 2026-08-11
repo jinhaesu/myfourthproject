@@ -118,10 +118,10 @@ async def update_config(
 
 
 @router.get("/dashboard-live")
-async def dashboard_live():
-    """대시보드 실데이터 — 그랜터 기반 (잔액·최근 입출금·카드 월비교)."""
+async def dashboard_live(db: AsyncSession = Depends(get_db)):
+    """대시보드 실데이터 — 은행=하이픈 원장(폴백 그랜터), 카드=그랜터."""
     from app.services.dashboard_live import build_dashboard
-    return await build_dashboard()
+    return await build_dashboard(db=db)
 
 
 @router.get("/preview")

@@ -9,7 +9,7 @@ import {
   ArrowTrendingUpIcon, ArrowTrendingDownIcon, SparklesIcon, ArrowRightIcon,
   BuildingLibraryIcon,
 } from '@heroicons/react/24/outline'
-import { cashDigestApi, granterApi } from '@/services/api'
+import { cashDigestApi, hyphenApi } from '@/services/api'
 import { useAuthStore } from '@/store/authStore'
 import { formatCurrency } from '@/utils/format'
 import { useChartTheme } from '@/lib/chartTheme'
@@ -24,97 +24,41 @@ export default function DashboardPage() {
     staleTime: 60_000,
   })
 
-  // 통장별 잔액 시계열 — 현재 잔액(자산) + 30일 거래금액 역산으로 일별 EOD 잔액 재구성
+  // 통장별 잔액 시계열 — Hyphen 원장 EOD 잔액 시계열
   const BAL_PALETTE = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#14b8a6']
   const [hiddenAccts, setHiddenAccts] = useState<Set<string>>(new Set())
 
-  const balDays = useMemo(() => {
-    const isoLocal = (d: Date) => {
-      const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
-      return z.toISOString().slice(0, 10)
-    }
-    const arr: string[] = []
-    const t = new Date()
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(t)
-      d.setDate(t.getDate() - i)
-      arr.push(isoLocal(d))
-    }
-    return arr
-  }, [])
-  const balFrom = balDays[0]
-  const balTo = balDays[balDays.length - 1]
+  const BANK_NAMES: Record<string, string> = {
+    '003': '기업은행', '004': '국민은행', '011': '농협', '020': '우리은행', '023': 'SC제일',
+    '027': '씨티', '031': '대구', '032': '부산', '081': '하나은행', '088': '신한은행',
+    '090': '카카오뱅크', '092': '토스뱅크', '002': '산업', '007': '수협', '071': '우체국',
+  }
 
-  const assetsQuery = useQuery({
-    queryKey: ['granter-assets-all', false],
-    queryFn: () => granterApi.listAllAssets(true).then((r) => r.data),
-    staleTime: 60_000,
-    retry: false,
-  })
-
-  // 30일 계좌 거래내역 (역산용)
-  const bankTxQuery = useQuery({
-    queryKey: ['dash-bank-tx', balFrom, balTo],
-    queryFn: () =>
-      granterApi.listTickets({ ticketType: 'BANK_TRANSACTION_TICKET', startDate: balFrom, endDate: balTo }).then((r) => r.data),
+  const balSeriesQuery = useQuery({
+    queryKey: ['hyphen-balance-series', 30],
+    queryFn: () => hyphenApi.balanceSeries(30).then((r) => r.data),
     staleTime: 60_000,
     retry: false,
   })
 
   const { balAccounts, balChartData } = useMemo(() => {
-    const bankAssets: any[] = (assetsQuery.data as any)?.BANK_ACCOUNT || []
-    const isLoanAccount = (a: any) => {
-      const accType = String(a?.bankAccount?.accountType || '').toUpperCase()
-      return accType === 'LOAN' || a?.bankAccount?.isLoan === true
-    }
-    const accs = bankAssets
-      .filter((a) => !isLoanAccount(a))
-      .map((a, i) => {
-        const ba = a?.bankAccount || {}
-        const acctNo = String(ba?.accountNumber || a?.number || '')
-        const last3 = acctNo.replace(/\D/g, '').slice(-3)
-        const org = String(a?.organizationName || a?.nickname || '통장').trim()
-        return {
-          id: String(a?.id),
-          label: last3 ? `${org}(${last3})` : org,
-          balance: Number(ba?.accountBalance || 0),
-          color: BAL_PALETTE[i % BAL_PALETTE.length],
-        }
-      })
+    const accounts: any[] = (balSeriesQuery.data as any)?.accounts || []
+    const accs = accounts
+      .map((a, i) => ({
+        id: String(a?.acct_no),
+        label: `${BANK_NAMES[a?.bank_cd] || a?.bank_cd}(${a?.last4})`,
+        balance: Number(a?.balance || 0),
+        color: BAL_PALETTE[i % BAL_PALETTE.length],
+      }))
       .sort((x, y) => y.balance - x.balance)
 
-    // 계좌×일자 순변동 집계
-    const raw = bankTxQuery.data
-    const tickets: any[] = Array.isArray(raw) ? raw : ((raw as any)?.data || [])
-    const net: Record<string, Record<string, number>> = {}
-    for (const t of tickets) {
-      const aid = String(t?.assetId || t?.asset?.id || '')
-      if (!aid) continue
-      const dt = String(t?.transactAt || t?.transactionDate || t?.date || '').slice(0, 10)
-      if (!dt) continue
-      const amt = Number(t?.amount || 0)
-      const signed = String(t?.transactionType) === 'IN' ? amt : -amt
-      if (!net[aid]) net[aid] = {}
-      net[aid][dt] = (net[aid][dt] || 0) + signed
-    }
-    // EOD 잔액 역산: 오늘 EOD = 현재잔액, EOD[전일] = EOD[당일] - net(당일)
-    const eod: Record<string, Record<string, number>> = {}
-    for (const a of accs) {
-      eod[a.id] = {}
-      let bal = a.balance
-      for (let i = balDays.length - 1; i >= 0; i--) {
-        const d = balDays[i]
-        eod[a.id][d] = bal
-        bal = bal - (net[a.id]?.[d] || 0)
-      }
-    }
-    const data = balDays.map((d) => {
-      const row: any = { date: d.slice(5).replace('-', '/') }
-      for (const a of accs) row[a.id] = eod[a.id]?.[d]
-      return row
-    })
+    const series: any[] = (balSeriesQuery.data as any)?.series || []
+    const data = series.map((row) => ({
+      ...row,
+      date: String(row?.date || '').slice(5).replace('-', '/'),
+    }))
     return { balAccounts: accs, balChartData: data }
-  }, [assetsQuery.data, bankTxQuery.data, balDays])
+  }, [balSeriesQuery.data])
 
   const cardDelta = data?.card?.delta_pct || 0
 
@@ -182,9 +126,9 @@ export default function DashboardPage() {
                 <span className="text-ink-400 normal-case font-normal">· {balAccounts.length}개 계좌</span>
               )}
             </div>
-            {assetsQuery.isLoading || bankTxQuery.isLoading ? (
+            {balSeriesQuery.isLoading ? (
               <div className="h-56 flex items-center justify-center text-2xs text-ink-400">불러오는 중…</div>
-            ) : assetsQuery.isError ? (
+            ) : balSeriesQuery.isError ? (
               <div className="h-56 flex items-center justify-center text-2xs text-ink-400">통장 잔액을 불러오지 못했습니다.</div>
             ) : balAccounts.length === 0 ? (
               <div className="h-56 flex items-center justify-center text-2xs text-ink-400">활성 계좌 없음</div>

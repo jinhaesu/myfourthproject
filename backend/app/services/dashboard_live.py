@@ -20,7 +20,7 @@ def _num(v: Any) -> float:
         return 0.0
 
 
-async def build_dashboard(as_of: date | None = None) -> Dict[str, Any]:
+async def build_dashboard(as_of: date | None = None, db=None) -> Dict[str, Any]:
     from app.services.daily_cash_report import (
         _granter_daily_report, _granter_bank_tickets, _granter_expense_tickets,
         _split_inflow_outflow,
@@ -28,26 +28,43 @@ async def build_dashboard(as_of: date | None = None) -> Dict[str, Any]:
 
     today = as_of or date.today()
     yesterday = today - timedelta(days=1)
-
-    # 1) 현재 가용자금 = 오늘 기준 currentBalance (실시간 — 통합조회 잔액과 동일)
-    today_report = await _granter_daily_report(today)
-    today_total = (today_report or {}).get("total", {}) if isinstance(today_report, dict) else {}
-    balance = _num(today_total.get("currentBalance"))
-
-    # 어제 순증감 = 마지막 완료일(어제) 입출금
-    y_report = await _granter_daily_report(yesterday)
-    y_total = (y_report or {}).get("total", {}) if isinstance(y_report, dict) else {}
-    y_inflow = _num(y_total.get("inAmount"))
-    y_outflow = _num(y_total.get("outAmount"))
-
-    # 2) 최근 7일 통장 입출금 상위 (통합조회 last_7d와 동일하게 today-6 = 7일 포함)
     week_start = today - timedelta(days=6)
-    bank = await _granter_bank_tickets(week_start, today)
-    inflows, outflows = _split_inflow_outflow(bank)
-    inflows.sort(key=lambda x: x["amount"], reverse=True)
-    outflows.sort(key=lambda x: x["amount"], reverse=True)
-    week_inflow = sum(i["amount"] for i in inflows)
-    week_outflow = sum(o["amount"] for o in outflows)
+
+    # === 은행 데이터: 하이픈 원장 우선(전 계좌 연동), 없으면 그랜터 폴백 ===
+    agg = None
+    if db is not None:
+        try:
+            from app.services.hyphen_sync import dashboard_bank_aggregates
+            agg = await dashboard_bank_aggregates(db, as_of=today)
+        except Exception:
+            logger.exception("hyphen dashboard aggregates 실패 → 그랜터 폴백")
+            agg = None
+
+    if agg is not None:
+        balance = _num(agg["balance"])
+        y_inflow = _num(agg["yesterday"]["inflow"])
+        y_outflow = _num(agg["yesterday"]["outflow"])
+        inflows = agg["week"]["top_inflows"]
+        outflows = agg["week"]["top_outflows"]
+        week_inflow = _num(agg["week"]["inflow"])
+        week_outflow = _num(agg["week"]["outflow"])
+    else:
+        # 1) 현재 가용자금 = 오늘 기준 currentBalance (실시간 — 통합조회 잔액과 동일)
+        today_report = await _granter_daily_report(today)
+        today_total = (today_report or {}).get("total", {}) if isinstance(today_report, dict) else {}
+        balance = _num(today_total.get("currentBalance"))
+        # 어제 순증감 = 마지막 완료일(어제) 입출금
+        y_report = await _granter_daily_report(yesterday)
+        y_total = (y_report or {}).get("total", {}) if isinstance(y_report, dict) else {}
+        y_inflow = _num(y_total.get("inAmount"))
+        y_outflow = _num(y_total.get("outAmount"))
+        # 2) 최근 7일 통장 입출금 상위 (today-6 = 7일 포함)
+        bank = await _granter_bank_tickets(week_start, today)
+        inflows, outflows = _split_inflow_outflow(bank)
+        inflows.sort(key=lambda x: x["amount"], reverse=True)
+        outflows.sort(key=lambda x: x["amount"], reverse=True)
+        week_inflow = sum(i["amount"] for i in inflows)
+        week_outflow = sum(o["amount"] for o in outflows)
 
     # 3) 카드 지출 — 이번달 vs 지난달
     this_m_start = today.replace(day=1)
