@@ -35,7 +35,7 @@ const SOURCE_TONE: Record<string, string> = {
 const VOUCHER_SOURCE_LABEL: Record<string, string> = {
   wehago_import: '위하고 분개장',
   douzone_journal: '더존 분개장',
-  granter_auto: '그랜터 자동',
+  granter_auto: '연동 자동',
   manual: '수기 입력',
   api: 'API',
 }
@@ -147,7 +147,7 @@ function JournalMigrationModal({
               <div>
                 <div className="font-semibold mb-0.5">이미 분개된 위하고 데이터를 정식 전표로 격상합니다.</div>
                 <ul className="list-disc list-inside space-y-0.5 text-blue-800 dark:text-blue-200">
-                  <li>변환 후엔 그랜터 자동 후보가 같은 거래일 때 자동으로 <strong>중복</strong>으로 표시됩니다.</li>
+                  <li>변환 후엔 연동 자동 후보가 같은 거래일 때 자동으로 <strong>중복</strong>으로 표시됩니다.</li>
                   <li>이미 변환된 그룹은 다시 변환되지 않습니다 (idempotent).</li>
                   <li>출처 라벨: <code className="px-1 bg-white dark:bg-ink-900 rounded">wehago_import</code></li>
                 </ul>
@@ -565,7 +565,7 @@ export default function AutoVoucherPage() {
             자동 전표 검수 큐
           </h1>
           <p className="text-xs text-ink-500 dark:text-ink-400 mt-1">
-            그랜터 수집 거래 → AI 분개 → 검수 → 확정. 위하고 분개장 import는 자동 중복 표시.
+            연동 수집 거래 → AI 분개 → 검수 → 확정. 위하고 분개장 import는 자동 중복 표시.
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -589,7 +589,7 @@ export default function AutoVoucherPage() {
             onClick={() => generateMut.mutate()}
             disabled={generateMut.isPending}
             className="btn-primary"
-            title="이 기간의 그랜터 거래를 분개 후보로 일괄 생성"
+            title="이 기간의 연동 거래를 분개 후보로 일괄 생성"
           >
             <BoltIcon className="h-3.5 w-3.5 mr-1" />
             {generateMut.isPending ? '생성 중…' : '후보 생성'}

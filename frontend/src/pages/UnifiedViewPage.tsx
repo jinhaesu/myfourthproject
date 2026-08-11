@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
@@ -350,6 +350,27 @@ export default function UnifiedViewPage() {
     retry: false,
   })
 
+  // 온디맨드 동기화 — 열었을 때 이 기간 원장이 비어 있으면 은행에서 자동으로 당겨와 DB화(1회/세션/기간)
+  const onDemandSync = useMutation({
+    mutationFn: (v: { id: number; from: string; to: string }) =>
+      hyphenApi.sync(v.id, { start_date: v.from, end_date: v.to }).then((r) => r.data),
+    onSuccess: (_d, v) => {
+      queryClient.invalidateQueries({ queryKey: ['hyphen-tx-unified', hyphenAcct?.acct_no, v.from, v.to] })
+      queryClient.invalidateQueries({ queryKey: ['hyphen-creds-map'] })
+    },
+  })
+  const autoSyncedRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!hyphenAcct || !ready) return
+    if (hyphenTxQuery.isLoading || !hyphenTxQuery.data) return
+    if ((hyphenTxQuery.data.transactions?.length || 0) > 0) return
+    const key = `${hyphenAcct.acct_no}|${from}|${to}`
+    if (autoSyncedRef.current.has(key) || onDemandSync.isPending) return
+    autoSyncedRef.current.add(key)
+    onDemandSync.mutate({ id: hyphenAcct.id, from, to })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hyphenAcct?.acct_no, from, to, hyphenTxQuery.data, hyphenTxQuery.isLoading, ready])
+
   // 거래 (선택에 따라 단일 타입 또는 모든 타입 통합)
   const ticketsQuery = useQuery({
     queryKey: ['granter-tickets-v2', selected, from, to],
@@ -532,7 +553,7 @@ export default function UnifiedViewPage() {
         <div>
           <h1>통합 조회</h1>
           <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
-            그랜터 실시간 — 활성 자산만 노출 · 카드·계좌·세금계산서·현금영수증 통합
+            실시간 연동 — 활성 자산만 노출 · 카드·계좌·세금계산서·현금영수증 통합
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -610,13 +631,13 @@ export default function UnifiedViewPage() {
       {/* Status / 31일 제한 안내 */}
       {!healthQuery.isFetched ? (
         <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
+          <span className="text-2xs text-ink-600 dark:text-ink-400">연동 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-start gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
           <div className="flex-1 text-2xs">
-            <div className="font-semibold text-amber-900 dark:text-amber-100">그랜터 API 키 미설정</div>
+            <div className="font-semibold text-amber-900 dark:text-amber-100">연동 키 미설정</div>
             <div className="text-amber-800 dark:text-amber-200 mt-0.5">
               Railway → Variables → <code className="font-mono bg-white dark:bg-ink-900 px-1 rounded">GRANTER_API_KEY</code>{' '}
               등록 후 자동 활성화.
@@ -627,7 +648,7 @@ export default function UnifiedViewPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
           {exceeds31Days && (
             <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
@@ -1067,19 +1088,19 @@ export default function UnifiedViewPage() {
 
             {!healthQuery.isFetched ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400 p-6 text-center">
-                그랜터 연결 확인 중…
+                연동 확인 중…
               </div>
             ) : !isConfigured ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400 p-6 text-center">
-                그랜터 API 키 등록 후 실시간 거래가 표시됩니다.
+                연동 키 등록 후 실시간 거래가 표시됩니다.
               </div>
-            ) : (usingHyphen ? hyphenTxQuery.isLoading : ticketsQuery.isLoading) ? (
+            ) : (usingHyphen ? (hyphenTxQuery.isLoading || onDemandSync.isPending) : ticketsQuery.isLoading) ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400">
-                불러오는 중…
+                {usingHyphen && onDemandSync.isPending ? '은행에서 가져오는 중… (최초 1회, 이후 즉시)' : '불러오는 중…'}
               </div>
             ) : ticketsQuery.isError ? (
               <div className="flex-1 flex flex-col items-center justify-center text-2xs p-6 text-center gap-2">
-                <div className="text-rose-500">그랜터 API 호출 실패</div>
+                <div className="text-rose-500">데이터 조회 실패</div>
                 <div className="text-ink-500 dark:text-ink-400 max-w-md break-all font-mono text-2xs">
                   {(() => {
                     const e: any = ticketsQuery.error
@@ -1410,7 +1431,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 z-50 bg-ink-900 dark:bg-ink-50/40 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-ink-900 rounded-lg shadow-pop w-full max-w-3xl max-h-[80vh] overflow-y-auto border border-ink-200 dark:border-ink-800">
         <div className="sticky top-0 bg-white dark:bg-ink-900 border-b border-ink-200 dark:border-ink-800 px-4 py-2.5 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink-900 dark:text-ink-50">데이터 소스 (그랜터 자산)</h3>
+          <h3 className="text-sm font-semibold text-ink-900 dark:text-ink-50">데이터 소스 (연동 자산)</h3>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
             <XMarkIcon className="h-4 w-4" />
           </button>
@@ -1419,7 +1440,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
         <div className="p-4 space-y-3">
           <div className="flex items-center justify-between">
             <div className="rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800 px-3 py-2 text-2xs text-ink-600 dark:text-ink-400 leading-relaxed flex-1 mr-3">
-              그랜터에 연동된 자산입니다. 새 연결은 그랜터 대시보드에서 추가합니다.
+              연동된 자산입니다. 새 연결은 연동 관리에서 추가합니다.
             </div>
             <label className="flex items-center gap-1.5 text-2xs text-ink-600 dark:text-ink-400 cursor-pointer">
               <input

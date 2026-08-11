@@ -922,7 +922,7 @@ function RequestsTab({ isAdmin }: { isAdmin: boolean }) {
                       <div className="flex items-center justify-between">
                         <span className="text-2xs font-semibold text-violet-700 dark:text-violet-300 flex items-center gap-1">
                           <CreditCardIcon className="h-3 w-3" />
-                          그랜터 카드전표 대사 — 금액·시각으로 자동 후보 검색
+                          카드전표 대사 — 금액·시각으로 자동 후보 검색
                         </span>
                         <button onClick={() => loadCandidates(req.id)}
                           className="px-2 py-0.5 text-2xs rounded border border-violet-300 dark:border-violet-700 text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-950/40">

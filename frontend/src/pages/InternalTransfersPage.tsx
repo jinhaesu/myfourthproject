@@ -99,7 +99,7 @@ export default function InternalTransfersPage() {
 
       {query.isLoading ? (
         <div className="panel p-10 text-center text-2xs text-ink-400">
-          그랜터 통장거래에서 내부이체를 찾는 중… (기간이 길면 수십 초 걸릴 수 있어요)
+          연동 통장거래에서 내부이체를 찾는 중… (기간이 길면 수십 초 걸릴 수 있어요)
         </div>
       ) : query.isError ? (
         <div className="panel p-10 text-center text-2xs text-red-500">
@@ -289,7 +289,7 @@ export default function InternalTransfersPage() {
               연결된 회사 계좌: {data.known_accounts.map((a: any) => a.label).join(' · ')}
               {data.unresolved_count > 0 && (
                 <span className="block mt-0.5">
-                  ※ '계좌 미상'은 상대 계좌가 그랜터에 연동되지 않아 이름을 특정하지 못한 건입니다(금액·방향은 정확). 상대 계좌를 그랜터에 연결하면 자동으로 이름이 채워집니다.
+                  ※ '계좌 미상'은 상대 계좌가 연동되지 않아 이름을 특정하지 못한 건입니다(금액·방향은 정확). 상대 계좌를 연동하면 자동으로 이름이 채워집니다.
                 </span>
               )}
             </div>

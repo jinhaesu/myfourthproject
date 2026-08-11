@@ -77,7 +77,7 @@ export default function DailyReportPage() {
             자금일보
           </h1>
           <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
-            그랜터 daily-financial-report 기반 — 자산별 일별 잔액·입출금·대출 분리
+            일별 자금 현황 기반 — 자산별 일별 잔액·입출금·대출 분리
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -122,18 +122,18 @@ export default function DailyReportPage() {
 
       {!healthQuery.isFetched ? (
         <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
+          <span className="text-2xs text-ink-600 dark:text-ink-400">연동 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-          <div className="text-2xs text-amber-800 dark:text-amber-200">그랜터 API 키 미설정 — Railway 환경변수 등록 필요</div>
+          <div className="text-2xs text-amber-800 dark:text-amber-200">연동 키 미설정 — Railway 환경변수 등록 필요</div>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
           <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
           {data?.effectiveEndDate && data?.previousDate && (
             <div className="text-2xs text-ink-500 dark:text-ink-400">

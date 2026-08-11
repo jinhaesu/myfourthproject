@@ -126,7 +126,7 @@ export default function DashboardPage() {
             안녕하세요{user?.fullName ? `, ${user.fullName}님` : ''} 👋
           </h1>
           <p className="text-xs text-ink-500 dark:text-ink-400 mt-0.5">
-            그랜터 실시간 자금 현황 {data?.as_of ? `· ${data.as_of} 기준` : ''}
+            실시간 연동 자금 현황 {data?.as_of ? `· ${data.as_of} 기준` : ''}
           </p>
         </div>
         <Link to="/cash-digest" className="text-xs px-2.5 py-1.5 rounded-md border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 flex items-center gap-1">
@@ -135,7 +135,7 @@ export default function DashboardPage() {
       </div>
 
       {isLoading ? (
-        <div className="panel p-12 text-center text-2xs text-ink-400">자금 현황 불러오는 중… (그랜터 조회)</div>
+        <div className="panel p-12 text-center text-2xs text-ink-400">자금 현황 불러오는 중… (연동 조회)</div>
       ) : isError ? (
         <div className="panel p-10 text-center text-2xs text-red-500">
           불러오기 실패: {(error as any)?.response?.data?.detail || '네트워크 오류'}

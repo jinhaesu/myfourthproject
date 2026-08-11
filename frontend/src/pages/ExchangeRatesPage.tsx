@@ -575,7 +575,7 @@ export default function ExchangeRatesPage() {
       {/* 푸터 */}
       <p className="text-2xs text-ink-400 pb-2">
         시계열 데이터: Frankfurter API (ECB 공식 환율) 기준. JPY는 100엔 단위 표시.
-        그랜터 API 최신 환율은 KPI 카드에 반영됩니다.
+        연동 최신 환율은 KPI 카드에 반영됩니다.
       </p>
     </div>
   )

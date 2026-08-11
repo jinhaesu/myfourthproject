@@ -664,7 +664,7 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
           {debugRaw && (
             <div className="rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 p-3">
               <div className="text-2xs font-semibold text-rose-700 dark:text-rose-300 mb-1">
-                그랜터 응답 (디버그) — 필드 오류 확인 후 수정하세요
+                연동 응답 (디버그) — 필드 오류 확인 후 수정하세요
               </div>
               <pre className="text-2xs text-rose-800 dark:text-rose-200 overflow-x-auto whitespace-pre-wrap break-all">
                 {debugRaw}
@@ -822,7 +822,7 @@ export default function TaxInvoicePage() {
           `${res.monthsBack === 0 ? '이번달' : `${res.monthsBack}개월 전`} 구간 (${res.count}건)`
         )
       } else {
-        toast.error('최근 24개월 내 세금계산서가 없습니다. 그랜터에서 홈택스 데이터 동기화가 진행 중일 수 있습니다.')
+        toast.error('최근 24개월 내 세금계산서가 없습니다. 홈택스 데이터 동기화가 진행 중일 수 있습니다.')
       }
     },
   })
@@ -876,7 +876,7 @@ export default function TaxInvoicePage() {
             세금계산서
           </h1>
           <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
-            그랜터 TAX_INVOICE_TICKET — 매출(IN) / 매입(OUT) 자동 분리
+            세금계산서 연동 — 매출(IN) / 매입(OUT) 자동 분리
           </p>
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -947,18 +947,18 @@ export default function TaxInvoicePage() {
 
       {!healthQuery.isFetched ? (
         <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
+          <span className="text-2xs text-ink-600 dark:text-ink-400">연동 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-          <div className="text-2xs text-amber-800 dark:text-amber-200">그랜터 API 키 미설정</div>
+          <div className="text-2xs text-amber-800 dark:text-amber-200">연동 키 미설정</div>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
           <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
           {exceeds31 && (
             <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
@@ -1137,7 +1137,7 @@ export default function TaxInvoicePage() {
                         최근 12개월에서 자동 탐색
                       </button>
                       <div className="text-2xs text-ink-400">
-                        그랜터 홈택스 자산 연동 상태는 [통합조회 → 설정]에서 확인하세요.
+                        홈택스 자산 연동 상태는 [통합조회 → 설정]에서 확인하세요.
                       </div>
                     </div>
                   </td>

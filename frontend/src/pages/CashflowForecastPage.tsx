@@ -1725,7 +1725,7 @@ export default function CashflowForecastPage() {
         <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
           <span className="text-2xs text-amber-800 dark:text-amber-200">
-            그랜터 API 키 미설정 — Railway 환경변수 GRANTER_API_KEY 등록이 필요합니다.
+            연동 키 미설정 — Railway 환경변수 GRANTER_API_KEY 등록이 필요합니다.
           </span>
         </div>
       )}
@@ -1734,7 +1734,7 @@ export default function CashflowForecastPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
           {inPatterns.length + outPatterns.length > 0 && (
             <span className="text-2xs text-ink-500 dark:text-ink-400">
@@ -1957,7 +1957,7 @@ export default function CashflowForecastPage() {
         </p>
         {selfBankNetIn > 0 && (
           <p>
-            <span className="font-semibold text-ink-700 dark:text-ink-300">외부 매출 추정(IN buffer):</span> 그랜터가
+            <span className="font-semibold text-ink-700 dark:text-ink-300">외부 매출 추정(IN buffer):</span> 연동에서
             contact을 자기 회사명으로 잘못 기록한 BANK 입금 중 통장간 이체로 매칭 안 되는 net 분.
             기간 총 <span className="font-mono">{formatCurrency(selfBankNetIn, false)}원</span> →
             일평균 <span className="font-mono">{formatCurrency(selfBankNetInDailyAvg, false)}원/일</span> 가산.

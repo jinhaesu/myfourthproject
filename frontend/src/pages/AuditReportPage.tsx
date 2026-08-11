@@ -633,20 +633,20 @@ export default function AuditReportPage() {
       {/* 연결 상태 배너 */}
       {!healthQuery.isFetched ? (
         <div className="rounded-md border border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 px-3 py-2 flex items-center gap-2">
-          <span className="text-2xs text-ink-600 dark:text-ink-400">그랜터 연결 확인 중…</span>
+          <span className="text-2xs text-ink-600 dark:text-ink-400">연동 확인 중…</span>
         </div>
       ) : !isConfigured ? (
         <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-2 flex items-center gap-2">
           <ExclamationTriangleIcon className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
           <span className="text-2xs text-amber-800 dark:text-amber-200">
-            그랜터 API 키가 설정되지 않았습니다. 설정 후 감사 리포트를 이용할 수 있습니다.
+            연동 키가 설정되지 않았습니다. 설정 후 감사 리포트를 이용할 수 있습니다.
           </span>
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-wrap">
           <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span className="text-2xs text-emerald-800 dark:text-emerald-200">그랜터 연결됨</span>
+            <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
           {fbFrom && (
             <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-1 text-2xs text-amber-800 dark:text-amber-200">
@@ -898,7 +898,7 @@ export default function AuditReportPage() {
       {!isLoading && ticketsQuery.isSuccess && tickets.length === 0 && isConfigured && (
         <div className="panel p-6 text-center">
           <div className="text-2xs text-ink-400">조회 기간 내 거래 데이터가 없습니다.</div>
-          <div className="text-2xs text-ink-400 mt-1">기간을 변경하거나 그랜터 자산 연동 상태를 확인하세요.</div>
+          <div className="text-2xs text-ink-400 mt-1">기간을 변경하거나 자산 연동 상태를 확인하세요.</div>
         </div>
       )}
 
