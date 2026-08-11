@@ -361,13 +361,14 @@ class HyphenClient:
         self, *, card_cd: str, card_no: str, biz_no: str, start_date: str, end_date: str,
         sign_cert=None, sign_pri=None, sign_pw=None,
         user_id=None, user_pw=None, login_method: str = "CERT",
-        gustation: bool = False,
+        gustation: bool = False, path: Optional[str] = None,
     ) -> Any:
-        """법인카드 매입내역조회 (/in0007000561)."""
+        """법인카드 승인내역조회 (/in0007000559 기본 — 매입 561은 권한없는 경우 많음)."""
+        p = path or os.getenv("HYPHEN_CARD_TX_PATH", "/in0007000559")
         payload: Dict[str, Any] = {
             "cardCd": card_cd, "loginMethod": login_method, "cardNo": card_no, "bizNo": biz_no,
             "sdate": start_date.replace("-", ""), "edate": end_date.replace("-", ""),
-            "useArea": "N",
+            "useArea": "N", "cardNoFilter": "Y",
         }
         if login_method.upper() == "CERT":
             self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
@@ -376,7 +377,7 @@ class HyphenClient:
                 payload["userId"] = user_id
             if user_pw is not None:
                 payload["userPw"] = user_pw
-        return await self.call_bank(payload=payload, path="/in0007000561", gustation=gustation)
+        return await self.call_bank(payload=payload, path=p, gustation=gustation)
 
     # ============ 은행 API (Hkey 헤더 인증) ============
     # 은행 상품(/in0087xxx)은 OAuth Bearer가 아니라 user-id + Hkey 헤더로 인증.
