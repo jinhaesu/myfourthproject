@@ -155,6 +155,7 @@ def to_public(c: HyphenCredential) -> Dict[str, Any]:
         "id": c.id,
         "label": c.label,
         "bank_cd": c.bank_cd,
+        "acct_no": c.acct_no,
         "acct_last4": c.acct_last4,
         "login_method": c.login_method,
         "cert_subject": c.cert_subject,
@@ -167,6 +168,8 @@ def to_public(c: HyphenCredential) -> Dict[str, Any]:
         "last_used_at": c.last_used_at.isoformat() if c.last_used_at else None,
         "last_status": c.last_status,
         "has_cert": bool(c.enc_sign_cert),
+        "last_synced_at": c.last_synced_at.isoformat() if c.last_synced_at else None,
+        "last_balance": float(c.last_balance) if c.last_balance is not None else None,
     }
 
 

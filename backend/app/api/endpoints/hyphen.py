@@ -29,6 +29,7 @@ from app.core.security import get_current_user
 from app.services.hyphen_client import get_hyphen_client, HyphenAPIError
 from app.services.granter_client import get_granter_client, GranterAPIError
 from app.services import hyphen_credentials as creds_svc
+from app.services import hyphen_sync as sync_svc
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -433,6 +434,44 @@ async def hyphen_credential_query(
         )
     except HyphenAPIError as e:
         raise _err(e)
+
+
+# ============ 동기화 (하이픈 → 로컬 원장) ============
+
+class SyncBody(BaseModel):
+    start_date: str
+    end_date: str
+    gustation: bool = False
+
+
+@router.post("/credentials/{cred_id}/sync")
+async def hyphen_sync_credential(cred_id: int, body: SyncBody, db: AsyncSession = Depends(get_db)):
+    """단일 계좌 동기화 (하이픈 조회 → 원장 저장)."""
+    cred = await creds_svc.get_credential(db, cred_id)
+    if not cred:
+        raise HTTPException(status_code=404, detail="인증정보 없음")
+    try:
+        return await sync_svc.sync_credential(db, cred, start_date=body.start_date, end_date=body.end_date, gustation=body.gustation)
+    except HyphenAPIError as e:
+        raise _err(e)
+
+
+@router.post("/sync-all")
+async def hyphen_sync_all(body: SyncBody, db: AsyncSession = Depends(get_db)):
+    """등록된 모든 계좌 동기화."""
+    return await sync_svc.sync_all(db, start_date=body.start_date, end_date=body.end_date)
+
+
+@router.get("/transactions")
+async def hyphen_transactions(
+    start_date: str,
+    end_date: str,
+    acct_no: Optional[str] = None,
+    bank_cd: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """로컬 원장에서 거래 즉시 조회 (화면용)."""
+    return await sync_svc.read_transactions(db, start_date=start_date, end_date=end_date, acct_no=acct_no, bank_cd=bank_cd)
 
 
 # ============ 로컬 등록도구 (1회용 코드) ============

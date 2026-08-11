@@ -1293,6 +1293,7 @@ export interface HyphenCredential {
   id: number
   label: string | null
   bank_cd: string
+  acct_no: string
   acct_last4: string | null
   login_method: string
   cert_subject: string | null
@@ -1305,6 +1306,8 @@ export interface HyphenCredential {
   last_used_at: string | null
   last_status: string | null
   has_cert: boolean
+  last_synced_at: string | null
+  last_balance: number | null
 }
 
 export const hyphenApi = {
@@ -1327,6 +1330,16 @@ export const hyphenApi = {
       '/hyphen/list-accounts', body, { timeout: 180_000 },
     ),
   deleteCredential: (id: number) => api.delete(`/hyphen/credentials/${id}`),
+  sync: (id: number, body: { start_date: string; end_date: string; gustation?: boolean }) =>
+    api.post<{ ok: boolean; inserted: number; fetched: number; balance: number; elapsed_sec: number; error?: string }>(
+      `/hyphen/credentials/${id}/sync`, body, { timeout: 180_000 },
+    ),
+  syncAll: (body: { start_date: string; end_date: string }) =>
+    api.post<{ synced: number; results: any[] }>('/hyphen/sync-all', body, { timeout: 300_000 }),
+  transactionsDb: (params: { start_date: string; end_date: string; acct_no?: string; bank_cd?: string }) =>
+    api.get<{ count: number; in_sum: number; out_sum: number; net: number; transactions: any[] }>(
+      '/hyphen/transactions', { params },
+    ),
   queryCredential: (
     id: number,
     body: { start_date: string; end_date: string; gustation?: boolean; sort?: string; filter_type?: string; gubun?: string },

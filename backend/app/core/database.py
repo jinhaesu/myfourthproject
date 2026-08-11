@@ -287,6 +287,31 @@ async def init_db():
             last_status VARCHAR(300)
         )""",
         "CREATE INDEX IF NOT EXISTS ix_hyphen_credentials_bank ON hyphen_credentials(bank_cd)",
+        # 동기화 상태 (마지막 동기화 시각/잔액)
+        "ALTER TABLE hyphen_credentials ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMP",
+        "ALTER TABLE hyphen_credentials ADD COLUMN IF NOT EXISTS last_balance NUMERIC(20,2)",
+        # 하이픈 계좌 거래 로컬 원장
+        """CREATE TABLE IF NOT EXISTS hyphen_bank_tx (
+            id SERIAL PRIMARY KEY,
+            credential_id INTEGER,
+            bank_cd VARCHAR(10) NOT NULL,
+            acct_no VARCHAR(50) NOT NULL,
+            acct_last4 VARCHAR(8),
+            tr_date VARCHAR(10) NOT NULL,
+            tr_time VARCHAR(10),
+            in_amt NUMERIC(20,2) DEFAULT 0,
+            out_amt NUMERIC(20,2) DEFAULT 0,
+            balance NUMERIC(20,2),
+            tr_name VARCHAR(300),
+            tr_type VARCHAR(50),
+            memo TEXT,
+            counterparty_acct VARCHAR(60),
+            counterparty_name VARCHAR(120),
+            dedup_hash VARCHAR(64) UNIQUE NOT NULL,
+            synced_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_hyphen_bank_tx_acct_date ON hyphen_bank_tx(acct_no, tr_date)",
+        "CREATE INDEX IF NOT EXISTS ix_hyphen_bank_tx_cred ON hyphen_bank_tx(credential_id)",
         # 급여 세금 설정/오버라이드 (외부 확정값 입력)
         """CREATE TABLE IF NOT EXISTS payroll_tax_settings (
             id SERIAL PRIMARY KEY,

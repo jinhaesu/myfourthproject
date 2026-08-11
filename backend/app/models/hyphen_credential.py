@@ -6,7 +6,7 @@
 """
 from datetime import datetime, timedelta
 from typing import Optional
-from sqlalchemy import Integer, String, Text, DateTime
+from sqlalchemy import Integer, String, Text, DateTime, Numeric
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -48,6 +48,9 @@ class HyphenCredential(Base):
     )
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_status: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    # 동기화 상태
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_balance: Mapped[Optional[float]] = mapped_column(Numeric(20, 2), nullable=True)
 
     @property
     def is_expired(self) -> bool:

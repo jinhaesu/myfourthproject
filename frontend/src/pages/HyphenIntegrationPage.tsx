@@ -76,6 +76,21 @@ export default function HyphenIntegrationPage() {
     onError: () => toast.error('삭제 실패'),
   })
 
+  const syncAllMut = useMutation({
+    mutationFn: () => {
+      const to = new Date()
+      const from = new Date(); from.setDate(to.getDate() - 29)
+      const iso = (d: Date) => d.toISOString().slice(0, 10)
+      return hyphenApi.syncAll({ start_date: iso(from), end_date: iso(to) }).then((r) => r.data)
+    },
+    onSuccess: (d) => {
+      toast.success(`${d.synced}개 계좌 동기화 완료`)
+      qc.invalidateQueries({ queryKey: ['hyphen-credentials'] })
+      qc.invalidateQueries({ queryKey: ['hyphen-tx-db'] })
+    },
+    onError: () => toast.error('전체 동기화 실패'),
+  })
+
   const creds = credsQuery.data || []
 
   return (
@@ -88,10 +103,17 @@ export default function HyphenIntegrationPage() {
             은행 로그인(기업뱅킹=공동인증서)하면 <b>전 계좌를 자동으로 불러와</b> 목록에서 선택해 등록합니다. 인증정보는 <b>암호화 보관·30일 후 자동삭제</b>됩니다.
           </p>
         </div>
-        <button onClick={() => setShowForm(true)} className="btn-primary">
-          <BuildingLibraryIcon className="h-3.5 w-3.5 mr-1" />
-          계좌 등록
-        </button>
+        <div className="flex items-center gap-1.5">
+          {creds.length > 0 && (
+            <button onClick={() => syncAllMut.mutate()} disabled={syncAllMut.isPending} className="btn-secondary">
+              {syncAllMut.isPending ? '동기화 중…' : '전체 동기화'}
+            </button>
+          )}
+          <button onClick={() => setShowForm(true)} className="btn-primary">
+            <BuildingLibraryIcon className="h-3.5 w-3.5 mr-1" />
+            계좌 등록
+          </button>
+        </div>
       </div>
 
       {/* 연결 상태 */}
@@ -150,30 +172,36 @@ export default function HyphenIntegrationPage() {
 }
 
 function CredentialCard({ cred, onDelete }: { cred: HyphenCredential; onDelete: () => void }) {
+  const qc = useQueryClient()
   const [range, setRange] = useState(() => {
     const to = new Date()
     const from = new Date(); from.setDate(to.getDate() - 29)
     const iso = (d: Date) => d.toISOString().slice(0, 10)
     return { from: iso(from), to: iso(to) }
   })
-  const [gustation, setGustation] = useState(false)
-  const [result, setResult] = useState<any>(null)
 
-  const queryMut = useMutation({
-    mutationFn: () =>
-      hyphenApi.queryCredential(cred.id, { start_date: range.from, end_date: range.to, gustation }).then((r) => r.data),
+  // 로컬 원장(DB) 즉시 조회
+  const dbQuery = useQuery({
+    queryKey: ['hyphen-tx-db', cred.acct_no, range.from, range.to],
+    queryFn: () => hyphenApi.transactionsDb({ start_date: range.from, end_date: range.to, acct_no: cred.acct_no }).then((r) => r.data),
+    retry: false,
+  })
+
+  // 은행에서 가져와 DB 저장(동기화)
+  const syncMut = useMutation({
+    mutationFn: () => hyphenApi.sync(cred.id, { start_date: range.from, end_date: range.to }).then((r) => r.data),
     onSuccess: (d) => {
-      setResult(d)
-      const common = d?.data?.common
-      if (common?.errYn === 'Y') toast.error(`조회 실패: ${common?.errMsg || ''}`)
-      else toast.success(`조회 완료 (${d.elapsed_sec}s)`)
+      if (!d.ok) { toast.error(`동기화 실패: ${d.error || ''}`); return }
+      toast.success(`동기화 완료 · 신규 ${d.inserted}건 (${d.elapsed_sec}s)`)
+      qc.invalidateQueries({ queryKey: ['hyphen-credentials'] })
+      qc.invalidateQueries({ queryKey: ['hyphen-tx-db', cred.acct_no] })
     },
-    onError: (e: any) => toast.error(e?.response?.data?.detail?.error || '조회 실패'),
+    onError: (e: any) => toast.error(e?.response?.data?.detail?.error || e?.response?.data?.detail || '동기화 실패'),
   })
 
   const expiring = cred.days_left <= 5
-  const list: any[] = result?.data?.data?.list || []
-  const acct = result?.data?.data || {}
+  const db = dbQuery.data
+  const list: any[] = db?.transactions || []
 
   return (
     <div className={`rounded-md border p-2.5 ${cred.is_expired ? 'border-rose-300 dark:border-rose-800 bg-rose-50/50 dark:bg-rose-950/30' : 'border-ink-200 dark:border-ink-800'}`}>
@@ -189,11 +217,14 @@ function CredentialCard({ cred, onDelete }: { cred: HyphenCredential; onDelete: 
             </span>
           </div>
           <div className="text-2xs mt-1 flex items-center gap-2 flex-wrap">
+            {cred.last_balance != null && (
+              <span className="text-ink-700 dark:text-ink-200 font-mono">잔액 {formatCurrency(cred.last_balance, false)}</span>
+            )}
+            <span className="text-ink-400">· 마지막 동기화 {cred.last_synced_at ? new Date(cred.last_synced_at).toLocaleString('ko-KR') : '없음'}</span>
             <span className={`inline-flex items-center gap-1 ${expiring ? 'text-rose-600 dark:text-rose-400 font-semibold' : 'text-ink-500 dark:text-ink-400'}`}>
               <ClockIcon className="h-3 w-3" />
-              {cred.is_expired ? '만료됨 — 재등록 필요' : `보관 만료까지 ${cred.days_left}일`}
+              {cred.is_expired ? '만료됨 — 재등록 필요' : `만료 D-${cred.days_left}`}
             </span>
-            {cred.last_status && <span className="text-ink-400">· {cred.last_status}</span>}
           </div>
         </div>
         <button onClick={onDelete} className="btn-secondary text-rose-600 dark:text-rose-400" title="삭제">
@@ -201,66 +232,58 @@ function CredentialCard({ cred, onDelete }: { cred: HyphenCredential; onDelete: 
         </button>
       </div>
 
-      {/* 조회 테스트 */}
+      {/* 기간 + 동기화 */}
       <div className="mt-2 pt-2 border-t border-ink-100 dark:border-ink-800 flex items-center gap-1.5 flex-wrap">
         <input type="date" value={range.from} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))}
           className="bg-transparent border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs" />
         <span className="text-ink-300">→</span>
         <input type="date" value={range.to} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))}
           className="bg-transparent border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs" />
-        <label className="flex items-center gap-1 text-2xs text-ink-500 dark:text-ink-400 cursor-pointer ml-1">
-          <input type="checkbox" checked={gustation} onChange={(e) => setGustation(e.target.checked)} className="w-3 h-3" />
-          테스트베드(무료)
-        </label>
-        <button onClick={() => queryMut.mutate()} disabled={queryMut.isPending || cred.is_expired} className="btn-secondary">
-          {queryMut.isPending ? '조회 중…' : '거래내역 조회'}
+        <button onClick={() => syncMut.mutate()} disabled={syncMut.isPending || cred.is_expired} className="btn-primary">
+          {syncMut.isPending ? '은행에서 가져오는 중…' : '은행에서 동기화'}
         </button>
-        {result?.elapsed_sec != null && <span className="text-2xs text-ink-400 font-mono">· {result.elapsed_sec}s</span>}
+        <span className="text-2xs text-ink-400">
+          원장 {db?.count ?? 0}건
+          {db && ` · 입 ${formatCurrency(db.in_sum, false)} / 출 ${formatCurrency(db.out_sum, false)}`}
+        </span>
       </div>
 
-      {result && result?.data?.common?.errYn !== 'Y' && (
-        <div className="mt-2">
-          {acct.acctNm && (
-            <div className="text-2xs text-ink-500 dark:text-ink-400 mb-1">
-              {acct.acctNm} · 예금주 {acct.acctHolder} · 잔액{' '}
-              <span className="font-mono text-ink-800 dark:text-ink-100">{formatCurrency(Number(acct.curBal || 0), false)}</span>
-            </div>
-          )}
-          <div className="max-h-64 overflow-y-auto border border-ink-100 dark:border-ink-800 rounded">
-            <table className="min-w-full text-2xs">
-              <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0">
-                <tr>
-                  <th className="px-2 py-1 text-left font-semibold text-ink-500">일자</th>
-                  <th className="px-2 py-1 text-left font-semibold text-ink-500">적요</th>
-                  <th className="px-2 py-1 text-right font-semibold text-ink-500">입금</th>
-                  <th className="px-2 py-1 text-right font-semibold text-ink-500">출금</th>
-                  <th className="px-2 py-1 text-right font-semibold text-ink-500">잔액</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
-                {list.map((row, i) => (
-                  <tr key={i}>
-                    <td className="px-2 py-1 font-mono whitespace-nowrap text-ink-500">{row.trDt} {row.trTm}</td>
-                    <td className="px-2 py-1 truncate max-w-[180px]">{row.trNm || row.trDetail || row.memo}</td>
-                    <td className="px-2 py-1 text-right font-mono text-emerald-700 dark:text-emerald-300">
-                      {Number(row.inAmt || 0) > 0 ? formatCurrency(Number(row.inAmt), false) : ''}
-                    </td>
-                    <td className="px-2 py-1 text-right font-mono text-rose-700 dark:text-rose-300">
-                      {Number(row.outAmt || 0) > 0 ? formatCurrency(Number(row.outAmt), false) : ''}
-                    </td>
-                    <td className="px-2 py-1 text-right font-mono text-ink-700 dark:text-ink-300">
-                      {formatCurrency(Number(row.balance || 0), false)}
-                    </td>
-                  </tr>
-                ))}
-                {list.length === 0 && (
-                  <tr><td colSpan={5} className="px-2 py-4 text-center text-ink-400">이 기간 거래내역이 없습니다.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {/* 로컬 원장(즉시) */}
+      <div className="mt-2 max-h-64 overflow-y-auto border border-ink-100 dark:border-ink-800 rounded">
+        <table className="min-w-full text-2xs">
+          <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0">
+            <tr>
+              <th className="px-2 py-1 text-left font-semibold text-ink-500">일자</th>
+              <th className="px-2 py-1 text-left font-semibold text-ink-500">적요</th>
+              <th className="px-2 py-1 text-right font-semibold text-ink-500">입금</th>
+              <th className="px-2 py-1 text-right font-semibold text-ink-500">출금</th>
+              <th className="px-2 py-1 text-right font-semibold text-ink-500">잔액</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
+            {list.map((row, i) => (
+              <tr key={i}>
+                <td className="px-2 py-1 font-mono whitespace-nowrap text-ink-500">{row.tr_date} {row.tr_time}</td>
+                <td className="px-2 py-1 truncate max-w-[180px]">{row.tr_name || row.counterparty_name}</td>
+                <td className="px-2 py-1 text-right font-mono text-emerald-700 dark:text-emerald-300">
+                  {row.in_amt > 0 ? formatCurrency(row.in_amt, false) : ''}
+                </td>
+                <td className="px-2 py-1 text-right font-mono text-rose-700 dark:text-rose-300">
+                  {row.out_amt > 0 ? formatCurrency(row.out_amt, false) : ''}
+                </td>
+                <td className="px-2 py-1 text-right font-mono text-ink-700 dark:text-ink-300">
+                  {row.balance != null ? formatCurrency(row.balance, false) : ''}
+                </td>
+              </tr>
+            ))}
+            {list.length === 0 && (
+              <tr><td colSpan={5} className="px-2 py-4 text-center text-ink-400">
+                {dbQuery.isLoading ? '불러오는 중…' : '원장이 비어 있습니다. "은행에서 동기화"를 누르세요.'}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

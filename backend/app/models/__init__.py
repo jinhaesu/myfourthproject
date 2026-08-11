@@ -118,6 +118,8 @@ __all__ = [
     "PurchaseSetting",
     # Hyphen
     "HyphenCredential",
+    "HyphenBankTx",
 ]
 
 from app.models.hyphen_credential import HyphenCredential  # noqa: E402
+from app.models.hyphen_bank_tx import HyphenBankTx  # noqa: E402
