@@ -278,6 +278,106 @@ class HyphenClient:
         except Exception:
             return resp.text
 
+    def _apply_cert(self, payload: Dict[str, Any], sign_cert, sign_pri, sign_pw):
+        """CERT 로그인 공통 — signCert(헤더제거 base64), signPri(개인키 복호화 후), signPw."""
+        if sign_cert is not None:
+            payload["signCert"] = _pem_body(sign_cert)
+        if sign_pri is not None:
+            dec = _decrypt_sign_key(sign_pri, sign_pw) if sign_pw else None
+            payload["signPri"] = dec or _pem_body(sign_pri)
+        if sign_pw is not None:
+            payload["signPw"] = sign_pw
+
+    # ============ 홈택스 세금계산서/현금영수증 (/in0076xxx) ============
+
+    async def tax_invoices(
+        self, *, biz_no: str, sup_byr: str, start_date: str, end_date: str,
+        sign_cert=None, sign_pri=None, sign_pw=None,
+        user_id=None, user_pw=None, login_method: str = "CERT",
+        gustation: bool = False,
+    ) -> Any:
+        """전자세금계산서 발행내역. sup_byr: '01'매출(/in0076000266), '02'매입(/in0076000267)."""
+        path = "/in0076000266" if sup_byr == "01" else "/in0076000267"
+        payload: Dict[str, Any] = {
+            "loginMethod": login_method, "cnvrHstrClsfCd": "04", "bizNo": biz_no,
+            "dateGb": "03", "dtCd": "01",
+            "inqrDtStrt": start_date.replace("-", ""), "inqrDtEnd": end_date.replace("-", ""),
+            "isnType": "00", "bmanCd": "00", "itemOption": "N",
+        }
+        if login_method.upper() == "CERT":
+            self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
+        else:
+            if user_id is not None:
+                payload["userId"] = user_id
+            if user_pw is not None:
+                payload["userPw"] = user_pw
+        return await self.call_bank(path, payload, gustation=gustation)
+
+    async def cash_receipts(
+        self, *, biz_no: str, sup_byr: str, start_date: str, end_date: str,
+        sign_cert=None, sign_pri=None, sign_pw=None,
+        user_id=None, user_pw=None, login_method: str = "CERT",
+        gustation: bool = False,
+    ) -> Any:
+        """현금영수증. sup_byr: '01'매출(/in0076000274), '02'매입(/in0076000275)."""
+        path = "/in0076000274" if sup_byr == "01" else "/in0076000275"
+        payload: Dict[str, Any] = {
+            "loginMethod": login_method, "bizNo": biz_no,
+            "inqrDtStrt": start_date.replace("-", ""), "inqrDtEnd": end_date.replace("-", ""),
+            "detailYn": "N",
+        }
+        if login_method.upper() == "CERT":
+            self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
+        else:
+            if user_id is not None:
+                payload["userId"] = user_id
+            if user_pw is not None:
+                payload["userPw"] = user_pw
+        return await self.call_bank(path, payload, gustation=gustation)
+
+    # ============ 법인카드 (/in0007xxx) ============
+
+    async def card_list(
+        self, *, card_cd: str, biz_no: str,
+        sign_cert=None, sign_pri=None, sign_pw=None,
+        user_id=None, user_pw=None, login_method: str = "CERT",
+        gustation: bool = False,
+    ) -> Any:
+        """법인 보유카드 조회 (/in0007000556)."""
+        payload: Dict[str, Any] = {
+            "cardCd": card_cd, "loginMethod": login_method, "bizNo": biz_no,
+            "onlyActiveCard": "Y", "cardNoConfirm": "N", "imgB64Yn": "N",
+        }
+        if login_method.upper() == "CERT":
+            self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
+        else:
+            if user_id is not None:
+                payload["userId"] = user_id
+            if user_pw is not None:
+                payload["userPw"] = user_pw
+        return await self.call_bank(payload=payload, path="/in0007000556", gustation=gustation)
+
+    async def card_transactions(
+        self, *, card_cd: str, card_no: str, biz_no: str, start_date: str, end_date: str,
+        sign_cert=None, sign_pri=None, sign_pw=None,
+        user_id=None, user_pw=None, login_method: str = "CERT",
+        gustation: bool = False,
+    ) -> Any:
+        """법인카드 매입내역조회 (/in0007000561)."""
+        payload: Dict[str, Any] = {
+            "cardCd": card_cd, "loginMethod": login_method, "cardNo": card_no, "bizNo": biz_no,
+            "sdate": start_date.replace("-", ""), "edate": end_date.replace("-", ""),
+            "useArea": "N",
+        }
+        if login_method.upper() == "CERT":
+            self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
+        else:
+            if user_id is not None:
+                payload["userId"] = user_id
+            if user_pw is not None:
+                payload["userPw"] = user_pw
+        return await self.call_bank(payload=payload, path="/in0007000561", gustation=gustation)
+
     # ============ 은행 API (Hkey 헤더 인증) ============
     # 은행 상품(/in0087xxx)은 OAuth Bearer가 아니라 user-id + Hkey 헤더로 인증.
     # 테스트베드는 hyphen-gustation:Y (실사용 시 제거 — 실데이터/실속도 반영).

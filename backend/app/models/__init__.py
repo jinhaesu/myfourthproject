@@ -119,7 +119,11 @@ __all__ = [
     # Hyphen
     "HyphenCredential",
     "HyphenBankTx",
+    "HyphenTaxInvoice",
+    "HyphenCardTx",
+    "HyphenCardAccount",
 ]
 
 from app.models.hyphen_credential import HyphenCredential  # noqa: E402
 from app.models.hyphen_bank_tx import HyphenBankTx  # noqa: E402
+from app.models.hyphen_ext import HyphenTaxInvoice, HyphenCardTx, HyphenCardAccount  # noqa: E402

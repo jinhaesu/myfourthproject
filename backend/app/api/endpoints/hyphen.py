@@ -30,6 +30,10 @@ from app.services.hyphen_client import get_hyphen_client, HyphenAPIError
 from app.services.granter_client import get_granter_client, GranterAPIError
 from app.services import hyphen_credentials as creds_svc
 from app.services import hyphen_sync as sync_svc
+from app.services import hyphen_sync_ext as ext_svc
+from app.core.security import data_encryption
+from app.models.hyphen_ext import HyphenCardAccount
+from sqlalchemy import select as _select
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -436,6 +440,89 @@ async def hyphen_credential_query(
         raise _err(e)
 
 
+# ============ 홈택스 세금계산서 ============
+
+class TaxSyncBody(BaseModel):
+    start_date: str
+    end_date: str
+    gustation: bool = False
+
+
+@router.post("/tax/sync")
+async def hyphen_tax_sync(body: TaxSyncBody, db: AsyncSession = Depends(get_db)):
+    """세금계산서(매출·매입) 동기화 — 저장된 법인 인증서 재사용."""
+    return await ext_svc.sync_tax_invoices(db, start_date=body.start_date, end_date=body.end_date, gustation=body.gustation)
+
+
+@router.get("/tax/invoices")
+async def hyphen_tax_invoices(start_date: str, end_date: str, sup_byr: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    return await ext_svc.read_tax_invoices(db, start_date=start_date, end_date=end_date, sup_byr=sup_byr)
+
+
+# ============ 법인카드 ============
+
+class CardAccountBody(BaseModel):
+    card_cd: str
+    card_no: str
+    label: Optional[str] = None
+    login_method: str = "CERT"
+    user_id: Optional[str] = None
+    user_pw: Optional[str] = None
+
+
+@router.get("/cards")
+async def hyphen_list_cards(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(_select(HyphenCardAccount).order_by(HyphenCardAccount.id))).scalars().all()
+    return {"cards": [{
+        "id": c.id, "card_cd": c.card_cd, "card_no": c.card_no, "label": c.label,
+        "login_method": c.login_method,
+        "last_synced_at": c.last_synced_at.isoformat() if c.last_synced_at else None,
+        "last_status": c.last_status,
+    } for c in rows]}
+
+
+@router.post("/cards")
+async def hyphen_register_card(body: CardAccountBody, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    existing = (await db.execute(_select(HyphenCardAccount).where(
+        HyphenCardAccount.card_cd == body.card_cd, HyphenCardAccount.card_no == body.card_no,
+    ).order_by(HyphenCardAccount.id))).scalars().first()
+    c = existing or HyphenCardAccount(card_cd=body.card_cd, card_no=body.card_no)
+    c.card_cd = body.card_cd
+    c.card_no = body.card_no
+    c.label = body.label
+    c.login_method = body.login_method
+    if body.user_id is not None:
+        c.enc_user_id = data_encryption.encrypt(body.user_id) if body.user_id else None
+    if body.user_pw is not None:
+        c.enc_user_pw = data_encryption.encrypt(body.user_pw) if body.user_pw else None
+    c.created_by = getattr(user, "email", None) if user else None
+    if not existing:
+        db.add(c)
+    await db.commit()
+    await db.refresh(c)
+    return {"id": c.id}
+
+
+@router.delete("/cards/{card_id}")
+async def hyphen_delete_card(card_id: int, db: AsyncSession = Depends(get_db)):
+    c = (await db.execute(_select(HyphenCardAccount).where(HyphenCardAccount.id == card_id))).scalar_one_or_none()
+    if not c:
+        raise HTTPException(status_code=404, detail="카드 연동 없음")
+    await db.delete(c)
+    await db.commit()
+    return {"deleted": True}
+
+
+@router.post("/cards/sync")
+async def hyphen_cards_sync(body: TaxSyncBody, db: AsyncSession = Depends(get_db)):
+    return await ext_svc.sync_cards(db, start_date=body.start_date, end_date=body.end_date, gustation=body.gustation)
+
+
+@router.get("/card-tx")
+async def hyphen_card_tx(start_date: str, end_date: str, db: AsyncSession = Depends(get_db)):
+    return await ext_svc.read_card_tx(db, start_date=start_date, end_date=end_date)
+
+
 # ============ 동기화 (하이픈 → 로컬 원장) ============
 
 class SyncBody(BaseModel):
@@ -478,7 +565,18 @@ async def hyphen_cron_sync(
     today = _date.today()
     start = (today - _td(days=max(1, days))).isoformat()
     end = today.isoformat()
-    return await sync_svc.sync_all(db, start_date=start, end_date=end)
+    bank = await sync_svc.sync_all(db, start_date=start, end_date=end)
+    # 세금계산서·카드도 동기화 (실패해도 은행 동기화는 유지)
+    tax = card = None
+    try:
+        tax = await ext_svc.sync_tax_invoices(db, start_date=(today - _td(days=90)).isoformat(), end_date=end)
+    except Exception as e:
+        logger.warning("cron 세금계산서 동기화 실패: %s", e)
+    try:
+        card = await ext_svc.sync_cards(db, start_date=(today - _td(days=45)).isoformat(), end_date=end)
+    except Exception as e:
+        logger.warning("cron 카드 동기화 실패: %s", e)
+    return {"bank": bank, "tax": tax, "card": card}
 
 
 @router.get("/balance-series")

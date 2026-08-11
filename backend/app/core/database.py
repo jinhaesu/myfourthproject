@@ -312,6 +312,60 @@ async def init_db():
         )""",
         "CREATE INDEX IF NOT EXISTS ix_hyphen_bank_tx_acct_date ON hyphen_bank_tx(acct_no, tr_date)",
         "CREATE INDEX IF NOT EXISTS ix_hyphen_bank_tx_cred ON hyphen_bank_tx(credential_id)",
+        # 하이픈 세금계산서 원장
+        """CREATE TABLE IF NOT EXISTS hyphen_tax_invoice (
+            id SERIAL PRIMARY KEY,
+            biz_no VARCHAR(20) NOT NULL,
+            sup_byr VARCHAR(2) NOT NULL,
+            issue_dt VARCHAR(10) NOT NULL,
+            make_dt VARCHAR(10),
+            sup_corp_nm VARCHAR(200),
+            sup_biz_no VARCHAR(20),
+            byr_corp_nm VARCHAR(200),
+            byr_biz_no VARCHAR(20),
+            tot_amt NUMERIC(20,2) DEFAULT 0,
+            sup_amt NUMERIC(20,2) DEFAULT 0,
+            tax_amt NUMERIC(20,2) DEFAULT 0,
+            tax_knd VARCHAR(20),
+            item_nm VARCHAR(300),
+            issue_no VARCHAR(60),
+            dedup_hash VARCHAR(64) UNIQUE NOT NULL,
+            synced_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_hyphen_taxinv_dt ON hyphen_tax_invoice(issue_dt)",
+        # 하이픈 법인카드 원장
+        """CREATE TABLE IF NOT EXISTS hyphen_card_tx (
+            id SERIAL PRIMARY KEY,
+            card_cd VARCHAR(10) NOT NULL,
+            card_no VARCHAR(30) NOT NULL,
+            use_dt VARCHAR(10) NOT NULL,
+            use_tm VARCHAR(10),
+            appr_no VARCHAR(30),
+            use_store VARCHAR(200),
+            use_amt NUMERIC(20,2) DEFAULT 0,
+            use_div VARCHAR(30),
+            appr_st VARCHAR(20),
+            inst_mon VARCHAR(10),
+            store_biz_no VARCHAR(20),
+            tax_type VARCHAR(20),
+            dedup_hash VARCHAR(64) UNIQUE NOT NULL,
+            synced_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_hyphen_cardtx_dt ON hyphen_card_tx(use_dt)",
+        # 하이픈 법인카드 연동설정
+        """CREATE TABLE IF NOT EXISTS hyphen_card_account (
+            id SERIAL PRIMARY KEY,
+            card_cd VARCHAR(10) NOT NULL,
+            card_no VARCHAR(30) NOT NULL,
+            label VARCHAR(100),
+            login_method VARCHAR(10) DEFAULT 'CERT',
+            enc_user_id TEXT,
+            enc_user_pw TEXT,
+            created_by VARCHAR(255),
+            created_at TIMESTAMP DEFAULT NOW(),
+            last_synced_at TIMESTAMP,
+            last_status VARCHAR(300)
+        )""",
         # 급여 세금 설정/오버라이드 (외부 확정값 입력)
         """CREATE TABLE IF NOT EXISTS payroll_tax_settings (
             id SERIAL PRIMARY KEY,
