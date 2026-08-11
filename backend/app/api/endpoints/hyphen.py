@@ -250,8 +250,24 @@ class ListAccountsBody(BaseModel):
     user_id: Optional[str] = None
     user_pw: Optional[str] = None
     acct_pw: Optional[str] = None
+    # CERT(인증서) 로그인 — 파일 base64 + 인증서 비밀번호
+    sign_cert_b64: Optional[str] = None
+    sign_pri_b64: Optional[str] = None
+    sign_pw: Optional[str] = None
     gubun: str = "01"
     gustation: bool = False
+
+
+def _cert_pem_from_b64(cert_b64: Optional[str], pri_b64: Optional[str]):
+    """업로드된 인증서/개인키 base64 → PEM 문자열 (전계좌 조회용)."""
+    cert_pem = pri_pem = None
+    cb = _b64_to_bytes(cert_b64)
+    pb = _b64_to_bytes(pri_b64)
+    if cb:
+        cert_pem = cb.decode() if cb[:20].lstrip().startswith(b"-----BEGIN") else creds_svc.cert_der_to_pem(cb)["pem"]
+    if pb:
+        pri_pem = pb.decode() if pb[:20].lstrip().startswith(b"-----BEGIN") else creds_svc.key_der_to_pem(pb)
+    return cert_pem, pri_pem
 
 
 def _extract_accounts(data: Any) -> List[Dict[str, Any]]:
@@ -289,6 +305,9 @@ def _extract_accounts(data: Any) -> List[Dict[str, Any]]:
 async def hyphen_list_accounts(body: ListAccountsBody):
     """아이디(또는 인증서) 로그인으로 은행의 전 계좌 목록을 조회 (저장 안 함)."""
     client = get_hyphen_client()
+    sign_cert = sign_pri = None
+    if body.login_method.upper() == "CERT":
+        sign_cert, sign_pri = _cert_pem_from_b64(body.sign_cert_b64, body.sign_pri_b64)
     t0 = time.perf_counter()
     try:
         data = await client.list_accounts(
@@ -297,6 +316,9 @@ async def hyphen_list_accounts(body: ListAccountsBody):
             user_id=body.user_id,
             user_pw=body.user_pw,
             acct_pw=body.acct_pw,
+            sign_cert=sign_cert,
+            sign_pri=sign_pri,
+            sign_pw=body.sign_pw,
             gubun=body.gubun,
             gustation=body.gustation,
         )

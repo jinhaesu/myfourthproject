@@ -39,6 +39,18 @@ const BANKS: { cd: string; name: string }[] = [
 ]
 const bankName = (cd: string) => BANKS.find((b) => b.cd === cd)?.name || cd
 
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => {
+      const s = String(r.result || '')
+      resolve(s.includes(',') ? s.split(',', 2)[1] : s)
+    }
+    r.onerror = reject
+    r.readAsDataURL(file)
+  })
+}
+
 export default function HyphenIntegrationPage() {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
@@ -73,7 +85,7 @@ export default function HyphenIntegrationPage() {
         <div>
           <h1>하이픈 은행연동</h1>
           <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
-            은행 아이디로 로그인하면 <b>전 계좌를 자동으로 불러와</b> 목록에서 선택해 등록합니다. 인증정보는 <b>암호화 보관·30일 후 자동삭제</b>됩니다.
+            은행 로그인(기업뱅킹=공동인증서)하면 <b>전 계좌를 자동으로 불러와</b> 목록에서 선택해 등록합니다. 인증정보는 <b>암호화 보관·30일 후 자동삭제</b>됩니다.
           </p>
         </div>
         <button onClick={() => setShowForm(true)} className="btn-primary">
@@ -255,17 +267,21 @@ function CredentialCard({ cred, onDelete }: { cred: HyphenCredential; onDelete: 
 
 function IdLoginModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [step, setStep] = useState<'login' | 'select'>('login')
-  const [form, setForm] = useState({ bank_cd: '003', user_id: '', user_pw: '', acct_pw: '' })
+  const [method, setMethod] = useState<'CERT' | 'ID'>('CERT')
+  const [form, setForm] = useState({ bank_cd: '003', user_id: '', user_pw: '', acct_pw: '', sign_pw: '' })
+  const [certB64, setCertB64] = useState('')
+  const [keyB64, setKeyB64] = useState('')
   const [gustation, setGustation] = useState(false)
   const [accounts, setAccounts] = useState<{ acctNo: string; acctNm: string; acctHolder: string; balance: string; curCd: string }[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
 
+  const commonBody = () =>
+    method === 'CERT'
+      ? { bank_cd: form.bank_cd, login_method: 'CERT', sign_cert_b64: certB64, sign_pri_b64: keyB64, sign_pw: form.sign_pw, acct_pw: form.acct_pw || undefined }
+      : { bank_cd: form.bank_cd, login_method: 'ID', user_id: form.user_id, user_pw: form.user_pw, acct_pw: form.acct_pw || undefined }
+
   const loadMut = useMutation({
-    mutationFn: () =>
-      hyphenApi.listAccounts({
-        bank_cd: form.bank_cd, user_id: form.user_id, user_pw: form.user_pw,
-        acct_pw: form.acct_pw || undefined, gustation,
-      }).then((r) => r.data),
+    mutationFn: () => hyphenApi.listAccounts({ ...commonBody(), gustation }).then((r) => r.data),
     onSuccess: (d) => {
       setAccounts(d.accounts || [])
       setSelected(new Set((d.accounts || []).map((a) => a.acctNo)))
@@ -278,16 +294,13 @@ function IdLoginModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
   const saveMut = useMutation({
     mutationFn: async () => {
       const chosen = accounts.filter((a) => selected.has(a.acctNo))
+      const base = commonBody()
       await Promise.all(chosen.map((a) =>
         hyphenApi.registerCredential({
-          bank_cd: form.bank_cd,
+          ...base,
           acct_no: a.acctNo.replace(/\D/g, ''),
-          login_method: 'ID',
-          user_id: form.user_id,
-          user_pw: form.user_pw,
-          acct_pw: form.acct_pw || undefined,
           label: a.acctNm || `${bankName(form.bank_cd)}(${a.acctNo.slice(-4)})`,
-        }),
+        } as any),
       ))
       return chosen.length
     },
@@ -301,12 +314,14 @@ function IdLoginModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     return next
   })
 
+  const canLoad = form.bank_cd && (method === 'CERT' ? certB64 && keyB64 && form.sign_pw : form.user_id && form.user_pw)
+
   return (
     <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-ink-900 rounded-lg shadow-pop w-full max-w-lg max-h-[85vh] overflow-y-auto border border-ink-200 dark:border-ink-800">
         <div className="sticky top-0 bg-white dark:bg-ink-900 border-b border-ink-200 dark:border-ink-800 px-4 py-2.5 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-ink-900 dark:text-ink-50">
-            {step === 'login' ? '은행 아이디 로그인' : '등록할 계좌 선택'}
+            {step === 'login' ? '은행 로그인' : '등록할 계좌 선택'}
           </h3>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200 text-lg leading-none">×</button>
         </div>
@@ -314,27 +329,68 @@ function IdLoginModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
         {step === 'login' ? (
           <div className="p-4 space-y-3">
             <div className="rounded-md bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 px-3 py-2 text-2xs text-blue-800 dark:text-blue-200">
-              은행 인터넷뱅킹 아이디/비밀번호로 로그인하면 전 계좌를 불러옵니다. 입력정보는 <b>AES-256 암호화</b> 저장되고 <b>30일 후 자동 삭제</b>됩니다.
+              로그인하면 전 계좌를 불러옵니다. 입력정보는 <b>AES-256 암호화</b> 저장되고 <b>30일 후 자동 삭제</b>됩니다.
             </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-2xs text-ink-600 dark:text-ink-400">
+                은행
+                <select value={form.bank_cd} onChange={(e) => setForm((f) => ({ ...f, bank_cd: e.target.value }))}
+                  className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent">
+                  {BANKS.map((b) => <option key={b.cd} value={b.cd}>{b.name} ({b.cd})</option>)}
+                </select>
+              </label>
+              <label className="text-2xs text-ink-600 dark:text-ink-400">
+                로그인 방식
+                <select value={method} onChange={(e) => setMethod(e.target.value as 'CERT' | 'ID')}
+                  className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent">
+                  <option value="CERT">공동인증서 (기업뱅킹 권장)</option>
+                  <option value="ID">아이디 로그인</option>
+                </select>
+              </label>
+            </div>
+
+            {method === 'CERT' ? (
+              <>
+                <div className="rounded-md bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-3 py-2 text-2xs text-amber-800 dark:text-amber-200">
+                  인증서 파일은 <b>바탕화면 → 하이픈_IBK인증서</b> 폴더에 준비해 두었습니다. 아래에서 그 폴더의 <code>signCert.der</code>, <code>signPri.key</code>를 선택하세요.
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-2xs text-ink-600 dark:text-ink-400">
+                    인증서 (signCert.der)
+                    <input type="file" onChange={async (e) => { const f = e.target.files?.[0]; if (f) setCertB64(await fileToBase64(f)) }}
+                      className="mt-1 w-full text-2xs file:mr-2 file:text-2xs file:border-0 file:bg-ink-100 dark:file:bg-ink-800 file:px-2 file:py-1 file:rounded" />
+                    {certB64 && <span className="text-emerald-600 dark:text-emerald-400">✓ 첨부됨</span>}
+                  </label>
+                  <label className="text-2xs text-ink-600 dark:text-ink-400">
+                    개인키 (signPri.key)
+                    <input type="file" onChange={async (e) => { const f = e.target.files?.[0]; if (f) setKeyB64(await fileToBase64(f)) }}
+                      className="mt-1 w-full text-2xs file:mr-2 file:text-2xs file:border-0 file:bg-ink-100 dark:file:bg-ink-800 file:px-2 file:py-1 file:rounded" />
+                    {keyB64 && <span className="text-emerald-600 dark:text-emerald-400">✓ 첨부됨</span>}
+                  </label>
+                </div>
+                <label className="block text-2xs text-ink-600 dark:text-ink-400">
+                  인증서 비밀번호
+                  <input type="password" value={form.sign_pw} onChange={(e) => setForm((f) => ({ ...f, sign_pw: e.target.value }))}
+                    className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="block text-2xs text-ink-600 dark:text-ink-400">
+                  인터넷뱅킹 아이디
+                  <input value={form.user_id} onChange={(e) => setForm((f) => ({ ...f, user_id: e.target.value }))}
+                    className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
+                </label>
+                <label className="block text-2xs text-ink-600 dark:text-ink-400">
+                  인터넷뱅킹 비밀번호
+                  <input type="password" value={form.user_pw} onChange={(e) => setForm((f) => ({ ...f, user_pw: e.target.value }))}
+                    className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
+                </label>
+              </>
+            )}
+
             <label className="block text-2xs text-ink-600 dark:text-ink-400">
-              은행
-              <select value={form.bank_cd} onChange={(e) => setForm((f) => ({ ...f, bank_cd: e.target.value }))}
-                className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent">
-                {BANKS.map((b) => <option key={b.cd} value={b.cd}>{b.name} ({b.cd})</option>)}
-              </select>
-            </label>
-            <label className="block text-2xs text-ink-600 dark:text-ink-400">
-              인터넷뱅킹 아이디
-              <input value={form.user_id} onChange={(e) => setForm((f) => ({ ...f, user_id: e.target.value }))}
-                className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
-            </label>
-            <label className="block text-2xs text-ink-600 dark:text-ink-400">
-              인터넷뱅킹 비밀번호
-              <input type="password" value={form.user_pw} onChange={(e) => setForm((f) => ({ ...f, user_pw: e.target.value }))}
-                className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
-            </label>
-            <label className="block text-2xs text-ink-600 dark:text-ink-400">
-              계좌 비밀번호 <span className="text-ink-400">(일부 은행 거래내역 조회 시 필요 · 선택)</span>
+              계좌 비밀번호 <span className="text-ink-400">(거래내역 조회 시 필요할 수 있음 · 선택)</span>
               <input type="password" value={form.acct_pw} onChange={(e) => setForm((f) => ({ ...f, acct_pw: e.target.value }))}
                 placeholder="4자리" className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
             </label>
@@ -344,11 +400,7 @@ function IdLoginModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             </label>
             <div className="flex items-center justify-end gap-2 pt-1">
               <button onClick={onClose} className="btn-secondary">취소</button>
-              <button
-                onClick={() => loadMut.mutate()}
-                disabled={!form.bank_cd || !form.user_id || !form.user_pw || loadMut.isPending}
-                className="btn-primary"
-              >
+              <button onClick={() => loadMut.mutate()} disabled={!canLoad || loadMut.isPending} className="btn-primary">
                 {loadMut.isPending ? '계좌 불러오는 중…' : '계좌 불러오기'}
               </button>
             </div>
