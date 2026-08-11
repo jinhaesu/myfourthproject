@@ -268,6 +268,62 @@ class HyphenClient:
         except Exception:
             return resp.text
 
+    # ============ 기업계좌 전계좌조회 (POST /in0087000519) — 계좌목록 ============
+
+    ALL_ACCTS_PATH = "/in0087000519"
+
+    async def list_accounts(
+        self,
+        *,
+        bank_cd: str,
+        login_method: str = "ID",
+        user_id: Optional[str] = None,
+        user_pw: Optional[str] = None,
+        acct_pw: Optional[str] = None,
+        sign_cert: Optional[str] = None,
+        sign_pri: Optional[str] = None,
+        sign_pw: Optional[str] = None,
+        gubun: str = "01",           # 01:입출금 / 02:유형별 / 03:대출
+        detail_yn: str = "Y",
+        use_channel: Optional[str] = None,
+        encrypt_secrets: bool = False,
+        gustation: bool = False,
+        path: Optional[str] = None,
+    ) -> Any:
+        """아이디/인증서 로그인으로 은행의 전 계좌 목록 조회 (/in0087000519)."""
+        p = path or self.ALL_ACCTS_PATH
+        payload: Dict[str, Any] = {
+            "gubun": gubun,
+            "bankCd": bank_cd,
+            "loginMethod": login_method,
+            "detailYn": detail_yn,
+        }
+        if use_channel:
+            payload["useChannel"] = use_channel
+
+        def _enc_or_plain(plain_key: str, enc_key: str, value: str):
+            if encrypt_secrets:
+                payload[enc_key] = self.encrypt(value)
+            else:
+                payload[plain_key] = value
+
+        if login_method.upper() == "ID":
+            if user_id is not None:
+                payload["userId"] = user_id
+            if user_pw is not None:
+                _enc_or_plain("userPw", "userPwEnc", user_pw)
+        else:  # CERT
+            if sign_cert is not None:
+                payload["signCert"] = sign_cert
+            if sign_pri is not None:
+                payload["signPri"] = sign_pri
+            if sign_pw is not None:
+                _enc_or_plain("signPw", "signPwEnc", sign_pw)
+        # 일부 은행(우리 등) 아이디로그인 시 계좌 추가인증 필요
+        if acct_pw is not None:
+            _enc_or_plain("acctPw", "acctPwEnc", acct_pw)
+        return await self.call_bank(p, payload, gustation=gustation)
+
     # ============ 기업계좌 거래내역조회 (POST /in0087000483) — PoC 대상 ============
 
     ACCT_TX_PATH = "/in0087000483"

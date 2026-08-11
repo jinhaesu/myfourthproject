@@ -1317,6 +1317,10 @@ export const hyphenApi = {
     user_id?: string; user_pw?: string
   }) => api.post<HyphenCredential>('/hyphen/credentials', body, { timeout: 60_000 }),
   registerCode: () => api.post<{ code: string; expires_in: number }>('/hyphen/register-code'),
+  listAccounts: (body: { bank_cd: string; user_id: string; user_pw: string; acct_pw?: string; login_method?: string; gustation?: boolean }) =>
+    api.post<{ elapsed_sec: number; accounts: { acctNo: string; acctNm: string; acctHolder: string; balance: string; curCd: string }[] }>(
+      '/hyphen/list-accounts', body, { timeout: 180_000 },
+    ),
   deleteCredential: (id: number) => api.delete(`/hyphen/credentials/${id}`),
   queryCredential: (
     id: number,

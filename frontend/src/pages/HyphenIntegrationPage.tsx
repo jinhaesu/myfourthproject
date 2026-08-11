@@ -3,9 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
   BuildingLibraryIcon,
-  ShieldCheckIcon,
   TrashIcon,
-  ArrowPathIcon,
   ClockIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
@@ -41,23 +39,9 @@ const BANKS: { cd: string; name: string }[] = [
 ]
 const bankName = (cd: string) => BANKS.find((b) => b.cd === cd)?.name || cd
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader()
-    r.onload = () => {
-      const s = String(r.result || '')
-      // data:...;base64,XXXX → XXXX
-      resolve(s.includes(',') ? s.split(',', 2)[1] : s)
-    }
-    r.onerror = reject
-    r.readAsDataURL(file)
-  })
-}
-
 export default function HyphenIntegrationPage() {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
-  const [editId, setEditId] = useState<number | null>(null)
 
   const healthQuery = useQuery({
     queryKey: ['hyphen-health'],
@@ -80,13 +64,6 @@ export default function HyphenIntegrationPage() {
     onError: () => toast.error('삭제 실패'),
   })
 
-  const [regCode, setRegCode] = useState<string | null>(null)
-  const codeMut = useMutation({
-    mutationFn: () => hyphenApi.registerCode().then((r) => r.data),
-    onSuccess: (d) => setRegCode(d.code),
-    onError: () => toast.error('코드 발급 실패'),
-  })
-
   const creds = credsQuery.data || []
 
   return (
@@ -96,15 +73,12 @@ export default function HyphenIntegrationPage() {
         <div>
           <h1>하이픈 은행연동</h1>
           <p className="text-2xs text-ink-500 dark:text-ink-400 mt-0.5">
-            공동인증서·비밀번호는 서버에 <b>암호화 보관</b>되며 <b>30일 후 자동 삭제</b>되어 재인증이 필요합니다.
+            은행 아이디로 로그인하면 <b>전 계좌를 자동으로 불러와</b> 목록에서 선택해 등록합니다. 인증정보는 <b>암호화 보관·30일 후 자동삭제</b>됩니다.
           </p>
         </div>
-        <button
-          onClick={() => { setEditId(null); setShowForm(true) }}
-          className="btn-primary"
-        >
-          <ShieldCheckIcon className="h-3.5 w-3.5 mr-1" />
-          파일로 직접 등록
+        <button onClick={() => setShowForm(true)} className="btn-primary">
+          <BuildingLibraryIcon className="h-3.5 w-3.5 mr-1" />
+          계좌 등록
         </button>
       </div>
 
@@ -114,83 +88,44 @@ export default function HyphenIntegrationPage() {
           {healthQuery.data.configured ? (
             <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950 px-3 py-1 flex items-center gap-2">
               <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span className="text-2xs text-emerald-800 dark:text-emerald-200">하이픈 연결됨 (user-id/Hkey 설정)</span>
+              <span className="text-2xs text-emerald-800 dark:text-emerald-200">하이픈 연결됨</span>
             </div>
           ) : (
             <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-1 flex items-center gap-2">
               <ExclamationTriangleIcon className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
               <span className="text-2xs text-amber-800 dark:text-amber-200">
-                서버에 HYPHEN_USER_ID / HYPHEN_HKEY 환경변수 미설정
+                서버에 HYPHEN_USER_ID / HYPHEN_HKEY 미설정
               </span>
             </div>
           )}
         </div>
       )}
 
-      {/* 이 PC에서 인증서로 등록 (로컬 등록도구) */}
-      <div className="panel p-3">
-        <div className="text-2xs font-semibold text-ink-700 dark:text-ink-300 uppercase tracking-wider flex items-center gap-1.5 mb-2">
-          <ShieldCheckIcon className="h-3.5 w-3.5" />이 PC에서 인증서로 등록 (권장)
-        </div>
-        <div className="text-2xs text-ink-500 dark:text-ink-400 leading-relaxed space-y-1">
-          <p>파일 위치를 찾을 필요 없이, 이 PC에 설치된 공동인증서를 <b>자동으로 목록에서 골라</b> 등록합니다. 비밀번호는 <b>내 PC에서만</b> 입력됩니다.</p>
-          <ol className="list-decimal ml-4 space-y-0.5">
-            <li>아래 <b>등록 코드 생성</b> 클릭 → 코드 복사</li>
-            <li>PC에서 등록도구 실행:{' '}
-              <code className="font-mono bg-ink-100 dark:bg-ink-800 px-1 rounded">python C:\Users\lion9\myfourthproject\tools\hyphen_cert_register.py</code>
-            </li>
-            <li>인증서 선택 → 계좌정보·비밀번호 입력 → 붙여넣은 코드로 등록</li>
-          </ol>
-        </div>
-        <div className="mt-2 flex items-center gap-2 flex-wrap">
-          <button onClick={() => codeMut.mutate()} disabled={codeMut.isPending} className="btn-primary">
-            {codeMut.isPending ? '발급 중…' : '등록 코드 생성 (10분 유효)'}
-          </button>
-          {regCode && (
-            <div className="flex items-center gap-1.5">
-              <input
-                readOnly
-                value={regCode}
-                className="font-mono text-2xs bg-canvas-50 dark:bg-ink-950 border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 w-64"
-              />
-              <button
-                onClick={() => { navigator.clipboard.writeText(regCode); toast.success('코드 복사됨') }}
-                className="btn-secondary"
-              >
-                복사
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 등록된 인증정보 */}
+      {/* 등록된 계좌 */}
       <div className="panel">
         <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center gap-1.5 text-2xs font-semibold text-ink-700 dark:text-ink-300 uppercase tracking-wider">
           <BuildingLibraryIcon className="h-3.5 w-3.5" />
-          등록된 계좌 인증정보 ({creds.length})
+          등록된 계좌 ({creds.length})
         </div>
         <div className="p-2 space-y-2">
           {credsQuery.isLoading && <div className="text-2xs text-ink-400 px-2 py-3 text-center">불러오는 중…</div>}
           {!credsQuery.isLoading && creds.length === 0 && (
             <div className="text-2xs text-ink-400 px-2 py-6 text-center">
-              등록된 인증정보가 없습니다. 우측 상단 “인증서 등록”으로 추가하세요.
+              등록된 계좌가 없습니다. 우측 상단 “계좌 등록”으로 추가하세요.
             </div>
           )}
           {creds.map((c) => (
             <CredentialCard
               key={c.id}
               cred={c}
-              onDelete={() => { if (confirm('이 인증정보를 삭제할까요?')) delMut.mutate(c.id) }}
-              onReauth={() => { setEditId(c.id); setShowForm(true) }}
+              onDelete={() => { if (confirm('이 계좌 인증정보를 삭제할까요?')) delMut.mutate(c.id) }}
             />
           ))}
         </div>
       </div>
 
       {showForm && (
-        <RegisterModal
-          editCred={editId ? creds.find((c) => c.id === editId) || null : null}
+        <IdLoginModal
           onClose={() => setShowForm(false)}
           onSaved={() => {
             setShowForm(false)
@@ -202,9 +137,7 @@ export default function HyphenIntegrationPage() {
   )
 }
 
-function CredentialCard({
-  cred, onDelete, onReauth,
-}: { cred: HyphenCredential; onDelete: () => void; onReauth: () => void }) {
+function CredentialCard({ cred, onDelete }: { cred: HyphenCredential; onDelete: () => void }) {
   const [range, setRange] = useState(() => {
     const to = new Date()
     const from = new Date(); from.setDate(to.getDate() - 29)
@@ -216,9 +149,7 @@ function CredentialCard({
 
   const queryMut = useMutation({
     mutationFn: () =>
-      hyphenApi.queryCredential(cred.id, {
-        start_date: range.from, end_date: range.to, gustation,
-      }).then((r) => r.data),
+      hyphenApi.queryCredential(cred.id, { start_date: range.from, end_date: range.to, gustation }).then((r) => r.data),
     onSuccess: (d) => {
       setResult(d)
       const common = d?.data?.common
@@ -245,25 +176,17 @@ function CredentialCard({
               {cred.login_method === 'CERT' ? '인증서' : '아이디'}
             </span>
           </div>
-          {cred.cert_subject && (
-            <div className="text-2xs text-ink-400 truncate mt-0.5 font-mono">{cred.cert_subject}</div>
-          )}
           <div className="text-2xs mt-1 flex items-center gap-2 flex-wrap">
             <span className={`inline-flex items-center gap-1 ${expiring ? 'text-rose-600 dark:text-rose-400 font-semibold' : 'text-ink-500 dark:text-ink-400'}`}>
               <ClockIcon className="h-3 w-3" />
-              {cred.is_expired ? '만료됨 — 재인증 필요' : `보관 만료까지 ${cred.days_left}일`}
+              {cred.is_expired ? '만료됨 — 재등록 필요' : `보관 만료까지 ${cred.days_left}일`}
             </span>
             {cred.last_status && <span className="text-ink-400">· {cred.last_status}</span>}
           </div>
         </div>
-        <div className="flex items-center gap-1.5">
-          <button onClick={onReauth} className="btn-secondary" title="재인증(갱신)">
-            <ArrowPathIcon className="h-3 w-3 mr-1" />재인증
-          </button>
-          <button onClick={onDelete} className="btn-secondary text-rose-600 dark:text-rose-400" title="삭제">
-            <TrashIcon className="h-3 w-3" />
-          </button>
-        </div>
+        <button onClick={onDelete} className="btn-secondary text-rose-600 dark:text-rose-400" title="삭제">
+          <TrashIcon className="h-3 w-3" />
+        </button>
       </div>
 
       {/* 조회 테스트 */}
@@ -280,13 +203,10 @@ function CredentialCard({
         <button onClick={() => queryMut.mutate()} disabled={queryMut.isPending || cred.is_expired} className="btn-secondary">
           {queryMut.isPending ? '조회 중…' : '거래내역 조회'}
         </button>
-        {result?.elapsed_sec != null && (
-          <span className="text-2xs text-ink-400 font-mono">· {result.elapsed_sec}s</span>
-        )}
+        {result?.elapsed_sec != null && <span className="text-2xs text-ink-400 font-mono">· {result.elapsed_sec}s</span>}
       </div>
 
-      {/* 결과 */}
-      {result && !result?.data?.common?.errYn?.includes?.('Y') && (
+      {result && result?.data?.common?.errYn !== 'Y' && (
         <div className="mt-2">
           {acct.acctNm && (
             <div className="text-2xs text-ink-500 dark:text-ink-400 mb-1">
@@ -333,138 +253,138 @@ function CredentialCard({
   )
 }
 
-function RegisterModal({
-  editCred, onClose, onSaved,
-}: { editCred: HyphenCredential | null; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({
-    bank_cd: editCred?.bank_cd || '003',
-    acct_no: '',
-    acct_pw: '',
-    login_method: editCred?.login_method || 'CERT',
-    sign_pw: '',
-    label: editCred?.label || '',
-    user_id: '',
-    user_pw: '',
+function IdLoginModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [step, setStep] = useState<'login' | 'select'>('login')
+  const [form, setForm] = useState({ bank_cd: '003', user_id: '', user_pw: '', acct_pw: '' })
+  const [gustation, setGustation] = useState(false)
+  const [accounts, setAccounts] = useState<{ acctNo: string; acctNm: string; acctHolder: string; balance: string; curCd: string }[]>([])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  const loadMut = useMutation({
+    mutationFn: () =>
+      hyphenApi.listAccounts({
+        bank_cd: form.bank_cd, user_id: form.user_id, user_pw: form.user_pw,
+        acct_pw: form.acct_pw || undefined, gustation,
+      }).then((r) => r.data),
+    onSuccess: (d) => {
+      setAccounts(d.accounts || [])
+      setSelected(new Set((d.accounts || []).map((a) => a.acctNo)))
+      setStep('select')
+      if (!d.accounts?.length) toast('계좌가 조회되지 않았습니다. 정보를 확인하세요.', { icon: '⚠️' })
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.detail?.error || e?.response?.data?.detail || '계좌 조회 실패'),
   })
-  const [certFile, setCertFile] = useState<File | null>(null)
-  const [keyFile, setKeyFile] = useState<File | null>(null)
 
   const saveMut = useMutation({
     mutationFn: async () => {
-      const body: any = {
-        bank_cd: form.bank_cd,
-        acct_no: form.acct_no.replace(/\D/g, ''),
-        acct_pw: form.acct_pw || undefined,
-        login_method: form.login_method,
-        label: form.label || undefined,
-      }
-      if (form.login_method === 'CERT') {
-        if (certFile) body.sign_cert_b64 = await fileToBase64(certFile)
-        if (keyFile) body.sign_pri_b64 = await fileToBase64(keyFile)
-        body.sign_pw = form.sign_pw || undefined
-      } else {
-        body.user_id = form.user_id || undefined
-        body.user_pw = form.user_pw || undefined
-      }
-      return hyphenApi.registerCredential(body).then((r) => r.data)
+      const chosen = accounts.filter((a) => selected.has(a.acctNo))
+      await Promise.all(chosen.map((a) =>
+        hyphenApi.registerCredential({
+          bank_cd: form.bank_cd,
+          acct_no: a.acctNo.replace(/\D/g, ''),
+          login_method: 'ID',
+          user_id: form.user_id,
+          user_pw: form.user_pw,
+          acct_pw: form.acct_pw || undefined,
+          label: a.acctNm || `${bankName(form.bank_cd)}(${a.acctNo.slice(-4)})`,
+        }),
+      ))
+      return chosen.length
     },
-    onSuccess: () => { toast.success('인증정보가 암호화 저장되었습니다 (30일 유효)'); onSaved() },
+    onSuccess: (n) => { toast.success(`${n}개 계좌가 암호화 등록되었습니다 (30일 유효)`); onSaved() },
     onError: (e: any) => toast.error(e?.response?.data?.detail || '등록 실패'),
   })
 
-  const isCert = form.login_method === 'CERT'
-  const canSave = form.bank_cd && form.acct_no && (
-    isCert ? (editCred || (certFile && keyFile)) && (editCred ? true : form.sign_pw) : form.user_id && form.user_pw
-  )
+  const toggle = (acctNo: string) => setSelected((prev) => {
+    const next = new Set(prev)
+    if (next.has(acctNo)) next.delete(acctNo); else next.add(acctNo)
+    return next
+  })
 
   return (
     <div className="fixed inset-0 z-50 bg-ink-900/40 flex items-center justify-center p-4">
       <div className="bg-white dark:bg-ink-900 rounded-lg shadow-pop w-full max-w-lg max-h-[85vh] overflow-y-auto border border-ink-200 dark:border-ink-800">
         <div className="sticky top-0 bg-white dark:bg-ink-900 border-b border-ink-200 dark:border-ink-800 px-4 py-2.5 flex items-center justify-between">
           <h3 className="text-sm font-semibold text-ink-900 dark:text-ink-50">
-            {editCred ? '인증정보 재인증(갱신)' : '하이픈 인증서 등록'}
+            {step === 'login' ? '은행 아이디 로그인' : '등록할 계좌 선택'}
           </h3>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200 text-lg leading-none">×</button>
         </div>
-        <div className="p-4 space-y-3">
-          <div className="rounded-md bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 px-3 py-2 text-2xs text-blue-800 dark:text-blue-200">
-            입력한 인증서·비밀번호는 서버에서 <b>AES-256 암호화</b>되어 저장되고, <b>30일 후 자동 삭제</b>됩니다. 이후 다시 인증하면 됩니다.
-          </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-2xs text-ink-600 dark:text-ink-400">
+        {step === 'login' ? (
+          <div className="p-4 space-y-3">
+            <div className="rounded-md bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 px-3 py-2 text-2xs text-blue-800 dark:text-blue-200">
+              은행 인터넷뱅킹 아이디/비밀번호로 로그인하면 전 계좌를 불러옵니다. 입력정보는 <b>AES-256 암호화</b> 저장되고 <b>30일 후 자동 삭제</b>됩니다.
+            </div>
+            <label className="block text-2xs text-ink-600 dark:text-ink-400">
               은행
               <select value={form.bank_cd} onChange={(e) => setForm((f) => ({ ...f, bank_cd: e.target.value }))}
                 className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent">
                 {BANKS.map((b) => <option key={b.cd} value={b.cd}>{b.name} ({b.cd})</option>)}
               </select>
             </label>
-            <label className="text-2xs text-ink-600 dark:text-ink-400">
-              로그인 방식
-              <select value={form.login_method} onChange={(e) => setForm((f) => ({ ...f, login_method: e.target.value }))}
-                className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent">
-                <option value="CERT">공동인증서</option>
-                <option value="ID">아이디 로그인</option>
-              </select>
+            <label className="block text-2xs text-ink-600 dark:text-ink-400">
+              인터넷뱅킹 아이디
+              <input value={form.user_id} onChange={(e) => setForm((f) => ({ ...f, user_id: e.target.value }))}
+                className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
             </label>
+            <label className="block text-2xs text-ink-600 dark:text-ink-400">
+              인터넷뱅킹 비밀번호
+              <input type="password" value={form.user_pw} onChange={(e) => setForm((f) => ({ ...f, user_pw: e.target.value }))}
+                className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
+            </label>
+            <label className="block text-2xs text-ink-600 dark:text-ink-400">
+              계좌 비밀번호 <span className="text-ink-400">(일부 은행 거래내역 조회 시 필요 · 선택)</span>
+              <input type="password" value={form.acct_pw} onChange={(e) => setForm((f) => ({ ...f, acct_pw: e.target.value }))}
+                placeholder="4자리" className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
+            </label>
+            <label className="flex items-center gap-1.5 text-2xs text-ink-500 dark:text-ink-400 cursor-pointer">
+              <input type="checkbox" checked={gustation} onChange={(e) => setGustation(e.target.checked)} className="w-3 h-3" />
+              테스트베드(무료·실계좌 조회 안 함)
+            </label>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button onClick={onClose} className="btn-secondary">취소</button>
+              <button
+                onClick={() => loadMut.mutate()}
+                disabled={!form.bank_cd || !form.user_id || !form.user_pw || loadMut.isPending}
+                className="btn-primary"
+              >
+                {loadMut.isPending ? '계좌 불러오는 중…' : '계좌 불러오기'}
+              </button>
+            </div>
           </div>
-
-          <label className="block text-2xs text-ink-600 dark:text-ink-400">
-            계좌번호
-            <input value={form.acct_no} onChange={(e) => setForm((f) => ({ ...f, acct_no: e.target.value }))}
-              placeholder="숫자만" className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent font-mono" />
-          </label>
-          <label className="block text-2xs text-ink-600 dark:text-ink-400">
-            계좌 비밀번호
-            <input type="password" value={form.acct_pw} onChange={(e) => setForm((f) => ({ ...f, acct_pw: e.target.value }))}
-              placeholder={editCred ? '변경 시에만 입력' : '4자리'} className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
-          </label>
-
-          {isCert ? (
-            <>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="text-2xs text-ink-600 dark:text-ink-400">
-                  인증서 (signCert.der)
-                  <input type="file" onChange={(e) => setCertFile(e.target.files?.[0] || null)}
-                    className="mt-1 w-full text-2xs file:mr-2 file:text-2xs file:border-0 file:bg-ink-100 dark:file:bg-ink-800 file:px-2 file:py-1 file:rounded" />
+        ) : (
+          <div className="p-4 space-y-3">
+            <div className="text-2xs text-ink-500 dark:text-ink-400">
+              {bankName(form.bank_cd)} · {accounts.length}개 계좌 조회됨 · 추적할 계좌를 선택하세요.
+            </div>
+            <div className="space-y-1.5 max-h-72 overflow-y-auto">
+              {accounts.map((a) => (
+                <label key={a.acctNo} className="flex items-center gap-2 px-2 py-1.5 rounded border border-ink-100 dark:border-ink-800 cursor-pointer hover:bg-ink-50 dark:hover:bg-ink-800">
+                  <input type="checkbox" checked={selected.has(a.acctNo)} onChange={() => toggle(a.acctNo)} className="w-3.5 h-3.5" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium text-ink-900 dark:text-ink-50 truncate">{a.acctNm || '계좌'}</div>
+                    <div className="text-2xs text-ink-400 font-mono">{a.acctNo} {a.acctHolder && `· ${a.acctHolder}`}</div>
+                  </div>
+                  {a.balance !== '' && (
+                    <div className="text-2xs font-mono text-ink-700 dark:text-ink-300">{formatCurrency(Number(a.balance) || 0, false)}</div>
+                  )}
                 </label>
-                <label className="text-2xs text-ink-600 dark:text-ink-400">
-                  개인키 (signPri.key)
-                  <input type="file" onChange={(e) => setKeyFile(e.target.files?.[0] || null)}
-                    className="mt-1 w-full text-2xs file:mr-2 file:text-2xs file:border-0 file:bg-ink-100 dark:file:bg-ink-800 file:px-2 file:py-1 file:rounded" />
-                </label>
-              </div>
-              <div className="text-2xs text-ink-400">
-                Windows 공동인증서 경로 예: <code className="font-mono">C:\Users\...\AppData\LocalLow\NPKI\[인증기관]\USER\[인증서]\</code> 폴더의 signCert.der / signPri.key
-              </div>
-              <label className="block text-2xs text-ink-600 dark:text-ink-400">
-                인증서 비밀번호
-                <input type="password" value={form.sign_pw} onChange={(e) => setForm((f) => ({ ...f, sign_pw: e.target.value }))}
-                  placeholder={editCred ? '변경 시에만 입력' : '공동인증서 비밀번호'} className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
-              </label>
-            </>
-          ) : (
-            <>
-              <label className="block text-2xs text-ink-600 dark:text-ink-400">
-                은행 사이트 아이디
-                <input value={form.user_id} onChange={(e) => setForm((f) => ({ ...f, user_id: e.target.value }))}
-                  className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
-              </label>
-              <label className="block text-2xs text-ink-600 dark:text-ink-400">
-                은행 사이트 비밀번호
-                <input type="password" value={form.user_pw} onChange={(e) => setForm((f) => ({ ...f, user_pw: e.target.value }))}
-                  className="mt-1 w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-xs bg-transparent" />
-              </label>
-            </>
-          )}
-
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <button onClick={onClose} className="btn-secondary">취소</button>
-            <button onClick={() => saveMut.mutate()} disabled={!canSave || saveMut.isPending} className="btn-primary">
-              {saveMut.isPending ? '저장 중…' : (editCred ? '재인증 저장' : '암호화 저장')}
-            </button>
+              ))}
+              {accounts.length === 0 && <div className="text-2xs text-ink-400 text-center py-6">조회된 계좌가 없습니다.</div>}
+            </div>
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <button onClick={() => setStep('login')} className="btn-secondary">← 다시 로그인</button>
+              <button
+                onClick={() => saveMut.mutate()}
+                disabled={selected.size === 0 || saveMut.isPending}
+                className="btn-primary"
+              >
+                {saveMut.isPending ? '등록 중…' : `선택 ${selected.size}개 계좌 등록`}
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )

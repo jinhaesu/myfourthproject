@@ -242,6 +242,75 @@ async def hyphen_benchmark_account(body: BenchmarkBody):
     return result
 
 
+# ============ 전계좌 조회 (아이디 로그인 → 계좌목록) ============
+
+class ListAccountsBody(BaseModel):
+    bank_cd: str
+    login_method: str = "ID"
+    user_id: Optional[str] = None
+    user_pw: Optional[str] = None
+    acct_pw: Optional[str] = None
+    gubun: str = "01"
+    gustation: bool = False
+
+
+def _extract_accounts(data: Any) -> List[Dict[str, Any]]:
+    """하이픈 전계좌 응답(중첩 가능)에서 계좌 배열 추출 후 정규화."""
+    node = data
+    lst = None
+    for _ in range(8):
+        if isinstance(node, dict):
+            if isinstance(node.get("list"), list):
+                lst = node["list"]
+                break
+            node = node.get("data")
+        else:
+            break
+    if not isinstance(lst, list):
+        return []
+    out = []
+    for a in lst:
+        if not isinstance(a, dict):
+            continue
+        acct_no = str(a.get("acctNo") or a.get("accountNo") or "")
+        if not acct_no:
+            continue
+        out.append({
+            "acctNo": acct_no,
+            "acctNm": a.get("acctNm") or a.get("acctNick") or a.get("acctDisp") or "",
+            "acctHolder": a.get("acctHolder") or "",
+            "balance": a.get("curBal") or a.get("balance") or a.get("ablBal") or "",
+            "curCd": a.get("curCd") or "KRW",
+        })
+    return out
+
+
+@router.post("/list-accounts")
+async def hyphen_list_accounts(body: ListAccountsBody):
+    """아이디(또는 인증서) 로그인으로 은행의 전 계좌 목록을 조회 (저장 안 함)."""
+    client = get_hyphen_client()
+    t0 = time.perf_counter()
+    try:
+        data = await client.list_accounts(
+            bank_cd=body.bank_cd,
+            login_method=body.login_method,
+            user_id=body.user_id,
+            user_pw=body.user_pw,
+            acct_pw=body.acct_pw,
+            gubun=body.gubun,
+            gustation=body.gustation,
+        )
+    except HyphenAPIError as e:
+        raise _err(e)
+    elapsed = round(time.perf_counter() - t0, 2)
+    common = (data or {}).get("common") if isinstance(data, dict) else {}
+    if isinstance(common, dict) and common.get("errYn") == "Y":
+        raise HTTPException(status_code=400, detail={
+            "error": common.get("errMsg") or "계좌 조회 실패", "errCd": common.get("errCd"),
+        })
+    return {"elapsed_sec": elapsed, "accounts": _extract_accounts(data)}
+
+
 # ============ 인증정보 (암호화 보관, 30일 TTL) ============
 
 class RegisterCredBody(BaseModel):
