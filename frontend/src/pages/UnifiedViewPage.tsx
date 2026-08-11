@@ -62,12 +62,6 @@ function periodForPreset(preset: PeriodPreset): { start: string; end: string } {
   }
 }
 
-function daysBetween(from: string, to: string): number {
-  const f = new Date(from).getTime()
-  const t = new Date(to).getTime()
-  return Math.floor((t - f) / (24 * 3600 * 1000)) + 1
-}
-
 interface SelectedSource {
   scope: 'all' | 'asset_only'
   ticketType?: 'EXPENSE_TICKET' | 'BANK_TRANSACTION_TICKET' | 'TAX_INVOICE_TICKET' | 'CASH_RECEIPT_TICKET'
@@ -124,8 +118,6 @@ export default function UnifiedViewPage() {
   })
 
   const ready = Boolean(from && to)
-  const periodDays = ready ? daysBetween(from, to) : 0
-  const exceeds31Days = periodDays > 31
 
   const healthQuery = useQuery({
     queryKey: ['granter-health'],
@@ -363,9 +355,14 @@ export default function UnifiedViewPage() {
   useEffect(() => {
     if (!hyphenAcct || !ready) return
     if (hyphenTxQuery.isLoading || !hyphenTxQuery.data) return
-    if ((hyphenTxQuery.data.transactions?.length || 0) > 0) return
     const key = `${hyphenAcct.acct_no}|${from}|${to}`
     if (autoSyncedRef.current.has(key) || onDemandSync.isPending) return
+    // DB가 요청 시작일까지 커버하면(가장 오래된 거래 ≤ 시작일) 동기화 불필요.
+    // 비었거나 시작일보다 오래된 데이터가 없으면 → 그 기간을 은행에서 당겨와 DB화.
+    const txs = hyphenTxQuery.data.transactions || []
+    const fromNorm = from.replace(/-/g, '')
+    const earliest = txs.length ? String(txs[0].tr_date || '').replace(/-/g, '') : ''
+    if (txs.length > 0 && earliest && earliest <= fromNorm) return
     autoSyncedRef.current.add(key)
     onDemandSync.mutate({ id: hyphenAcct.id, from, to })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -650,11 +647,6 @@ export default function UnifiedViewPage() {
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
             <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
-          {exceeds31Days && (
-            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
-              ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
-            </div>
-          )}
           <label className="ml-auto flex items-center gap-1.5 text-2xs text-ink-600 dark:text-ink-400 cursor-pointer">
             <input
               type="checkbox"

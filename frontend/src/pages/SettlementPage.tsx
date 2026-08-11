@@ -73,10 +73,6 @@ type FilterMode = 'all' | 'receivable' | 'payable' | 'settled'
 // 유틸
 // ─────────────────────────────────────────────────────────────────────────────
 
-function daysBetween(a: string, b: string) {
-  return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
-}
-
 
 /** 거래처 집계 */
 function buildContactRows(taxTickets: any[], bankTickets: any[]): ContactRow[] {
@@ -508,10 +504,6 @@ export default function SettlementPage() {
 
   const ready = Boolean(from && to)
 
-  // backend 자동 분할 — frontend 클램프 불필요
-  const periodSpan = ready ? daysBetween(from, to) : 0
-  const exceeds31 = periodSpan > 31
-
   // 그랜터 연결 상태
   const healthQuery = useQuery({
     queryKey: ['granter-health'],
@@ -676,11 +668,6 @@ export default function SettlementPage() {
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
             <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
-          {exceeds31 && (
-            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
-              ⓘ {periodSpan}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodSpan / 31)}회)되어 첫 로드가 다소 길 수 있음
-            </div>
-          )}
         </div>
       )}
 

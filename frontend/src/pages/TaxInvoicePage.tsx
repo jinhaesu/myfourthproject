@@ -90,10 +90,6 @@ function extractContractors(taxTickets: any[]): ContractorSuggestion[] {
   return Array.from(map.values()).sort((a, b) => b.count - a.count)
 }
 
-function daysBetween(a: string, b: string) {
-  return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
-}
-
 function num(obj: any, ...keys: string[]): number {
   for (const k of keys) {
     const v = obj?.[k]
@@ -740,7 +736,6 @@ export default function TaxInvoicePage() {
   }, [])
 
   const ready = Boolean(from && to)
-  const exceeds31 = ready && daysBetween(from, to) > 31
 
   const healthQuery = useQuery({
     queryKey: ['granter-health'],
@@ -960,11 +955,6 @@ export default function TaxInvoicePage() {
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
             <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
-          {exceeds31 && (
-            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
-              ⓘ {daysBetween(from, to)}일 분석 — 31일씩 자동 분할 호출({Math.ceil(daysBetween(from, to) / 31)}회)되어 첫 로드가 다소 길 수 있음
-            </div>
-          )}
         </div>
       )}
 

@@ -121,7 +121,6 @@ export default function DashboardPage() {
           <div className="panel p-3">
             <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2 flex items-center gap-1">
               <BuildingLibraryIcon className="h-3.5 w-3.5" />통장별 잔액 추이
-              <span className="text-ink-400 normal-case font-normal">· 최근 30일</span>
               {balAccounts.length > 0 && (
                 <span className="text-ink-400 normal-case font-normal">· {balAccounts.length}개 계좌</span>
               )}

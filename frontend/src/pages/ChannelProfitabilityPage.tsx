@@ -130,10 +130,6 @@ function channelMeta(key: string) {
   return CHANNEL_RULES.find((r) => r.key === key) ?? CHANNEL_RULES[CHANNEL_RULES.length - 1]
 }
 
-function daysBetween(a: string, b: string) {
-  return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
-}
-
 // ─── 타입 ─────────────────────────────────────────────────────────────────────
 type AnalysisTab = 'bank' | 'tax'
 
@@ -220,8 +216,6 @@ export default function ChannelProfitabilityPage() {
   const autoSearchFired = useRef(false)
 
   const ready = Boolean(from && to)
-  const periodDays = ready ? daysBetween(from, to) : 0
-  const exceeds31 = ready && periodDays > 31
 
   // ─── 그랜터 설정 확인 ──────────────────────────────────────────────────────
   const healthQuery = useQuery({
@@ -598,11 +592,6 @@ export default function ChannelProfitabilityPage() {
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
             <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
-          {exceeds31 && (
-            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
-              ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
-            </div>
-          )}
         </div>
       )}
 

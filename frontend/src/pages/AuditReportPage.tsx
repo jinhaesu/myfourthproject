@@ -38,12 +38,6 @@ function safeStringify(obj: any): string {
   )
 }
 
-// ─── 날짜 유틸 ───────────────────────────────────────────────────────────────
-
-function daysBetween(a: string, b: string): number {
-  return Math.floor((new Date(b).getTime() - new Date(a).getTime()) / 86400000) + 1
-}
-
 // ─── 헬퍼 ────────────────────────────────────────────────────────────────────
 
 function str(obj: any, ...keys: string[]): string {
@@ -362,7 +356,6 @@ export default function AuditReportPage() {
   const effectiveTo   = fbTo   || to
 
   const ready     = Boolean(effectiveFrom && effectiveTo)
-  const exceeds31 = ready && daysBetween(effectiveFrom, effectiveTo) > 31
 
   // 그랜터 연결 확인
   const healthQuery = useQuery({
@@ -651,11 +644,6 @@ export default function AuditReportPage() {
           {fbFrom && (
             <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-1 text-2xs text-amber-800 dark:text-amber-200">
               {`데이터 없음 — ${fbFrom} ~ ${fbTo} 자동 탐색 중`}
-            </div>
-          )}
-          {!fbFrom && exceeds31 && (
-            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
-              ⓘ {daysBetween(effectiveFrom, effectiveTo)}일 분석 — 31일씩 자동 분할 호출({Math.ceil(daysBetween(effectiveFrom, effectiveTo) / 31)}회)되어 첫 로드가 다소 길 수 있음
             </div>
           )}
         </div>

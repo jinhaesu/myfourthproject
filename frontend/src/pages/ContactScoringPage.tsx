@@ -937,8 +937,6 @@ export default function ContactScoringPage() {
   const [selected, setSelected] = useState<ContactScore | null>(null)
 
   const ready = Boolean(from && to)
-  const periodDays = ready ? daysBetween(from, to) : 1
-  const exceeds31 = ready && periodDays > 31
 
   // 그랜터 헬스 체크
   const healthQuery = useQuery({
@@ -1136,11 +1134,6 @@ export default function ContactScoringPage() {
             <CheckCircleIcon className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
             <span className="text-2xs text-emerald-800 dark:text-emerald-200">은행 연동됨</span>
           </div>
-          {exceeds31 && (
-            <div className="rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950 px-3 py-1 text-2xs text-blue-800 dark:text-blue-200">
-              ⓘ {periodDays}일 분석 — 31일씩 자동 분할 호출({Math.ceil(periodDays / 31)}회)되어 첫 로드가 다소 길 수 있음
-            </div>
-          )}
           {ticketsQuery.isError && (
             <div className="rounded-md border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950 px-3 py-1 flex items-center gap-2 text-2xs text-rose-800 dark:text-rose-200">
               <ExclamationTriangleIcon className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
