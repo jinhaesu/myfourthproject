@@ -613,7 +613,15 @@ function CardPanel() {
   })
   const syncMut = useMutation({
     mutationFn: () => hyphenApi.cardsSync({ start_date: range.from, end_date: range.to }).then((r) => r.data),
-    onSuccess: (d) => { toast.success(`카드 동기화 · 신규 ${d.inserted}건`); qc.invalidateQueries({ queryKey: ['hyphen-card-tx'] }); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
+    onSuccess: (d) => {
+      const fails = (d.results || []).filter((r: any) => !r.ok)
+      if (d.inserted === 0 && fails.length) {
+        toast.error(`카드 조회 실패: ${fails[0].error || ''}`, { duration: 6000 })
+      } else {
+        toast.success(`카드 동기화 · 신규 ${d.inserted}건`)
+      }
+      qc.invalidateQueries({ queryKey: ['hyphen-card-tx'] }); qc.invalidateQueries({ queryKey: ['hyphen-cards'] })
+    },
     onError: () => toast.error('카드 동기화 실패'),
   })
   const cards = cardsQ.data || []

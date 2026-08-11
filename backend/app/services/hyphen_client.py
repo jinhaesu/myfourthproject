@@ -49,6 +49,21 @@ def _to_16(raw: bytes) -> bytes:
     return raw + b"\x00" * (16 - len(raw))
 
 
+def _decode_json(resp) -> Any:
+    """하이픈 응답을 한글 인코딩 견고하게 파싱 — utf-8 실패 시 cp949/euc-kr."""
+    import json as _json
+    raw = resp.content
+    for enc in ("utf-8", "cp949", "euc-kr"):
+        try:
+            return _json.loads(raw.decode(enc))
+        except Exception:
+            continue
+    try:
+        return resp.json()
+    except Exception:
+        return resp.text
+
+
 def _pem_body(s: Optional[str]) -> Optional[str]:
     """하이픈 signCert/signPri 입력형식 — PEM 헤더/푸터와 모든 공백·개행 제거한 순수 base64."""
     if not s:
@@ -417,10 +432,7 @@ class HyphenClient:
             raise HyphenAPIError(f"하이픈 API {resp.status_code}: {rbody}", status_code=resp.status_code, body=rbody)
         if resp.status_code == 204 or not resp.content:
             return None
-        try:
-            return resp.json()
-        except Exception:
-            return resp.text
+        return _decode_json(resp)
 
     # ============ 기업계좌 전계좌조회 (POST /in0087000519) — 계좌목록 ============
 
