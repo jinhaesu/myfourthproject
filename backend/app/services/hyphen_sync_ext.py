@@ -188,40 +188,49 @@ async def sync_cards(db: AsyncSession, *, start_date: str, end_date: str, gustat
     accts = (await db.execute(select(HyphenCardAccount))).scalars().all()
     total_inserted = 0
     results = []
+    # 카드사별 1회 호출(cardNoFilter=N → 그 카드사 전 카드 거래 반환). 비용 절감 + 마스킹 카드번호 필터 회피.
+    by_cd: Dict[str, list] = {}
     for a in accts:
-        sign = cert if (a.login_method == "CERT" and cert) else (None, None, None)
+        by_cd.setdefault(a.card_cd, []).append(a)
+
+    for card_cd, cards in by_cd.items():
+        rep = cards[0]  # 로그인 대표(카드사별 동일 인증)
+        sign = cert if (rep.login_method == "CERT" and cert) else (None, None, None)
         try:
             data = await client.card_transactions(
-                card_cd=a.card_cd, card_no=a.card_no, biz_no=COMPANY_BIZ_NO,
+                card_cd=card_cd, card_no=rep.card_no, biz_no=COMPANY_BIZ_NO,
                 start_date=start_date, end_date=end_date,
                 sign_cert=sign[0], sign_pri=sign[1], sign_pw=sign[2],
-                user_id=_dec(a.enc_user_id), user_pw=_dec(a.enc_user_pw),
-                login_method=a.login_method, gustation=gustation,
+                user_id=_dec(rep.enc_user_id), user_pw=_dec(rep.enc_user_pw),
+                login_method=rep.login_method, gustation=gustation,
             )
         except HyphenAPIError as e:
-            a.last_status = f"오류: {str(e)[:280]}"
-            results.append({"card_no": a.card_no, "ok": False, "error": str(e)[:120]})
+            for a in cards:
+                a.last_status = f"오류: {str(e)[:280]}"
+                results.append({"card_no": a.card_no, "ok": False, "error": str(e)[:120]})
             continue
         common = (data or {}).get("common") if isinstance(data, dict) else {}
         if isinstance(common, dict) and common.get("errYn") == "Y":
-            a.last_status = f"실패: {common.get('errMsg')}"
-            results.append({"card_no": a.card_no, "ok": False, "error": common.get("errMsg")})
+            msg = common.get("errMsg")
+            for a in cards:
+                a.last_status = f"실패: {msg}"
+                results.append({"card_no": a.card_no, "ok": False, "error": msg})
             continue
         rows = _extract_list(data)
-        ins = 0
         hashes = []
         for r in rows:
-            key = "|".join(str(r.get(k, "")) for k in ("useDt", "useTm", "apprNo", "useAmt", "useStore"))
-            hashes.append(hashlib.sha256(f"{a.card_cd}|{a.card_no}|{key}".encode()).hexdigest())
+            key = "|".join(str(r.get(k, "")) for k in ("useDt", "useTm", "apprNo", "useAmt", "useStore", "useCard"))
+            hashes.append(hashlib.sha256(f"{card_cd}|{key}".encode()).hexdigest())
         existing = set()
         if hashes:
             q = await db.execute(select(HyphenCardTx.dedup_hash).where(HyphenCardTx.dedup_hash.in_(hashes)))
             existing = set(q.scalars().all())
+        ins = 0
         for r, h in zip(rows, hashes):
             if h in existing:
                 continue
             db.add(HyphenCardTx(
-                card_cd=a.card_cd, card_no=(str(r.get("useCard") or a.card_no)[:30]),
+                card_cd=card_cd, card_no=(str(r.get("useCard") or rep.card_no)[:30]),
                 use_dt=str(r.get("useDt") or ""), use_tm=str(r.get("useTm") or "") or None,
                 appr_no=(str(r.get("apprNo") or "")[:30]) or None,
                 use_store=(str(r.get("useStore") or "")[:200]) or None,
@@ -235,11 +244,12 @@ async def sync_cards(db: AsyncSession, *, start_date: str, end_date: str, gustat
             ))
             existing.add(h)
             ins += 1
-        a.last_synced_at = datetime.utcnow()
-        a.last_status = f"성공 신규 {ins}건"
-        await record_coverage(db, "card", a.card_no, start_date, end_date)
+        for a in cards:
+            a.last_synced_at = datetime.utcnow()
+            a.last_status = f"성공 신규 {ins}건"
+            await record_coverage(db, "card", a.card_no, start_date, end_date)
         total_inserted += ins
-        results.append({"card_no": a.card_no, "ok": True, "inserted": ins, "fetched": len(rows)})
+        results.append({"card_cd": card_cd, "ok": True, "inserted": ins, "fetched": len(rows)})
     await db.commit()
     return {"ok": True, "inserted": total_inserted, "results": results}
 
