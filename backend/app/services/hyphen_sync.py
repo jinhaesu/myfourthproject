@@ -116,6 +116,70 @@ async def sync_all(db: AsyncSession, *, start_date: str, end_date: str) -> Dict[
     return {"synced": len([r for r in results if r.get("ok")]), "results": results}
 
 
+async def balance_series(db: AsyncSession, *, days: int = 30) -> Dict[str, Any]:
+    """하이픈 원장 기반 계좌별 일별 EOD 잔액 시계열 (대시보드용).
+    현재 잔액(last_balance) + 일별 순변동 역산으로 재구성. 계좌는 acct_no로 중복 제거.
+    """
+    from datetime import date as _date, timedelta as _td
+    creds = (await db.execute(select(HyphenCredential).order_by(HyphenCredential.id))).scalars().all()
+    # acct_no 기준 계좌 목록(중복 제거, 최신 last_balance 사용)
+    accts: Dict[str, Dict[str, Any]] = {}
+    for c in creds:
+        if c.is_expired:
+            continue
+        key = c.acct_no
+        cur = accts.get(key)
+        if cur is None or (c.last_synced_at and (not cur.get("_synced") or c.last_synced_at > cur["_synced"])):
+            accts[key] = {
+                "acct_no": c.acct_no,
+                "bank_cd": c.bank_cd,
+                "last4": c.acct_last4,
+                "label": c.label or f"{c.bank_cd}({c.acct_last4})",
+                "balance": float(c.last_balance) if c.last_balance is not None else 0.0,
+                "_synced": c.last_synced_at,
+            }
+    if not accts:
+        return {"accounts": [], "series": []}
+
+    today = _date.today()
+    day_list = [(today - _td(days=i)).isoformat() for i in range(days - 1, -1, -1)]  # 오래된→최신
+    day_set = {d.replace("-", "") for d in day_list}
+
+    # 계좌별 일별 순변동
+    rows = (await db.execute(
+        select(HyphenBankTx).where(HyphenBankTx.acct_no.in_(list(accts.keys())))
+    )).scalars().all()
+    net: Dict[str, Dict[str, float]] = {k: {} for k in accts}
+    for t in rows:
+        d = (t.tr_date or "").replace("-", "")
+        if d not in day_set:
+            continue
+        iso = f"{d[0:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else t.tr_date
+        signed = float(t.in_amt or 0) - float(t.out_amt or 0)
+        net[t.acct_no][iso] = net[t.acct_no].get(iso, 0.0) + signed
+
+    # EOD 역산: 오늘=현재잔액, EOD[전일]=EOD[당일]-net(당일)
+    eod: Dict[str, Dict[str, float]] = {}
+    for k, a in accts.items():
+        eod[k] = {}
+        bal = a["balance"]
+        for i in range(len(day_list) - 1, -1, -1):
+            d = day_list[i]
+            eod[k][d] = bal
+            bal = bal - net[k].get(d, 0.0)
+
+    series = []
+    for d in day_list:
+        row: Dict[str, Any] = {"date": d}
+        for k in accts:
+            row[k] = eod[k].get(d)
+        series.append(row)
+
+    accounts = [{"acct_no": a["acct_no"], "bank_cd": a["bank_cd"], "last4": a["last4"], "label": a["label"], "balance": a["balance"]} for a in accts.values()]
+    accounts.sort(key=lambda x: x["balance"], reverse=True)
+    return {"accounts": accounts, "series": series}
+
+
 async def read_transactions(
     db: AsyncSession,
     *,

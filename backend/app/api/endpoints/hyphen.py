@@ -481,6 +481,12 @@ async def hyphen_cron_sync(
     return await sync_svc.sync_all(db, start_date=start, end_date=end)
 
 
+@router.get("/balance-series")
+async def hyphen_balance_series(days: int = 30, db: AsyncSession = Depends(get_db)):
+    """계좌별 일별 잔액 시계열 (대시보드 통장별 잔액용, 원장 기반 즉시)."""
+    return await sync_svc.balance_series(db, days=max(1, min(days, 120)))
+
+
 @router.get("/transactions")
 async def hyphen_transactions(
     start_date: str,

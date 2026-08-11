@@ -1340,6 +1340,10 @@ export const hyphenApi = {
     api.get<{ count: number; in_sum: number; out_sum: number; net: number; transactions: any[] }>(
       '/hyphen/transactions', { params },
     ),
+  balanceSeries: (days = 30) =>
+    api.get<{ accounts: { acct_no: string; bank_cd: string; last4: string; label: string; balance: number }[]; series: Record<string, any>[] }>(
+      '/hyphen/balance-series', { params: { days } },
+    ),
   queryCredential: (
     id: number,
     body: { start_date: string; end_date: string; gustation?: boolean; sort?: string; filter_type?: string; gubun?: string },
