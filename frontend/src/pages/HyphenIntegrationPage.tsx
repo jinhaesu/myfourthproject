@@ -570,23 +570,43 @@ function TaxInvoicePanel() {
 function CardPanel() {
   const qc = useQueryClient()
   const [range, setRange] = useState(last3mRange)
-  const [form, setForm] = useState({ card_cd: '001', card_no: '', label: '', login_method: 'CERT', user_id: '', user_pw: '' })
+  const [form, setForm] = useState({ card_cd: '001', login_method: 'CERT', user_id: '', user_pw: '' })
+  const [discovered, setDiscovered] = useState<{ card_no: string; card_nm: string; card_brand: string }[]>([])
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const cardsQ = useQuery({ queryKey: ['hyphen-cards'], queryFn: () => hyphenApi.listCards().then((r) => r.data.cards), retry: false })
   const txQ = useQuery({
     queryKey: ['hyphen-card-tx', range.from, range.to],
     queryFn: () => hyphenApi.cardTx({ start_date: range.from, end_date: range.to }).then((r) => r.data),
     retry: false,
   })
-  const regMut = useMutation({
-    mutationFn: () => hyphenApi.registerCard({
-      card_cd: form.card_cd, card_no: form.card_no.replace(/\D/g, ''), label: form.label || undefined,
-      login_method: form.login_method,
+  const discoverMut = useMutation({
+    mutationFn: () => hyphenApi.discoverCards({
+      card_cd: form.card_cd, login_method: form.login_method,
       user_id: form.login_method === 'ID' ? form.user_id : undefined,
       user_pw: form.login_method === 'ID' ? form.user_pw : undefined,
     }).then((r) => r.data),
-    onSuccess: () => { toast.success('카드 등록됨'); setForm((f) => ({ ...f, card_no: '', label: '' })); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
+    onSuccess: (d) => {
+      setDiscovered(d.cards || [])
+      setSelected(new Set((d.cards || []).map((c) => c.card_no)))
+      if (!d.cards?.length) toast('보유카드가 조회되지 않았습니다.', { icon: '⚠️' })
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.detail?.error || e?.response?.data?.detail || '보유카드 조회 실패'),
+  })
+  const regMut = useMutation({
+    mutationFn: async () => {
+      const chosen = discovered.filter((c) => selected.has(c.card_no))
+      await Promise.all(chosen.map((c) => hyphenApi.registerCard({
+        card_cd: form.card_cd, card_no: c.card_no.replace(/\D/g, ''), label: c.card_nm || undefined,
+        login_method: form.login_method,
+        user_id: form.login_method === 'ID' ? form.user_id : undefined,
+        user_pw: form.login_method === 'ID' ? form.user_pw : undefined,
+      })))
+      return chosen.length
+    },
+    onSuccess: (n) => { toast.success(`${n}개 카드 등록됨`); setDiscovered([]); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
     onError: () => toast.error('카드 등록 실패'),
   })
+  const toggleCard = (no: string) => setSelected((prev) => { const n = new Set(prev); if (n.has(no)) n.delete(no); else n.add(no); return n })
   const delMut = useMutation({
     mutationFn: (id: number) => hyphenApi.deleteCard(id),
     onSuccess: () => { toast.success('삭제됨'); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
@@ -606,23 +626,15 @@ function CardPanel() {
       </div>
       <div className="flex items-end gap-1.5 flex-wrap mb-2">
         <label className="text-2xs text-ink-500">카드사
-          <select value={form.card_cd} onChange={(e) => setForm((f) => ({ ...f, card_cd: e.target.value }))}
+          <select value={form.card_cd} onChange={(e) => { setForm((f) => ({ ...f, card_cd: e.target.value })); setDiscovered([]) }}
             className="mt-0.5 block border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent">
             {CARD_CODES.map((c) => <option key={c.cd} value={c.cd}>{c.name}</option>)}
           </select>
         </label>
-        <label className="text-2xs text-ink-500">카드번호
-          <input value={form.card_no} onChange={(e) => setForm((f) => ({ ...f, card_no: e.target.value }))}
-            placeholder="숫자만" className="mt-0.5 block border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent font-mono w-40" />
-        </label>
-        <label className="text-2xs text-ink-500">별명
-          <input value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
-            className="mt-0.5 block border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent w-28" />
-        </label>
         <label className="text-2xs text-ink-500">로그인
           <select value={form.login_method} onChange={(e) => setForm((f) => ({ ...f, login_method: e.target.value }))}
             className="mt-0.5 block border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent">
-            <option value="CERT">공동인증서</option>
+            <option value="CERT">공동인증서(재사용)</option>
             <option value="ID">카드사 아이디</option>
           </select>
         </label>
@@ -634,8 +646,29 @@ function CardPanel() {
               placeholder="비밀번호" className="border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent w-28" />
           </>
         )}
-        <button onClick={() => regMut.mutate()} disabled={!form.card_no || regMut.isPending} className="btn-secondary">카드 등록</button>
+        <button onClick={() => discoverMut.mutate()} disabled={discoverMut.isPending} className="btn-secondary">
+          {discoverMut.isPending ? '보유카드 불러오는 중…' : '보유카드 불러오기'}
+        </button>
       </div>
+      {discovered.length > 0 && (
+        <div className="mb-2 space-y-1.5 rounded-md border border-ink-200 dark:border-ink-800 p-2">
+          <div className="text-2xs text-ink-500 dark:text-ink-400">{cardName(form.card_cd)} 보유카드 {discovered.length}장 · 등록할 카드 선택</div>
+          <div className="flex flex-wrap gap-1.5">
+            {discovered.map((c) => {
+              const on = selected.has(c.card_no)
+              return (
+                <label key={c.card_no} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs border cursor-pointer ${on ? 'border-ink-300 dark:border-ink-600' : 'border-ink-100 dark:border-ink-800 text-ink-400'}`}>
+                  <input type="checkbox" checked={on} onChange={() => toggleCard(c.card_no)} className="w-3 h-3" />
+                  {c.card_nm || '카드'} <span className="font-mono">{c.card_no.slice(-4)}</span>
+                </label>
+              )
+            })}
+          </div>
+          <button onClick={() => regMut.mutate()} disabled={selected.size === 0 || regMut.isPending} className="btn-primary">
+            {regMut.isPending ? '등록 중…' : `선택 ${selected.size}장 등록`}
+          </button>
+        </div>
+      )}
       {cards.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {cards.map((c) => (

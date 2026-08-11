@@ -1354,6 +1354,10 @@ export const hyphenApi = {
   // 법인카드
   listCards: () =>
     api.get<{ cards: { id: number; card_cd: string; card_no: string; label: string | null; login_method: string; last_synced_at: string | null; last_status: string | null }[] }>('/hyphen/cards'),
+  discoverCards: (body: { card_cd: string; login_method?: string; user_id?: string; user_pw?: string; gustation?: boolean }) =>
+    api.post<{ cards: { card_no: string; card_nm: string; card_brand: string; valid_date: string; active_yn: string }[] }>(
+      '/hyphen/cards/discover', body, { timeout: 180_000 },
+    ),
   registerCard: (body: { card_cd: string; card_no: string; label?: string; login_method?: string; user_id?: string; user_pw?: string }) =>
     api.post<{ id: number }>('/hyphen/cards', body),
   deleteCard: (id: number) => api.delete(`/hyphen/cards/${id}`),

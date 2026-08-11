@@ -145,6 +145,39 @@ async def read_tax_invoices(db: AsyncSession, *, start_date: str, end_date: str,
 
 # ============ 법인카드 ============
 
+async def discover_cards(
+    db: AsyncSession, *, card_cd: str, login_method: str = "CERT",
+    user_id: Optional[str] = None, user_pw: Optional[str] = None, gustation: bool = False,
+) -> List[Dict[str, Any]]:
+    """카드사에서 보유 법인카드 목록 조회(/in0007000556). 저장 안 함. 인증서 재사용."""
+    cert = await get_company_cert(db) if login_method.upper() == "CERT" else None
+    sign = cert if cert else (None, None, None)
+    if login_method.upper() == "CERT" and not cert:
+        raise HyphenAPIError("저장된 법인 공동인증서 없음(은행 계좌를 인증서로 먼저 등록)", status_code=400)
+    client = get_hyphen_client()
+    data = await client.card_list(
+        card_cd=card_cd, biz_no=COMPANY_BIZ_NO,
+        sign_cert=sign[0], sign_pri=sign[1], sign_pw=sign[2],
+        user_id=user_id, user_pw=user_pw, login_method=login_method, gustation=gustation,
+    )
+    common = (data or {}).get("common") if isinstance(data, dict) else {}
+    if isinstance(common, dict) and common.get("errYn") == "Y":
+        raise HyphenAPIError(common.get("errMsg") or "보유카드 조회 실패", status_code=400)
+    out = []
+    for r in _extract_list(data):
+        if not isinstance(r, dict):
+            continue
+        no = str(r.get("cardNo") or "")
+        if not no:
+            continue
+        out.append({
+            "card_no": no, "card_nm": r.get("cardNm") or "", "card_brand": r.get("cardBrand") or "",
+            "valid_date": r.get("validDate") or "", "active_yn": r.get("activeYn") or "",
+        })
+    return out
+
+
+
 async def sync_cards(db: AsyncSession, *, start_date: str, end_date: str, gustation: bool = False) -> Dict[str, Any]:
     cert = await get_company_cert(db)
     client = get_hyphen_client()

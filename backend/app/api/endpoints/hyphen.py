@@ -470,6 +470,27 @@ class CardAccountBody(BaseModel):
     user_pw: Optional[str] = None
 
 
+class CardDiscoverBody(BaseModel):
+    card_cd: str
+    login_method: str = "CERT"
+    user_id: Optional[str] = None
+    user_pw: Optional[str] = None
+    gustation: bool = False
+
+
+@router.post("/cards/discover")
+async def hyphen_cards_discover(body: CardDiscoverBody, db: AsyncSession = Depends(get_db)):
+    """카드사에서 보유 법인카드 목록 조회 (저장 안 함, 인증서 재사용)."""
+    try:
+        cards = await ext_svc.discover_cards(
+            db, card_cd=body.card_cd, login_method=body.login_method,
+            user_id=body.user_id, user_pw=body.user_pw, gustation=body.gustation,
+        )
+    except HyphenAPIError as e:
+        raise _err(e)
+    return {"cards": cards}
+
+
 @router.get("/cards")
 async def hyphen_list_cards(db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(_select(HyphenCardAccount).order_by(HyphenCardAccount.id))).scalars().all()
