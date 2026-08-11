@@ -17,7 +17,7 @@ import {
   ClockIcon,
   ArrowDownTrayIcon,
 } from '@heroicons/react/24/outline'
-import { granterApi, cardsApi } from '@/services/api'
+import { granterApi, cardsApi, hyphenApi } from '@/services/api'
 import { formatCurrency, isoLocal, formatLastUpdated } from '@/utils/format'
 import { buildOwnAccountSet, filterOutInternalTransfers } from '@/utils/internalTransfer'
 import { usePeriodStore } from '@/store/periodStore'
@@ -74,6 +74,12 @@ interface SelectedSource {
   assetId?: number
   label: string
   sublabel?: string
+  acctNo?: string  // 하이픈 원장 매칭용 계좌번호
+}
+
+// 계좌번호 정규화 (숫자만) — 하이픈 acct_no ↔ 그랜터 accountNumber 매칭
+function digits(s: any): string {
+  return String(s || '').replace(/\D/g, '')
 }
 
 function num(obj: any, ...keys: string[]): number {
@@ -320,6 +326,30 @@ export default function UnifiedViewPage() {
     onError: () => toast.error('탐색 실패'),
   })
 
+  // ===== 하이픈 동기화 원장(즉시) — 선택 계좌가 동기화돼 있으면 그랜터 대신 DB 원장 사용 =====
+  const hyphenCredsQuery = useQuery({
+    queryKey: ['hyphen-creds-map'],
+    queryFn: () => hyphenApi.listCredentials().then((r) => r.data.credentials),
+    retry: false,
+    staleTime: 60_000,
+  })
+  const hyphenAcct = useMemo(() => {
+    if (selected.ticketType !== 'BANK_TRANSACTION_TICKET' || !selected.acctNo) return null
+    const target = digits(selected.acctNo)
+    if (!target) return null
+    const creds = hyphenCredsQuery.data || []
+    return creds.find((c) => c.last_synced_at && digits(c.acct_no) === target) || null
+  }, [selected, hyphenCredsQuery.data])
+  const usingHyphen = !!hyphenAcct
+
+  const hyphenTxQuery = useQuery({
+    queryKey: ['hyphen-tx-unified', hyphenAcct?.acct_no, from, to],
+    queryFn: () =>
+      hyphenApi.transactionsDb({ start_date: from, end_date: to, acct_no: hyphenAcct!.acct_no }).then((r) => r.data),
+    enabled: !!hyphenAcct && ready,
+    retry: false,
+  })
+
   // 거래 (선택에 따라 단일 타입 또는 모든 타입 통합)
   const ticketsQuery = useQuery({
     queryKey: ['granter-tickets-v2', selected, from, to],
@@ -338,7 +368,7 @@ export default function UnifiedViewPage() {
       if (selected.assetId) payload.assetId = selected.assetId
       return granterApi.listTickets(payload).then((r) => r.data)
     },
-    enabled: !!isConfigured && ready,
+    enabled: !!isConfigured && ready && !usingHyphen,
     retry: false,
   })
 
@@ -369,15 +399,39 @@ export default function UnifiedViewPage() {
     return []
   }, [ticketsQuery.data])
 
-  // 거래 합계 계산에서 법인 계좌 간 이체 제외
+  // 하이픈 원장 → 그랜터 티켓과 동일 형태로 정규화 (기존 테이블·합계·잔액컬럼 재사용)
+  const hyphenTickets: any[] = useMemo(() => {
+    if (!usingHyphen) return []
+    const rows = hyphenTxQuery.data?.transactions || []
+    return rows
+      .map((r: any) => {
+        const isIn = Number(r.in_amt || 0) > 0
+        const d = String(r.tr_date || '')
+        const iso = d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : d
+        const tm = String(r.tr_time || '')
+        const hm = tm.length >= 4 ? `${tm.slice(0, 2)}:${tm.slice(2, 4)}` : ''
+        const contact = r.tr_name || r.counterparty_name || ''
+        return {
+          transactionType: isIn ? 'IN' : 'OUT',
+          amount: isIn ? Number(r.in_amt || 0) : Number(r.out_amt || 0),
+          ticketType: 'BANK_TRANSACTION_TICKET',
+          transactAt: hm ? `${iso}T${hm}` : iso,
+          contact,
+          bankTransaction: { counterparty: contact, balanceAfter: r.balance, descriptionType: '' },
+        }
+      })
+      .sort((a: any, b: any) => String(b.transactAt).localeCompare(String(a.transactAt)))
+  }, [usingHyphen, hyphenTxQuery.data])
+
+  // 거래 합계 계산에서 법인 계좌 간 이체 제외 (그랜터 경로만)
   const filteredTickets: any[] = useMemo(
     () => filterOutInternalTransfers(rawTickets, ownAccounts),
     [rawTickets, ownAccounts]
   )
-  const internalFilteredCount = rawTickets.length - filteredTickets.length
+  const internalFilteredCount = usingHyphen ? 0 : rawTickets.length - filteredTickets.length
 
-  // 표시용 tickets는 원본 유지 (표시는 그대로), 합계 계산만 filteredTickets 사용
-  const tickets = rawTickets
+  // 하이픈 동기화 계좌면 DB 원장, 아니면 그랜터
+  const tickets = usingHyphen ? hyphenTickets : rawTickets
 
   // 세금계산서 매출/매입 합계
   const taxSummary = useMemo(() => {
@@ -692,6 +746,7 @@ export default function UnifiedViewPage() {
                       assetId: id,
                       label: alias || bankName,
                       sublabel: `${bankName} ${acctNum}`,
+                      acctNo: acctNum,
                     })
                   }
                   className={`w-full flex items-start justify-between px-2 py-1.5 rounded text-2xs transition gap-2 ${
@@ -987,6 +1042,11 @@ export default function UnifiedViewPage() {
                     · {tickets.length.toLocaleString('ko-KR')}건
                   </span>
                 )}
+                {usingHyphen && (
+                  <span className="text-2xs ml-2 px-1.5 py-0.5 rounded font-semibold bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                    ⚡ 하이픈 원장{hyphenAcct?.last_synced_at ? ` · 동기화 ${new Date(hyphenAcct.last_synced_at).toLocaleString('ko-KR')}` : ''}
+                  </span>
+                )}
                 {internalFilteredCount > 0 && (
                   <span className="text-2xs text-ink-400 ml-1">
                     · 법인 계좌 간 이체 {internalFilteredCount}건 포함
@@ -1013,7 +1073,7 @@ export default function UnifiedViewPage() {
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400 p-6 text-center">
                 그랜터 API 키 등록 후 실시간 거래가 표시됩니다.
               </div>
-            ) : ticketsQuery.isLoading ? (
+            ) : (usingHyphen ? hyphenTxQuery.isLoading : ticketsQuery.isLoading) ? (
               <div className="flex-1 flex items-center justify-center text-2xs text-ink-400">
                 불러오는 중…
               </div>
