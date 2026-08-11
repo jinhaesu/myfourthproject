@@ -24,6 +24,8 @@ import os
 import time
 import base64
 import logging
+import subprocess
+import tempfile
 from typing import Optional, Dict, Any, Iterable
 
 import httpx
@@ -55,6 +57,47 @@ def _pem_body(s: Optional[str]) -> Optional[str]:
     s2 = re.sub(r"-----BEGIN [^-]+-----", "", s)
     s2 = re.sub(r"-----END [^-]+-----", "", s2)
     return "".join(s2.split())
+
+
+def _decrypt_sign_key(sign_pri: str, password: str) -> Optional[str]:
+    """한국 공동인증서 개인키(PBES2+PBKDF2+SEED-CBC)를 openssl legacy provider로 복호화.
+    성공 시 복호화된 PKCS8 DER의 headerless base64 반환, 실패 시 None.
+    (cryptography는 SEED 미지원 → openssl 서브프로세스 사용)
+    """
+    if not sign_pri or not password:
+        return None
+    try:
+        der = base64.b64decode(_pem_body(sign_pri))
+    except Exception:
+        return None
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".key", delete=False) as tf:
+            tf.write(der)
+            path = tf.name
+        env = dict(os.environ, SIGNKEYPW=password)
+        proc = subprocess.run(
+            [
+                "openssl", "pkcs8", "-inform", "DER", "-in", path,
+                "-passin", "env:SIGNKEYPW",
+                "-outform", "DER", "-nocrypt",
+                "-provider", "legacy", "-provider", "default",
+            ],
+            capture_output=True, timeout=20, env=env,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            logger.warning("signPri 복호화 실패: %s", (proc.stderr or b"")[:200])
+            return None
+        return base64.b64encode(proc.stdout).decode()
+    except Exception as e:
+        logger.warning("signPri 복호화 예외: %s", e)
+        return None
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
 
 
 class HyphenClient:
@@ -326,7 +369,8 @@ class HyphenClient:
             if sign_cert is not None:
                 payload["signCert"] = _pem_body(sign_cert)
             if sign_pri is not None:
-                payload["signPri"] = _pem_body(sign_pri)
+                _dec = _decrypt_sign_key(sign_pri, sign_pw) if sign_pw else None
+                payload["signPri"] = _dec or _pem_body(sign_pri)
             if sign_pw is not None:
                 _enc_or_plain("signPw", "signPwEnc", sign_pw)
         # 일부 은행(우리 등) 아이디로그인 시 계좌 추가인증 필요
@@ -402,7 +446,8 @@ class HyphenClient:
             if sign_cert is not None:
                 payload["signCert"] = _pem_body(sign_cert)
             if sign_pri is not None:
-                payload["signPri"] = _pem_body(sign_pri)
+                _dec = _decrypt_sign_key(sign_pri, sign_pw) if sign_pw else None
+                payload["signPri"] = _dec or _pem_body(sign_pri)
             if sign_pw is not None:
                 _enc_or_plain("signPw", "signPwEnc", sign_pw)
             if acct_pw is not None:
