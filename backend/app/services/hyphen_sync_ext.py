@@ -16,6 +16,7 @@ from app.models.hyphen_credential import HyphenCredential
 from app.models.hyphen_ext import HyphenTaxInvoice, HyphenCardTx, HyphenCardAccount
 from app.services.hyphen_client import get_hyphen_client, HyphenAPIError
 from app.services.hyphen_credentials import _dec
+from app.services.hyphen_sync import record_coverage, get_coverage
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ async def sync_tax_invoices(db: AsyncSession, *, start_date: str, end_date: str,
             ))
             existing.add(h)
             inserted += 1
+    await record_coverage(db, "tax", "tax", start_date, end_date)
     await db.commit()
     return {"ok": True, "inserted": inserted}
 
@@ -140,7 +142,9 @@ async def read_tax_invoices(db: AsyncSession, *, start_date: str, end_date: str,
             "tax_knd": t.tax_knd, "item_nm": t.item_nm,
         })
     out.sort(key=lambda x: x["issue_dt"], reverse=True)
-    return {"count": len(out), "sales_amount": sales, "purchase_amount": purchase, "net": sales - purchase, "invoices": out}
+    cov = await get_coverage(db, "tax", "tax")
+    return {"count": len(out), "sales_amount": sales, "purchase_amount": purchase, "net": sales - purchase,
+            "invoices": out, "covered_from": cov[0] if cov else None, "covered_to": cov[1] if cov else None}
 
 
 # ============ 법인카드 ============
@@ -233,6 +237,7 @@ async def sync_cards(db: AsyncSession, *, start_date: str, end_date: str, gustat
             ins += 1
         a.last_synced_at = datetime.utcnow()
         a.last_status = f"성공 신규 {ins}건"
+        await record_coverage(db, "card", a.card_no, start_date, end_date)
         total_inserted += ins
         results.append({"card_no": a.card_no, "ok": True, "inserted": ins, "fetched": len(rows)})
     await db.commit()

@@ -56,6 +56,19 @@ class HyphenCardTx(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class HyphenSyncCoverage(Base):
+    """동기화 커버리지 — (종류,키)별로 이미 API로 당긴 날짜범위. 이 범위 내 조회는 API 재호출 안 함."""
+    __tablename__ = "hyphen_sync_coverage"
+    __table_args__ = (Index("ix_hyphen_cov_kk", "kind", "ckey", unique=True), {"extend_existing": True})
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    kind: Mapped[str] = mapped_column(String(10))   # bank / tax / card
+    ckey: Mapped[str] = mapped_column(String(50))   # acct_no / card_no / 'tax'
+    start_date: Mapped[str] = mapped_column(String(8))   # YYYYMMDD (당긴 최소일)
+    end_date: Mapped[str] = mapped_column(String(8))     # YYYYMMDD (당긴 최대일)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class HyphenCardAccount(Base):
     """법인카드 연동설정 (카드사+카드번호). 인증은 공용 법인 공동인증서 재사용."""
     __tablename__ = "hyphen_card_account"

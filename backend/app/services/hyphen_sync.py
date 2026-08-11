@@ -30,6 +30,27 @@ def _num(v: Any) -> float:
         return 0.0
 
 
+async def record_coverage(db: AsyncSession, kind: str, ckey: str, start_date: str, end_date: str) -> None:
+    """(종류,키)의 당긴 범위를 확장 기록 — 이후 이 범위 조회는 API 재호출 안 함."""
+    from app.models.hyphen_ext import HyphenSyncCoverage
+    sd = start_date.replace("-", ""); ed = end_date.replace("-", "")
+    row = (await db.execute(select(HyphenSyncCoverage).where(
+        HyphenSyncCoverage.kind == kind, HyphenSyncCoverage.ckey == ckey))).scalars().first()
+    if row is None:
+        db.add(HyphenSyncCoverage(kind=kind, ckey=ckey, start_date=sd, end_date=ed, synced_at=datetime.utcnow()))
+    else:
+        row.start_date = min(row.start_date, sd)
+        row.end_date = max(row.end_date, ed)
+        row.synced_at = datetime.utcnow()
+
+
+async def get_coverage(db: AsyncSession, kind: str, ckey: str):
+    from app.models.hyphen_ext import HyphenSyncCoverage
+    row = (await db.execute(select(HyphenSyncCoverage).where(
+        HyphenSyncCoverage.kind == kind, HyphenSyncCoverage.ckey == ckey))).scalars().first()
+    return (row.start_date, row.end_date) if row else None
+
+
 def _hash(acct_no: str, r: Dict[str, Any]) -> str:
     key = "|".join(str(r.get(k, "")) for k in ("trDt", "trTm", "inAmt", "outAmt", "balance", "trNm", "trNo", "trNum"))
     return hashlib.sha256(f"{acct_no}|{key}".encode()).hexdigest()
@@ -94,6 +115,7 @@ async def sync_credential(
         bal = _num(rows[-1].get("balance"))
     cred.last_balance = bal or cred.last_balance
     cred.last_synced_at = datetime.utcnow()
+    await record_coverage(db, "bank", acct_no, start_date, end_date)
     await db.commit()
     return {"ok": True, "inserted": inserted, "fetched": len(rows), "balance": bal, "elapsed_sec": res.get("elapsed_sec")}
 
@@ -359,10 +381,13 @@ async def read_transactions(
             "counterparty_name": t.counterparty_name,
         })
     out.sort(key=lambda x: (x["tr_date"], x["tr_time"] or ""))
+    cov = await get_coverage(db, "bank", acct_no) if acct_no else None
     return {
         "count": len(out),
         "in_sum": in_sum,
         "out_sum": out_sum,
         "net": in_sum - out_sum,
         "transactions": out,
+        "covered_from": cov[0] if cov else None,
+        "covered_to": cov[1] if cov else None,
     }

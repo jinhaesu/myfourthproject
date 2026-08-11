@@ -587,14 +587,14 @@ async def hyphen_cron_sync(
     start = (today - _td(days=max(1, days))).isoformat()
     end = today.isoformat()
     bank = await sync_svc.sync_all(db, start_date=start, end_date=end)
-    # 세금계산서·카드도 동기화 (실패해도 은행 동기화는 유지)
+    # 세금계산서·카드도 증분 동기화(짧은 창 — 비용 절감, 과거분은 온디맨드로 1회만 당김)
     tax = card = None
     try:
-        tax = await ext_svc.sync_tax_invoices(db, start_date=(today - _td(days=90)).isoformat(), end_date=end)
+        tax = await ext_svc.sync_tax_invoices(db, start_date=(today - _td(days=14)).isoformat(), end_date=end)
     except Exception as e:
         logger.warning("cron 세금계산서 동기화 실패: %s", e)
     try:
-        card = await ext_svc.sync_cards(db, start_date=(today - _td(days=45)).isoformat(), end_date=end)
+        card = await ext_svc.sync_cards(db, start_date=(today - _td(days=14)).isoformat(), end_date=end)
     except Exception as e:
         logger.warning("cron 카드 동기화 실패: %s", e)
     return {"bank": bank, "tax": tax, "card": card}

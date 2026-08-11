@@ -352,6 +352,16 @@ async def init_db():
             synced_at TIMESTAMP DEFAULT NOW()
         )""",
         "CREATE INDEX IF NOT EXISTS ix_hyphen_cardtx_dt ON hyphen_card_tx(use_dt)",
+        # 하이픈 동기화 커버리지 (한 번 당긴 범위 재호출 방지)
+        """CREATE TABLE IF NOT EXISTS hyphen_sync_coverage (
+            id SERIAL PRIMARY KEY,
+            kind VARCHAR(10) NOT NULL,
+            ckey VARCHAR(50) NOT NULL,
+            start_date VARCHAR(8) NOT NULL,
+            end_date VARCHAR(8) NOT NULL,
+            synced_at TIMESTAMP DEFAULT NOW()
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_hyphen_cov_kk ON hyphen_sync_coverage(kind, ckey)",
         # 하이픈 법인카드 연동설정
         """CREATE TABLE IF NOT EXISTS hyphen_card_account (
             id SERIAL PRIMARY KEY,

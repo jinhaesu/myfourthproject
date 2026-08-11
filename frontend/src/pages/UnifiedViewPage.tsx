@@ -357,12 +357,11 @@ export default function UnifiedViewPage() {
     if (hyphenTxQuery.isLoading || !hyphenTxQuery.data) return
     const key = `${hyphenAcct.acct_no}|${from}|${to}`
     if (autoSyncedRef.current.has(key) || onDemandSync.isPending) return
-    // DB가 요청 시작일까지 커버하면(가장 오래된 거래 ≤ 시작일) 동기화 불필요.
-    // 비었거나 시작일보다 오래된 데이터가 없으면 → 그 기간을 은행에서 당겨와 DB화.
-    const txs = hyphenTxQuery.data.transactions || []
+    // 이미 API로 당긴 범위(covered) 안이면 재호출 안 함 — 비용 절감(다른 사용자가 당긴 것도 재사용).
+    const d: any = hyphenTxQuery.data
     const fromNorm = from.replace(/-/g, '')
-    const earliest = txs.length ? String(txs[0].tr_date || '').replace(/-/g, '') : ''
-    if (txs.length > 0 && earliest && earliest <= fromNorm) return
+    const toNorm = to.replace(/-/g, '')
+    if (d.covered_from && d.covered_to && d.covered_from <= fromNorm && d.covered_to >= toNorm) return
     autoSyncedRef.current.add(key)
     onDemandSync.mutate({ id: hyphenAcct.id, from, to })
     // eslint-disable-next-line react-hooks/exhaustive-deps
