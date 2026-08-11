@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
-from fastapi import APIRouter, Body, HTTPException, Depends
+from fastapi import APIRouter, Body, HTTPException, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from jose import JWTError, jwt
@@ -460,6 +460,25 @@ async def hyphen_sync_credential(cred_id: int, body: SyncBody, db: AsyncSession 
 async def hyphen_sync_all(body: SyncBody, db: AsyncSession = Depends(get_db)):
     """등록된 모든 계좌 동기화."""
     return await sync_svc.sync_all(db, start_date=body.start_date, end_date=body.end_date)
+
+
+@public_router.post("/cron/sync")
+async def hyphen_cron_sync(
+    request: Request,
+    days: int = 7,
+    db: AsyncSession = Depends(get_db),
+):
+    """주기 자동 동기화 (Cloud Scheduler 호출). X-Cron-Secret 헤더로 게이트."""
+    import os as _os
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    given = request.headers.get("x-cron-secret", "")
+    if not secret or given != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    start = (today - _td(days=max(1, days))).isoformat()
+    end = today.isoformat()
+    return await sync_svc.sync_all(db, start_date=start, end_date=end)
 
 
 @router.get("/transactions")
