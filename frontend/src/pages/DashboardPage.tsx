@@ -27,6 +27,14 @@ export default function DashboardPage() {
   // 통장별 잔액 시계열 — Hyphen 원장 EOD 잔액 시계열
   const BAL_PALETTE = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#14b8a6']
   const [hiddenAccts, setHiddenAccts] = useState<Set<string>>(new Set())
+  const [balDays, setBalDays] = useState(30)
+  const [hideZero, setHideZero] = useState(true)
+  const BAL_PERIOD_PRESETS: { label: string; days: number }[] = [
+    { label: '1개월', days: 30 },
+    { label: '3개월', days: 90 },
+    { label: '6개월', days: 180 },
+    { label: '1년', days: 365 },
+  ]
 
   const BANK_NAMES: Record<string, string> = {
     '003': '기업은행', '004': '국민은행', '011': '농협', '020': '우리은행', '023': 'SC제일',
@@ -35,8 +43,8 @@ export default function DashboardPage() {
   }
 
   const balSeriesQuery = useQuery({
-    queryKey: ['hyphen-balance-series', 30],
-    queryFn: () => hyphenApi.balanceSeries(30).then((r) => r.data),
+    queryKey: ['hyphen-balance-series', balDays],
+    queryFn: () => hyphenApi.balanceSeries(balDays).then((r) => r.data),
     staleTime: 60_000,
     retry: false,
   })
@@ -59,6 +67,11 @@ export default function DashboardPage() {
     }))
     return { balAccounts: accs, balChartData: data }
   }, [balSeriesQuery.data])
+
+  const visibleAccounts = useMemo(
+    () => balAccounts.filter((a) => !hideZero || a.balance !== 0),
+    [balAccounts, hideZero]
+  )
 
   const cardDelta = data?.card?.delta_pct || 0
 
@@ -119,23 +132,51 @@ export default function DashboardPage() {
 
           {/* 통장별 잔액 추이 (최근 30일, 일별) */}
           <div className="panel p-3">
-            <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-              <BuildingLibraryIcon className="h-3.5 w-3.5" />통장별 잔액 추이
-              {balAccounts.length > 0 && (
-                <span className="text-ink-400 normal-case font-normal">· {balAccounts.length}개 계좌</span>
-              )}
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+              <div className="text-2xs font-semibold text-ink-600 dark:text-ink-400 uppercase tracking-wider flex items-center gap-1">
+                <BuildingLibraryIcon className="h-3.5 w-3.5" />통장별 잔액 추이
+                {balAccounts.length > 0 && (
+                  <span className="text-ink-400 normal-case font-normal">· {visibleAccounts.length}개 계좌</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1">
+                  {BAL_PERIOD_PRESETS.map((p) => (
+                    <button
+                      key={p.days}
+                      onClick={() => setBalDays(p.days)}
+                      className={`px-1.5 py-0.5 rounded text-2xs border transition ${
+                        balDays === p.days
+                          ? 'border-emerald-400 dark:border-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                          : 'border-ink-200 dark:border-ink-700 text-ink-600 dark:text-ink-300 hover:bg-canvas-50 dark:hover:bg-ink-800'
+                      }`}
+                    >
+                      {p.label}({p.days})
+                    </button>
+                  ))}
+                </div>
+                <label className="inline-flex items-center gap-1 text-2xs text-ink-600 dark:text-ink-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={hideZero}
+                    onChange={(e) => setHideZero(e.target.checked)}
+                    className="h-3 w-3 rounded border-ink-300 dark:border-ink-600 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  잔액 0원 제외
+                </label>
+              </div>
             </div>
             {balSeriesQuery.isLoading ? (
               <div className="h-56 flex items-center justify-center text-2xs text-ink-400">불러오는 중…</div>
             ) : balSeriesQuery.isError ? (
               <div className="h-56 flex items-center justify-center text-2xs text-ink-400">통장 잔액을 불러오지 못했습니다.</div>
-            ) : balAccounts.length === 0 ? (
+            ) : visibleAccounts.length === 0 ? (
               <div className="h-56 flex items-center justify-center text-2xs text-ink-400">활성 계좌 없음</div>
             ) : (
               <>
                 {/* 계좌 선택 토글 */}
                 <div className="flex flex-wrap gap-1.5 mb-2">
-                  {balAccounts.map((a) => {
+                  {visibleAccounts.map((a) => {
                     const on = !hiddenAccts.has(a.id)
                     return (
                       <button
@@ -174,7 +215,7 @@ export default function DashboardPage() {
                       contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
                       formatter={(v: number, name: string) => [formatCurrency(v, false), name]}
                     />
-                    {balAccounts
+                    {visibleAccounts
                       .filter((a) => !hiddenAccts.has(a.id))
                       .map((a) => (
                         <Line

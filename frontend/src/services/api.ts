@@ -1344,6 +1344,23 @@ export const hyphenApi = {
     api.get<{ accounts: { acct_no: string; bank_cd: string; last4: string; label: string; balance: number }[]; series: Record<string, any>[] }>(
       '/hyphen/balance-series', { params: { days } },
     ),
+  // 홈택스 세금계산서
+  taxSync: (body: { start_date: string; end_date: string; gustation?: boolean }) =>
+    api.post<{ ok: boolean; inserted: number; error?: string }>('/hyphen/tax/sync', body, { timeout: 300_000 }),
+  taxInvoices: (params: { start_date: string; end_date: string; sup_byr?: string }) =>
+    api.get<{ count: number; sales_amount: number; purchase_amount: number; net: number; invoices: any[] }>(
+      '/hyphen/tax/invoices', { params },
+    ),
+  // 법인카드
+  listCards: () =>
+    api.get<{ cards: { id: number; card_cd: string; card_no: string; label: string | null; login_method: string; last_synced_at: string | null; last_status: string | null }[] }>('/hyphen/cards'),
+  registerCard: (body: { card_cd: string; card_no: string; label?: string; login_method?: string; user_id?: string; user_pw?: string }) =>
+    api.post<{ id: number }>('/hyphen/cards', body),
+  deleteCard: (id: number) => api.delete(`/hyphen/cards/${id}`),
+  cardsSync: (body: { start_date: string; end_date: string; gustation?: boolean }) =>
+    api.post<{ ok: boolean; inserted: number; results: any[] }>('/hyphen/cards/sync', body, { timeout: 300_000 }),
+  cardTx: (params: { start_date: string; end_date: string }) =>
+    api.get<{ count: number; total: number; transactions: any[] }>('/hyphen/card-tx', { params }),
   queryCredential: (
     id: number,
     body: { start_date: string; end_date: string; gustation?: boolean; sort?: string; filter_type?: string; gubun?: string },

@@ -7,6 +7,8 @@ import {
   ClockIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
+  DocumentTextIcon,
+  CreditCardIcon,
 } from '@heroicons/react/24/outline'
 import { hyphenApi, type HyphenCredential } from '@/services/api'
 import { formatCurrency } from '@/utils/format'
@@ -157,6 +159,12 @@ export default function HyphenIntegrationPage() {
           ))}
         </div>
       </div>
+
+      {/* 홈택스 세금계산서 */}
+      <TaxInvoicePanel />
+
+      {/* 법인카드 */}
+      <CardPanel />
 
       {showForm && (
         <IdLoginModal
@@ -460,6 +468,221 @@ function IdLoginModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
             </div>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+const CARD_CODES: { cd: string; name: string }[] = [
+  { cd: '001', name: '신한카드' }, { cd: '002', name: '현대카드' }, { cd: '003', name: '삼성카드' },
+  { cd: '004', name: 'KB국민카드' }, { cd: '005', name: '롯데카드' }, { cd: '006', name: '하나카드' },
+  { cd: '007', name: '우리카드' }, { cd: '008', name: '농협카드' }, { cd: '009', name: '씨티카드' },
+  { cd: '010', name: 'BC카드' }, { cd: '011', name: '수협카드' }, { cd: '012', name: '광주카드' },
+  { cd: '013', name: '전북카드' }, { cd: '014', name: '제주카드' },
+]
+const cardName = (cd: string) => CARD_CODES.find((c) => c.cd === cd)?.name || cd
+
+function last3mRange() {
+  const to = new Date(); const from = new Date(); from.setMonth(to.getMonth() - 3)
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  return { from: iso(from), to: iso(to) }
+}
+
+function TaxInvoicePanel() {
+  const qc = useQueryClient()
+  const [range, setRange] = useState(last3mRange)
+  const q = useQuery({
+    queryKey: ['hyphen-tax', range.from, range.to],
+    queryFn: () => hyphenApi.taxInvoices({ start_date: range.from, end_date: range.to }).then((r) => r.data),
+    retry: false,
+  })
+  const syncMut = useMutation({
+    mutationFn: () => hyphenApi.taxSync({ start_date: range.from, end_date: range.to }).then((r) => r.data),
+    onSuccess: (d) => {
+      if (!d.ok) { toast.error(d.error || '동기화 실패'); return }
+      toast.success(`세금계산서 동기화 · 신규 ${d.inserted}건`)
+      qc.invalidateQueries({ queryKey: ['hyphen-tax'] })
+    },
+    onError: (e: any) => toast.error(e?.response?.data?.detail?.error || '동기화 실패'),
+  })
+  const d = q.data
+  const list: any[] = d?.invoices || []
+  return (
+    <div className="panel p-3">
+      <div className="text-2xs font-semibold text-ink-700 dark:text-ink-300 uppercase tracking-wider flex items-center gap-1.5 mb-2">
+        <DocumentTextIcon className="h-3.5 w-3.5" />홈택스 세금계산서 (법인 인증서 재사용)
+      </div>
+      <div className="flex items-center gap-1.5 flex-wrap mb-2">
+        <input type="date" value={range.from} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))}
+          className="bg-transparent border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs" />
+        <span className="text-ink-300">→</span>
+        <input type="date" value={range.to} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))}
+          className="bg-transparent border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs" />
+        <button onClick={() => syncMut.mutate()} disabled={syncMut.isPending} className="btn-primary">
+          {syncMut.isPending ? '홈택스에서 가져오는 중…' : '홈택스 동기화'}
+        </button>
+        {d && (
+          <span className="text-2xs text-ink-500 dark:text-ink-400">
+            {d.count}건 · 매출 <span className="text-emerald-700 dark:text-emerald-300 font-mono">{formatCurrency(d.sales_amount, false)}</span>
+            {' · '}매입 <span className="text-rose-700 dark:text-rose-300 font-mono">{formatCurrency(d.purchase_amount, false)}</span>
+          </span>
+        )}
+      </div>
+      <div className="max-h-64 overflow-y-auto border border-ink-100 dark:border-ink-800 rounded">
+        <table className="min-w-full text-2xs">
+          <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0">
+            <tr>
+              <th className="px-2 py-1 text-left font-semibold text-ink-500">발행일</th>
+              <th className="px-2 py-1 text-center font-semibold text-ink-500">구분</th>
+              <th className="px-2 py-1 text-left font-semibold text-ink-500">거래처</th>
+              <th className="px-2 py-1 text-right font-semibold text-ink-500">공급가</th>
+              <th className="px-2 py-1 text-right font-semibold text-ink-500">세액</th>
+              <th className="px-2 py-1 text-right font-semibold text-ink-500">합계</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
+            {list.slice(0, 300).map((r, i) => (
+              <tr key={i}>
+                <td className="px-2 py-1 font-mono whitespace-nowrap text-ink-500">{r.issue_dt}</td>
+                <td className="px-2 py-1 text-center">
+                  <span className={r.sup_byr === '01' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                    {r.sup_byr === '01' ? '매출' : '매입'}
+                  </span>
+                </td>
+                <td className="px-2 py-1 truncate max-w-[180px]">{r.counterparty}</td>
+                <td className="px-2 py-1 text-right font-mono">{formatCurrency(r.sup_amt, false)}</td>
+                <td className="px-2 py-1 text-right font-mono text-ink-500">{formatCurrency(r.tax_amt, false)}</td>
+                <td className="px-2 py-1 text-right font-mono font-semibold">{formatCurrency(r.tot_amt, false)}</td>
+              </tr>
+            ))}
+            {list.length === 0 && (
+              <tr><td colSpan={6} className="px-2 py-4 text-center text-ink-400">
+                {q.isLoading ? '불러오는 중…' : '원장이 비어 있습니다. “홈택스 동기화”를 누르세요.'}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function CardPanel() {
+  const qc = useQueryClient()
+  const [range, setRange] = useState(last3mRange)
+  const [form, setForm] = useState({ card_cd: '001', card_no: '', label: '', login_method: 'CERT', user_id: '', user_pw: '' })
+  const cardsQ = useQuery({ queryKey: ['hyphen-cards'], queryFn: () => hyphenApi.listCards().then((r) => r.data.cards), retry: false })
+  const txQ = useQuery({
+    queryKey: ['hyphen-card-tx', range.from, range.to],
+    queryFn: () => hyphenApi.cardTx({ start_date: range.from, end_date: range.to }).then((r) => r.data),
+    retry: false,
+  })
+  const regMut = useMutation({
+    mutationFn: () => hyphenApi.registerCard({
+      card_cd: form.card_cd, card_no: form.card_no.replace(/\D/g, ''), label: form.label || undefined,
+      login_method: form.login_method,
+      user_id: form.login_method === 'ID' ? form.user_id : undefined,
+      user_pw: form.login_method === 'ID' ? form.user_pw : undefined,
+    }).then((r) => r.data),
+    onSuccess: () => { toast.success('카드 등록됨'); setForm((f) => ({ ...f, card_no: '', label: '' })); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
+    onError: () => toast.error('카드 등록 실패'),
+  })
+  const delMut = useMutation({
+    mutationFn: (id: number) => hyphenApi.deleteCard(id),
+    onSuccess: () => { toast.success('삭제됨'); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
+  })
+  const syncMut = useMutation({
+    mutationFn: () => hyphenApi.cardsSync({ start_date: range.from, end_date: range.to }).then((r) => r.data),
+    onSuccess: (d) => { toast.success(`카드 동기화 · 신규 ${d.inserted}건`); qc.invalidateQueries({ queryKey: ['hyphen-card-tx'] }); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
+    onError: () => toast.error('카드 동기화 실패'),
+  })
+  const cards = cardsQ.data || []
+  const list: any[] = txQ.data?.transactions || []
+  const isCert = form.login_method === 'CERT'
+  return (
+    <div className="panel p-3">
+      <div className="text-2xs font-semibold text-ink-700 dark:text-ink-300 uppercase tracking-wider flex items-center gap-1.5 mb-2">
+        <CreditCardIcon className="h-3.5 w-3.5" />법인카드 연동 (인증서 재사용 또는 카드사 아이디)
+      </div>
+      <div className="flex items-end gap-1.5 flex-wrap mb-2">
+        <label className="text-2xs text-ink-500">카드사
+          <select value={form.card_cd} onChange={(e) => setForm((f) => ({ ...f, card_cd: e.target.value }))}
+            className="mt-0.5 block border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent">
+            {CARD_CODES.map((c) => <option key={c.cd} value={c.cd}>{c.name}</option>)}
+          </select>
+        </label>
+        <label className="text-2xs text-ink-500">카드번호
+          <input value={form.card_no} onChange={(e) => setForm((f) => ({ ...f, card_no: e.target.value }))}
+            placeholder="숫자만" className="mt-0.5 block border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent font-mono w-40" />
+        </label>
+        <label className="text-2xs text-ink-500">별명
+          <input value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
+            className="mt-0.5 block border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent w-28" />
+        </label>
+        <label className="text-2xs text-ink-500">로그인
+          <select value={form.login_method} onChange={(e) => setForm((f) => ({ ...f, login_method: e.target.value }))}
+            className="mt-0.5 block border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent">
+            <option value="CERT">공동인증서</option>
+            <option value="ID">카드사 아이디</option>
+          </select>
+        </label>
+        {!isCert && (
+          <>
+            <input value={form.user_id} onChange={(e) => setForm((f) => ({ ...f, user_id: e.target.value }))}
+              placeholder="카드사 아이디" className="border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent w-28" />
+            <input type="password" value={form.user_pw} onChange={(e) => setForm((f) => ({ ...f, user_pw: e.target.value }))}
+              placeholder="비밀번호" className="border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs bg-transparent w-28" />
+          </>
+        )}
+        <button onClick={() => regMut.mutate()} disabled={!form.card_no || regMut.isPending} className="btn-secondary">카드 등록</button>
+      </div>
+      {cards.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {cards.map((c) => (
+            <span key={c.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs border border-ink-200 dark:border-ink-800">
+              {cardName(c.card_cd)} {c.card_no.slice(-4)} {c.label && `· ${c.label}`}
+              <button onClick={() => delMut.mutate(c.id)} className="text-rose-500 ml-0.5">×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 flex-wrap mb-2">
+        <input type="date" value={range.from} onChange={(e) => setRange((r) => ({ ...r, from: e.target.value }))}
+          className="bg-transparent border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs" />
+        <span className="text-ink-300">→</span>
+        <input type="date" value={range.to} onChange={(e) => setRange((r) => ({ ...r, to: e.target.value }))}
+          className="bg-transparent border border-ink-200 dark:border-ink-800 rounded px-1.5 py-1 text-2xs" />
+        <button onClick={() => syncMut.mutate()} disabled={syncMut.isPending || cards.length === 0} className="btn-primary">
+          {syncMut.isPending ? '카드사에서 가져오는 중…' : '카드 동기화'}
+        </button>
+        {txQ.data && <span className="text-2xs text-ink-500 dark:text-ink-400">{txQ.data.count}건 · 합계 <span className="font-mono">{formatCurrency(txQ.data.total, false)}</span></span>}
+      </div>
+      <div className="max-h-64 overflow-y-auto border border-ink-100 dark:border-ink-800 rounded">
+        <table className="min-w-full text-2xs">
+          <thead className="bg-canvas-50 dark:bg-ink-950 sticky top-0">
+            <tr>
+              <th className="px-2 py-1 text-left font-semibold text-ink-500">일시</th>
+              <th className="px-2 py-1 text-left font-semibold text-ink-500">카드</th>
+              <th className="px-2 py-1 text-left font-semibold text-ink-500">가맹점</th>
+              <th className="px-2 py-1 text-right font-semibold text-ink-500">금액</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-ink-100 dark:divide-ink-800">
+            {list.slice(0, 300).map((r, i) => (
+              <tr key={i}>
+                <td className="px-2 py-1 font-mono whitespace-nowrap text-ink-500">{r.use_dt} {r.use_tm}</td>
+                <td className="px-2 py-1 font-mono text-ink-400">{cardName(r.card_cd)} {String(r.card_no).slice(-4)}</td>
+                <td className="px-2 py-1 truncate max-w-[180px]">{r.use_store}</td>
+                <td className="px-2 py-1 text-right font-mono font-semibold text-rose-700 dark:text-rose-300">{formatCurrency(r.use_amt, false)}</td>
+              </tr>
+            ))}
+            {list.length === 0 && (
+              <tr><td colSpan={4} className="px-2 py-4 text-center text-ink-400">
+                {cards.length === 0 ? '카드를 먼저 등록하세요.' : (txQ.isLoading ? '불러오는 중…' : '원장이 비어 있습니다. “카드 동기화”를 누르세요.')}
+              </td></tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   )
