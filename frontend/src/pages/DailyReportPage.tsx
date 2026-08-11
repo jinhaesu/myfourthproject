@@ -141,11 +141,6 @@ export default function DailyReportPage() {
               <span className="font-mono text-ink-700 dark:text-ink-300">{data.previousDate}</span>
             </div>
           )}
-          {exceeds31 && (
-            <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 px-3 py-1 text-2xs text-amber-800 dark:text-amber-200">
-              31일 초과 — 종료일 기준 최근 31일만 자동 조회
-            </div>
-          )}
         </div>
       )}
 

@@ -29,6 +29,7 @@ export default function DashboardPage() {
   const [hiddenAccts, setHiddenAccts] = useState<Set<string>>(new Set())
   const [balDays, setBalDays] = useState(30)
   const [hideZero, setHideZero] = useState(true)
+  const [showTotal, setShowTotal] = useState(false)
   const BAL_PERIOD_PRESETS: { label: string; days: number }[] = [
     { label: '1개월', days: 30 },
     { label: '3개월', days: 90 },
@@ -71,6 +72,21 @@ export default function DashboardPage() {
   const visibleAccounts = useMemo(
     () => balAccounts.filter((a) => !hideZero || a.balance !== 0),
     [balAccounts, hideZero]
+  )
+
+  // 합계로 표시 시 실제로 라인에 반영되는 계좌 (per-account 토글 반영)
+  const shownAccounts = useMemo(
+    () => visibleAccounts.filter((a) => !hiddenAccts.has(a.id)),
+    [visibleAccounts, hiddenAccts]
+  )
+
+  const totalChartData = useMemo(
+    () =>
+      balChartData.map((row) => ({
+        ...row,
+        __total__: shownAccounts.reduce((sum, a) => sum + Number((row as any)[a.id] || 0), 0),
+      })),
+    [balChartData, shownAccounts]
   )
 
   const cardDelta = data?.card?.delta_pct || 0
@@ -164,6 +180,15 @@ export default function DashboardPage() {
                   />
                   잔액 0원 제외
                 </label>
+                <label className="inline-flex items-center gap-1 text-2xs text-ink-600 dark:text-ink-300 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showTotal}
+                    onChange={(e) => setShowTotal(e.target.checked)}
+                    className="h-3 w-3 rounded border-ink-300 dark:border-ink-600 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  합계로 표시
+                </label>
               </div>
             </div>
             {balSeriesQuery.isLoading ? (
@@ -203,7 +228,7 @@ export default function DashboardPage() {
                   })}
                 </div>
                 <ResponsiveContainer width="100%" height={220}>
-                  <LineChart data={balChartData} margin={{ top: 4, right: 16, left: 4, bottom: 0 }}>
+                  <LineChart data={showTotal ? totalChartData : balChartData} margin={{ top: 4, right: 16, left: 4, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.gridColor} />
                     <XAxis dataKey="date" tick={{ fontSize: 9, fill: chartTheme.axisColor }} minTickGap={24} />
                     <YAxis
@@ -215,9 +240,18 @@ export default function DashboardPage() {
                       contentStyle={{ fontSize: 11, backgroundColor: chartTheme.tooltipBg, border: `1px solid ${chartTheme.tooltipBorder}`, color: chartTheme.tooltipText }}
                       formatter={(v: number, name: string) => [formatCurrency(v, false), name]}
                     />
-                    {visibleAccounts
-                      .filter((a) => !hiddenAccts.has(a.id))
-                      .map((a) => (
+                    {showTotal ? (
+                      <Line
+                        type="monotone"
+                        dataKey="__total__"
+                        name="합계"
+                        stroke="#0ea5e9"
+                        strokeWidth={2}
+                        dot={false}
+                        connectNulls
+                      />
+                    ) : (
+                      shownAccounts.map((a) => (
                         <Line
                           key={a.id}
                           type="monotone"
@@ -228,7 +262,8 @@ export default function DashboardPage() {
                           dot={false}
                           connectNulls
                         />
-                      ))}
+                      ))
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </>

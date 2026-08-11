@@ -116,6 +116,74 @@ async def sync_all(db: AsyncSession, *, start_date: str, end_date: str) -> Dict[
     return {"synced": len([r for r in results if r.get("ok")]), "results": results}
 
 
+async def hyphen_digest_data(db: AsyncSession, target_date) -> Optional[Dict[str, Any]]:
+    """AI 자금 다이제스트용 하이픈 원장 데이터 — 특정일 잔액/입출금/당일거래(그랜터티켓 형태).
+    등록 계좌 없으면 None(그랜터 폴백)."""
+    from datetime import timedelta as _td
+    creds = (await db.execute(select(HyphenCredential))).scalars().all()
+    active = {c.acct_no for c in creds if not c.is_expired}
+    if not active:
+        return None
+
+    # 45일 EOD 시계열(계좌합)
+    series = await balance_series(db, days=45)
+    eod_by_date: Dict[str, float] = {}
+    for row in series.get("series", []):
+        d = str(row.get("date", "")).replace("-", "")
+        s = 0.0
+        for k, v in row.items():
+            if k == "date":
+                continue
+            try:
+                s += float(v or 0)
+            except Exception:
+                pass
+        eod_by_date[d] = s
+
+    def _n(dt) -> str:
+        return dt.isoformat().replace("-", "")
+
+    tnorm = _n(target_date)
+    prev_day = _n(target_date - _td(days=1))
+    prev_month_target = target_date.replace(day=1) - _td(days=1)
+    pm_day = min(target_date.day, prev_month_target.day)
+    prev_month_date = prev_month_target.replace(day=pm_day)
+    pm = _n(prev_month_date)
+
+    # 시계열에 없으면(가장 최근/과거) 최신값 폴백
+    latest = eod_by_date.get(max(eod_by_date) ) if eod_by_date else 0.0
+    cur_bal = eod_by_date.get(tnorm, latest)
+    prev_bal = eod_by_date.get(prev_day, cur_bal)
+    pm_bal = eod_by_date.get(pm, 0.0)
+
+    # 당일 거래(원장)
+    rows = (await db.execute(select(HyphenBankTx).where(HyphenBankTx.acct_no.in_(list(active))))).scalars().all()
+    in_amt = out_amt = 0.0
+    day_tickets = []
+    for t in rows:
+        d = (t.tr_date or "").replace("-", "")
+        if d != tnorm:
+            continue
+        ia = float(t.in_amt or 0)
+        oa = float(t.out_amt or 0)
+        in_amt += ia
+        out_amt += oa
+        amt = ia if ia > 0 else oa
+        day_tickets.append({
+            "id": f"hy-{t.id}",
+            "amount": amt,
+            "transactionType": "IN" if ia > 0 else "OUT",
+            "transactAt": t.tr_date,
+            "bankTransaction": {"content": t.tr_name or t.counterparty_name or "", "counterparty": t.tr_name or t.counterparty_name or ""},
+        })
+    return {
+        "has_data": True,
+        "total": {"currentBalance": cur_bal, "previousBalance": prev_bal, "inAmount": in_amt, "outAmount": out_amt},
+        "prev_month_balance": pm_bal,
+        "day_tickets": day_tickets,
+    }
+
+
 async def dashboard_bank_aggregates(db: AsyncSession, *, as_of=None) -> Optional[Dict[str, Any]]:
     """대시보드용 은행 집계(하이픈 원장) — 가용자금·어제·최근7일 입출금+상위 거래처.
     등록 계좌가 없으면 None(그랜터 폴백)."""

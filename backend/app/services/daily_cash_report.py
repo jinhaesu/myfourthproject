@@ -217,11 +217,13 @@ async def _section_cash_status(target_date: date, report: Optional[Dict[str, Any
     }
 
 
-async def _section_ai_cashflow(target_date: date, report: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def _section_ai_cashflow(
+    target_date: date, report: Optional[Dict[str, Any]] = None,
+    day_tickets: Optional[List[Dict[str, Any]]] = None,
+    prev_month_balance: Optional[float] = None,
+) -> Dict[str, Any]:
     """AI 현금흐름 — 잔액 추이 + 주요 입출금 (개별 거래 단위).
-
-    주요 입출금은 BANK_TRANSACTION_TICKET 기반으로 입금/출금 각 top 5 보장.
-    어제 데이터가 부족하면 최근 7일까지 확장해서 채움.
+    day_tickets/prev_month_balance 제공 시(하이픈 원장) 그랜터 호출 없이 그대로 사용.
     """
     if report is None:
         report = await _granter_daily_report(target_date)
@@ -231,26 +233,28 @@ async def _section_ai_cashflow(target_date: date, report: Optional[Dict[str, Any
     delta_day = bal_today - bal_prev_day
 
     # 전월 동기
-    prev_month_target = target_date.replace(day=1) - timedelta(days=1)
-    prev_month_same_day = min(target_date.day, prev_month_target.day)
-    prev_month_date = prev_month_target.replace(day=prev_month_same_day)
-    prev_month_report = await _granter_daily_report(prev_month_date)
-    prev_total = (prev_month_report or {}).get("total", {})
-    bal_prev_month = float(prev_total.get("currentBalance") or 0)
+    if prev_month_balance is not None:
+        bal_prev_month = float(prev_month_balance)
+    else:
+        prev_month_target = target_date.replace(day=1) - timedelta(days=1)
+        prev_month_same_day = min(target_date.day, prev_month_target.day)
+        prev_month_date = prev_month_target.replace(day=prev_month_same_day)
+        prev_month_report = await _granter_daily_report(prev_month_date)
+        prev_total = (prev_month_report or {}).get("total", {})
+        bal_prev_month = float(prev_total.get("currentBalance") or 0)
     delta_month = bal_today - bal_prev_month
 
-    # 어제 통장 거래 — 내부거래(자기계좌 간 이체) 제외 후 당일만 엄격히 집계.
-    # (과거엔 3건 미만이면 최근 7일까지 확장해 채웠으나, '어제' 다이제스트에 며칠 전
-    #  큰 거래가 섞여 실제와 안 맞아 보이는 문제로 제거 — 당일 기준만 표시.)
-    day_tickets = await _granter_bank_tickets(target_date, target_date)
-    try:
-        from app.services.internal_transfers import get_internal_ticket_ids
-        internal_ids = set(await get_internal_ticket_ids(target_date, target_date))
-    except Exception:
-        logger.exception("내부거래 id 조회 실패 — 내부거래 미제외로 진행")
-        internal_ids = set()
-    if internal_ids:
-        day_tickets = [t for t in day_tickets if t.get("id") not in internal_ids]
+    if day_tickets is None:
+        # 그랜터 폴백 경로 — 당일 통장거래 + 내부거래 제외
+        day_tickets = await _granter_bank_tickets(target_date, target_date)
+        try:
+            from app.services.internal_transfers import get_internal_ticket_ids
+            internal_ids = set(await get_internal_ticket_ids(target_date, target_date))
+        except Exception:
+            logger.exception("내부거래 id 조회 실패 — 내부거래 미제외로 진행")
+            internal_ids = set()
+        if internal_ids:
+            day_tickets = [t for t in day_tickets if t.get("id") not in internal_ids]
 
     inflows, outflows = _split_inflow_outflow(day_tickets)
     inflows.sort(key=lambda x: x["amount"], reverse=True)
@@ -598,8 +602,22 @@ async def generate_report_content(
         sections = DEFAULT_SECTIONS
         disabled = set()
 
-    # 그랜터 daily-report 한 번만 호출 후 cash_status/ai_cashflow에 공유
-    shared_report = await _granter_daily_report(target_date)
+    # 하이픈 원장 우선 (그랜터 배제). 하이픈 데이터 없으면 그랜터 폴백.
+    hy = None
+    try:
+        from app.services.hyphen_sync import hyphen_digest_data
+        hy = await hyphen_digest_data(db, target_date)
+    except Exception:
+        logger.exception("하이픈 다이제스트 데이터 실패")
+        hy = None
+    if hy and hy.get("has_data"):
+        shared_report = {"total": hy["total"]}
+        _hy_day_tickets = hy.get("day_tickets") or []
+        _hy_prev_month = hy.get("prev_month_balance")
+    else:
+        shared_report = await _granter_daily_report(target_date)
+        _hy_day_tickets = None
+        _hy_prev_month = None
 
     result = {
         "report_date": target_date.isoformat(),
@@ -616,7 +634,9 @@ async def generate_report_content(
             if section_key == "cash_status":
                 result["content"][section_key] = await _section_cash_status(target_date, shared_report)
             elif section_key == "ai_cashflow":
-                result["content"][section_key] = await _section_ai_cashflow(target_date, shared_report)
+                result["content"][section_key] = await _section_ai_cashflow(
+                    target_date, shared_report, day_tickets=_hy_day_tickets, prev_month_balance=_hy_prev_month,
+                )
             elif section_key == "card_spending":
                 result["content"][section_key] = await _section_card_spending(target_date)
             elif section_key == "card_usage":
