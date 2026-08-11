@@ -109,13 +109,13 @@ async def register_credential(
                        else key_der_to_pem(sign_pri_bytes))
 
     now = datetime.utcnow()
-    # 기존 동일 계좌 있으면 갱신
+    # 기존 동일 계좌 있으면 갱신 (중복행이 있어도 안전하게 첫 행 사용)
     existing = (await db.execute(
         select(HyphenCredential).where(
             HyphenCredential.bank_cd == bank_cd,
             HyphenCredential.acct_no == acct_no,
-        )
-    )).scalar_one_or_none()
+        ).order_by(HyphenCredential.id)
+    )).scalars().first()
     cred = existing or HyphenCredential(bank_cd=bank_cd, acct_no=acct_no)
     cred.label = label
     cred.bank_cd = bank_cd
@@ -199,8 +199,8 @@ async def get_active_for_account(db: AsyncSession, bank_cd: str, acct_no: str) -
         select(HyphenCredential).where(
             HyphenCredential.bank_cd == bank_cd,
             HyphenCredential.acct_no == acct_no,
-        )
-    )).scalar_one_or_none()
+        ).order_by(HyphenCredential.id)
+    )).scalars().first()
 
 
 # ============ 저장된 인증정보로 조회 실행 ============

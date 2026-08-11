@@ -262,7 +262,7 @@ function detectIssues(tickets: any[]): Issue[] {
 
     // rule 1: anomalyStatus
     if (t.anomalyStatus === 'ANOMALY') {
-      push('anomaly', '이상거래', 'high', '그랜터 이상 거래 자동 표시')
+      push('anomaly', '이상거래', 'high', '연동 이상 거래 자동 표시')
     }
 
     // rule 2: 큰 금액 (avg × 5)
