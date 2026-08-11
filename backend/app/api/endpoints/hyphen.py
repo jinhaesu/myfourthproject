@@ -637,44 +637,6 @@ class RegisterByCodeBody(RegisterCredBody):
     code: str
 
 
-@public_router.post("/cards/diag")
-async def hyphen_cards_diag(request: Request, db: AsyncSession = Depends(get_db)):
-    """카드 API 진단 — 각 엔드포인트를 실호출/테스트베드로 찍어 errMsg 반환 (시크릿 게이트)."""
-    import os as _os
-    if request.headers.get("x-cron-secret", "") != _os.getenv("HYPHEN_CRON_SECRET", "x"):
-        raise HTTPException(status_code=401, detail="unauthorized")
-    from app.services.hyphen_sync_ext import get_company_cert, COMPANY_BIZ_NO
-    cert = await get_company_cert(db)
-    if not cert:
-        return {"error": "no cert"}
-    client = get_hyphen_client()
-    card = (await db.execute(_select(HyphenCardAccount).order_by(HyphenCardAccount.id))).scalars().first()
-    if not card:
-        return {"error": "no card registered"}
-    from datetime import date as _date, timedelta as _td
-    ed = _date.today().isoformat(); sd = (_date.today() - _td(days=7)).isoformat()
-
-    async def _try(path, gust):
-        try:
-            data = await client.card_transactions(
-                card_cd=card.card_cd, card_no=card.card_no, biz_no=COMPANY_BIZ_NO,
-                start_date=sd, end_date=ed, sign_cert=cert[0], sign_pri=cert[1], sign_pw=cert[2],
-                gustation=gust, path=path,
-            )
-            c = (data or {}).get("common") if isinstance(data, dict) else {}
-            rows = ((data or {}).get("data") or {}).get("list") if isinstance(data, dict) else None
-            return {"errYn": c.get("errYn"), "errCd": c.get("errCd"), "errMsg": c.get("errMsg"), "rows": len(rows or [])}
-        except Exception as e:
-            return {"exc": str(e)[:150]}
-
-    return {
-        "card": card.card_cd + "/" + card.card_no[-4:],
-        "승인559_real": await _try("/in0007000559", False),
-        "승인559_test": await _try("/in0007000559", True),
-        "매입561_real": await _try("/in0007000561", False),
-    }
-
-
 @public_router.post("/credentials/by-code")
 async def hyphen_register_by_code(body: RegisterByCodeBody, db: AsyncSession = Depends(get_db)):
     """로컬 등록도구가 1회용 코드로 인증서/비번을 암호화 등록 (SSO 불필요, 코드로 게이트)."""
