@@ -216,7 +216,15 @@ export default function Layout() {
         const admin = !!r.data.is_admin
         if (admin !== user?.isAdmin) {
           updateUser({ isAdmin: admin })
-          if (admin && user?.isAdmin === undefined) setMenuMode('admin')
+        }
+        // 관리자 계정은 어느 기기에서든 관리자 메뉴로 구분되도록 승격.
+        // 과거엔 `if (admin !== isAdmin && isAdmin === undefined)` 안에서만 승격해,
+        // 다른 기기/과거 세션에서 menuMode='employee'가 persist되면(이미 isAdmin 확정)
+        // 서버가 admin으로 확인해줘도 일반 메뉴로 고착되던 버그가 있었다.
+        // 이제 서버가 admin이고 현재 employee 모드면 항상 관리자 메뉴로 올린다.
+        // (세션 중 '일반 직원용'으로 직접 전환한 경우는 리로드 전까지 유지됨 — 마운트 시 1회만 승격.)
+        if (admin && useAuthStore.getState().menuMode === 'employee') {
+          setMenuMode('admin')
         }
       })
       .catch(() => { /* 토큰 만료 등 — 인터셉터가 처리 */ })
