@@ -204,6 +204,18 @@ async def get_current_user(
     from sqlalchemy.orm import selectinload
 
     token = credentials.credentials
+
+    # JARVIS 서비스 계정: 서버-서버(에이전트) 호출용 정적 키.
+    # 키가 정확히 일치하면 회계 관리자(superuser) 합성 유저를 반환 → require_accounting_admin 통과.
+    import os
+    _jarvis_key = os.getenv("JARVIS_API_KEY")
+    if _jarvis_key and token == _jarvis_key:
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            id=0, email="jarvis@service.local", full_name="JARVIS Service",
+            is_active=True, is_superuser=True, role=None, department=None, department_id=None,
+        )
+
     payload = decode_token(token)
 
     if payload is None:
