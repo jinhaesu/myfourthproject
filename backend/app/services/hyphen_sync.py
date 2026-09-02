@@ -51,6 +51,54 @@ async def get_coverage(db: AsyncSession, kind: str, ckey: str):
     return (row.start_date, row.end_date) if row else None
 
 
+def _iso(ymd: str) -> str:
+    return f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
+
+
+def _shift(ymd: str, days: int) -> str:
+    from datetime import timedelta
+    return (datetime.strptime(ymd, "%Y%m%d") + timedelta(days=days)).strftime("%Y%m%d")
+
+
+# 자동 온디맨드 sync 허용 최대 gap(일) — 이보다 크면 수동 백필/크론에 맡김(요청 행 방지)
+_ENSURE_MAX_GAP_DAYS = int(__import__("os").getenv("HYPHEN_ENSURE_MAX_GAP", "120"))
+
+
+async def ensure_coverage(db: AsyncSession, kind: str, ckey: str, start_date: str, end_date: str, sync_fn) -> Dict[str, Any]:
+    """요청 [start,end]에서 **커버 안 된 좌/우 구간만** sync_fn(db,start_date=,end_date=)로 1회 당김.
+    이미 전부 커버된 범위면 API 호출 0(=한 번 조회한 범위는 재조회 시 외부호출 없음).
+    sync_fn은 내부에서 record_coverage로 커버리지를 확장해야 함. gap이 너무 크면(초기 대량) 스킵."""
+    cov = await get_coverage(db, kind, ckey)
+    sd = start_date.replace("-", ""); ed = end_date.replace("-", "")
+    if ed < sd:
+        return {"synced": [], "covered": True}
+    gaps = []
+    if cov is None:
+        gaps.append((sd, ed))
+    else:
+        cs, ce = cov
+        if sd < cs:
+            g_end = min(ed, _shift(cs, -1))
+            if sd <= g_end:
+                gaps.append((sd, g_end))
+        if ed > ce:
+            g_start = max(sd, _shift(ce, 1))
+            if g_start <= ed:
+                gaps.append((g_start, ed))
+    synced = []
+    for gsd, ged in gaps:
+        span_days = (datetime.strptime(ged, "%Y%m%d") - datetime.strptime(gsd, "%Y%m%d")).days + 1
+        if span_days > _ENSURE_MAX_GAP_DAYS:
+            logger.info("ensure_coverage: gap %s~%s (%d일) > 한도 → 자동sync 스킵(%s/%s)", gsd, ged, span_days, kind, ckey)
+            continue
+        try:
+            await sync_fn(db, start_date=_iso(gsd), end_date=_iso(ged))
+            synced.append({"from": _iso(gsd), "to": _iso(ged)})
+        except Exception:
+            logger.exception("ensure_coverage sync 실패 %s/%s %s~%s", kind, ckey, gsd, ged)
+    return {"synced": synced, "covered": not gaps}
+
+
 def _hash(acct_no: str, r: Dict[str, Any]) -> str:
     key = "|".join(str(r.get(k, "")) for k in ("trDt", "trTm", "inAmt", "outAmt", "balance", "trNm", "trNo", "trNum"))
     return hashlib.sha256(f"{acct_no}|{key}".encode()).hexdigest()

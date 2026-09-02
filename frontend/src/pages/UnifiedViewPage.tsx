@@ -137,6 +137,22 @@ export default function UnifiedViewPage() {
   })
 
   const assetsData = assetsQuery.data || {}
+  // 하이픈 인증정보(계좌별 최신잔액 포함) — 그랜터 잔액이 비는 은행(우리 등) 보정용
+  const hyphenCredsQuery = useQuery({
+    queryKey: ['hyphen-creds-map'],
+    queryFn: () => hyphenApi.listCredentials().then((r) => r.data.credentials),
+    retry: false,
+    staleTime: 60_000,
+  })
+  // 계좌번호(숫자) → 하이픈 최신잔액 맵
+  const hyphenBalByAcct = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const c of hyphenCredsQuery.data || []) {
+      const k = digits(c.acct_no)
+      if (k && c.last_balance != null) m[k] = Number(c.last_balance)
+    }
+    return m
+  }, [hyphenCredsQuery.data])
   const allBankAssets: any[] = useMemo(() => assetsData?.BANK_ACCOUNT || [], [assetsData])
   const cardAssets: any[] = useMemo(() => assetsData?.CARD || [], [assetsData])
   const homeTaxAssets: any[] = useMemo(() => assetsData?.HOME_TAX_ACCOUNT || [], [assetsData])
@@ -162,10 +178,29 @@ export default function UnifiedViewPage() {
     () =>
       bankAssets.reduce((s, a) => {
         const ba = a?.bankAccount || {}
-        return s + Number(ba?.accountBalance || 0)
+        const g = Number(ba?.accountBalance || 0)
+        // 그랜터 잔액이 0이면 하이픈 최신잔액으로 보정(우리은행 등)
+        const acctNum = digits(String(ba?.accountNumber || a?.number || ''))
+        const hy = hyphenBalByAcct[acctNum]
+        return s + (g !== 0 ? g : (hy != null ? hy : 0))
       }, 0),
-    [bankAssets]
+    [bankAssets, hyphenBalByAcct]
   )
+  // 계좌 표시잔액(그랜터 0이면 하이픈 보정) — 정렬·필터·표시 공용
+  const bankBalanceOf = (a: any): number => {
+    const ba = a?.bankAccount || {}
+    const g = Number(ba?.accountBalance || ba?.originalBalance || 0)
+    const hy = hyphenBalByAcct[digits(String(ba?.accountNumber || a?.number || ''))]
+    return g !== 0 ? g : (hy != null ? hy : 0)
+  }
+  // 잔액 0 제외 토글 + 잔액 큰 순 정렬
+  const [hideZeroBal, setHideZeroBal] = useState(false)
+  const bankAssetsView = useMemo(() => {
+    const arr = bankAssets.map((a) => ({ a, balance: bankBalanceOf(a) }))
+    const filtered = hideZeroBal ? arr.filter((x) => x.balance !== 0) : arr
+    return filtered.sort((x, y) => y.balance - x.balance)
+  }, [bankAssets, hideZeroBal, hyphenBalByAcct])
+
   const krwCashAccounts = useMemo(
     () =>
       bankAssets.filter((a) => {
@@ -319,12 +354,6 @@ export default function UnifiedViewPage() {
   })
 
   // ===== 하이픈 동기화 원장(즉시) — 선택 계좌가 동기화돼 있으면 그랜터 대신 DB 원장 사용 =====
-  const hyphenCredsQuery = useQuery({
-    queryKey: ['hyphen-creds-map'],
-    queryFn: () => hyphenApi.listCredentials().then((r) => r.data.credentials),
-    retry: false,
-    staleTime: 60_000,
-  })
   const hyphenAcct = useMemo(() => {
     if (selected.ticketType !== 'BANK_TRANSACTION_TICKET' || !selected.acctNo) return null
     const target = digits(selected.acctNo)
@@ -351,17 +380,45 @@ export default function UnifiedViewPage() {
       queryClient.invalidateQueries({ queryKey: ['hyphen-creds-map'] })
     },
   })
+  // 자동 크론 OFF — 통합조회 열 때 세션당 1회 은행 전체 동기화(집계 잔액·최근거래 신선하게).
+  const syncAllMut = useMutation({
+    mutationFn: () => {
+      const end = new Date()
+      const start = new Date(Date.now() - 7 * 86400000)
+      const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      return hyphenApi.syncAll({ start_date: iso(start), end_date: iso(end) }).then((r) => r.data)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['hyphen-creds-map'] })
+      queryClient.invalidateQueries({ queryKey: ['granter-assets-all'] })
+      queryClient.invalidateQueries({ queryKey: ['hyphen-tx-unified'] })
+    },
+  })
+  useEffect(() => {
+    if (!ready || !isConfigured) return
+    if (sessionStorage.getItem('hyphen-session-synced')) return
+    sessionStorage.setItem('hyphen-session-synced', '1')
+    syncAllMut.mutate()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, isConfigured])
+
   const autoSyncedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!hyphenAcct || !ready) return
     if (hyphenTxQuery.isLoading || !hyphenTxQuery.data) return
     const key = `${hyphenAcct.acct_no}|${from}|${to}`
     if (autoSyncedRef.current.has(key) || onDemandSync.isPending) return
-    // 이미 API로 당긴 범위(covered) 안이면 재호출 안 함 — 비용 절감(다른 사용자가 당긴 것도 재사용).
+    // 자동 크론 OFF → 조회 시 동기화가 최신분을 책임진다.
+    // 규칙: 최근 구간(오늘 기준 3일 이내 포함)은 covered여도 항상 동기화(새 거래 반영),
+    //       과거 구간은 covered면 재호출 안 함(비용 절감·캐시 재사용).
     const d: any = hyphenTxQuery.data
     const fromNorm = from.replace(/-/g, '')
     const toNorm = to.replace(/-/g, '')
-    if (d.covered_from && d.covered_to && d.covered_from <= fromNorm && d.covered_to >= toNorm) return
+    const recentCut = new Date(Date.now() - 3 * 86400000)
+    const rc = `${recentCut.getFullYear()}${String(recentCut.getMonth() + 1).padStart(2, '0')}${String(recentCut.getDate()).padStart(2, '0')}`
+    const isRecent = toNorm >= rc
+    const isCovered = d.covered_from && d.covered_to && d.covered_from <= fromNorm && d.covered_to >= toNorm
+    if (isCovered && !isRecent) return
     autoSyncedRef.current.add(key)
     onDemandSync.mutate({ id: hyphenAcct.id, from, to })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -723,7 +780,7 @@ export default function UnifiedViewPage() {
           <Section
             title="입출금 계좌"
             icon={<BuildingLibraryIcon className="h-3.5 w-3.5" />}
-            count={bankAssets.length}
+            count={bankAssetsView.length}
             onClickAll={() =>
               setSelected({
                 scope: 'all',
@@ -735,16 +792,37 @@ export default function UnifiedViewPage() {
             allLabel="전체"
             isAllActive={selected.ticketType === 'BANK_TRANSACTION_TICKET' && !selected.assetId}
           >
-            {bankAssets.length === 0 && !assetsQuery.isLoading && (
-              <div className="text-2xs text-ink-400 px-2 py-3 text-center">활성 계좌 없음</div>
+            <div className="flex items-center justify-between px-2 pb-1">
+              <button
+                onClick={() => syncAllMut.mutate()}
+                disabled={syncAllMut.isPending}
+                title="은행 최신 거래·잔액을 지금 불러옵니다 (자동 동기화 OFF)"
+                className="text-2xs text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50 flex items-center gap-1"
+              >
+                <ArrowPathIcon className={`h-3 w-3 ${syncAllMut.isPending ? 'animate-spin' : ''}`} />
+                {syncAllMut.isPending ? '동기화 중…' : '지금 동기화'}
+              </button>
+              <label className="flex items-center gap-1.5 text-2xs text-ink-500 dark:text-ink-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={hideZeroBal}
+                  onChange={(e) => setHideZeroBal(e.target.checked)}
+                  className="h-3 w-3 rounded border-ink-300 dark:border-ink-700"
+                />
+                잔액 0 제외
+              </label>
+            </div>
+            {bankAssetsView.length === 0 && !assetsQuery.isLoading && (
+              <div className="text-2xs text-ink-400 px-2 py-3 text-center">
+                {hideZeroBal ? '잔액 있는 계좌 없음' : '활성 계좌 없음'}
+              </div>
             )}
-            {bankAssets.map((a, idx) => {
+            {bankAssetsView.map(({ a, balance }, idx) => {
               const id = num(a, 'id')
               const ba = a.bankAccount || {}
               const bankName = str(a, 'organizationName', 'name')
               const alias = str(a, 'nickname') || str(ba, 'nickName', 'accountName')
               const acctNum = str(ba, 'accountNumber') || str(a, 'number')
-              const balance = num(ba, 'accountBalance', 'originalBalance')
               const currency = String(ba?.currencyCode || 'KRW').toUpperCase()
               const periodFlow = usageByAsset[id]
               const isActive = selected.assetId === id
@@ -809,7 +887,9 @@ export default function UnifiedViewPage() {
                 const bankName = str(a, 'organizationName', 'name')
                 const alias = str(a, 'nickname') || str(ba, 'nickName', 'accountName')
                 const acctNum = str(ba, 'accountNumber') || str(a, 'number')
-                const balance = num(ba, 'accountBalance', 'originalBalance')
+                const granterBal = num(ba, 'accountBalance', 'originalBalance')
+                const hyBal = hyphenBalByAcct[digits(acctNum)]
+                const balance = granterBal !== 0 ? granterBal : (hyBal != null ? hyBal : granterBal)
                 const isActive = selected.assetId === id
                 return (
                   <button

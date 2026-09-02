@@ -504,12 +504,14 @@ async def hyphen_list_cards(db: AsyncSession = Depends(get_db)):
 
 @router.post("/cards")
 async def hyphen_register_card(body: CardAccountBody, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
+    import re as _re
+    card_no = _re.sub(r"\D", "", body.card_no or "")
     existing = (await db.execute(_select(HyphenCardAccount).where(
-        HyphenCardAccount.card_cd == body.card_cd, HyphenCardAccount.card_no == body.card_no,
+        HyphenCardAccount.card_cd == body.card_cd, HyphenCardAccount.card_no == card_no,
     ).order_by(HyphenCardAccount.id))).scalars().first()
-    c = existing or HyphenCardAccount(card_cd=body.card_cd, card_no=body.card_no)
+    c = existing or HyphenCardAccount(card_cd=body.card_cd, card_no=card_no)
     c.card_cd = body.card_cd
-    c.card_no = body.card_no
+    c.card_no = card_no
     c.label = body.label
     c.login_method = body.login_method
     if body.user_id is not None:
@@ -532,6 +534,18 @@ async def hyphen_delete_card(card_id: int, db: AsyncSession = Depends(get_db)):
     await db.delete(c)
     await db.commit()
     return {"deleted": True}
+
+
+@router.delete("/cards")
+async def hyphen_delete_all_cards(card_cd: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    """등록된 카드 일괄 삭제. card_cd 지정 시 해당 카드사만, 없으면 전체."""
+    from sqlalchemy import delete as _delete
+    stmt = _delete(HyphenCardAccount)
+    if card_cd:
+        stmt = stmt.where(HyphenCardAccount.card_cd == card_cd)
+    res = await db.execute(stmt)
+    await db.commit()
+    return {"deleted": res.rowcount or 0}
 
 
 @router.post("/cards/sync")
@@ -574,9 +588,99 @@ async def hyphen_sync_all(body: SyncBody, db: AsyncSession = Depends(get_db)):
 async def hyphen_cron_sync(
     request: Request,
     days: int = 7,
+    full: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """주기 자동 동기화 (Cloud Scheduler 호출). X-Cron-Secret 헤더로 게이트."""
+    """주기 자동 동기화 (Cloud Scheduler 호출). X-Cron-Secret 헤더로 게이트.
+
+    비용 절감: **은행은 매 실행**, **카드·세금계산서·잔액갱신은 하루 1회만**(KST 06~09시 실행 또는 ?full=1).
+    카드 25장을 매 실행마다 재조회하면 비즈머니가 크게 소진되므로 하루 1회로 제한.
+    """
+    import os as _os
+    from datetime import datetime as _dt, timedelta as _td, date as _date
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    given = request.headers.get("x-cron-secret", "")
+    if not secret or given != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    today = _date.today()
+    start = (today - _td(days=max(1, days))).isoformat()
+    end = today.isoformat()
+    # 은행 — 매 실행(현금흐름 신선도, 비용 상대적으로 낮음: 계좌당 1콜)
+    bank = await sync_svc.sync_all(db, start_date=start, end_date=end)
+
+    # 무거운 동기화(카드·세금·잔액)는 하루 1회만 — KST 06~09시 실행 또는 강제(full=1)
+    kst_hour = (_dt.utcnow() + _td(hours=9)).hour
+    heavy = bool(full) or (6 <= kst_hour <= 9)
+    tax = card = bal = None
+    if heavy:
+        try:
+            tax = await ext_svc.sync_tax_invoices(db, start_date=(today - _td(days=14)).isoformat(), end_date=end)
+        except Exception as e:
+            logger.warning("cron 세금계산서 동기화 실패: %s", e)
+        try:
+            card = await ext_svc.sync_cards(db, start_date=(today - _td(days=14)).isoformat(), end_date=end)
+        except Exception as e:
+            logger.warning("cron 카드 동기화 실패: %s", e)
+        try:
+            bal = await ext_svc.refresh_account_balances(db)
+        except Exception as e:
+            logger.warning("cron 잔액 갱신 실패: %s", e)
+    return {"bank": bank, "tax": tax, "card": card, "balances": bal, "heavy": heavy, "kst_hour": kst_hour}
+
+
+@public_router.post("/cron/refresh-balances")
+async def hyphen_refresh_balances(request: Request, db: AsyncSession = Depends(get_db)):
+    """저장 인증정보로 전 계좌 잔액 갱신(은행별 1콜). X-Cron-Secret 게이트."""
+    import os as _os
+    if request.headers.get("x-cron-secret", "") != _os.getenv("HYPHEN_CRON_SECRET", "") or not _os.getenv("HYPHEN_CRON_SECRET", ""):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return await ext_svc.refresh_account_balances(db)
+
+
+@public_router.get("/cron/debug-accounts")
+async def hyphen_debug_accounts(request: Request, db: AsyncSession = Depends(get_db)):
+    """진단: 등록된 하이픈 은행 credential + merge된 BANK_ACCOUNT 목록 요약. X-Cron-Secret 게이트."""
+    import os as _os
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if request.headers.get("x-cron-secret", "") != secret or not secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    creds = await ext_svc._hyphen_bank_creds(db)
+    cred_rows = [{
+        "bank_cd": c.bank_cd, "bank_nm": ext_svc._bank_nm(c.bank_cd),
+        "acct_no": c.acct_no, "last4": (c.acct_no or "")[-4:], "label": c.label,
+        "last_balance": float(c.last_balance) if c.last_balance is not None else None,
+        "last_synced_at": c.last_synced_at.isoformat() if c.last_synced_at else None,
+        "expired": c.is_expired,
+    } for c in creds]
+    # 그랜터 원본 + merge 결과 은행목록
+    granter_bank = []
+    try:
+        g = await get_granter_client().list_all_assets(only_active=False)
+        for a in (g.get("BANK_ACCOUNT") or []):
+            ba = a.get("bankAccount") or {}
+            granter_bank.append({"id": a.get("id"), "name": a.get("name"),
+                                 "acct": ba.get("accountNumber") or a.get("number"),
+                                 "bal": ba.get("accountBalance"),
+                                 "active": a.get("isActive"), "hidden": a.get("isHidden"), "dormant": a.get("isDormant")})
+    except Exception as e:
+        granter_bank = [{"error": str(e)[:200]}]
+    merged = await ext_svc.merge_assets_all(db, {"BANK_ACCOUNT": []})
+    merged_bank = [{"id": a.get("id"), "name": a.get("name"), "acct": (a.get("bankAccount") or {}).get("accountNumber"),
+                    "bal": (a.get("bankAccount") or {}).get("accountBalance"), "src": a.get("_source", "granter")}
+                   for a in merged.get("BANK_ACCOUNT", [])]
+    return {"credentials_count": len(cred_rows), "credentials": cred_rows,
+            "granter_bank_count": len(granter_bank), "granter_bank": granter_bank,
+            "merged_hyphen_only_count": len(merged_bank), "merged_hyphen_only": merged_bank}
+
+
+@public_router.post("/cron/card-debug")
+async def hyphen_card_debug(
+    request: Request,
+    days: int = 30,
+    db: AsyncSession = Depends(get_db),
+):
+    """하이픈 지원팀 제출용: 실패하는 카드 승인내역 호출의 요청/응답 원본(마스킹) 캡처.
+    X-Cron-Secret 헤더 게이트. 개인정보·인증서·키는 마스킹, 원본 응답 body는 그대로."""
     import os as _os
     secret = _os.getenv("HYPHEN_CRON_SECRET", "")
     given = request.headers.get("x-cron-secret", "")
@@ -586,18 +690,105 @@ async def hyphen_cron_sync(
     today = _date.today()
     start = (today - _td(days=max(1, days))).isoformat()
     end = today.isoformat()
-    bank = await sync_svc.sync_all(db, start_date=start, end_date=end)
-    # 세금계산서·카드도 증분 동기화(짧은 창 — 비용 절감, 과거분은 온디맨드로 1회만 당김)
-    tax = card = None
-    try:
-        tax = await ext_svc.sync_tax_invoices(db, start_date=(today - _td(days=14)).isoformat(), end_date=end)
-    except Exception as e:
-        logger.warning("cron 세금계산서 동기화 실패: %s", e)
-    try:
-        card = await ext_svc.sync_cards(db, start_date=(today - _td(days=14)).isoformat(), end_date=end)
-    except Exception as e:
-        logger.warning("cron 카드 동기화 실패: %s", e)
-    return {"bank": bank, "tax": tax, "card": card}
+
+    cert = await ext_svc.get_company_cert(db)
+    client = get_hyphen_client()
+    accts = (await db.execute(_select(HyphenCardAccount))).scalars().all()
+    if not accts:
+        return {"error": "등록된 카드가 없습니다."}
+    # 카드사별 대표 1장만 캡처(비용 절감 — 지원팀엔 한 사례면 충분)
+    by_cd: Dict[str, Any] = {}
+    for a in accts:
+        by_cd.setdefault(a.card_cd, a)
+    out = []
+    for card_cd, rep in by_cd.items():
+        sign = cert if (rep.login_method == "CERT" and cert) else (None, None, None)
+        cap = await client.card_transactions_debug(
+            card_cd=card_cd, card_no=rep.card_no, biz_no=ext_svc.COMPANY_BIZ_NO,
+            start_date=start, end_date=end,
+            sign_cert=sign[0], sign_pri=sign[1], sign_pw=sign[2],
+            user_id=creds_svc._dec(rep.enc_user_id),
+            user_pw=creds_svc._dec(rep.enc_user_pw),
+            login_method=rep.login_method, gustation=False,
+        )
+        out.append({"card_cd": card_cd, "login_method": rep.login_method, **cap})
+    return {"period": {"sdate": start, "edate": end}, "cases": out}
+
+
+class BulkCardItem(BaseModel):
+    card_cd: str
+    card_no: str
+    label: Optional[str] = None
+    login_method: str = "CERT"
+
+
+class BulkCardBody(BaseModel):
+    cards: List[BulkCardItem]
+    replace: bool = True  # 같은 카드사 기존분 삭제 후 삽입
+
+
+@public_router.post("/cron/cards-bulk-register")
+async def hyphen_cards_bulk_register(request: Request, body: BulkCardBody, db: AsyncSession = Depends(get_db)):
+    """관리자 대행 일괄등록(카드번호 16자리). X-Cron-Secret 게이트.
+    replace=True면 payload에 등장한 카드사코드의 기존분을 지우고 새로 넣음(12자리 잔재 제거)."""
+    import os as _os
+    import re as _re
+    from sqlalchemy import delete as _delete
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if not secret or request.headers.get("x-cron-secret", "") != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    items = []
+    skipped = []
+    for it in body.cards:
+        no = _re.sub(r"\D", "", it.card_no or "")
+        if len(no) != 16:
+            skipped.append({"card_no": it.card_no, "reason": f"digits={len(no)}"})
+            continue
+        items.append((it.card_cd, no, it.label, it.login_method))
+
+    if body.replace and items:
+        for cd in sorted({c for c, _, _, _ in items}):
+            await db.execute(_delete(HyphenCardAccount).where(HyphenCardAccount.card_cd == cd))
+
+    inserted = 0
+    for card_cd, no, label, lm in items:
+        existing = (await db.execute(_select(HyphenCardAccount).where(
+            HyphenCardAccount.card_cd == card_cd, HyphenCardAccount.card_no == no,
+        ))).scalars().first()
+        c = existing or HyphenCardAccount(card_cd=card_cd, card_no=no)
+        c.card_cd = card_cd
+        c.card_no = no
+        c.label = label
+        c.login_method = lm
+        if not existing:
+            db.add(c)
+            inserted += 1
+    await db.commit()
+    total = (await db.execute(_select(HyphenCardAccount))).scalars().all()
+    by_cd: Dict[str, int] = {}
+    for t in total:
+        by_cd[t.card_cd] = by_cd.get(t.card_cd, 0) + 1
+    return {
+        "received": len(body.cards), "valid_16": len(items),
+        "inserted": inserted, "skipped": skipped,
+        "total_now": len(total), "by_cd": by_cd,
+    }
+
+
+@public_router.post("/cron/cards-sync")
+async def hyphen_cron_cards_sync(
+    request: Request,
+    start_date: str,
+    end_date: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """카드 백필/동기화 (기간지정). X-Cron-Secret 게이트. 등록된 25장 전체를 기간으로 조회→원장 적재."""
+    import os as _os
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if not secret or request.headers.get("x-cron-secret", "") != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return await ext_svc.sync_cards(db, start_date=start_date, end_date=end_date)
 
 
 @router.get("/balance-series")

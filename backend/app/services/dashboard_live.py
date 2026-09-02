@@ -71,8 +71,20 @@ async def build_dashboard(as_of: date | None = None, db=None) -> Dict[str, Any]:
     prev_m_end = this_m_start - timedelta(days=1)
     prev_m_start = prev_m_end.replace(day=1)
 
-    this_cards = await _granter_expense_tickets(this_m_start, today)
-    prev_cards = await _granter_expense_tickets(prev_m_start, prev_m_end)
+    # 카드도 하이픈 원장 우선(DB 즉시, API 호출 없음), 미등록 시 그랜터 폴백
+    _hy_cards = False
+    if db is not None:
+        try:
+            from app.services import hyphen_sync_ext as _hy
+            if await _hy.has_hyphen_cards(db):
+                this_cards = await _hy.card_tickets_as_expense(db, start_date=this_m_start.isoformat(), end_date=today.isoformat())
+                prev_cards = await _hy.card_tickets_as_expense(db, start_date=prev_m_start.isoformat(), end_date=prev_m_end.isoformat())
+                _hy_cards = True
+        except Exception:
+            logger.exception("hyphen 카드 집계 실패 → 그랜터 폴백")
+    if not _hy_cards:
+        this_cards = await _granter_expense_tickets(this_m_start, today)
+        prev_cards = await _granter_expense_tickets(prev_m_start, prev_m_end)
     this_card_total = sum(_num(t.get("amount")) for t in this_cards)
     prev_card_total = sum(_num(t.get("amount")) for t in prev_cards)
 

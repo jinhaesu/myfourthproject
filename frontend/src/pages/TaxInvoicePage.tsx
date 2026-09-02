@@ -350,7 +350,9 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
         remark,
         issueImmediately,
       }
-      return granterApi.issueTaxInvoice(payload, idempotencyKey)
+      // 발행 미지원 — 그랜터 API 미사용. payload는 향후 대체 발행 수단 연동 시 재사용.
+      void payload; void idempotencyKey
+      throw new Error('현재 세금계산서 발행은 미지원입니다 (조회만 가능).')
     },
     onSuccess: (_res) => {
       toast.success('세금계산서가 발행되었습니다.')
@@ -392,6 +394,10 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
 
         {/* 스크롤 영역 */}
         <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4 text-xs">
+          {/* 발행 미지원 안내 */}
+          <div className="rounded-md bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 px-3 py-2 text-2xs text-amber-800 dark:text-amber-200">
+            ⚠️ <b>현재 세금계산서 발행은 미지원</b>입니다. 하이픈 전환으로 홈택스 <b>조회(수취·발행내역)</b>만 제공되며, 발행 기능은 별도 발행 수단 연동 후 지원 예정입니다.
+          </div>
           {/* 거래일자 */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -675,14 +681,11 @@ function IssueTaxInvoiceModal({ open, onClose, onSuccess, contractors, initialCo
             취소
           </button>
           <button
-            onClick={() => issueMut.mutate()}
-            disabled={issueMut.isPending}
-            className="btn-primary flex items-center gap-1.5"
+            disabled
+            title="현재 발행 미지원 — 조회만 가능"
+            className="btn-primary flex items-center gap-1.5 opacity-50 cursor-not-allowed"
           >
-            {issueMut.isPending && (
-              <ArrowPathIcon className="h-3 w-3 animate-spin" />
-            )}
-            {issueMut.isPending ? '발행 중...' : '발행'}
+            {issueMut.isPending ? '처리 중...' : '발행 미지원'}
           </button>
         </div>
       </div>

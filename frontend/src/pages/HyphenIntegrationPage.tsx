@@ -573,6 +573,9 @@ function CardPanel() {
   const [form, setForm] = useState({ card_cd: '001', login_method: 'CERT', user_id: '', user_pw: '' })
   const [discovered, setDiscovered] = useState<{ card_no: string; card_nm: string; card_brand: string }[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [fullNos, setFullNos] = useState<Record<string, string>>({})
+  const [bulkText, setBulkText] = useState('')
+  const [replaceExisting, setReplaceExisting] = useState(true)
   const cardsQ = useQuery({ queryKey: ['hyphen-cards'], queryFn: () => hyphenApi.listCards().then((r) => r.data.cards), retry: false })
   const txQ = useQuery({
     queryKey: ['hyphen-card-tx', range.from, range.to],
@@ -586,31 +589,79 @@ function CardPanel() {
       user_pw: form.login_method === 'ID' ? form.user_pw : undefined,
     }).then((r) => r.data),
     onSuccess: (d) => {
-      setDiscovered(d.cards || [])
-      setSelected(new Set((d.cards || []).map((c) => c.card_no)))
-      if (!d.cards?.length) toast('보유카드가 조회되지 않았습니다.', { icon: '⚠️' })
+      const cs = d.cards || []
+      setDiscovered(cs)
+      setSelected(new Set(cs.map((c) => c.card_no)))
+      // 조회번호가 이미 16자리면 그대로, 아니면(마스킹 12자리) 빈칸으로 시작 → 사장님이 실제 16자리 입력
+      setFullNos(Object.fromEntries(cs.map((c) => {
+        const digits = (c.card_no || '').replace(/\D/g, '')
+        return [c.card_no, digits.length === 16 ? digits : '']
+      })))
+      setBulkText('')
+      if (!cs.length) toast('보유카드가 조회되지 않았습니다.', { icon: '⚠️' })
     },
     onError: (e: any) => toast.error(e?.response?.data?.detail?.error || e?.response?.data?.detail || '보유카드 조회 실패'),
   })
   const regMut = useMutation({
     mutationFn: async () => {
       const chosen = discovered.filter((c) => selected.has(c.card_no))
+      if (!chosen.length) throw new Error('등록할 카드를 선택하세요')
+      const bad = chosen.filter((c) => (fullNos[c.card_no] || '').replace(/\D/g, '').length !== 16)
+      if (bad.length) {
+        throw new Error(`카드번호 16자리를 입력하세요 (${bad.map((c) => c.card_nm || c.card_no.slice(-4)).join(', ')})`)
+      }
+      // 재등록: 같은 카드사 기존 등록분을 먼저 정리(12자리 잔재 제거) 후 새로 등록
+      if (replaceExisting) {
+        await hyphenApi.deleteAllCards(form.card_cd)
+      }
       await Promise.all(chosen.map((c) => hyphenApi.registerCard({
-        card_cd: form.card_cd, card_no: c.card_no.replace(/\D/g, ''), label: c.card_nm || undefined,
+        card_cd: form.card_cd, card_no: (fullNos[c.card_no] || '').replace(/\D/g, ''), label: c.card_nm || undefined,
         login_method: form.login_method,
         user_id: form.login_method === 'ID' ? form.user_id : undefined,
         user_pw: form.login_method === 'ID' ? form.user_pw : undefined,
       })))
       return chosen.length
     },
-    onSuccess: (n) => { toast.success(`${n}개 카드 등록됨`); setDiscovered([]); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
-    onError: () => toast.error('카드 등록 실패'),
+    onSuccess: (n) => { toast.success(`${n}장 등록 완료${replaceExisting ? ' (기존 정리 후 교체)' : ''}`); setDiscovered([]); setBulkText(''); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
+    onError: (e: any) => toast.error(e?.message || '카드 등록 실패'),
   })
   const toggleCard = (no: string) => setSelected((prev) => { const n = new Set(prev); if (n.has(no)) n.delete(no); else n.add(no); return n })
   const delMut = useMutation({
     mutationFn: (id: number) => hyphenApi.deleteCard(id),
     onSuccess: () => { toast.success('삭제됨'); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
   })
+  const delAllMut = useMutation({
+    mutationFn: () => hyphenApi.deleteAllCards().then((r) => r.data),
+    onSuccess: (d) => { toast.success(`${d.deleted}장 전체 삭제됨`); qc.invalidateQueries({ queryKey: ['hyphen-cards'] }) },
+    onError: () => toast.error('전체 삭제 실패'),
+  })
+  // 일괄 입력: 여러 줄(또는 공백/콤마 구분)로 붙여넣은 16자리들을 조회표기 뒷4자리로 자동 매칭, 나머지는 순서대로 채움
+  const applyBulk = () => {
+    const nums = (bulkText.match(/\d[\d\s-]{13,}\d/g) || [])
+      .map((s) => s.replace(/\D/g, ''))
+      .filter((s) => s.length === 16)
+    if (!nums.length) { toast.error('16자리 숫자를 인식하지 못했습니다'); return }
+    const next: Record<string, string> = { ...fullNos }
+    const pick = new Set(selected)
+    const used = new Set<string>()
+    // 1차: 조회표기 뒷 4자리 == 입력 뒷 4자리 자동 매칭
+    for (const c of discovered) {
+      const last4 = (c.card_no || '').replace(/\D/g, '').slice(-4)
+      const hit = nums.find((n) => !used.has(n) && n.slice(-4) === last4)
+      if (hit) { next[c.card_no] = hit; used.add(hit); pick.add(c.card_no) }
+    }
+    // 2차: 매칭 안 된 카드에 남은 번호를 위→아래 순서대로 채움
+    const rest = nums.filter((n) => !used.has(n))
+    let ri = 0
+    for (const c of discovered) {
+      if ((next[c.card_no] || '').length === 16) continue
+      if (ri < rest.length) { next[c.card_no] = rest[ri++]; pick.add(c.card_no) }
+    }
+    setFullNos(next)
+    setSelected(pick)
+    const filled = discovered.filter((c) => (next[c.card_no] || '').length === 16).length
+    toast.success(`${filled}/${discovered.length}장 채움 (인식 ${nums.length}건)`)
+  }
   const syncMut = useMutation({
     mutationFn: () => hyphenApi.cardsSync({ start_date: range.from, end_date: range.to }).then((r) => r.data),
     onSuccess: (d) => {
@@ -660,31 +711,84 @@ function CardPanel() {
       </div>
       {discovered.length > 0 && (
         <div className="mb-2 space-y-1.5 rounded-md border border-ink-200 dark:border-ink-800 p-2">
-          <div className="text-2xs text-ink-500 dark:text-ink-400">{cardName(form.card_cd)} 보유카드 {discovered.length}장 · 등록할 카드 선택</div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="text-2xs text-ink-500 dark:text-ink-400">
+            {cardName(form.card_cd)} 보유카드 {discovered.length}장 · 승인내역 조회는 <b>카드번호 16자리 전체</b>가 필요합니다.
+            카드사 조회는 일부만 표기(가운데 자리 마스킹)되니, 실물 카드의 16자리를 직접 입력해 주세요.
+          </div>
+
+          {/* 일괄 입력: 한 번에 쭉 붙여넣기 → 자동 매칭 */}
+          <div className="rounded-md bg-canvas-50 dark:bg-ink-950 border border-ink-100 dark:border-ink-800 p-2 space-y-1.5">
+            <div className="text-2xs font-semibold text-ink-600 dark:text-ink-300">한 번에 입력 (권장)</div>
+            <div className="text-2xs text-ink-400">
+              16자리 카드번호를 <b>한 줄에 하나씩</b> 쭉 붙여넣고 “일괄 채우기”를 누르세요. 하이픈·공백 있어도 됩니다.
+              뒷 4자리로 자동 매칭하고, 안 맞으면 위에서부터 순서대로 채웁니다.
+            </div>
+            <textarea
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              rows={Math.min(8, Math.max(3, discovered.length))}
+              placeholder={'1234 5678 9012 3456\n2345-6789-0123-4567\n...'}
+              className="w-full border border-ink-200 dark:border-ink-800 rounded px-2 py-1.5 text-2xs bg-transparent font-mono"
+            />
+            <button onClick={applyBulk} className="btn-secondary">일괄 채우기</button>
+          </div>
+
+          <div className="space-y-1">
             {discovered.map((c) => {
               const on = selected.has(c.card_no)
+              const val = fullNos[c.card_no] || ''
+              const len = val.replace(/\D/g, '').length
+              const ok = len === 16
               return (
-                <label key={c.card_no} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs border cursor-pointer ${on ? 'border-ink-300 dark:border-ink-600' : 'border-ink-100 dark:border-ink-800 text-ink-400'}`}>
-                  <input type="checkbox" checked={on} onChange={() => toggleCard(c.card_no)} className="w-3 h-3" />
-                  {c.card_nm || '카드'} <span className="font-mono">{c.card_no.slice(-4)}</span>
-                </label>
+                <div key={c.card_no} className="flex items-center gap-2">
+                  <input type="checkbox" checked={on} onChange={() => toggleCard(c.card_no)} className="w-3.5 h-3.5" />
+                  <span className="text-2xs w-24 truncate text-ink-600 dark:text-ink-300">{c.card_nm || '카드'}</span>
+                  <span className="text-2xs text-ink-400 font-mono w-28">조회표기 {c.card_no}</span>
+                  <input
+                    value={val}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 16)
+                      setFullNos((p) => ({ ...p, [c.card_no]: digits }))
+                    }}
+                    inputMode="numeric" maxLength={19} placeholder="카드번호 16자리"
+                    className={`border rounded px-1.5 py-1 text-2xs bg-transparent font-mono w-40 ${on && !ok ? 'border-rose-400' : 'border-ink-200 dark:border-ink-800'}`}
+                  />
+                  <span className={`text-2xs ${ok ? 'text-emerald-500' : 'text-ink-400'}`}>{len}/16</span>
+                </div>
               )
             })}
           </div>
-          <button onClick={() => regMut.mutate()} disabled={selected.size === 0 || regMut.isPending} className="btn-primary">
-            {regMut.isPending ? '등록 중…' : `선택 ${selected.size}장 등록`}
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button onClick={() => regMut.mutate()} disabled={selected.size === 0 || regMut.isPending} className="btn-primary">
+              {regMut.isPending ? '등록 중…' : `선택 ${selected.size}장 등록`}
+            </button>
+            <label className="flex items-center gap-1 text-2xs text-ink-500 dark:text-ink-400 cursor-pointer">
+              <input type="checkbox" checked={replaceExisting} onChange={(e) => setReplaceExisting(e.target.checked)} className="w-3 h-3" />
+              {cardName(form.card_cd)} 기존 등록분 지우고 교체
+            </label>
+          </div>
         </div>
       )}
       {cards.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mb-2">
-          {cards.map((c) => (
-            <span key={c.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs border border-ink-200 dark:border-ink-800">
-              {cardName(c.card_cd)} {c.card_no.slice(-4)} {c.label && `· ${c.label}`}
-              <button onClick={() => delMut.mutate(c.id)} className="text-rose-500 ml-0.5">×</button>
-            </span>
-          ))}
+        <div className="mb-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-2xs text-ink-500 dark:text-ink-400">등록된 카드 {cards.length}장</span>
+            <button
+              onClick={() => { if (confirm(`등록된 카드 ${cards.length}장을 모두 삭제할까요?`)) delAllMut.mutate() }}
+              disabled={delAllMut.isPending}
+              className="btn-secondary text-rose-600 dark:text-rose-400"
+            >
+              {delAllMut.isPending ? '삭제 중…' : '전체 삭제'}
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {cards.map((c) => (
+              <span key={c.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs border border-ink-200 dark:border-ink-800">
+                {cardName(c.card_cd)} {c.card_no.slice(-4)} {c.label && `· ${c.label}`}
+                <button onClick={() => delMut.mutate(c.id)} className="text-rose-500 ml-0.5">×</button>
+              </span>
+            ))}
+          </div>
         </div>
       )}
       <div className="flex items-center gap-1.5 flex-wrap mb-2">

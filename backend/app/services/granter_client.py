@@ -149,6 +149,10 @@ class GranterClient:
         """
         import asyncio
 
+        # 그랜터 전면 제거 — 하이픈 단일소스로 전환. GRANTER_DISABLED=0 으로만 재활성(비권장).
+        if os.getenv("GRANTER_DISABLED", "1") != "0":
+            raise GranterAPIError("그랜터 API 비활성화됨(하이픈 단일소스로 전환)", status_code=410)
+
         if not self.is_configured:
             raise GranterAPIError("GRANTER_API_KEY 환경변수가 설정되지 않았습니다.", status_code=500)
 

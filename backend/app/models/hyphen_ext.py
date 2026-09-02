@@ -56,6 +56,27 @@ class HyphenCardTx(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class HyphenCashReceipt(Base):
+    """홈택스 현금영수증 1건 (매출/매입). 발행 아님 — 조회 원장."""
+    __tablename__ = "hyphen_cash_receipt"
+    __table_args__ = (Index("ix_hyphen_cashrcpt_dt", "tr_dt"), {"extend_existing": True})
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    biz_no: Mapped[str] = mapped_column(String(20), index=True)
+    sup_byr: Mapped[str] = mapped_column(String(2), index=True)  # 01 매출 / 02 매입
+    tr_dt: Mapped[str] = mapped_column(String(10), index=True)   # 거래일 YYYYMMDD
+    appr_no: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)  # 승인번호
+    frcs_biz_no: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # 가맹점 사업자번호
+    frcs_nm: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)     # 가맹점명
+    tot_amt: Mapped[float] = mapped_column(Numeric(20, 2), default=0)
+    sup_amt: Mapped[float] = mapped_column(Numeric(20, 2), default=0)
+    tax_amt: Mapped[float] = mapped_column(Numeric(20, 2), default=0)
+    item_nm: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    raw: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 원본 JSON(필드검증용)
+    dedup_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class HyphenSyncCoverage(Base):
     """동기화 커버리지 — (종류,키)별로 이미 API로 당긴 날짜범위. 이 범위 내 조회는 API 재호출 안 함."""
     __tablename__ = "hyphen_sync_coverage"

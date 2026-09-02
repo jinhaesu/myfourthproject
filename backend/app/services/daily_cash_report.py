@@ -144,6 +144,22 @@ async def _granter_bank_tickets(start_date: date, end_date: date) -> List[Dict[s
     return await _granter_tickets_single("BANK_TRANSACTION_TICKET", start_date, end_date)
 
 
+async def _expense_tickets(db: Optional[AsyncSession], start_date: date, end_date: date) -> List[Dict[str, Any]]:
+    """카드 지출(EXPENSE_TICKET 형태) — 하이픈 원장 우선(DB 즉시, API 최소화), 미등록 시 그랜터 폴백.
+
+    db 미제공(레거시 호출)이면 그랜터 경로. 하이픈 어댑터는 EXPENSE_TICKET과 동일 형태를 반환.
+    """
+    if db is not None:
+        try:
+            from app.services import hyphen_sync_ext as _hy
+            if await _hy.has_hyphen_cards(db):
+                await _hy.ensure_card_coverage(db, start_date=start_date.isoformat(), end_date=end_date.isoformat())
+                return await _hy.card_tickets_as_expense(db, start_date=start_date.isoformat(), end_date=end_date.isoformat())
+        except Exception:
+            logger.exception("하이픈 카드 티켓 조회 실패 → 그랜터 폴백")
+    return await _granter_expense_tickets(start_date, end_date)
+
+
 def _split_inflow_outflow(bank_tickets: List[Dict[str, Any]]) -> tuple:
     """BANK_TRANSACTION_TICKET 리스트를 입금/출금으로 분리."""
     inflows = []
@@ -287,8 +303,8 @@ async def _section_ai_cashflow(
     }
 
 
-async def _section_card_spending(target_date: date) -> Dict[str, Any]:
-    """카드 지출 분석 — 어제 + 이번달 vs 전월 동기 (그랜터 expense_tickets)."""
+async def _section_card_spending(target_date: date, db: Optional[AsyncSession] = None) -> Dict[str, Any]:
+    """카드 지출 분석 — 어제 + 이번달 vs 전월 동기 (하이픈 원장 우선, 그랜터 폴백)."""
     month_start = target_date.replace(day=1)
     prev_month_end = month_start - timedelta(days=1)
     prev_month_start = prev_month_end.replace(day=1)
@@ -297,7 +313,7 @@ async def _section_card_spending(target_date: date) -> Dict[str, Any]:
     # 이번달 + 전월 동기 한꺼번에 받음 (30일 제한 안에서)
     span_start = min(prev_month_start, month_start)
     span_end = target_date
-    tickets = await _granter_expense_tickets(span_start, span_end)
+    tickets = await _expense_tickets(db, span_start, span_end)
 
     def _ticket_date(t: Dict[str, Any]) -> Optional[date]:
         d = t.get("transactAt") or t.get("createdAt") or ""
@@ -353,9 +369,9 @@ async def _section_card_spending(target_date: date) -> Dict[str, Any]:
     }
 
 
-async def _section_card_usage(target_date: date) -> Dict[str, Any]:
-    """카드 사용 현황 — 어제 카드 결제 상세."""
-    tickets = await _granter_expense_tickets(target_date, target_date)
+async def _section_card_usage(target_date: date, db: Optional[AsyncSession] = None) -> Dict[str, Any]:
+    """카드 사용 현황 — 어제 카드 결제 상세 (하이픈 원장 우선, 그랜터 폴백)."""
+    tickets = await _expense_tickets(db, target_date, target_date)
 
     def _amt(t: Dict[str, Any]) -> float:
         try:
@@ -638,9 +654,9 @@ async def generate_report_content(
                     target_date, shared_report, day_tickets=_hy_day_tickets, prev_month_balance=_hy_prev_month,
                 )
             elif section_key == "card_spending":
-                result["content"][section_key] = await _section_card_spending(target_date)
+                result["content"][section_key] = await _section_card_spending(target_date, db)
             elif section_key == "card_usage":
-                result["content"][section_key] = await _section_card_usage(target_date)
+                result["content"][section_key] = await _section_card_usage(target_date, db)
         except Exception as e:
             logger.exception(f"섹션 생성 실패: {section_key}")
             result["content"][section_key] = {"error": str(e)[:200]}

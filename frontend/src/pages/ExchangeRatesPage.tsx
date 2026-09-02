@@ -15,7 +15,7 @@ import {
   GlobeAltIcon,
   ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline'
-import api, { granterApi } from '@/services/api'
+import api from '@/services/api'
 import { isoLocal } from '@/utils/format'
 import PeriodPicker from '@/components/common/PeriodPicker'
 import { usePeriodStore } from '@/store/periodStore'
@@ -256,14 +256,12 @@ export default function ExchangeRatesPage() {
   // -------------------------------------------------------------------------
   const today = isoLocal(new Date())
 
+  // 그랜터 API 미사용(해지 예정) — 최신 환율은 Frankfurter 최신 포인트로 대체.
   const granterQuery = useQuery({
     queryKey: ['granter-exchange-rates-latest', today],
-    queryFn: async () => {
-      const resp = await granterApi.getExchangeRates({ baseDate: today })
-      return resp.data as GranterRateItem[]
-    },
+    queryFn: async () => [] as GranterRateItem[],
+    enabled: false,
     staleTime: 5 * 60_000,
-    retry: 1,
   })
 
   // -------------------------------------------------------------------------

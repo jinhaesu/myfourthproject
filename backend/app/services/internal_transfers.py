@@ -85,11 +85,42 @@ class Account:
             self.role = _DEFAULT_ROLE_BY_BANK.get(self.bank, "other")
 
 
+async def _hyphen_has_bank() -> bool:
+    """하이픈 은행 계좌(인증정보)가 있으면 True → 내부거래도 하이픈 원장 사용."""
+    from app.core.database import async_session_factory
+    if async_session_factory is None:
+        return False
+    try:
+        from app.services import hyphen_sync_ext as _hy
+        async with async_session_factory() as db:
+            return await _hy.has_hyphen_bank(db)
+    except Exception:
+        logger.exception("하이픈 은행 존재 확인 실패")
+        return False
+
+
 async def _fetch_accounts(role_overrides: Optional[Dict[str, str]] = None) -> List[Account]:
+    # 하이픈 우선 — 인증정보에서 회사 계좌 목록 구성 (그랜터가 놓친 우리은행 등 포함)
+    if await _hyphen_has_bank():
+        from app.core.database import async_session_factory
+        from app.services import hyphen_sync_ext as _hy
+        accts: List[Account] = []
+        async with async_session_factory() as db:
+            creds = await _hy._hyphen_bank_creds(db)
+        for c in creds:
+            bank = _hy._bank_nm(c.bank_cd)
+            # asset_id는 bank_tickets_as_granter의 assetId와 동일 규칙으로 맞춤(자기계좌 판정용)
+            acc = Account(_hy._synthetic_asset_id(c.acct_no), bank, c.acct_no, c.label or "")
+            if role_overrides and acc.label in role_overrides:
+                acc.role = role_overrides[acc.label]
+            accts.append(acc)
+        if accts:
+            return accts
+
     from app.services.granter_client import get_granter_client
     client = get_granter_client()
     assets = await client.list_all_assets(only_active=False)
-    accts: List[Account] = []
+    accts = []
     for a in (assets.get("BANK_ACCOUNT") or []):
         if not isinstance(a, dict):
             continue
@@ -141,14 +172,24 @@ def _resolve_counterparty(memo: str, accounts: List[Account], my: Optional[Accou
 
 
 async def _fetch_bank_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
-    from app.services.granter_client import get_granter_client
-    client = get_granter_client()
-
     key = f"bank|{start_date}|{end_date}"
     now = _time.time()
     cached = _CACHE.get(key)
     if cached and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
+
+    # 하이픈 우선 — 은행원장을 그랜터 BANK_TRANSACTION_TICKET 셰이프로 정규화
+    if await _hyphen_has_bank():
+        from app.core.database import async_session_factory
+        from app.services import hyphen_sync_ext as _hy
+        async with async_session_factory() as db:
+            items = await _hy.bank_tickets_as_granter(
+                db, start_date=start_date.isoformat(), end_date=end_date.isoformat())
+        _CACHE[key] = (items, now)
+        return items
+
+    from app.services.granter_client import get_granter_client
+    client = get_granter_client()
 
     items: List[Dict[str, Any]] = []
     seen: set = set()
@@ -197,6 +238,30 @@ async def _fetch_period_balance(start_date: date, end_date: date) -> Optional[Di
     cached = _BALANCE_CACHE.get(key)
     if cached and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
+
+    # 하이픈 우선 — 잔액=전 계좌 last_balance 합, 입출금=기간 원장 합계
+    if await _hyphen_has_bank():
+        from app.core.database import async_session_factory
+        from app.services import hyphen_sync_ext as _hy
+        try:
+            async with async_session_factory() as db:
+                rep = await _hy.daily_report_as_granter(
+                    db, start_date=start_date.isoformat(), end_date=end_date.isoformat())
+            if rep is not None:
+                tot = rep.get("total", {})
+                end_bal = float(tot.get("currentBalance") or 0)
+                start_bal = float(tot.get("previousBalance") or 0)
+                result = {
+                    "start_balance": start_bal,
+                    "end_balance": end_bal,
+                    "net_change": end_bal - start_bal,
+                    "inflow": float(tot.get("inAmount") or 0),
+                    "outflow": float(tot.get("outAmount") or 0),
+                }
+                _BALANCE_CACHE[key] = (result, now)
+                return result
+        except Exception:
+            logger.exception("하이픈 기간 잔액 실패 → 그랜터 폴백")
 
     from app.services.granter_client import get_granter_client
     client = get_granter_client()

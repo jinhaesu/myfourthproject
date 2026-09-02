@@ -384,7 +384,7 @@ class HyphenClient:
             "cardCd": card_cd, "loginMethod": login_method, "cardNo": card_no, "bizNo": biz_no,
             "sdate": start_date.replace("-", ""), "edate": end_date.replace("-", ""),
             "useArea": os.getenv("HYPHEN_CARD_USEAREA", "D"),
-            "cardNoFilter": os.getenv("HYPHEN_CARD_NOFILTER", "N"), "orApprYn": "N",
+            "cardNoFilter": os.getenv("HYPHEN_CARD_NOFILTER", "Y"), "orApprYn": "N",
         }
         if login_method.upper() == "CERT":
             self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
@@ -394,6 +394,67 @@ class HyphenClient:
             if user_pw is not None:
                 payload["userPw"] = user_pw
         return await self.call_bank(payload=payload, path=p, gustation=gustation)
+
+    async def card_transactions_debug(
+        self, *, card_cd: str, card_no: str, biz_no: str, start_date: str, end_date: str,
+        sign_cert=None, sign_pri=None, sign_pw=None,
+        user_id=None, user_pw=None, login_method: str = "CERT",
+        gustation: bool = False, path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """하이픈 지원팀 제출용: 카드 승인내역 호출의 요청/응답 원본을 마스킹해 반환(예외 미발생)."""
+        p = path or os.getenv("HYPHEN_CARD_TX_PATH", "/in0007000559")
+        payload: Dict[str, Any] = {
+            "cardCd": card_cd, "loginMethod": login_method, "cardNo": card_no, "bizNo": biz_no,
+            "sdate": start_date.replace("-", ""), "edate": end_date.replace("-", ""),
+            "useArea": os.getenv("HYPHEN_CARD_USEAREA", "D"),
+            "cardNoFilter": os.getenv("HYPHEN_CARD_NOFILTER", "Y"), "orApprYn": "N",
+        }
+        if login_method.upper() == "CERT":
+            self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
+        else:
+            if user_id is not None:
+                payload["userId"] = user_id
+            if user_pw is not None:
+                payload["userPw"] = user_pw
+
+        def _mask(v: str, keep: int = 4) -> str:
+            s = str(v or "")
+            if len(s) <= keep:
+                return "*" * len(s)
+            return s[:keep] + "*" * (len(s) - keep)
+
+        SECRET_KEYS = {"signCert", "signPri", "signPw", "signPwEnc", "userPw", "userPwEnc"}
+        req_masked: Dict[str, Any] = {}
+        for k, v in payload.items():
+            if k in SECRET_KEYS:
+                req_masked[k] = f"<len={len(str(v))} omitted>"
+            elif k in ("cardNo", "bizNo", "userId"):
+                req_masked[k] = _mask(v)
+            else:
+                req_masked[k] = v
+
+        headers = self._bank_headers(gustation)
+        hdr_masked = {
+            "user-id": _mask(headers.get("user-id", "")),
+            "Hkey": _mask(headers.get("Hkey", "")),
+            **({"hyphen-gustation": headers["hyphen-gustation"]} if "hyphen-gustation" in headers else {}),
+        }
+
+        client = self._get_client()
+        result: Dict[str, Any] = {
+            "request": {"method": "POST", "base_url": str(client.base_url), "path": p,
+                        "headers_masked": hdr_masked, "payload_masked": req_masked},
+        }
+        try:
+            resp = await client.post(p, json=payload, headers=headers)
+            try:
+                body: Any = resp.json()
+            except Exception:
+                body = resp.text
+            result["response"] = {"http_status": resp.status_code, "body": body}
+        except Exception as e:  # noqa: BLE001
+            result["response"] = {"error": str(e)}
+        return result
 
     # ============ 은행 API (Hkey 헤더 인증) ============
     # 은행 상품(/in0087xxx)은 OAuth Bearer가 아니라 user-id + Hkey 헤더로 인증.

@@ -162,11 +162,23 @@ async def _build_counterparty_cache(force: bool = False) -> Dict[str, Any]:
             except Exception as h_err:
                 logger.warning(f"hint skip {key!r}: {h_err}")
 
-    # 우리 회사 계좌 (그랜터 BANK_ACCOUNT 자산)
+    # 우리 회사 계좌 — 하이픈 인증정보 우선(그랜터 API 미사용 방향). 라벨+회사명으로 자기이체 판정.
     our_accounts: set = set()
     try:
-        client = get_granter_client()
-        assets = await client.list_all_assets(only_active=False)
+        from app.services import hyphen_sync_ext as _hy
+        if await _hy.has_hyphen_bank(db):
+            for c in await _hy._hyphen_bank_creds(db):
+                if c.label:
+                    our_accounts.add(_normalize_name(c.label))
+    except Exception as e:
+        logger.warning(f"하이픈 our_bank_accounts 조회 실패: {e}")
+    # 그랜터 폴백(하이픈 계좌 없을 때만 — 그랜터 해지 후엔 자연히 no-op)
+    try:
+        if not our_accounts:
+            client = get_granter_client()
+            assets = await client.list_all_assets(only_active=False)
+        else:
+            assets = {}
         for ba in (assets.get("BANK_ACCOUNT") or []):
             for k in ("nickname", "name", "accountHolder", "holderName"):
                 v = ba.get(k) if isinstance(ba, dict) else None
@@ -856,21 +868,45 @@ async def _generate_candidates_core(
     task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """청크 단위로 그랜터 호출 + 진행률 보고. db는 호출자 책임 (commit도)."""
-    client = get_granter_client()
-
     def _report(pct: int, msg: str):
         if task_id:
             _update(task_id, percent=pct, message=msg)
 
-    _report(3, "거래처 마스터 캐시 빌드 중 (wehago 학습 + 그랜터 계좌)…")
+    _report(3, "거래처 마스터 캐시 빌드 중 (wehago 학습 + 하이픈 계좌)…")
     await _build_counterparty_cache(force=False)
 
-    _report(5, f"그랜터에서 거래 수집 중… ({start_date}~{end_date})")
-    tickets = await client.list_tickets_all_types(
-        start_date.isoformat(),
-        end_date.isoformat(),
-        asset_id=asset_id,
-    )
+    _report(5, f"하이픈 원장에서 거래 수집 중… ({start_date}~{end_date})")
+    # 그랜터 API 미사용 — 하이픈 원장(카드·통장·세금계산서)에서 그랜터 셰이프로 정규화 수집.
+    from app.services import hyphen_sync_ext as _hy
+    sd_iso = start_date.isoformat(); ed_iso = end_date.isoformat()
+    if asset_id is not None:
+        logger.info("auto_voucher 하이픈 모드: asset_id=%s 지정됐으나 전사 원장으로 처리(계좌필터 미지원)", asset_id)
+    tickets: Dict[str, list] = {
+        "EXPENSE_TICKET": [], "BANK_TRANSACTION_TICKET": [],
+        "TAX_INVOICE_TICKET": [], "CASH_RECEIPT_TICKET": [],
+    }
+    try:
+        if await _hy.has_hyphen_cards(db):
+            await _hy.ensure_card_coverage(db, start_date=sd_iso, end_date=ed_iso)
+            tickets["EXPENSE_TICKET"] = await _hy.card_tickets_as_expense(db, start_date=sd_iso, end_date=ed_iso)
+    except Exception:
+        logger.exception("하이픈 카드 수집 실패")
+    try:
+        if await _hy.has_hyphen_bank(db):
+            tickets["BANK_TRANSACTION_TICKET"] = await _hy.bank_tickets_as_granter(db, start_date=sd_iso, end_date=ed_iso)
+    except Exception:
+        logger.exception("하이픈 통장 수집 실패")
+    try:
+        await _hy.ensure_tax_coverage(db, start_date=sd_iso, end_date=ed_iso)
+        tickets["TAX_INVOICE_TICKET"] = await _hy.tax_invoices_as_granter(db, start_date=sd_iso, end_date=ed_iso)
+    except Exception:
+        logger.exception("하이픈 세금계산서 수집 실패")
+    # 현금영수증: 하이픈 홈택스 현금영수증(/in0076000274·275) 원장에서 조회(발행 아님).
+    try:
+        await _hy.ensure_cashreceipt_coverage(db, start_date=sd_iso, end_date=ed_iso)
+        tickets["CASH_RECEIPT_TICKET"] = await _hy.cash_receipts_as_granter(db, start_date=sd_iso, end_date=ed_iso)
+    except Exception:
+        logger.exception("하이픈 현금영수증 수집 실패")
     _report(60, "수집 완료. 분개 후보 생성 중…")
 
     # 중복 방지용 기존 source_id → source_type map

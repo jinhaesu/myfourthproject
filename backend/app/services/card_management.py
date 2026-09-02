@@ -160,33 +160,26 @@ _EXPENSE_CACHE: Dict[str, tuple] = {}
 _CACHE_TTL = 300.0
 
 
-async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
+async def _fetch_expense_tickets(db: AsyncSession, start_date: date, end_date: date) -> List[Dict[str, Any]]:
     """
-    EXPENSE_TICKET 단일 타입 — 31일 초과 기간은 자동 분할 조회(list_tickets_single).
-    긴 기간(수개월)도 조회 가능. 5분 cache로 중복 호출 절약.
+    카드 사용내역 — 하이픈 카드원장 단일소스(DB 즉시, 그랜터 미사용).
+    hyphen_card_tx를 그랜터 EXPENSE_TICKET 형태로 정규화. 5분 cache로 중복 조회 절약.
     """
-    key = f"{start_date.isoformat()}~{end_date.isoformat()}"
     now = _time.time()
-    cached = _EXPENSE_CACHE.get(key)
+    from app.services import hyphen_sync_ext as _hy
+    hkey = f"HY|{start_date.isoformat()}~{end_date.isoformat()}"
+    cached = _EXPENSE_CACHE.get(hkey)
     if cached and (now - cached[1]) < _CACHE_TTL:
         return cached[0]
-
-    from app.services.granter_client import get_granter_client
-    client = get_granter_client()
+    # 커버 안 된 구간만 1회 당김 — 이미 본 범위는 외부 API 재호출 없음(DB 즉시)
     try:
-        items = await client.list_tickets_single(
-            "EXPENSE_TICKET", start_date.isoformat(), end_date.isoformat(),
-        )
+        await _hy.ensure_card_coverage(db, start_date=start_date.isoformat(), end_date=end_date.isoformat())
     except Exception:
-        logger.exception(f"그랜터 EXPENSE_TICKET 조회 실패 ({start_date}~{end_date})")
-        items = []
-
-    # 취소/거절 건 제외 — paymentStatus가 정상(NORMAL)이 아닌 카드사용은 실지출이 아님.
-    from app.services.granter_client import filter_normal_card_tickets
-    items = filter_normal_card_tickets(items, f"card_management {start_date}~{end_date}")
-
-    _EXPENSE_CACHE[key] = (items, now)
-    # 5분 지난 캐시 정리
+        logger.exception("카드 커버리지 확보 스킵")
+    items = await _hy.card_tickets_as_expense(
+        db, start_date=start_date.isoformat(), end_date=end_date.isoformat(),
+    )
+    _EXPENSE_CACHE[hkey] = (items, now)
     for k in list(_EXPENSE_CACHE.keys()):
         if now - _EXPENSE_CACHE[k][1] > 300:
             _EXPENSE_CACHE.pop(k, None)
@@ -197,33 +190,24 @@ async def _fetch_expense_tickets(start_date: date, end_date: date) -> List[Dict[
 _ASSET_CACHE: Dict[str, tuple] = {}
 
 
-async def _fetch_active_card_assets() -> List[Dict[str, Any]]:
-    """
-    그랜터 활성 CARD 자산 목록. 거래내역이 없어도 연동만 돼 있으면 카드 목록에 노출.
-    CARD 단일 assetType만 조회(list_all_assets 6종 순차호출보다 가벼움). 5분 캐시.
-    """
-    key = "active_card"
-    now = _time.time()
-    cached = _ASSET_CACHE.get(key)
-    if cached and (now - cached[1]) < _CACHE_TTL:
-        return cached[0]
-
-    from app.services.granter_client import get_granter_client
-    client = get_granter_client()
-    try:
-        r = await client.list_assets({"assetType": "CARD"})
-        items = r if isinstance(r, list) else (r.get("data", []) if isinstance(r, dict) else [])
-        # 활성 + 비휴면 + 비숨김만
-        items = [
-            a for a in items
-            if a.get("isActive", True) and not a.get("isHidden", False)
-            and not a.get("isDormant", False)
-        ]
-    except Exception:
-        logger.exception("그랜터 활성 CARD 자산 조회 실패")
-        items = []
-
-    _ASSET_CACHE[key] = (items, now)
+async def _fetch_active_card_assets(db: Optional[AsyncSession] = None) -> List[Dict[str, Any]]:
+    """등록 법인카드(하이픈 HyphenCardAccount) 목록 — 거래 없어도 노출. 그랜터 미사용.
+    id=_card_key(거래 cardUsage.card.id와 동일 체계)라 dedup됨."""
+    if db is None:
+        return []
+    from app.services import hyphen_sync_ext as _hy
+    from app.models.hyphen_ext import HyphenCardAccount
+    rows = (await db.execute(select(HyphenCardAccount))).scalars().all()
+    items: List[Dict[str, Any]] = []
+    for a in rows:
+        issuer = _hy.CARD_ISSUER_NM.get(a.card_cd, a.card_cd)
+        items.append({
+            "id": _hy._card_key(a.card_cd, a.card_no),
+            "organizationName": issuer,
+            "number": _hy._masked_no(a.card_no),
+            "name": a.label or None,
+            "nickname": a.label or None,
+        })
     return items
 
 
@@ -244,7 +228,15 @@ async def list_cards(
         start_date = end_date - timedelta(days=31)
     # 긴 기간은 _fetch_expense_tickets가 자동 분할 조회
 
-    expense = await _fetch_expense_tickets(start_date, end_date)
+    # 하이픈 소스 전환 시 배정/별칭/분류 키를 뒷4자리로 이관(멱등, 최초 1회만 실제 이동)
+    try:
+        from app.services import hyphen_sync_ext as _hy
+        if await _hy.has_hyphen_cards(db):
+            await _hy.rekey_card_aliases_by_last4(db)
+    except Exception:
+        logger.exception("카드 별칭 키 이관 스킵")
+
+    expense = await _fetch_expense_tickets(db, start_date, end_date)
 
     # 카드별 집계 — _build_card_key로 식별자 추출
     by_card: Dict[str, Dict[str, Any]] = {}
@@ -277,7 +269,7 @@ async def list_cards(
     asset_keys: set = set()
     if not only_assigned_to:
         try:
-            for a in await _fetch_active_card_assets():
+            for a in await _fetch_active_card_assets(db):
                 ak = _build_card_key_from_asset(a)
                 if not ak:
                     continue
@@ -492,14 +484,14 @@ async def migrate_card_keys(
     return report
 
 
-async def _resolve_card_meta(card_key: str) -> Dict[str, Optional[str]]:
+async def _resolve_card_meta(card_key: str, db: Optional[AsyncSession] = None) -> Dict[str, Optional[str]]:
     """
-    card_key(id 문자열 또는 legacy)에 대한 표시 메타(issuer/last4/label) 조회.
-    id 키는 그랜터 활성 CARD 자산에서 매칭해 발급사/뒷4자리/읽기 좋은 라벨을 뽑는다.
+    card_key(하이픈 _card_key 또는 legacy)에 대한 표시 메타(issuer/last4/label) 조회.
+    하이픈 등록 카드에서 매칭해 발급사/뒷4자리/라벨을 뽑는다.
     """
-    if card_key and card_key.isdigit():
+    if card_key and db is not None:
         try:
-            for a in await _fetch_active_card_assets():
+            for a in await _fetch_active_card_assets(db):
                 if str(a.get("id")) == card_key:
                     meta = _meta_from_fields(
                         a.get("organizationName"), a.get("number"),
@@ -528,7 +520,7 @@ async def upsert_alias(
     alias = (await db.execute(
         select(CardAlias).where(CardAlias.card_key == card_key)
     )).scalar_one_or_none()
-    meta = await _resolve_card_meta(card_key)
+    meta = await _resolve_card_meta(card_key, db)
     if alias is None:
         alias = CardAlias(
             card_key=card_key,
@@ -571,7 +563,7 @@ async def assign_card(
         select(CardAlias).where(CardAlias.card_key == card_key)
     )).scalar_one_or_none()
     if alias is None:
-        meta = await _resolve_card_meta(card_key)
+        meta = await _resolve_card_meta(card_key, db)
         alias = CardAlias(
             card_key=card_key,
             nickname=meta.get("label") or card_key,
@@ -614,7 +606,7 @@ async def list_transactions(
     카드 사용내역 건별 목록 + 분류(있으면) 조인.
     그랜터 EXPENSE_TICKET 실시간 조회 기반. 최신순 정렬. 긴 기간 자동 분할.
     """
-    expense = await _fetch_expense_tickets(start_date, end_date)
+    expense = await _fetch_expense_tickets(db, start_date, end_date)
     tickets = [t for t in expense if _build_card_key(t) == card_key]
 
     ticket_ids = [str(t.get("id")) for t in tickets if t.get("id") is not None]
@@ -926,7 +918,7 @@ async def get_card_analysis(
     카드 사용 분석 — 가맹점별/카테고리별 top + 일별 합계.
     그랜터 EXPENSE_TICKET 기반. 긴 기간 자동 분할.
     """
-    expense = await _fetch_expense_tickets(start_date, end_date)
+    expense = await _fetch_expense_tickets(db, start_date, end_date)
 
     # card_key 매칭만
     cards = [t for t in expense if _build_card_key(t) == card_key]
@@ -1018,7 +1010,7 @@ async def get_monthly_summary(
             next_m = m_start.replace(month=m_start.month + 1)
         m_end = min(next_m - timedelta(days=1), today)
 
-        expense = await _fetch_expense_tickets(m_start, m_end)
+        expense = await _fetch_expense_tickets(db, m_start, m_end)
 
         month_total = 0.0
         count = 0
