@@ -733,6 +733,21 @@ function CardPanel() {
             <button onClick={applyBulk} className="btn-secondary">일괄 채우기</button>
           </div>
 
+          {/* 일괄 선택/해제 — 부분 선택 시 indeterminate 표시 */}
+          <div className="flex items-center gap-2 text-2xs border-b border-ink-100 dark:border-ink-800 pb-1">
+            <label className="flex items-center gap-1 cursor-pointer text-ink-600 dark:text-ink-300 font-semibold">
+              <input
+                type="checkbox"
+                checked={discovered.length > 0 && selected.size === discovered.length}
+                ref={(el) => { if (el) el.indeterminate = selected.size > 0 && selected.size < discovered.length }}
+                onChange={(e) => setSelected(e.target.checked ? new Set(discovered.map((c) => c.card_no)) : new Set())}
+                className="w-3.5 h-3.5"
+              />
+              전체 선택/해제
+            </label>
+            <span className="text-ink-400">선택 {selected.size}/{discovered.length}장</span>
+          </div>
+
           <div className="space-y-1">
             {discovered.map((c) => {
               const on = selected.has(c.card_no)
