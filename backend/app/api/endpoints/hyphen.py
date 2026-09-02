@@ -664,6 +664,44 @@ async def hyphen_card_alias_rekey(request: Request, db: AsyncSession = Depends(g
     }}
 
 
+@public_router.get("/cron/card-tx-diag")
+async def hyphen_card_tx_diag(request: Request, last4: str, start_date: str, end_date: str,
+                              db: AsyncSession = Depends(get_db)):
+    """진단: 특정 뒷4 카드의 원장거래(HyphenCardTx) + 파생 카드키를 그대로 반환.
+    직원 화면 미표시 원인(키 불일치 vs 날짜)을 데이터로 확정. X-Cron-Secret 게이트."""
+    import os as _os
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if request.headers.get("x-cron-secret", "") != secret or not secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    from app.models.hyphen_ext import HyphenCardTx, HyphenCardAccount as _HCA
+    import re as _re
+    l4 = _re.sub(r"\D", "", last4)[-4:]
+    sd = start_date.replace("-", ""); ed = end_date.replace("-", "")
+    # 등록 계정 중 해당 뒷4
+    accts = (await db.execute(_select(_HCA))).scalars().all()
+    acct_rows = [{
+        "card_cd": a.card_cd, "card_no_last4": _re.sub(r"\D", "", a.card_no or "")[-4:],
+        "key": ext_svc._card_key(a.card_cd, a.card_no), "label": a.label,
+    } for a in accts if _re.sub(r"\D", "", a.card_no or "")[-4:] == l4]
+    # 원장거래 중 뒷4 일치(거래 card_no=useCard 기준) 또는 파생키 뒷4 일치
+    rows = (await db.execute(_select(HyphenCardTx))).scalars().all()
+    tx = []
+    for t in rows:
+        tno4 = _re.sub(r"\D", "", t.card_no or "")[-4:]
+        key = ext_svc._card_key(t.card_cd, t.card_no)
+        if tno4 != l4 and key[-4:] != l4:
+            continue
+        d = (t.use_dt or "").replace("-", "")
+        in_range = bool(d) and sd <= d <= ed
+        tx.append({"use_dt": t.use_dt, "use_store": t.use_store, "use_amt": float(t.use_amt or 0),
+                   "card_cd": t.card_cd, "tx_card_no_last4": tno4, "derived_key": key, "in_range": in_range})
+    tx.sort(key=lambda x: x["use_dt"] or "")
+    return {"last4": l4, "accounts": acct_rows,
+            "tx_total": len(tx), "tx_in_range": sum(1 for x in tx if x["in_range"]),
+            "distinct_keys": sorted({x["derived_key"] for x in tx}),
+            "tx": tx[-60:]}
+
+
 @public_router.get("/cron/debug-accounts")
 async def hyphen_debug_accounts(request: Request, db: AsyncSession = Depends(get_db)):
     """진단: 등록된 하이픈 은행 credential + merge된 BANK_ACCOUNT 목록 요약. X-Cron-Secret 게이트."""
