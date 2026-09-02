@@ -702,6 +702,40 @@ async def hyphen_card_tx_diag(request: Request, last4: str, start_date: str, end
             "tx": tx[-60:]}
 
 
+@public_router.get("/cron/card-recover-scan")
+async def hyphen_card_recover_scan(request: Request, db: AsyncSession = Depends(get_db)):
+    """복구 스캔: 원장거래(HyphenCardTx)에 저장된 카드번호가 전체자리인지 마스킹인지 판별.
+    삭제된 카드 계정을 거래에서 재구성할 수 있는지 확인용. 번호는 마스킹 반환. X-Cron-Secret."""
+    import os as _os, re as _re
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if request.headers.get("x-cron-secret", "") != secret or not secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    from app.models.hyphen_ext import HyphenCardTx, HyphenCardAccount as _HCA
+    rows = (await db.execute(_select(HyphenCardTx))).scalars().all()
+    # (card_cd, 정규화 카드번호) 단위 집계
+    byno: Dict[tuple, Dict[str, Any]] = {}
+    for t in rows:
+        raw = t.card_no or ""
+        digits = _re.sub(r"\D", "", raw)
+        has_mask = ("*" in raw) or ("x" in raw.lower())
+        k = (t.card_cd, digits)
+        e = byno.setdefault(k, {"card_cd": t.card_cd, "digits_len": len(digits),
+                                "last4": digits[-4:], "has_mask_char": has_mask, "count": 0,
+                                "sample_masked": (digits[:6] + "*" * max(0, len(digits) - 10) + digits[-4:]) if len(digits) >= 10 else "*" * len(digits)})
+        e["count"] += 1
+    accts = (await db.execute(_select(_HCA))).scalars().all()
+    cur = [{"card_cd": a.card_cd, "last4": _re.sub(r"\D", "", a.card_no or "")[-4:],
+            "digits_len": len(_re.sub(r"\D", "", a.card_no or ""))} for a in accts]
+    vals = list(byno.values())
+    # 전체자리(15~16)로 판정되는 것만 복구 후보
+    recoverable = [v for v in vals if v["digits_len"] in (15, 16) and not v["has_mask_char"]]
+    return {"ledger_distinct_cards": len(vals),
+            "full_number_cards": len(recoverable),
+            "masked_cards": len([v for v in vals if v not in recoverable]),
+            "currently_registered": len(cur), "registered": cur,
+            "ledger_cards": sorted(vals, key=lambda x: (x["card_cd"], x["last4"]))}
+
+
 @public_router.get("/cron/debug-accounts")
 async def hyphen_debug_accounts(request: Request, db: AsyncSession = Depends(get_db)):
     """진단: 등록된 하이픈 은행 credential + merge된 BANK_ACCOUNT 목록 요약. X-Cron-Secret 게이트."""

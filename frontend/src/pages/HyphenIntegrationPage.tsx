@@ -577,7 +577,7 @@ function CardPanel() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [fullNos, setFullNos] = useState<Record<string, string>>({})
   const [bulkText, setBulkText] = useState('')
-  const [replaceExisting, setReplaceExisting] = useState(true)
+  const [replaceExisting, setReplaceExisting] = useState(false)
   const cardsQ = useQuery({ queryKey: ['hyphen-cards'], queryFn: () => hyphenApi.listCards().then((r) => r.data.cards), retry: false })
   const txQ = useQuery({
     queryKey: ['hyphen-card-tx', range.from, range.to],
@@ -612,8 +612,14 @@ function CardPanel() {
       if (bad.length) {
         throw new Error(`카드번호 15~16자리를 입력하세요 (${bad.map((c) => c.card_nm || c.card_no.slice(-4)).join(', ')})`)
       }
-      // 재등록: 같은 카드사 기존 등록분을 먼저 정리(12자리 잔재 제거) 후 새로 등록
+      // 재등록: 같은 카드사 기존 등록분을 먼저 정리(12자리 잔재 제거) 후 새로 등록.
+      // ⚠ 위험: 해당 카드사 전체 삭제이므로 명시적 확인 후에만 실행(카드 추가 시 기존분 유실 방지).
       if (replaceExisting) {
+        const ok = window.confirm(
+          `[주의] ${cardName(form.card_cd)} 기존 등록분을 모두 삭제하고 선택한 ${chosen.length}장으로 교체합니다.\n` +
+          `기존 카드가 사라집니다. 정말 교체할까요? (추가만 하려면 취소하세요)`
+        )
+        if (!ok) throw new Error('교체 취소됨 — 기존 카드를 지우지 않았습니다')
         await hyphenApi.deleteAllCards(form.card_cd)
       }
       await Promise.all(chosen.map((c) => hyphenApi.registerCard({
@@ -779,9 +785,9 @@ function CardPanel() {
             <button onClick={() => regMut.mutate()} disabled={selected.size === 0 || regMut.isPending} className="btn-primary">
               {regMut.isPending ? '등록 중…' : `선택 ${selected.size}장 등록`}
             </button>
-            <label className="flex items-center gap-1 text-2xs text-ink-500 dark:text-ink-400 cursor-pointer">
+            <label className="flex items-center gap-1 text-2xs text-rose-500 dark:text-rose-400 cursor-pointer">
               <input type="checkbox" checked={replaceExisting} onChange={(e) => setReplaceExisting(e.target.checked)} className="w-3 h-3" />
-              {cardName(form.card_cd)} 기존 등록분 지우고 교체
+              ⚠ {cardName(form.card_cd)} 기존 전체 삭제 후 교체 (추가만 하려면 체크 해제)
             </label>
           </div>
         </div>
