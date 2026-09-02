@@ -338,7 +338,9 @@ async def ensure_card_coverage(db: AsyncSession, *, start_date: str, end_date: s
             await db.commit()
     async def _sync(db_, *, start_date, end_date):
         await sync_cards(db_, start_date=start_date, end_date=end_date)
-    return await ensure_coverage(db, "card", "ALL", start_date, end_date, _sync)
+    # recent_days=10: 카드 매입 정산지연으로 늦게 확정되는 최근 10일은 커버돼 있어도 재싱크
+    # (throttle 6h → 조회가 잦아도 최근 재싱크는 6시간당 1회로 비용 제한)
+    return await ensure_coverage(db, "card", "ALL", start_date, end_date, _sync, recent_days=10)
 
 
 async def ensure_tax_coverage(db: AsyncSession, *, start_date: str, end_date: str) -> Dict[str, Any]:

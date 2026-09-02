@@ -64,11 +64,19 @@ def _shift(ymd: str, days: int) -> str:
 _ENSURE_MAX_GAP_DAYS = int(__import__("os").getenv("HYPHEN_ENSURE_MAX_GAP", "120"))
 
 
-async def ensure_coverage(db: AsyncSession, kind: str, ckey: str, start_date: str, end_date: str, sync_fn) -> Dict[str, Any]:
+async def ensure_coverage(db: AsyncSession, kind: str, ckey: str, start_date: str, end_date: str, sync_fn,
+                          *, recent_days: int = 0, recent_throttle_hours: float = 6.0) -> Dict[str, Any]:
     """요청 [start,end]에서 **커버 안 된 좌/우 구간만** sync_fn(db,start_date=,end_date=)로 1회 당김.
     이미 전부 커버된 범위면 API 호출 0(=한 번 조회한 범위는 재조회 시 외부호출 없음).
-    sync_fn은 내부에서 record_coverage로 커버리지를 확장해야 함. gap이 너무 크면(초기 대량) 스킵."""
-    cov = await get_coverage(db, kind, ckey)
+    sync_fn은 내부에서 record_coverage로 커버리지를 확장해야 함. gap이 너무 크면(초기 대량) 스킵.
+
+    recent_days>0: 카드처럼 매입 정산지연으로 거래가 늦게 들어오는 경우, **커버돼 있어도**
+    최근 recent_days일 구간을 재싱크(늦게 확정된 건 반영). 단 이 (kind,ckey)의 마지막 싱크가
+    recent_throttle_hours 이내면 스킵 → 조회 폭주 시에도 최근 재싱크는 그 시간당 1회로 제한."""
+    from app.models.hyphen_ext import HyphenSyncCoverage
+    row = (await db.execute(select(HyphenSyncCoverage).where(
+        HyphenSyncCoverage.kind == kind, HyphenSyncCoverage.ckey == ckey))).scalars().first()
+    cov = (row.start_date, row.end_date) if row else None
     sd = start_date.replace("-", ""); ed = end_date.replace("-", "")
     if ed < sd:
         return {"synced": [], "covered": True}
@@ -85,6 +93,18 @@ async def ensure_coverage(db: AsyncSession, kind: str, ckey: str, start_date: st
             g_start = max(sd, _shift(ce, 1))
             if g_start <= ed:
                 gaps.append((g_start, ed))
+    # 최근구간 재싱크 (정산지연 대비) — 커버돼 있어도 최근 N일은 다시 당김, throttle로 비용 제한
+    if recent_days > 0:
+        from datetime import date as _date, timedelta as _td
+        today = _date.today()
+        rs = max(sd, (today - _td(days=recent_days)).strftime("%Y%m%d"))
+        re_ = min(ed, today.strftime("%Y%m%d"))
+        if rs <= re_:
+            last = row.synced_at if row else None
+            fresh = last is not None and (datetime.utcnow() - last) < _td(hours=recent_throttle_hours)
+            already = any(g[0] <= rs and re_ <= g[1] for g in gaps)
+            if not fresh and not already:
+                gaps.append((rs, re_))
     synced = []
     for gsd, ged in gaps:
         span_days = (datetime.strptime(ged, "%Y%m%d") - datetime.strptime(gsd, "%Y%m%d")).days + 1
