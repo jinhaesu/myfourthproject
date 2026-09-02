@@ -1256,7 +1256,7 @@ export const cardsApi = {
       params: { card_key, start_date, end_date }, timeout: 180_000,
     }),
   accounts: (q?: string) =>
-    api.get<{ accounts: { code: string; name: string }[] }>('/cards/accounts', { params: { q } }),
+    api.get<{ accounts: { code: string; name: string; category?: string; group?: string }[] }>('/cards/accounts', { params: { q } }),
   classify: (data: {
     ticket_id: string; card_key: string; category: string
     account_code?: string; account_name?: string; memo?: string

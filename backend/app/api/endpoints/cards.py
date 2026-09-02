@@ -71,16 +71,31 @@ async def list_accounts_for_classify(
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """카드 사용 분류용 원장 계정과목 목록 (코드+명) — 직원도 접근 가능."""
+    """카드 사용 분류용 원장 계정과목 목록 (코드+명+그룹) — 직원도 접근 가능.
+    group: 자산 카테고리→'자산성', 비용 카테고리→'판매관리비', 그외→'기타'.
+    프론트에서 자산성/판매관리비 2개 리스트로 나눠 선택하도록 사용."""
     from sqlalchemy import select as _select
-    from app.models.accounting import Account
-    stmt = _select(Account).where(Account.is_active == True)  # noqa: E712
+    from app.models.accounting import Account, AccountCategory
+    stmt = (_select(Account, AccountCategory)
+            .join(AccountCategory, Account.category_id == AccountCategory.id)
+            .where(Account.is_active == True))  # noqa: E712
     if q:
         like = f"%{q}%"
         stmt = stmt.where(Account.code.ilike(like) | Account.name.ilike(like))
     stmt = stmt.order_by(Account.code)
-    rows = (await db.execute(stmt)).scalars().all()
-    return {"accounts": [{"code": a.code, "name": a.name} for a in rows]}
+    rows = (await db.execute(stmt)).all()
+
+    def _group(cat_name: str) -> str:
+        if cat_name == "자산":
+            return "자산성"
+        if cat_name == "비용":
+            return "판매관리비"
+        return "기타"
+
+    return {"accounts": [
+        {"code": a.code, "name": a.name, "category": c.name, "group": _group(c.name)}
+        for a, c in rows
+    ]}
 
 
 @router.get("/list")

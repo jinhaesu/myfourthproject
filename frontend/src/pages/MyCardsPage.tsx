@@ -43,6 +43,8 @@ export default function MyCardsPage() {
   const [activeRow, setActiveRow] = useState<string | null>(null)
   const [acctOpen, setAcctOpen] = useState<string | null>(null)  // 행별 계정검색 열림
   const [acctSearch, setAcctSearch] = useState('')
+  // 계정 그룹 탭 — 카드지출은 판매관리비가 기본, 자산성(비품·선급 등)은 별도 탭
+  const [acctGroup, setAcctGroup] = useState<'판매관리비' | '자산성'>('판매관리비')
   // 일괄적용 툴바
   const [bulkAcct, setBulkAcct] = useState<{ code: string; name: string } | null>(null)
   const [bulkAcctOpen, setBulkAcctOpen] = useState(false)
@@ -150,8 +152,14 @@ export default function MyCardsPage() {
   const toggleSel = (tid: string) => setSelected((s) => { const n = new Set(s); n.has(tid) ? n.delete(tid) : n.add(tid); return n })
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(rowIds))
 
-  const filterAccts = (q: string) =>
-    accounts.filter((a) => a.code.includes(q.trim()) || a.name.includes(q.trim())).slice(0, 40)
+  // 검색어 없으면 선택된 그룹(판매관리비/자산성)만 표시, 검색어 있으면 전 계정에서 검색.
+  const filterAccts = (q: string) => {
+    const query = q.trim()
+    let list = accounts
+    if (!query) list = list.filter((a) => (a.group || '기타') === acctGroup)
+    return list.filter((a) => a.code.includes(query) || a.name.includes(query)).slice(0, 60)
+  }
+  const groupCount = (g: string) => accounts.filter((a) => (a.group || '기타') === g).length
 
   const applyBulk = () => {
     if (!selected.size) { toast('먼저 왼쪽 체크박스로 행을 선택하세요'); return }
@@ -387,8 +395,16 @@ export default function MyCardsPage() {
                     </button>
                     {bulkAcctOpen && (
                       <div className="absolute z-30 mt-0.5 w-60 bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 rounded-md shadow-lg">
+                        <div className="flex border-b border-ink-100 dark:border-ink-800">
+                          {(['판매관리비', '자산성'] as const).map((g) => (
+                            <button key={g} onClick={() => setAcctGroup(g)}
+                              className={`flex-1 px-2 py-1 text-2xs font-medium ${acctGroup === g ? 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-b-2 border-blue-400' : 'text-ink-400 hover:text-ink-600'}`}>
+                              {g} {!bulkAcctSearch.trim() && `(${groupCount(g)})`}
+                            </button>
+                          ))}
+                        </div>
                         <input autoFocus value={bulkAcctSearch} onChange={(e) => setBulkAcctSearch(e.target.value)}
-                          placeholder="계정 코드/명 검색"
+                          placeholder="계정 코드/명 검색 (전체에서)"
                           className="w-full px-2 py-1 text-xs border-b border-ink-100 dark:border-ink-800 bg-transparent focus:outline-none" />
                         <div className="max-h-44 overflow-y-auto divide-y divide-ink-50 dark:divide-ink-800">
                           {filterAccts(bulkAcctSearch).map((a) => (
@@ -498,11 +514,19 @@ export default function MyCardsPage() {
                                   onClick={(e) => e.stopPropagation()}
                                   onChange={(e) => setAcctSearch(e.target.value)}
                                   onKeyDown={(e) => { if (e.key === 'Escape') { setAcctOpen(null); setAcctSearch('') } }}
-                                  onBlur={() => setTimeout(() => setAcctOpen((cur) => (cur === tid ? null : cur)), 150)}
-                                  placeholder="계정 코드/명 검색"
+                                  onBlur={() => setTimeout(() => setAcctOpen((cur) => (cur === tid ? null : cur)), 200)}
+                                  placeholder="계정 검색 (전체)"
                                   className="w-40 px-1.5 py-0.5 text-xs rounded border border-blue-300 dark:border-blue-700 bg-white dark:bg-ink-900 focus:outline-none" />
-                                {acctSearch.trim() && (
-                                  <div className="absolute z-30 mt-0.5 w-56 max-h-52 overflow-y-auto bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 rounded-md shadow-lg divide-y divide-ink-50 dark:divide-ink-800">
+                                <div className="absolute z-30 mt-0.5 w-56 bg-white dark:bg-ink-900 border border-ink-200 dark:border-ink-800 rounded-md shadow-lg">
+                                  <div className="flex border-b border-ink-100 dark:border-ink-800">
+                                    {(['판매관리비', '자산성'] as const).map((g) => (
+                                      <button key={g} onMouseDown={(e) => { e.preventDefault(); setAcctGroup(g) }}
+                                        className={`flex-1 px-2 py-1 text-2xs font-medium ${acctGroup === g ? 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-b-2 border-blue-400' : 'text-ink-400 hover:text-ink-600'}`}>
+                                        {g} {!acctSearch.trim() && `(${groupCount(g)})`}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <div className="max-h-52 overflow-y-auto divide-y divide-ink-50 dark:divide-ink-800">
                                     {filterAccts(acctSearch).map((a) => (
                                       <button key={a.code}
                                         onMouseDown={() => { setRow(tid, { account_code: a.code, account_name: a.name }); setAcctOpen(null); setAcctSearch('') }}
@@ -511,9 +535,9 @@ export default function MyCardsPage() {
                                         <span className="text-ink-800 dark:text-ink-100 truncate">{a.name}</span>
                                       </button>
                                     ))}
-                                    {filterAccts(acctSearch).length === 0 && <div className="px-2 py-1.5 text-2xs text-ink-400">검색 결과 없음</div>}
+                                    {filterAccts(acctSearch).length === 0 && <div className="px-2 py-1.5 text-2xs text-ink-400">계정 없음</div>}
                                   </div>
-                                )}
+                                </div>
                               </div>
                             ) : (
                               <button onClick={(e) => { e.stopPropagation(); setActiveRow(tid); setAcctOpen(tid); setAcctSearch('') }}
