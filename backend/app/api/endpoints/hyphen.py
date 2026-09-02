@@ -637,6 +637,33 @@ async def hyphen_refresh_balances(request: Request, db: AsyncSession = Depends(g
     return await ext_svc.refresh_account_balances(db)
 
 
+@public_router.get("/cron/card-alias-diag")
+async def hyphen_card_alias_diag(request: Request, db: AsyncSession = Depends(get_db)):
+    """진단: 카드 별칭↔하이픈 카드 매칭 상태(읽기 전용). X-Cron-Secret 게이트."""
+    import os as _os
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if request.headers.get("x-cron-secret", "") != secret or not secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return await ext_svc.diagnose_card_aliases(db)
+
+
+@public_router.post("/cron/card-alias-rekey")
+async def hyphen_card_alias_rekey(request: Request, db: AsyncSession = Depends(get_db)):
+    """카드 별칭·배정·분류·월마감 키를 하이픈 카드키로 이관(멱등). X-Cron-Secret 게이트.
+    실행 후 이관 건수 + 잔여 미매칭 진단을 함께 반환."""
+    import os as _os
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if request.headers.get("x-cron-secret", "") != secret or not secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    moved = await ext_svc.rekey_card_aliases_by_last4(db)
+    diag = await ext_svc.diagnose_card_aliases(db)
+    return {"moved": moved, "after": {
+        "already_hyphen": diag["already_hyphen"], "will_move": diag["will_move"],
+        "unmatched": diag["unmatched"],
+        "unmatched_aliases": [r for r in diag["aliases"] if r["status"] == "UNMATCHED"],
+    }}
+
+
 @public_router.get("/cron/debug-accounts")
 async def hyphen_debug_accounts(request: Request, db: AsyncSession = Depends(get_db)):
     """진단: 등록된 하이픈 은행 credential + merge된 BANK_ACCOUNT 목록 요약. X-Cron-Secret 게이트."""

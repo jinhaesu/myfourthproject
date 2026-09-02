@@ -822,44 +822,166 @@ async def daily_report_as_granter(db: AsyncSession, *, start_date: str, end_date
     }
 
 
-async def rekey_card_aliases_by_last4(db: AsyncSession) -> int:
-    """그랜터 card.id 기반 CardAlias/분류/월마감 키를 하이픈 카드키(HY-cd-last4)로 이관.
-    뒷4자리 매칭. 멱등(이미 하이픈키면 스킵). 배정·별칭을 소스 전환에도 보존."""
-    from app.models.card_alias import CardAlias
-    from app.models.card_classification import CardUsageClassification, CardMonthlyClosing
-    accts = (await db.execute(select(HyphenCardAccount))).scalars().all()
-    # 뒷4 → 하이픈키 (충돌 시 이관 스킵)
+# 카드사명(그랜터 issuer/라벨) → 하이픈 카드사코드. 뒷4 충돌을 카드사로 분리.
+_ISSUER_CD_TOKENS = {
+    "001": ("신한",), "002": ("현대",), "003": ("삼성",),
+    "004": ("국민", "kb", "케이비"), "005": ("롯데",), "006": ("하나",),
+    "007": ("우리",), "008": ("농협", "nh"), "009": ("씨티", "citi"),
+    "010": ("bc", "비씨"), "011": ("수협",), "012": ("광주",),
+    "013": ("전북",), "014": ("제주",),
+}
+
+
+def _issuer_to_card_cd(name: Optional[str]) -> Optional[str]:
+    """카드사명 문자열 → 카드사코드(001~014). 매칭 실패 시 None."""
+    s = (name or "").strip().lower()
+    if not s:
+        return None
+    for cd, toks in _ISSUER_CD_TOKENS.items():
+        for tk in toks:
+            if tk in s:
+                return cd
+    return None
+
+
+def _alias_last4(al) -> str:
+    """별칭의 뒷4 — last4 컬럼 우선, 없으면 옛 card_key 문자열 말미의 4자리."""
+    d = re.sub(r"\D", "", al.last4 or "")
+    if len(d) >= 4:
+        return d[-4:]
+    m = re.search(r"(\d{4})\D*$", al.card_key or "")
+    return m.group(1) if m else ""
+
+
+def _alias_email_list(al) -> List[str]:
+    import json as _json
+    raw = getattr(al, "assigned_emails", None)
+    if raw:
+        try:
+            v = _json.loads(raw)
+            if isinstance(v, list):
+                return [str(e).strip().lower() for e in v if e and str(e).strip()]
+        except (ValueError, TypeError):
+            pass
+    if al.assigned_email:
+        return [al.assigned_email.strip().lower()]
+    return []
+
+
+def _resolve_alias_to_new_key(al, by_cd_last4, by_last4) -> Optional[str]:
+    """별칭 → 하이픈 카드키 후보. (카드사+뒷4) 우선, 실패 시 뒷4 단독(유일할 때)."""
+    l4 = _alias_last4(al)
+    if not l4:
+        return None
+    cd = _issuer_to_card_cd(al.issuer) or _issuer_to_card_cd(al.nickname)
+    if cd:
+        c = by_cd_last4.get((cd, l4))
+        if c and len(c) == 1:
+            return c[0]
+    c = by_last4.get(l4)
+    if c and len(c) == 1:
+        return c[0]
+    return None
+
+
+def _build_hyphen_key_maps(accts):
+    by_cd_last4: Dict[tuple, List[str]] = {}
     by_last4: Dict[str, List[str]] = {}
+    new_keys: set = set()
     for a in accts:
         d = re.sub(r"\D", "", a.card_no or "")
-        by_last4.setdefault(d[-4:], []).append(_card_key(a.card_cd, a.card_no))
-    valid_new = {v[0] for v in by_last4.values() if len(v) == 1}
-    moved = 0
+        l4 = d[-4:]
+        key = _card_key(a.card_cd, a.card_no)
+        new_keys.add(key)
+        by_cd_last4.setdefault((a.card_cd, l4), []).append(key)
+        by_last4.setdefault(l4, []).append(key)
+    return new_keys, by_cd_last4, by_last4
+
+
+async def rekey_card_aliases_by_last4(db: AsyncSession) -> int:
+    """그랜터 card.id 기반 CardAlias/분류/월마감 키를 하이픈 카드키(HY-cd-last4)로 이관.
+    (카드사+뒷4) 매칭으로 충돌 해소. 멱등(이미 하이픈키면 스킵). 배정·별칭을 소스 전환에도 보존.
+    대상 하이픈키에 빈 별칭이 있으면 배정/이름을 병합해 유실 방지."""
+    from app.models.card_alias import CardAlias
+    from app.models.card_classification import CardUsageClassification, CardMonthlyClosing
+    import json as _json
+    accts = (await db.execute(select(HyphenCardAccount))).scalars().all()
+    new_keys, by_cd_last4, by_last4 = _build_hyphen_key_maps(accts)
     aliases = (await db.execute(select(CardAlias))).scalars().all()
+    by_key = {al.card_key: al for al in aliases}
+    moved = 0
+
+    async def _move_rows(old_key: str, new_key: str):
+        for M in (CardUsageClassification, CardMonthlyClosing):
+            for r in (await db.execute(select(M).where(M.card_key == old_key))).scalars().all():
+                r.card_key = new_key
+
     for al in aliases:
-        if al.card_key in valid_new:
+        if al.card_key in new_keys:
             continue  # 이미 하이픈키
-        l4 = (al.last4 or "")[-4:]
-        cand = by_last4.get(l4)
-        if not cand or len(cand) != 1:
+        new_key = _resolve_alias_to_new_key(al, by_cd_last4, by_last4)
+        if not new_key or new_key == al.card_key:
             continue
-        new_key = cand[0]
-        if new_key == al.card_key:
-            continue
-        # 대상 하이픈키에 이미 alias가 있으면 스킵(중복 unique 충돌 방지)
-        exists = (await db.execute(select(CardAlias.id).where(CardAlias.card_key == new_key))).first()
-        if exists:
+        target = by_key.get(new_key)
+        if target is not None and target is not al:
+            # 충돌 — 대상에 배정/이름이 없으면 옛 별칭 값을 병합, 그 후 옛 별칭 제거.
+            if not _alias_email_list(target):
+                em = _alias_email_list(al)
+                target.assigned_emails = _json.dumps(em) if em else None
+                target.assigned_email = em[0] if em else None
+            if al.nickname and (not target.nickname or target.nickname in (target.card_key, target.issuer or "")):
+                target.nickname = al.nickname
+            for f in ("color", "memo", "issuer", "last4"):
+                if getattr(al, f) and not getattr(target, f):
+                    setattr(target, f, getattr(al, f))
+            await _move_rows(al.card_key, new_key)
+            await db.delete(al)
+            by_key.pop(al.card_key, None)
+            moved += 1
             continue
         old = al.card_key
         al.card_key = new_key
-        # 분류·월마감도 함께 이관(카드 단위 키)
-        for M in (CardUsageClassification, CardMonthlyClosing):
-            for r in (await db.execute(select(M).where(M.card_key == old))).scalars().all():
-                r.card_key = new_key
+        by_key.pop(old, None)
+        by_key[new_key] = al
+        await _move_rows(old, new_key)
         moved += 1
     if moved:
         await db.commit()
     return moved
+
+
+async def diagnose_card_aliases(db: AsyncSession) -> Dict[str, Any]:
+    """카드 별칭↔하이픈 카드 매칭 진단(읽기 전용). 배포 후 이관 결과 확인용."""
+    from app.models.card_alias import CardAlias
+    accts = (await db.execute(select(HyphenCardAccount))).scalars().all()
+    new_keys, by_cd_last4, by_last4 = _build_hyphen_key_maps(accts)
+    hyphen_cards = [{
+        "card_cd": a.card_cd, "issuer": CARD_ISSUER_NM.get(a.card_cd, a.card_cd),
+        "last4": re.sub(r"\D", "", a.card_no or "")[-4:], "key": _card_key(a.card_cd, a.card_no),
+        "label": a.label,
+    } for a in accts]
+    aliases = (await db.execute(select(CardAlias))).scalars().all()
+    rows, matched, orphaned = [], 0, 0
+    for al in aliases:
+        is_hy = al.card_key in new_keys
+        cand = None if is_hy else _resolve_alias_to_new_key(al, by_cd_last4, by_last4)
+        status = "already_hyphen" if is_hy else ("will_move" if cand else "UNMATCHED")
+        if is_hy:
+            matched += 1
+        elif not cand:
+            orphaned += 1
+        rows.append({
+            "card_key": al.card_key, "nickname": al.nickname, "issuer": al.issuer,
+            "last4": al.last4, "derived_last4": _alias_last4(al),
+            "issuer_cd": _issuer_to_card_cd(al.issuer),
+            "assigned": _alias_email_list(al), "status": status, "target_key": cand,
+        })
+    return {
+        "hyphen_cards_count": len(hyphen_cards), "hyphen_cards": hyphen_cards,
+        "aliases_count": len(rows), "already_hyphen": matched,
+        "will_move": sum(1 for r in rows if r["status"] == "will_move"),
+        "unmatched": orphaned, "aliases": rows,
+    }
 
 
 async def read_card_tx(db: AsyncSession, *, start_date: str, end_date: str) -> Dict[str, Any]:
