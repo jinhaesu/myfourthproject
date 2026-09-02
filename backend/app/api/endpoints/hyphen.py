@@ -769,7 +769,8 @@ async def hyphen_cards_bulk_register(request: Request, body: BulkCardBody, db: A
     skipped = []
     for it in body.cards:
         no = _re.sub(r"\D", "", it.card_no or "")
-        if len(no) != 16:
+        # 15~16자리 허용 (일반 법인카드 16자리, 고위드 BC카드 15자리)
+        if len(no) not in (15, 16):
             skipped.append({"card_no": it.card_no, "reason": f"digits={len(no)}"})
             continue
         items.append((it.card_cd, no, it.label, it.login_method))

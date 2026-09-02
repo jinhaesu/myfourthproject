@@ -481,6 +481,8 @@ const CARD_CODES: { cd: string; name: string }[] = [
   { cd: '013', name: '전북카드' }, { cd: '014', name: '제주카드' },
 ]
 const cardName = (cd: string) => CARD_CODES.find((c) => c.cd === cd)?.name || cd
+// 카드번호 유효 길이 — 일반 법인카드 16자리, 고위드 BC카드 15자리
+const CARD_LEN_OK = (n: number) => n === 15 || n === 16
 
 function last3mRange() {
   const to = new Date(); const from = new Date(); from.setMonth(to.getMonth() - 3)
@@ -595,7 +597,7 @@ function CardPanel() {
       // 조회번호가 이미 16자리면 그대로, 아니면(마스킹 12자리) 빈칸으로 시작 → 사장님이 실제 16자리 입력
       setFullNos(Object.fromEntries(cs.map((c) => {
         const digits = (c.card_no || '').replace(/\D/g, '')
-        return [c.card_no, digits.length === 16 ? digits : '']
+        return [c.card_no, CARD_LEN_OK(digits.length) ? digits : '']
       })))
       setBulkText('')
       if (!cs.length) toast('보유카드가 조회되지 않았습니다.', { icon: '⚠️' })
@@ -606,9 +608,9 @@ function CardPanel() {
     mutationFn: async () => {
       const chosen = discovered.filter((c) => selected.has(c.card_no))
       if (!chosen.length) throw new Error('등록할 카드를 선택하세요')
-      const bad = chosen.filter((c) => (fullNos[c.card_no] || '').replace(/\D/g, '').length !== 16)
+      const bad = chosen.filter((c) => !CARD_LEN_OK((fullNos[c.card_no] || '').replace(/\D/g, '').length))
       if (bad.length) {
-        throw new Error(`카드번호 16자리를 입력하세요 (${bad.map((c) => c.card_nm || c.card_no.slice(-4)).join(', ')})`)
+        throw new Error(`카드번호 15~16자리를 입력하세요 (${bad.map((c) => c.card_nm || c.card_no.slice(-4)).join(', ')})`)
       }
       // 재등록: 같은 카드사 기존 등록분을 먼저 정리(12자리 잔재 제거) 후 새로 등록
       if (replaceExisting) {
@@ -637,10 +639,10 @@ function CardPanel() {
   })
   // 일괄 입력: 여러 줄(또는 공백/콤마 구분)로 붙여넣은 16자리들을 조회표기 뒷4자리로 자동 매칭, 나머지는 순서대로 채움
   const applyBulk = () => {
-    const nums = (bulkText.match(/\d[\d\s-]{13,}\d/g) || [])
+    const nums = (bulkText.match(/\d[\d\s-]{12,}\d/g) || [])
       .map((s) => s.replace(/\D/g, ''))
-      .filter((s) => s.length === 16)
-    if (!nums.length) { toast.error('16자리 숫자를 인식하지 못했습니다'); return }
+      .filter((s) => CARD_LEN_OK(s.length))
+    if (!nums.length) { toast.error('15~16자리 숫자를 인식하지 못했습니다'); return }
     const next: Record<string, string> = { ...fullNos }
     const pick = new Set(selected)
     const used = new Set<string>()
@@ -654,12 +656,12 @@ function CardPanel() {
     const rest = nums.filter((n) => !used.has(n))
     let ri = 0
     for (const c of discovered) {
-      if ((next[c.card_no] || '').length === 16) continue
+      if (CARD_LEN_OK((next[c.card_no] || '').length)) continue
       if (ri < rest.length) { next[c.card_no] = rest[ri++]; pick.add(c.card_no) }
     }
     setFullNos(next)
     setSelected(pick)
-    const filled = discovered.filter((c) => (next[c.card_no] || '').length === 16).length
+    const filled = discovered.filter((c) => CARD_LEN_OK((next[c.card_no] || '').length)).length
     toast.success(`${filled}/${discovered.length}장 채움 (인식 ${nums.length}건)`)
   }
   const syncMut = useMutation({
@@ -712,8 +714,8 @@ function CardPanel() {
       {discovered.length > 0 && (
         <div className="mb-2 space-y-1.5 rounded-md border border-ink-200 dark:border-ink-800 p-2">
           <div className="text-2xs text-ink-500 dark:text-ink-400">
-            {cardName(form.card_cd)} 보유카드 {discovered.length}장 · 승인내역 조회는 <b>카드번호 16자리 전체</b>가 필요합니다.
-            카드사 조회는 일부만 표기(가운데 자리 마스킹)되니, 실물 카드의 16자리를 직접 입력해 주세요.
+            {cardName(form.card_cd)} 보유카드 {discovered.length}장 · 승인내역 조회는 <b>카드번호 전체(15~16자리)</b>가 필요합니다.
+            카드사 조회는 일부만 표기(가운데 자리 마스킹)되니, 실물 카드번호를 직접 입력해 주세요. (일반 16자리 · 고위드 BC 15자리)
           </div>
 
           {/* 일괄 입력: 한 번에 쭉 붙여넣기 → 자동 매칭 */}
@@ -753,7 +755,7 @@ function CardPanel() {
               const on = selected.has(c.card_no)
               const val = fullNos[c.card_no] || ''
               const len = val.replace(/\D/g, '').length
-              const ok = len === 16
+              const ok = CARD_LEN_OK(len)
               return (
                 <div key={c.card_no} className="flex items-center gap-2">
                   <input type="checkbox" checked={on} onChange={() => toggleCard(c.card_no)} className="w-3.5 h-3.5" />
@@ -768,7 +770,7 @@ function CardPanel() {
                     inputMode="numeric" maxLength={19} placeholder="카드번호 16자리"
                     className={`border rounded px-1.5 py-1 text-2xs bg-transparent font-mono w-40 ${on && !ok ? 'border-rose-400' : 'border-ink-200 dark:border-ink-800'}`}
                   />
-                  <span className={`text-2xs ${ok ? 'text-emerald-500' : 'text-ink-400'}`}>{len}/16</span>
+                  <span className={`text-2xs ${ok ? 'text-emerald-500' : 'text-ink-400'}`}>{len}자리</span>
                 </div>
               )
             })}
