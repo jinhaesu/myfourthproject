@@ -264,25 +264,29 @@ async def list_cards(
         if d and (not entry["last_used"] or d > entry["last_used"]):
             entry["last_used"] = d
 
-    # 연동 카드 병합 — 거래는 없지만 그랜터에 활성 연동된 카드도 목록에 노출(관리자용).
-    # only_assigned_to(직원용)는 배정 카드만 봐야 하므로 자산 병합/추가 호출 생략.
-    asset_keys: set = set()
-    if not only_assigned_to:
-        try:
-            for a in await _fetch_active_card_assets(db):
-                ak = _build_card_key_from_asset(a)
-                if not ak:
-                    continue
-                asset_keys.add(ak)
-                by_card.setdefault(ak, {
-                    "card_key": ak,
-                    "total_amount": 0.0,
-                    "transaction_count": 0,
-                    "last_used": None,
-                    "_meta": _card_meta_from_asset(a),
+    # 등록 카드(하이픈 계정) 집합 — 연동 삭제된 카드를 목록에서 제외하는 게이트.
+    # 등록은 없지만 과거 거래(HyphenCardTx)만 남은 카드는 '거래에서 뽑혀' 목록에 뜨므로,
+    # 등록 키로 걸러 연동 해제된 카드가 유령처럼 남지 않게 함.
+    registered_keys: set = set()
+    assets_ok = False
+    try:
+        for a in await _fetch_active_card_assets(db):
+            ak = _build_card_key_from_asset(a)
+            if not ak:
+                continue
+            registered_keys.add(ak)
+            # 관리자 목록엔 거래 없어도 등록 카드는 노출(직원은 배정 카드만).
+            if not only_assigned_to:
+                entry = by_card.setdefault(ak, {
+                    "card_key": ak, "total_amount": 0.0,
+                    "transaction_count": 0, "last_used": None, "_meta": None,
                 })
-        except Exception:
-            logger.exception("활성 CARD 자산 병합 실패 — 거래 기반 목록만 반환")
+                if not entry.get("_meta"):
+                    entry["_meta"] = _card_meta_from_asset(a)
+        assets_ok = True
+    except Exception:
+        logger.exception("활성 CARD 자산 병합 실패 — 거래 기반 목록만 반환")
+    asset_keys = registered_keys
 
     # alias join
     aliases = (await db.execute(select(CardAlias))).scalars().all()
@@ -301,6 +305,11 @@ async def list_cards(
                 "card_key": k, "total_amount": 0.0,
                 "transaction_count": 0, "last_used": None,
             })
+
+    # 하이픈 연동에서 제거된 카드(등록 해제)는 관리 목록에서 숨김 — 등록 조회 성공 시에만 적용.
+    # (과거 분류·월마감 데이터는 DB에 그대로 보존되며 월별 내보내기로 계속 조회 가능.)
+    if assets_ok:
+        by_card = {k: v for k, v in by_card.items() if k in registered_keys}
 
     result = []
     for card_key, agg in by_card.items():
