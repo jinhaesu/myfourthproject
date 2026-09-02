@@ -682,6 +682,41 @@ async def _select_all(db, model):
     return (await db.execute(_sel(model))).scalars().all()
 
 
+@public_router.post("/cron/fix-account-categories")
+async def fix_account_categories(request: Request, include_cogs: int = 0, db: AsyncSession = Depends(get_db)):
+    """계정 카테고리 오분류 교정(멱등). X-Cron-Secret 게이트.
+    - 비유동자산(203 감가상각누계액·206 기계장치·208 차량운반구·212 비품·214 시설장치·
+      218 개발비·232 임차보증금)이 부채로 잘못 분류됨 → 자산으로 이동.
+    - include_cogs=1이면 451·455 매출원가(수익 오분류) → 비용으로 이동."""
+    import os as _os
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if request.headers.get("x-cron-secret", "") != secret or not secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    from app.models.accounting import Account, AccountCategory
+    cats = {c.code: c for c in await _select_all(db, AccountCategory)}
+    asset_id = cats.get("1").id if cats.get("1") else None    # 자산
+    expense_id = cats.get("5").id if cats.get("5") else None  # 비용
+    if not asset_id:
+        raise HTTPException(status_code=500, detail="자산 카테고리(code=1) 없음")
+    to_asset = ["203", "206", "208", "212", "214", "218", "232"]
+    accts = {a.code: a for a in await _select_all(db, Account)}
+    moved_asset, moved_cogs = [], []
+    for code in to_asset:
+        a = accts.get(code)
+        if a and a.category_id != asset_id:
+            a.category_id = asset_id
+            moved_asset.append({"code": code, "name": a.name})
+    if include_cogs and expense_id:
+        for code in ["451", "455"]:
+            a = accts.get(code)
+            if a and a.category_id != expense_id:
+                a.category_id = expense_id
+                moved_cogs.append({"code": code, "name": a.name})
+    if moved_asset or moved_cogs:
+        await db.commit()
+    return {"moved_to_asset": moved_asset, "moved_to_expense": moved_cogs}
+
+
 @public_router.get("/cron/card-alias-diag")
 async def hyphen_card_alias_diag(request: Request, db: AsyncSession = Depends(get_db)):
     """진단: 카드 별칭↔하이픈 카드 매칭 상태(읽기 전용). X-Cron-Secret 게이트."""
