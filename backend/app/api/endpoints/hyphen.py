@@ -637,6 +637,39 @@ async def hyphen_refresh_balances(request: Request, db: AsyncSession = Depends(g
     return await ext_svc.refresh_account_balances(db)
 
 
+@public_router.get("/cron/accounts-diag")
+async def hyphen_accounts_diag(request: Request, db: AsyncSession = Depends(get_db)):
+    """진단: 원장 계정과목(Account) 현황 — 카테고리별 개수 + 비용(판관비) 계정 목록 +
+    광고선전비 존재 여부. 카드분류 계정선택 점검용. X-Cron-Secret 게이트."""
+    import os as _os
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if request.headers.get("x-cron-secret", "") != secret or not secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    from app.models.accounting import Account, AccountCategory
+    cats = {c.id: c for c in (await _select_all(db, AccountCategory))}
+    accts = await _select_all(db, Account)
+    by_cat: Dict[str, int] = {}
+    expense = []
+    for a in accts:
+        cat = cats.get(a.category_id)
+        cname = cat.name if cat else f"cat{a.category_id}"
+        by_cat[cname] = by_cat.get(cname, 0) + 1
+        if cat and cat.name == "비용":
+            expense.append({"code": a.code, "name": a.name, "active": a.is_active})
+    expense.sort(key=lambda x: x["code"])
+    has_ad = any("광고" in a.name for a in accts)
+    return {"total": len(accts), "by_category": by_cat,
+            "expense_count": len(expense), "expense_active": sum(1 for e in expense if e["active"]),
+            "has_ad_expense": has_ad,
+            "categories": [{"id": c.id, "code": c.code, "name": c.name} for c in cats.values()],
+            "expense_accounts": expense}
+
+
+async def _select_all(db, model):
+    from sqlalchemy import select as _sel
+    return (await db.execute(_sel(model))).scalars().all()
+
+
 @public_router.get("/cron/card-alias-diag")
 async def hyphen_card_alias_diag(request: Request, db: AsyncSession = Depends(get_db)):
     """진단: 카드 별칭↔하이픈 카드 매칭 상태(읽기 전용). X-Cron-Secret 게이트."""
