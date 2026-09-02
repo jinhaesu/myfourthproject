@@ -649,20 +649,32 @@ async def hyphen_accounts_diag(request: Request, db: AsyncSession = Depends(get_
     cats = {c.id: c for c in (await _select_all(db, AccountCategory))}
     accts = await _select_all(db, Account)
     by_cat: Dict[str, int] = {}
-    expense = []
+    expense, asset, other = [], [], []
     for a in accts:
         cat = cats.get(a.category_id)
         cname = cat.name if cat else f"cat{a.category_id}"
         by_cat[cname] = by_cat.get(cname, 0) + 1
-        if cat and cat.name == "비용":
-            expense.append({"code": a.code, "name": a.name, "active": a.is_active})
-    expense.sort(key=lambda x: x["code"])
+        row = {"code": a.code, "name": a.name, "category": cname, "active": a.is_active}
+        if cname == "비용":
+            expense.append(row)
+        elif cname == "자산":
+            asset.append(row)
+        else:
+            other.append(row)
+    for lst in (expense, asset, other):
+        lst.sort(key=lambda x: x["code"])
     has_ad = any("광고" in a.name for a in accts)
+    # 유형자산 관련(기계장치/비품/차량 등) 어디에 있는지 진단
+    fixed_kw = ("기계", "비품", "차량", "건물", "토지", "시설", "장치", "공구", "기구", "구축")
+    fixed = [{"code": a.code, "name": a.name, "category": (cats.get(a.category_id).name if cats.get(a.category_id) else "?"), "active": a.is_active}
+             for a in accts if any(k in a.name for k in fixed_kw)]
+    fixed.sort(key=lambda x: x["code"])
     return {"total": len(accts), "by_category": by_cat,
-            "expense_count": len(expense), "expense_active": sum(1 for e in expense if e["active"]),
+            "expense_count": len(expense), "asset_count": len(asset), "other_count": len(other),
             "has_ad_expense": has_ad,
             "categories": [{"id": c.id, "code": c.code, "name": c.name} for c in cats.values()],
-            "expense_accounts": expense}
+            "asset_accounts": asset, "other_accounts": other,
+            "fixed_asset_like": fixed, "expense_accounts": expense}
 
 
 async def _select_all(db, model):
