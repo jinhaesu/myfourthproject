@@ -159,7 +159,9 @@ async def suggest_classifications(
         if pick:
             per_store[key] = {
                 "account_code": pick["account_code"], "account_name": pick["account_name"],
-                "memo": pick["memo"], "source": source, "basis": basis.format(n=pick["count"]),
+                # 다른 사람이 적은 메모("야근택시_홍길동" 등)는 내 건에 맞지 않으므로 사내 이력은 계정만 추천한다
+                "memo": "" if source == "company" else pick["memo"],
+                "source": source, "basis": basis.format(n=pick["count"]),
             }
 
     missing = {
