@@ -610,6 +610,10 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
         </div>
       )}
 
+      {closings.length > 0 && (
+        <AccountUsageChart closings={closings} cardName={cardName} month={month} pendingCards={nonSubmitters.length} />
+      )}
+
       {/* 미제출자 팝업 */}
       {showNonSubmitters && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowNonSubmitters(false)}>
@@ -665,6 +669,99 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * 계정별 사용 현황 — 그 달 마감 제출된 카드들의 분류 합계를 계정과목별로 모아 가로 막대로 보여준다.
+ * 금액 크기 비교가 목적이라 한 가지 색만 쓰고 큰 순서로 정렬한다. 막대를 누르면 카드별 내역이 펼쳐진다.
+ */
+function AccountUsageChart({ closings, cardName, month, pendingCards }: {
+  closings: CardClosing[]
+  cardName: (key: string) => string
+  month: string
+  pendingCards: number
+}) {
+  const [open, setOpen] = useState<string | null>(null)
+  const [showAll, setShowAll] = useState(false)
+
+  const byAccount = new Map<string, { total: number; cards: { key: string; amount: number }[] }>()
+  for (const c of closings) {
+    for (const [name, amt] of Object.entries(c.category_summary || {})) {
+      const amount = Number(amt) || 0
+      if (!amount) continue
+      const cur = byAccount.get(name) || { total: 0, cards: [] }
+      cur.total += amount
+      cur.cards.push({ key: c.card_key, amount })
+      byAccount.set(name, cur)
+    }
+  }
+  const rows = Array.from(byAccount.entries())
+    .map(([name, v]) => ({ name, ...v, cards: v.cards.sort((a, b) => b.amount - a.amount) }))
+    .sort((a, b) => b.total - a.total)
+  if (!rows.length) return null
+
+  const grand = rows.reduce((s, r) => s + r.total, 0)
+  const max = Math.max(...rows.map((r) => Math.abs(r.total)))
+  const TOP = 12
+  const visible = showAll ? rows : rows.slice(0, TOP)
+
+  return (
+    <div className="border-t border-ink-200 dark:border-ink-800">
+      <div className="px-3 py-2 flex items-center justify-between flex-wrap gap-1">
+        <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">
+          {month} 계정별 사용 현황 (제출분 합계)
+        </span>
+        <span className="text-2xs text-ink-500 dark:text-ink-400">
+          카드 {closings.length}장 · 계정 {rows.length}개 · 합계{' '}
+          <b className="font-mono text-ink-900 dark:text-ink-50">{formatCurrency(grand, false)}</b>
+          {pendingCards > 0 && <span className="text-amber-600 dark:text-amber-400"> · 미제출 {pendingCards}장은 제외</span>}
+        </span>
+      </div>
+      <div className="px-3 pb-3 space-y-0.5">
+        {visible.map((r) => {
+          const isOpen = open === r.name
+          const share = grand ? (r.total / grand) * 100 : 0
+          return (
+            <div key={r.name}>
+              <button
+                onClick={() => setOpen(isOpen ? null : r.name)}
+                title={`${r.name} — 카드 ${r.cards.length}장 · 클릭하면 카드별 내역`}
+                className={`w-full grid grid-cols-[9rem_1fr_7.5rem_3rem] items-center gap-2 px-1 py-1 rounded text-left ${isOpen ? 'bg-blue-50/60 dark:bg-blue-950/30' : 'hover:bg-canvas-50 dark:hover:bg-ink-800/60'}`}
+              >
+                <span className="text-xs text-ink-800 dark:text-ink-100 truncate">{r.name}</span>
+                <span className="h-3.5 flex items-center">
+                  <span
+                    className="h-full rounded-r bg-blue-500 dark:bg-blue-400"
+                    style={{ width: `${Math.max(0.5, (Math.abs(r.total) / max) * 100)}%` }}
+                  />
+                </span>
+                <span className="text-xs font-mono font-semibold text-ink-900 dark:text-ink-50 text-right whitespace-nowrap">
+                  {formatCurrency(r.total, false)}
+                </span>
+                <span className="text-2xs font-mono text-ink-500 dark:text-ink-400 text-right">{share.toFixed(1)}%</span>
+              </button>
+              {isOpen && (
+                <div className="ml-[9.5rem] mb-1.5 pl-2 border-l-2 border-blue-200 dark:border-blue-800 space-y-0.5">
+                  {r.cards.map((c) => (
+                    <div key={c.key} className="flex items-center justify-between gap-2 text-2xs max-w-md">
+                      <span className="text-ink-600 dark:text-ink-300 truncate">{cardName(c.key)}</span>
+                      <span className="font-mono text-ink-800 dark:text-ink-100 whitespace-nowrap">{formatCurrency(c.amount, false)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+        {rows.length > TOP && (
+          <button onClick={() => setShowAll((v) => !v)}
+            className="mt-1 text-2xs text-blue-600 dark:text-blue-400 hover:underline">
+            {showAll ? '상위 12개만 보기' : `나머지 ${rows.length - TOP}개 계정 더 보기`}
+          </button>
+        )}
+      </div>
     </div>
   )
 }
