@@ -5,7 +5,7 @@ import {
   ExclamationCircleIcon, LockClosedIcon, DocumentDuplicateIcon,
   ChevronUpIcon, ChevronDownIcon, ClipboardIcon,
 } from '@heroicons/react/24/outline'
-import { cardsApi, CardInfo, CardTransaction, CardClosing } from '@/services/api'
+import { cardsApi, CardInfo, CardTransaction, CardClosing, CardSuggestion } from '@/services/api'
 import { formatCurrency } from '@/utils/format'
 import toast from 'react-hot-toast'
 
@@ -41,6 +41,7 @@ export default function MyCardsPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [clip, setClip] = useState<RowDraft | null>(null)
   const [activeRow, setActiveRow] = useState<string | null>(null)
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set())  // 추천을 접고 직접 입력하기로 한 행
   const [acctOpen, setAcctOpen] = useState<string | null>(null)  // 행별 계정검색 열림
   const [acctSearch, setAcctSearch] = useState('')
   // 계정 그룹 탭 — 카드지출은 판매관리비가 기본, 자산성(비품·선급 등)은 별도 탭
@@ -76,6 +77,20 @@ export default function MyCardsPage() {
 
   const cards: CardInfo[] = listQuery.data || []
   const txs: CardTransaction[] = useMemo(() => txQuery.data || [], [txQuery.data])
+
+  // 미분류 건의 분류 추천(지난 이력 우선, 없으면 명확한 가맹점만 AI). 눌러야 입력된다.
+  const suggestTargets = useMemo(
+    () => txs.filter((t) => t.ticket_id && !t.classification)
+      .map((t) => ({ ticket_id: t.ticket_id!, store_name: t.store_name, amount: t.amount })),
+    [txs],
+  )
+  const suggestQuery = useQuery({
+    queryKey: ['my-card-suggest', selectedCard, month, suggestTargets.map((t) => t.ticket_id).join(',')],
+    queryFn: () => cardsApi.suggest(selectedCard!, suggestTargets).then((r) => r.data.suggestions),
+    enabled: !!selectedCard && suggestTargets.length > 0,
+    staleTime: 5 * 60_000,
+  })
+  const suggestions: Record<string, CardSuggestion> = suggestQuery.data || {}
   const closings: CardClosing[] = closingsQuery.data || []
   const selectedClosing = closings.find((c) => c.card_key === selectedCard && c.month === month)
   const isClosed = !!selectedClosing
@@ -87,7 +102,7 @@ export default function MyCardsPage() {
 
   // 카드/월 변경 시 그리드 리셋
   useEffect(() => {
-    setDraft({}); setSelected(new Set()); setActiveRow(null); setAcctOpen(null)
+    setDraft({}); setSelected(new Set()); setActiveRow(null); setAcctOpen(null); setDismissed(new Set())
   }, [selectedCard, month])
 
   // 사용내역 로드 시 draft 시드 (기존 저장 분류값). 이미 편집한 행은 보존.
@@ -177,6 +192,30 @@ export default function MyCardsPage() {
       return n
     })
     toast.success(`${selected.size}건에 일괄 적용`)
+  }
+
+  // 추천은 아직 아무것도 적지 않은 행에만 보여준다(직접 입력한 값을 덮어쓰지 않는다)
+  const suggestionFor = (tid: string | null): CardSuggestion | null => {
+    if (!tid || isClosed) return null
+    const d = draft[tid]
+    if (dismissed.has(tid) || (d && (d.account_code || d.memo.trim()))) return null
+    return suggestions[tid] || null
+  }
+  const applySuggestion = (tid: string) => {
+    const s = suggestions[tid]
+    if (s) setRow(tid, { account_code: s.account_code, account_name: s.account_name, memo: s.memo })
+  }
+  const openSuggestionIds = sortedTxs.filter((t) => suggestionFor(t.ticket_id)).map((t) => t.ticket_id!)
+  const applyAllSuggestions = () => {
+    setDraft((p) => {
+      const n = { ...p }
+      for (const tid of openSuggestionIds) {
+        const s = suggestions[tid]
+        n[tid] = { account_code: s.account_code, account_name: s.account_name, memo: s.memo }
+      }
+      return n
+    })
+    toast.success(`추천 ${openSuggestionIds.length}건 입력 — 확인 후 저장하세요`)
   }
 
   const copyRow = (tid: string) => {
@@ -434,6 +473,17 @@ export default function MyCardsPage() {
                     <ClipboardIcon className="h-3 w-3" />붙여넣기
                   </button>
 
+                  {suggestQuery.isFetching && (
+                    <span className="text-2xs text-violet-500 dark:text-violet-400">추천 찾는 중…</span>
+                  )}
+                  {openSuggestionIds.length > 0 && (
+                    <button onClick={applyAllSuggestions}
+                      title="추천이 있는 빈 행에 추천값을 한 번에 입력합니다. 저장 전에 확인·수정할 수 있습니다."
+                      className="px-2 py-1 text-2xs rounded border border-violet-300 dark:border-violet-700 bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 font-medium hover:bg-violet-100 dark:hover:bg-violet-900/40">
+                      ✨ 추천 {openSuggestionIds.length}건 모두 입력
+                    </button>
+                  )}
+
                   <div className="ml-auto flex items-center gap-2">
                     {partialCount > 0 && (
                       <span className="text-2xs text-amber-600 dark:text-amber-400 flex items-center gap-0.5">
@@ -550,6 +600,28 @@ export default function MyCardsPage() {
                           <td className="px-2 py-1">
                             {isClosed || !tid ? (
                               <span className="text-ink-700 dark:text-ink-300">{d.memo || '-'}</span>
+                            ) : suggestionFor(tid) ? (
+                              (() => {
+                                const s = suggestionFor(tid)!
+                                return (
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setActiveRow(tid); applySuggestion(tid) }}
+                                      title={`${s.basis} — 클릭하면 이 값으로 입력됩니다`}
+                                      className="min-w-0 flex items-center gap-1 px-1.5 py-0.5 rounded border border-dashed border-violet-300 dark:border-violet-700 bg-violet-50/70 dark:bg-violet-950/30 text-2xs text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/40">
+                                      <span className="flex-shrink-0">✨ {s.source === 'ai' ? 'AI 추천' : '추천'}</span>
+                                      <span className="font-medium whitespace-nowrap">{s.account_code} {s.account_name}</span>
+                                      {s.memo && <span className="truncate max-w-[140px] text-violet-500 dark:text-violet-400">· {s.memo}</span>}
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setActiveRow(tid); setDismissed((s) => new Set(s).add(tid)) }}
+                                      title="추천을 쓰지 않고 직접 입력"
+                                      className="flex-shrink-0 text-2xs text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
+                                      직접 입력
+                                    </button>
+                                  </div>
+                                )
+                              })()
                             ) : (
                               <input value={d.memo}
                                 onClick={(e) => e.stopPropagation()}

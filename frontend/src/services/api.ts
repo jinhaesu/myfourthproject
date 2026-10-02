@@ -1224,6 +1224,15 @@ export interface CardInfo {
   connected?: boolean
 }
 
+/** 미분류 건의 분류 추천. source: card=이 카드 이력, mine=내 이력, company=사내 이력, ai=가맹점명 기반 AI 추정 */
+export interface CardSuggestion {
+  account_code: string
+  account_name: string
+  memo: string
+  source: 'card' | 'mine' | 'company' | 'ai'
+  basis: string
+}
+
 export interface CardTransaction {
   ticket_id: string | null
   transact_at: string
@@ -1266,6 +1275,9 @@ export const cardsApi = {
     ticket_id: string; account_code: string; account_name: string; memo: string
     transact_at?: string; store_name?: string; amount?: number
   }[]) => api.put('/cards/transactions/classify-bulk', { card_key, items }, { timeout: 120_000 }),
+  suggest: (card_key: string, items: { ticket_id: string; store_name?: string | null; amount?: number }[]) =>
+    api.post<{ suggestions: Record<string, CardSuggestion> }>(
+      '/cards/transactions/suggest', { card_key, items }, { timeout: 120_000 }),
   analysis: (card_key: string, start_date?: string, end_date?: string) =>
     api.get('/cards/analysis', { params: { card_key, start_date, end_date }, timeout: 180_000 }),
   monthly: (card_key?: string, months: number = 6) =>

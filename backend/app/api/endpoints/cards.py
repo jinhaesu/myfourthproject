@@ -239,6 +239,32 @@ async def classify_transaction_api(
     }
 
 
+class SuggestItem(BaseModel):
+    ticket_id: str
+    store_name: Optional[str] = None
+    amount: Optional[float] = None
+
+
+class SuggestBody(BaseModel):
+    card_key: str
+    items: List[SuggestItem]
+
+
+@router.post("/transactions/suggest")
+async def suggest_classifications_api(
+    body: SuggestBody,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """미분류 건의 계정·메모 추천(지난 분류 이력 우선, 없으면 명확한 가맹점만 AI). 저장하지 않는다."""
+    await _ensure_card_access(db, user, body.card_key)
+    from app.services.card_suggest import suggest_classifications
+    return {"suggestions": await suggest_classifications(
+        db, card_key=body.card_key, user_email=user.email,
+        items=[it.model_dump() for it in body.items[:500]],
+    )}
+
+
 class BulkClassifyItem(BaseModel):
     ticket_id: str
     account_code: str
