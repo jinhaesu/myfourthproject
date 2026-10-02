@@ -223,9 +223,34 @@ async def sync_cards(db: AsyncSession, *, start_date: str, end_date: str, gustat
         if hashes:
             q = await db.execute(select(HyphenCardTx.dedup_hash).where(HyphenCardTx.dedup_hash.in_(hashes)))
             existing = set(q.scalars().all())
+        # 같은 승인 건이 매입 확정 후 가맹점명만 바뀌어 다시 내려온다(예: "컬리_AD" → "컬리_AD/주식회사 컬리페이").
+        # dedup_hash에는 가맹점명이 들어 있어 해시만 보면 새 거래로 중복 저장되므로,
+        # (일자·승인번호·금액·승인상태)가 같은 기존 행이 있으면 새로 넣지 않고 가맹점명만 갱신한다.
+        # dedup_hash는 분류(ticket_id)의 키라 기존 행의 값을 그대로 둔다.
+        by_natural: Dict[tuple, HyphenCardTx] = {}
+        dts = {str(r.get("useDt") or "") for r in rows if r.get("apprNo")}
+        if dts:
+            q = await db.execute(
+                select(HyphenCardTx).where(
+                    HyphenCardTx.card_cd == a.card_cd,
+                    HyphenCardTx.use_dt.in_(dts),
+                    HyphenCardTx.card_no.like(f"%{a.card_no[-4:]}"),
+                )
+            )
+            for t in q.scalars().all():
+                if t.appr_no:
+                    by_natural[(t.use_dt, t.appr_no, float(t.use_amt or 0), t.appr_st or "")] = t
         ins = 0
         for r, h in zip(rows, hashes):
             if h in existing:
+                continue
+            appr_no = (str(r.get("apprNo") or "")[:30]) or None
+            nkey = (str(r.get("useDt") or ""), appr_no, float(_num(r.get("useAmt")) or 0), str(r.get("apprSt") or "")[:20])
+            same = by_natural.get(nkey) if appr_no else None
+            if same is not None:
+                store = (str(r.get("useStore") or "")[:200]) or None
+                if store and store != same.use_store:
+                    same.use_store = store
                 continue
             db.add(HyphenCardTx(
                 card_cd=a.card_cd, card_no=(str(r.get("useCard") or a.card_no)[:30]),
