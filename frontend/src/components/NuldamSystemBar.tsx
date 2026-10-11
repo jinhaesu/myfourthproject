@@ -9,6 +9,8 @@ const SYS = [
   { key: "aisystem", label: "현장관리", url: "https://aisystem.nuldam.com" },
   { key: "marketing", label: "마케팅", url: "https://marketing.nuldam.com" },
   { key: "mes", label: "MES", url: "https://mes.nuldam.com" },
+  { key: "cafe", label: "카페", url: "https://cafe.nuldam.com" },
+  { key: "report", label: "경영리포트", url: "https://ceoreport.nuldam.com" },
 ];
 
 // 허브 /me로 접근 가능한 시스템을 조회해, 권한 없는 시스템은 🔒 잠금 표시한다.
