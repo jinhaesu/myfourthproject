@@ -350,6 +350,20 @@ class HyphenClient:
                 payload["userPw"] = user_pw
         return await self.call_bank(path, payload, gustation=gustation)
 
+    async def hometax_card_purchases(
+        self, *, biz_no: str, start_date: str, end_date: str,
+        sign_cert=None, sign_pri=None, sign_pw=None, gustation: bool = False,
+    ) -> Any:
+        """홈택스 사업용 신용카드 매입내역(건별) /in0076000279 - 승인일·카드번호·가맹점명·가맹점 사업자번호·
+        공급가/부가세·사업자유형(bmanClNm)·공제여부(ddcYnNm). 한 번 호출로 기간 전체(카드 전체) 반환."""
+        payload: Dict[str, Any] = {
+            "loginMethod": "CERT", "bizNo": biz_no,
+            "inqrDtStrt": start_date.replace("-", ""), "inqrDtEnd": end_date.replace("-", ""),
+            "detailYn": "N",
+        }
+        self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
+        return await self.call_bank(path="/in0076000279", payload=payload, gustation=gustation)
+
     # ============ 법인카드 (/in0007xxx) ============
 
     async def card_list(

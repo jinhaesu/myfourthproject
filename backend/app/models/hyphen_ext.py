@@ -52,8 +52,12 @@ class HyphenCardTx(Base):
     inst_mon: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # 할부개월
     store_biz_no: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     tax_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    # 사업자번호 출처: 'hyphen'(매입내역 561 확정) / 'inferred'(동일 가맹점명·세금계산서로 추정)
+    # 사업자번호 출처: 'hometax'(홈택스 279)/'hyphen'(카드사 561) 확정 / 'inferred'(동일 가맹점명·세금계산서로 추정)
     biz_src: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)
+    # 홈택스 사업용신용카드 매입내역(in0076000279)이 알려주는 가맹점 사업자유형/공제여부/사유
+    ht_kind: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    ht_deduct: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    ht_reason: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
     dedup_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

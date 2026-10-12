@@ -637,6 +637,7 @@ async def list_transactions(
             "store_biz_no": fmt_biz(biz.get("no")),
             "biz_src": biz.get("src"),
             "_hy_tax_type": biz.get("tax_type"),
+            "_ht": (biz.get("ht_kind"), biz.get("ht_deduct"), biz.get("ht_reason")),
             "classification": {
                 "category": cls.category,
                 "account_code": cls.account_code,
@@ -657,10 +658,12 @@ async def attach_vat_info(db: AsyncSession, rows: List[Dict[str, Any]]) -> None:
     smap = await load_status_map(db, [digits(r.get("store_biz_no")) for r in rows if r.get("store_biz_no")])
     for r in rows:
         cls = r.get("classification") or {}
+        htk, htd, htr = r.pop("_ht", (None, None, None))
         j = judge_vat(
             r.get("store_biz_no"),
             status_row=smap.get(digits(r.get("store_biz_no"))),
             hyphen_tax_type=r.pop("_hy_tax_type", None),
+            ht_kind=htk, ht_deduct=htd, ht_reason=htr,
             account_code=cls.get("account_code"), account_name=cls.get("account_name"),
             tx_date=(r.get("transact_at") or "")[:10],
         )
@@ -758,6 +761,8 @@ async def export_month_classifications(
         h = hy.get(r.ticket_id)
         bn = digits(h.store_biz_no) if h else ""
         vj = judge_vat(bn, status_row=smap.get(bn), hyphen_tax_type=(h.tax_type if h else None),
+                       ht_kind=(h.ht_kind if h else None), ht_deduct=(h.ht_deduct if h else None),
+                       ht_reason=(h.ht_reason if h else None),
                        account_code=r.account_code, account_name=r.account_name or r.category,
                        tx_date=(r.transact_at or "")[:10])
         if h and h.biz_src == "inferred":

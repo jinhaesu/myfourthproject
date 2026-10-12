@@ -67,7 +67,7 @@ def kind_from_hyphen(tax_type: Optional[str]) -> Optional[str]:
         return KIND_EXEMPT
     if "간이" in t:
         return KIND_SIMPLE_INV if "세금계산서" in t else KIND_SIMPLE
-    if "일반" in t:
+    if "일반" in t or "법인" in t:   # 법인사업자는 일반과세자
         return KIND_GENERAL
     return None
 
@@ -77,6 +77,9 @@ def judge(
     *,
     status_row: Optional[Dict[str, Any]] = None,
     hyphen_tax_type: Optional[str] = None,
+    ht_kind: Optional[str] = None,
+    ht_deduct: Optional[str] = None,
+    ht_reason: Optional[str] = None,
     account_code: Optional[str] = None,
     account_name: Optional[str] = None,
     tx_date: Optional[str] = None,
@@ -87,6 +90,10 @@ def judge(
     st = status_row or {}
     if st.get("tax_kind") in (KIND_GENERAL, KIND_SIMPLE, KIND_SIMPLE_INV, KIND_EXEMPT):
         kind, ksrc = st["tax_kind"], "국세청"
+    if kind is None:
+        k = kind_from_hyphen(ht_kind)
+        if k:
+            kind, ksrc = k, "홈택스"
     if kind is None:
         k = kind_from_hyphen(hyphen_tax_type)
         if k:
@@ -109,6 +116,8 @@ def judge(
     if code in NONDEDUCT_CODES or (name and _NONDEDUCT_NAME.search(name)):
         return out("불공제", f"법정 불공제 계정: {NONDEDUCT_CODES.get(code) or name}")
 
+    if ht_deduct == "불공제":
+        return out("불공제", f"홈택스 불공제 표시{(': ' + ht_reason) if ht_reason else ''}")
     if kind == KIND_EXEMPT:
         return out("불공제", "면세사업자(부가세 없음)")
     if kind == KIND_SIMPLE:
