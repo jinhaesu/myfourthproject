@@ -116,8 +116,10 @@ def judge(
     if code in NONDEDUCT_CODES or (name and _NONDEDUCT_NAME.search(name)):
         return out("불공제", f"법정 불공제 계정: {NONDEDUCT_CODES.get(code) or name}")
 
-    if ht_deduct == "불공제":
-        return out("불공제", f"홈택스 불공제 표시{(': ' + ht_reason) if ht_reason else ''}")
+    # 홈택스 '선택불공제'는 공제 대상이나 아직 공제 선택을 안 한 상태(법정 불공제 아님) -> 판정에 쓰지 않음.
+    # 당연불공제/면세불공제/간이불공제만 법정 불공제로 반영.
+    if ht_deduct == "불공제" and ht_reason and "선택" not in ht_reason:
+        return out("불공제", f"홈택스 {ht_reason}")
     if kind == KIND_EXEMPT:
         return out("불공제", "면세사업자(부가세 없음)")
     if kind == KIND_SIMPLE:
