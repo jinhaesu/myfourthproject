@@ -484,7 +484,7 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
       const aoa = rows.map((r) => [
         r.assigned_email || '', r.card_label || '', r.issuer || '', r.last4 || '',
         (r.transact_at || '').replace('T', ' '), r.store_name || '',
-        r.store_biz_no ? `${r.store_biz_no}${r.biz_src === 'inferred' ? ' (추정)' : ''}` : '—', r.amount || 0,
+        r.store_biz_no ? `${r.store_biz_no}${r.biz_src === 'inferred' ? ' (추정)' : ''}` : '확인필요', r.amount || 0,
         r.account_code || '', r.account_name || '', r.memo || '', r.classified_by || '', r.closed ? '마감' : '미마감',
         r.tax_kind || '', r.deduct || '', r.deduct_reason || '',
       ])

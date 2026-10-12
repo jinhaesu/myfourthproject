@@ -13,7 +13,7 @@ export default function CardBizInfo({ bizNo, src, vat }: { bizNo?: string | null
     <div className="flex items-center gap-1 flex-wrap mt-0.5" title={tip}>
       {bizNo
         ? <span className="font-mono text-2xs text-ink-500 dark:text-ink-400">{bizNo}{src === 'inferred' && <span className="ml-0.5 text-amber-600 dark:text-amber-400" title="동일 가맹점명 기준 추정값">?</span>}</span>
-        : <span className="text-2xs text-ink-400">—</span>}
+        : <span className="text-2xs font-medium text-amber-600 dark:text-amber-400">확인필요</span>}
       {vat && vat.tax_kind && vat.tax_kind !== '미확인' && (
         <span className="px-1 rounded border border-ink-200 dark:border-ink-700 text-2xs text-ink-500 dark:text-ink-400">{vat.tax_kind.replace('과세자', '').replace('사업자', '')}</span>
       )}
