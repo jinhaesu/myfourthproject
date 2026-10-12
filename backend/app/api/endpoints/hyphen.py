@@ -994,6 +994,7 @@ async def hyphen_card_debug(
     path: Optional[str] = None,
     only_cd: Optional[str] = None,
     drop: Optional[str] = None,
+    extra: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """하이픈 지원팀 제출용: 실패하는 카드 승인내역 호출의 요청/응답 원본(마스킹) 캡처.
@@ -1026,6 +1027,7 @@ async def hyphen_card_debug(
             card_cd=card_cd, card_no=rep.card_no, biz_no=ext_svc.COMPANY_BIZ_NO,
             start_date=start, end_date=end, path=path,
             drop=[x for x in (drop or '').split(',') if x],
+            extra=(__import__('json').loads(extra) if extra else None),
             sign_cert=sign[0], sign_pri=sign[1], sign_pw=sign[2],
             user_id=creds_svc._dec(rep.enc_user_id),
             user_pw=creds_svc._dec(rep.enc_user_pw),
