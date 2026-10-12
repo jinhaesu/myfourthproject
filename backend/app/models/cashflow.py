@@ -25,8 +25,11 @@ CF_LINES = [
     ("non_op_out",  "영업외지출(세금 등)", "out"),
     ("investing",   "투자활동",          "both"),
     ("financing",   "재무활동(차입·상환)", "both"),
+    ("exclude",     "내부이체/제외",      "both"),
     ("uncat",       "미분류",            "both"),
 ]
+# 현금흐름 집계에서 제외하는 라인(내부이체 등) — 피벗 셀/순증감에 반영 안 함
+EXCLUDE_LINES = {"exclude"}
 CF_LINE_KEYS = [k for k, _, _ in CF_LINES]
 CF_LINE_LABEL = {k: label for k, label, _ in CF_LINES}
 CF_LINE_DIR = {k: d for k, _, d in CF_LINES}

@@ -19,6 +19,7 @@ from app.models.hyphen_bank_tx import HyphenBankTx
 from app.models.cashflow import (
     CashflowClass, CashflowConfig,
     CF_LINES, CF_LINE_KEYS, CF_LINE_LABEL, DEFAULT_IN_LINE, DEFAULT_OUT_LINE,
+    EXCLUDE_LINES,
 )
 
 logger = logging.getLogger(__name__)
@@ -221,12 +222,20 @@ async def build_pivot(db: AsyncSession, year: int) -> Dict[str, Any]:
         d = _parse_trdate(tx.tr_date)
         if not d or d.year != year:
             continue
-        if tx.dedup_hash in internal_hashes:
+        manual = classes.get(tx.dedup_hash)
+        # 수동분류 우선 — 수동 '제외'는 빼고, 수동이 있으면 자동내부판정보다 우선
+        if manual in EXCLUDE_LINES:
             internal_ct += 1
             continue
-        line = classes.get(tx.dedup_hash) or _auto_line(tx)
-        if line not in cells:
-            line = "uncat"
+        if manual:
+            line = manual if manual in cells else "uncat"
+        elif tx.dedup_hash in internal_hashes:
+            internal_ct += 1
+            continue
+        else:
+            line = _auto_line(tx)
+            if line not in cells:
+                line = "uncat"
         bucket = f"{d.month}-{xun_of(d.day)}"
         cell = cells[line].setdefault(bucket, {"in": 0.0, "out": 0.0})
         i = float(tx.in_amt or 0)
@@ -278,10 +287,14 @@ async def list_bucket_txs(
         d = _parse_trdate(tx.tr_date)
         if not d or d.year != year or d.month != month or xun_of(d.day) != xun:
             continue
-        if tx.dedup_hash in internal_hashes:
-            continue
+        # 효과분류: 수동 우선 → 자동내부(제외) → 자동규칙. 제외분도 노출해 재분류 가능.
         manual = classes.get(tx.dedup_hash)
-        cur = manual or _auto_line(tx)
+        if manual:
+            cur, src = (manual if manual in CF_LINE_KEYS else "uncat"), "manual"
+        elif tx.dedup_hash in internal_hashes:
+            cur, src = "exclude", "auto"
+        else:
+            cur, src = _auto_line(tx), "auto"
         if line and cur != line:
             continue
         out.append({
@@ -293,7 +306,7 @@ async def list_bucket_txs(
             "out_amt": float(tx.out_amt or 0),
             "cf_line": cur,
             "cf_line_label": CF_LINE_LABEL.get(cur, cur),
-            "source": "manual" if manual else "auto",
+            "source": src,
         })
     out.sort(key=lambda r: (r["date"], -(r["in_amt"] + r["out_amt"])))
     return out
