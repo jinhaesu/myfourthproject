@@ -276,6 +276,12 @@ async def sync_cards(db: AsyncSession, *, start_date: str, end_date: str, gustat
     if any(r.get("ok") for r in results):
         await record_coverage(db, "card", "ALL", start_date, end_date)
     await db.commit()
+    if total_inserted:
+        try:   # 수동 입력된 가맹점명->사업자번호 매핑을 새 행에 자동 적용
+            from app.services.merchant_biz import apply_mappings
+            await apply_mappings(db)
+        except Exception:
+            logger.exception("수동 사업자번호 매핑 적용 실패")
     return {"ok": True, "inserted": total_inserted, "results": results}
 
 
@@ -309,11 +315,15 @@ async def card_tickets_as_expense(db: AsyncSession, *, start_date: str, end_date
     for a in accts:
         label_by_no[re.sub(r"\D", "", a.card_no or "")] = a.label or ""
     rows = (await db.execute(select(HyphenCardTx))).scalars().all()
+    from app.services.merchant_biz import load_manual_map, manual_key
+    mmap = await load_manual_map(db)
     out = []
     for t in rows:
         d = (t.use_dt or "").replace("-", "")
         if not d or d < sd or d > ed:
             continue
+        if mmap and (not (t.store_biz_no or "").strip() or t.biz_src == "inferred") and mmap.get(manual_key(t.use_store)):
+            t.store_biz_no, t.biz_src = mmap[manual_key(t.use_store)], "manual"   # 읽기 폴백(메모리만, 저장 안 함)
         tm = (t.use_tm or "").replace(":", "")
         iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
         if len(tm) >= 6:

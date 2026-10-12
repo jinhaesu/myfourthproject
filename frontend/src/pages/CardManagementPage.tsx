@@ -493,6 +493,7 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
         ['부가세 공제 참고(자동판정) - 원장·부가세 신고에 자동 반영되지 않음. 카드금액 VAT포함, 부가세=금액/11(면세 0)'],
         ['구분', '건수', '합계금액', '공급가액', '부가세'],
         ...(['공제', '불공제', '확인필요'] as const).map((k) => [k, vs[k]?.count || 0, vs[k]?.amount || 0, vs[k]?.supply || 0, vs[k]?.vat || 0]),
+        ['부가세 대상 아님 (세금·4대보험·과태료 납부 - 위 합계에서 제외)', vs['부가세 대상 아님']?.count || 0, vs['부가세 대상 아님']?.amount || 0, vs['부가세 대상 아님']?.amount || 0, 0],
       ]
       downloadXlsx(`카드분류내역_전직원_${month}`, [
         { name: month, rows: [header, ...aoa] },
@@ -601,9 +602,9 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                         {detailQuery.data?.vat_summary && (
                           <div className="text-2xs text-ink-500 dark:text-ink-400 px-1 pb-1" title="부가세 공제 참고(자동판정) - 원장·부가세 신고에 자동 반영되지 않음">
                             부가세 공제 참고(자동판정):{' '}
-                            {(['공제', '불공제', '확인필요'] as const).map((k) => {
+                            {(['공제', '불공제', '확인필요', '부가세 대상 아님'] as const).map((k) => {
                               const v = detailQuery.data.vat_summary[k]
-                              return v ? <span key={k} className="mr-2">{k} {v.count}건 {formatCurrency(v.amount, false)} (부가세 {formatCurrency(v.vat, false)})</span> : null
+                              return v ? <span key={k} className="mr-2">{k} {v.count}건 {formatCurrency(v.amount, false)}{k === '부가세 대상 아님' ? '' : ` (부가세 ${formatCurrency(v.vat, false)})`}</span> : null
                             })}
                           </div>
                         )}
@@ -612,7 +613,13 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                             <span className="text-ink-500 dark:text-ink-400 w-24 flex-shrink-0">{t.transact_at?.slice(5, 16).replace('T', ' ')}</span>
                             <span className="flex-1 min-w-0 text-ink-800 dark:text-ink-100">
                               <span className="block truncate">{t.store_name || '(가맹점 미확인)'}</span>
-                              <CardBizInfo bizNo={t.store_biz_no} src={t.biz_src} vat={t.vat} />
+                              <CardBizInfo bizNo={t.store_biz_no} src={t.biz_src} vat={t.vat} editable isAdmin
+                                onSave={async (b) => {
+                                  const r = await cardsApi.setBizNo(t.ticket_id, detailQuery.data.card_key, b)
+                                  toast.success(`사업자번호 저장 · 같은 가맹점 ${r.data.propagated}건 반영`)
+                                  detailQuery.refetch()
+                                }}
+                                onClear={async () => { await cardsApi.clearBizNo(t.ticket_id); detailQuery.refetch() }} />
                             </span>
                             {t.classification && (
                               <span className="px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 flex-shrink-0">

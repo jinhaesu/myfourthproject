@@ -920,6 +920,20 @@ async def hyphen_cron_nts_refresh(request: Request, floor: str = "2026-01-01", m
             "cache_distribution": [{"tax_kind": k, "status": s, "n": n} for k, s, n in kinds]}
 
 
+@public_router.post("/cron/reinfer")
+async def hyphen_cron_reinfer(request: Request, floor: str = "2026-01-01", db: AsyncSession = Depends(get_db)):
+    """추정값 전부 비우고 수동 매핑 -> 이름기준 추정을 재계산 (Hyphen 호출 없음). X-Cron-Secret 게이트."""
+    import os as _os
+    from app.services import card_bizno as _cb
+    from app.services.merchant_biz import apply_mappings
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if not secret or request.headers.get("x-cron-secret", "") != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    inf = await _cb.infer_blanks(db, floor=floor, reset=True)
+    man = await apply_mappings(db, floor=floor)
+    return {"inferred": inf, "manual_applied": man, "stats": await _cb.fill_stats(db, floor)}
+
+
 @public_router.get("/cron/biz-fill-status")
 async def hyphen_cron_biz_fill_status(request: Request, db: AsyncSession = Depends(get_db)):
     import os as _os
