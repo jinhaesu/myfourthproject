@@ -273,9 +273,9 @@ async def build_pivot(db: AsyncSession, year: int) -> Dict[str, Any]:
 
 
 async def list_bucket_txs(
-    db: AsyncSession, year: int, month: int, xun: int, line: Optional[str] = None,
+    db: AsyncSession, year: int, month: int, xun: Optional[int] = None, line: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """특정 (월·旬) 거래 목록 + 현재 분류(수동/자동) — 재분류 UI용."""
+    """특정 (월[·旬]) 거래 목록 + 현재 분류(수동/자동) — 재분류 UI용. xun 생략 시 월 전체."""
     txs = (await db.execute(
         select(HyphenBankTx).where(HyphenBankTx.tr_date.like(f"{year}%"))
     )).scalars().all()
@@ -285,7 +285,9 @@ async def list_bucket_txs(
     out = []
     for tx in txs:
         d = _parse_trdate(tx.tr_date)
-        if not d or d.year != year or d.month != month or xun_of(d.day) != xun:
+        if not d or d.year != year or d.month != month:
+            continue
+        if xun is not None and xun_of(d.day) != xun:
             continue
         # 효과분류: 수동 우선 → 자동내부(제외) → 자동규칙. 제외분도 노출해 재분류 가능.
         manual = classes.get(tx.dedup_hash)

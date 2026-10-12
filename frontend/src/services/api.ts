@@ -1567,6 +1567,37 @@ export const payrollImportApi = {
     api.delete('/payroll/tax/override', { params: { month, worker_name } }),
 }
 
+export interface CashflowPivot {
+  year: number
+  lines: { key: string; label: string; dir: string }[]
+  buckets: string[]
+  cells: Record<string, Record<string, { in: number; out: number }>>
+  net: Record<string, number>
+  closing: Record<string, number>
+  opening: number
+  opening_estimated: boolean
+  tx_used: number
+  internal_excluded: number
+}
+export interface CashflowTx {
+  tx_hash: string; date: string; acct_last4?: string; name: string
+  in_amt: number; out_amt: number; cf_line: string; cf_line_label: string; source: string
+}
+export const cashflowApi = {
+  pivot: (year: number) =>
+    api.get<CashflowPivot>('/cashflow/pivot', { params: { year }, timeout: 90_000 }),
+  lines: () =>
+    api.get<{ lines: { key: string; label: string; dir: string }[] }>('/cashflow/lines'),
+  transactions: (year: number, month: number, xun?: number, line?: string) =>
+    api.get<{ items: CashflowTx[] }>('/cashflow/transactions', { params: { year, month, xun, line }, timeout: 90_000 }),
+  classify: (tx_hash: string, cf_line: string, cf_sub?: string, by?: string) =>
+    api.put('/cashflow/classify', { tx_hash, cf_line, cf_sub }, { params: { by } }),
+  classifyBulk: (tx_hashes: string[], cf_line: string, by?: string) =>
+    api.post('/cashflow/classify/bulk', { tx_hashes, cf_line }, { params: { by } }),
+  setOpening: (year: number, opening_balance: number | null) =>
+    api.put('/cashflow/opening', { year, opening_balance }),
+}
+
 export const payrollApi = {
   listBatches: (year?: number) =>
     api.get('/payroll/batches', { params: { year } }),

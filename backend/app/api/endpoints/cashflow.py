@@ -36,7 +36,8 @@ async def pivot(year: Optional[int] = Query(default=None), db: AsyncSession = De
 
 @router.get("/transactions")
 async def transactions(
-    year: int = Query(...), month: int = Query(...), xun: int = Query(...),
+    year: int = Query(...), month: int = Query(...),
+    xun: Optional[int] = Query(default=None),
     line: Optional[str] = Query(default=None), db: AsyncSession = Depends(get_db),
 ):
     return {"items": await svc.list_bucket_txs(db, year, month, xun, line)}

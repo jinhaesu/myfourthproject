@@ -69,7 +69,7 @@ const baseNavigation: NavItem[] = [
   { name: '경영 인사이트', section: true },
   { name: '채널별 수익성', href: '/channel-profitability', icon: ShoppingBagIcon },
   { name: '거래처 스코어링', href: '/contact-scoring', icon: StarIcon },
-  { name: '캐시플로우 예측', href: '/cashflow-forecast', icon: ArrowTrendingUpIcon },
+  { name: '현금흐름(旬)', href: '/cashflow', icon: ArrowTrendingUpIcon },
   { name: '감사·컴플라이언스', href: '/audit-report', icon: ShieldCheckIcon },
 
   { name: '전표 처리', section: true },
