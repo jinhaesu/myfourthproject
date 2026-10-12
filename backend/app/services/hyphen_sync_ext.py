@@ -324,6 +324,7 @@ async def card_tickets_as_expense(db: AsyncSession, *, start_date: str, end_date
         label = label_by_no.get(no_digits) or label_by_no.get(no_digits[-16:], "")
         out.append({
             "id": t.dedup_hash or f"hy-{t.id}",
+            "_biz": {"no": t.store_biz_no, "src": t.biz_src, "tax_type": t.tax_type},
             "amount": float(t.use_amt or 0),
             "transactAt": iso,
             "createdAt": iso,

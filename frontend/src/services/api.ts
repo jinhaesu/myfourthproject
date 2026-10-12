@@ -1233,8 +1233,21 @@ export interface CardSuggestion {
   basis: string
 }
 
+/** 부가세 공제 참고(자동판정) — 원장/부가세 신고에 자동 반영되지 않음 */
+export interface CardVatInfo {
+  tax_kind: string            // 일반과세자/간이과세자/간이과세자(세금계산서)/면세사업자/미확인
+  tax_kind_src: string | null // 국세청/카드사/번호추정
+  status: string | null       // 계속/휴업/폐업
+  deduct: '공제' | '불공제' | '확인필요'
+  reason: string
+}
+export interface VatSummary { [deduct: string]: { count: number; amount: number; supply: number; vat: number } }
+
 export interface CardTransaction {
   ticket_id: string | null
+  store_biz_no?: string | null  // 000-00-00000
+  biz_src?: string | null       // hyphen(확정) / inferred(추정)
+  vat?: CardVatInfo
   transact_at: string
   store_name: string | null
   granter_category: string | null
@@ -1288,7 +1301,8 @@ export const cardsApi = {
       transact_at: string | null; store_name: string | null; amount: number | null
       account_code: string | null; account_name: string | null; memo: string | null
       classified_by: string; closed: boolean
-    }[] }>('/cards/classifications/export', { params: { month }, timeout: 120_000 }),
+      store_biz_no: string | null; biz_src: string | null; tax_kind: string; deduct: string; deduct_reason: string
+    }[]; vat_summary: VatSummary }>('/cards/classifications/export', { params: { month }, timeout: 120_000 }),
   // 월별 분류 마감
   listClosings: (month?: string) =>
     api.get<{ closings: CardClosing[] }>('/cards/closings', { params: { month } }),

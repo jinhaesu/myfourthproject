@@ -907,6 +907,49 @@ async def hyphen_cron_biz_fill_status(request: Request, db: AsyncSession = Depen
     return {"running": _cb.STATE["running"], "last": _cb.STATE["last"], "stats": await _cb.fill_stats(db)}
 
 
+@public_router.post("/cron/hometax-probe")
+async def hyphen_hometax_probe(
+    request: Request,
+    paths: str,
+    days: int = 30,
+    extra: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """홈택스(in0076xxxxxx) 엔드포인트 탐색용 — 현금영수증과 같은 CERT 페이로드로 호출하고 응답 구조만 요약.
+    paths=in0076000276,in0076000277 (쉼표). extra='{"k":"v"}' 추가 파라미터. X-Cron-Secret 게이트."""
+    import os as _os
+    import json as _json
+    from datetime import date as _date, timedelta as _td
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if not secret or request.headers.get("x-cron-secret", "") != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    cert = await ext_svc.get_company_cert(db)
+    client = get_hyphen_client()
+    today = _date.today()
+    out = []
+    for pth in [x.strip() for x in paths.split(",") if x.strip()]:
+        payload: Dict[str, Any] = {
+            "loginMethod": "CERT", "bizNo": ext_svc.COMPANY_BIZ_NO,
+            "inqrDtStrt": (today - _td(days=days)).strftime("%Y%m%d"), "inqrDtEnd": today.strftime("%Y%m%d"),
+            "detailYn": "N",
+        }
+        if extra:
+            payload.update(_json.loads(extra))
+        client._apply_cert(payload, cert[0], cert[1], cert[2])
+        try:
+            data = await client.call_bank(payload=payload, path="/" + pth.lstrip("/"), gustation=False)
+        except Exception as e:  # noqa: BLE001
+            out.append({"path": pth, "error": str(e)[:200]})
+            continue
+        d = data.get("data") if isinstance(data, dict) else None
+        lst = ext_svc._extract_list(data)
+        out.append({"path": pth, "common": (data or {}).get("common"),
+                    "data_keys": list(d.keys()) if isinstance(d, dict) else type(d).__name__,
+                    "rows": len(lst), "row_keys": sorted(lst[0].keys()) if lst else None,
+                    "sample": ({k: v for k, v in lst[0].items()} if lst else None)})
+    return out
+
+
 @public_router.post("/cron/card-debug")
 async def hyphen_card_debug(
     request: Request,

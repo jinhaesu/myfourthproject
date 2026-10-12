@@ -9,6 +9,7 @@ import {
 import { cardsApi, CardInfo, CardClosing } from '@/services/api'
 import { formatCurrency, isoLocal } from '@/utils/format'
 import { downloadXlsx } from '@/utils/exportXlsx'
+import CardBizInfo from '@/components/CardBizInfo'
 import DateRangePresets from '@/components/common/DateRangePresets'
 import toast from 'react-hot-toast'
 
@@ -479,13 +480,24 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
     onSuccess: (res) => {
       const rows = res.data.rows
       if (!rows.length) { toast(`${month} 분류 내역이 없습니다`); return }
-      const header = ['배정직원', '카드', '카드사', '뒷4자리', '거래일시', '가맹점', '금액', '계정코드', '계정명', '메모', '분류자', '마감여부']
+      const header = ['배정직원', '카드', '카드사', '뒷4자리', '거래일시', '가맹점', '사업자번호', '금액', '계정코드', '계정명', '메모', '분류자', '마감여부', '과세유형', '공제여부(참고)', '사유']
       const aoa = rows.map((r) => [
         r.assigned_email || '', r.card_label || '', r.issuer || '', r.last4 || '',
-        (r.transact_at || '').replace('T', ' '), r.store_name || '', r.amount || 0,
+        (r.transact_at || '').replace('T', ' '), r.store_name || '',
+        r.store_biz_no ? `${r.store_biz_no}${r.biz_src === 'inferred' ? ' (추정)' : ''}` : '—', r.amount || 0,
         r.account_code || '', r.account_name || '', r.memo || '', r.classified_by || '', r.closed ? '마감' : '미마감',
+        r.tax_kind || '', r.deduct || '', r.deduct_reason || '',
       ])
-      downloadXlsx(`카드분류내역_전직원_${month}`, [{ name: month, rows: [header, ...aoa] }])
+      const vs = res.data.vat_summary || {}
+      const sumRows: (string | number)[][] = [
+        ['부가세 공제 참고(자동판정) - 원장·부가세 신고에 자동 반영되지 않음. 카드금액 VAT포함, 부가세=금액/11(면세 0)'],
+        ['구분', '건수', '합계금액', '공급가액', '부가세'],
+        ...(['공제', '불공제', '확인필요'] as const).map((k) => [k, vs[k]?.count || 0, vs[k]?.amount || 0, vs[k]?.supply || 0, vs[k]?.vat || 0]),
+      ]
+      downloadXlsx(`카드분류내역_전직원_${month}`, [
+        { name: month, rows: [header, ...aoa] },
+        { name: '부가세공제참고', rows: sumRows },
+      ])
       toast.success(`${rows.length}건 다운로드`)
     },
     onError: (e: any) => toast.error(e.response?.data?.detail || '내보내기 실패'),
@@ -586,10 +598,22 @@ function MonthlyClosingsPanel({ cards }: { cards: CardInfo[] }) {
                       <div className="text-2xs text-ink-400 py-2 text-center">내역 불러오는 중…</div>
                     ) : (
                       <div className="max-h-72 overflow-y-auto space-y-0.5">
+                        {detailQuery.data?.vat_summary && (
+                          <div className="text-2xs text-ink-500 dark:text-ink-400 px-1 pb-1" title="부가세 공제 참고(자동판정) - 원장·부가세 신고에 자동 반영되지 않음">
+                            부가세 공제 참고(자동판정):{' '}
+                            {(['공제', '불공제', '확인필요'] as const).map((k) => {
+                              const v = detailQuery.data.vat_summary[k]
+                              return v ? <span key={k} className="mr-2">{k} {v.count}건 {formatCurrency(v.amount, false)} (부가세 {formatCurrency(v.vat, false)})</span> : null
+                            })}
+                          </div>
+                        )}
                         {(detailQuery.data?.transactions || []).map((t: any) => (
                           <div key={t.ticket_id || t.transact_at} className="flex items-center gap-2 text-2xs bg-white dark:bg-ink-900 rounded px-2 py-1">
                             <span className="text-ink-500 dark:text-ink-400 w-24 flex-shrink-0">{t.transact_at?.slice(5, 16).replace('T', ' ')}</span>
-                            <span className="flex-1 text-ink-800 dark:text-ink-100 truncate">{t.store_name || '(가맹점 미확인)'}</span>
+                            <span className="flex-1 min-w-0 text-ink-800 dark:text-ink-100">
+                              <span className="block truncate">{t.store_name || '(가맹점 미확인)'}</span>
+                              <CardBizInfo bizNo={t.store_biz_no} src={t.biz_src} vat={t.vat} />
+                            </span>
                             {t.classification && (
                               <span className="px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 flex-shrink-0">
                                 {t.classification.category}{t.classification.memo ? ` · ${t.classification.memo}` : ''}

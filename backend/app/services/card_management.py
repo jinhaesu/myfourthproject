@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.vat_deduction import judge as judge_vat, digits, fmt_biz, summarize as summarize_vat
+from app.services.nts_client import load_status_map
 from app.models.card_alias import CardAlias
 from app.models.card_classification import CardUsageClassification, CardMonthlyClosing
 
@@ -625,12 +627,16 @@ async def list_transactions(
         except (ValueError, TypeError):
             amt = 0.0
         cls = cls_map.get(tid) if tid else None
+        biz = t.get("_biz") or {}
         result.append({
             "ticket_id": tid,
             "transact_at": str(t.get("transactAt") or t.get("createdAt") or "")[:19],
             "store_name": (cu.get("storeName") or "").strip() or None,
             "granter_category": (cu.get("category") or "").strip() or None,
             "amount": amt,
+            "store_biz_no": fmt_biz(biz.get("no")),
+            "biz_src": biz.get("src"),
+            "_hy_tax_type": biz.get("tax_type"),
             "classification": {
                 "category": cls.category,
                 "account_code": cls.account_code,
@@ -641,8 +647,26 @@ async def list_transactions(
             } if cls else None,
         })
 
+    await attach_vat_info(db, result)
     result.sort(key=lambda x: x["transact_at"] or "", reverse=True)
     return result
+
+
+async def attach_vat_info(db: AsyncSession, rows: List[Dict[str, Any]]) -> None:
+    """각 행에 부가세 공제 참고판정(vat) 부착 - 자동판정, 참고용. 분류 계정이 바뀌면 재판정됨."""
+    smap = await load_status_map(db, [digits(r.get("store_biz_no")) for r in rows if r.get("store_biz_no")])
+    for r in rows:
+        cls = r.get("classification") or {}
+        j = judge_vat(
+            r.get("store_biz_no"),
+            status_row=smap.get(digits(r.get("store_biz_no"))),
+            hyphen_tax_type=r.pop("_hy_tax_type", None),
+            account_code=cls.get("account_code"), account_name=cls.get("account_name"),
+            tx_date=(r.get("transact_at") or "")[:10],
+        )
+        if r.get("biz_src") == "inferred":
+            j["reason"] = f"{j['reason']} (사업자번호 추정값)"
+        r["vat"] = j
 
 
 async def classify_transaction(
@@ -719,10 +743,31 @@ async def export_month_classifications(
     )).scalars().all()
     closed_keys = {c.card_key for c in closings}
 
+    # 사업자번호/과세유형 (하이픈 카드원장; ticket_id == dedup_hash)
+    from app.models.hyphen_ext import HyphenCardTx
+    tids = [r.ticket_id for r in rows if r.ticket_id]
+    hy: Dict[str, Any] = {}
+    for i in range(0, len(tids), 500):
+        for h in (await db.execute(select(HyphenCardTx).where(HyphenCardTx.dedup_hash.in_(tids[i:i + 500])))).scalars().all():
+            hy[h.dedup_hash] = h
+    smap = await load_status_map(db, [digits(h.store_biz_no) for h in hy.values() if h.store_biz_no])
+
     out: List[Dict[str, Any]] = []
     for r in rows:
         al = amap.get(r.card_key)
+        h = hy.get(r.ticket_id)
+        bn = digits(h.store_biz_no) if h else ""
+        vj = judge_vat(bn, status_row=smap.get(bn), hyphen_tax_type=(h.tax_type if h else None),
+                       account_code=r.account_code, account_name=r.account_name or r.category,
+                       tx_date=(r.transact_at or "")[:10])
+        if h and h.biz_src == "inferred":
+            vj["reason"] += " (사업자번호 추정값)"
         out.append({
+            "store_biz_no": fmt_biz(bn),
+            "biz_src": h.biz_src if h else None,
+            "tax_kind": vj["tax_kind"],
+            "deduct": vj["deduct"],
+            "deduct_reason": vj["reason"],
             "assigned_email": ", ".join(_alias_emails(al)) if al else "",
             "card_label": (al.nickname if al else None) or (al.issuer if al else None) or r.card_key,
             "issuer": al.issuer if al else None,

@@ -7,6 +7,7 @@ import {
 } from '@heroicons/react/24/outline'
 import { cardsApi, CardInfo, CardTransaction, CardClosing, CardSuggestion } from '@/services/api'
 import { formatCurrency } from '@/utils/format'
+import CardBizInfo from '@/components/CardBizInfo'
 import toast from 'react-hot-toast'
 
 type RowDraft = { account_code: string; account_name: string; memo: string }
@@ -547,9 +548,10 @@ export default function MyCardsPage() {
                             {t.transact_at?.slice(0, 10)}
                             <span className="text-ink-400 ml-1">{t.transact_at?.slice(11, 16)}</span>
                           </td>
-                          <td className="px-2 py-1 max-w-[200px]">
+                          <td className="px-2 py-1 max-w-[240px]">
                             <div className="truncate text-ink-900 dark:text-ink-50 font-medium">{t.store_name || '(가맹점 미확인)'}</div>
                             {t.granter_category && <div className="text-2xs text-ink-400 truncate">{t.granter_category}</div>}
+                            <CardBizInfo bizNo={t.store_biz_no} src={t.biz_src} vat={t.vat} />
                           </td>
                           <td className="px-2 py-1 text-right font-mono font-semibold text-ink-900 dark:text-ink-50 whitespace-nowrap">
                             {formatCurrency(t.amount, false)}
