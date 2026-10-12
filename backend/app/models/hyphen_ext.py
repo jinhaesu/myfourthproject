@@ -64,6 +64,19 @@ class HyphenCardTx(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class HyphenCardCompanyLogin(Base):
+    """카드사별 매입내역(561)용 ID/PW 로그인(법인 기업회원). 카드 등록 행과 분리 - 카드/분류에 영향 없음."""
+    __tablename__ = "hyphen_card_company_login"
+    __table_args__ = {"extend_existing": True}
+
+    card_cd: Mapped[str] = mapped_column(String(10), primary_key=True)
+    enc_user_id: Mapped[str] = mapped_column(Text)
+    enc_user_pw: Mapped[str] = mapped_column(Text)
+    id_hint: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)   # 마스킹 표시용(ab***)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class MerchantBizManual(Base):
     """가맹점명(정규화) -> 사업자번호 수동 입력 매핑. 전 카드·전 월·미래 행에 자동 적용."""
     __tablename__ = "merchant_biz_manual"
