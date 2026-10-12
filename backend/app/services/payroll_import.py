@@ -239,10 +239,10 @@ def _attach_insurance(records: List[Dict[str, Any]], visa_map: Dict[str, Dict[st
     for r in records:
         wt = r.get("worker_type", "")
         if wt in pol.NON_APPLICABLE:
-            r["insurance"] = {"applicable": False, "reason": pol.NON_APPLICABLE[wt]}
+            r["insurance_assessment"] = {"applicable": False, "reason": pol.NON_APPLICABLE[wt]}
             continue
         if r.get("cost_type") == "COGS" and "정규직" not in wt:
-            r["insurance"] = {"applicable": False, "reason": "4대보험 대상 아님"}
+            r["insurance_assessment"] = {"applicable": False, "reason": "4대보험 대상 아님"}
             continue
         name = (r.get("name") or "").strip()
         info = visa_map.get(name)
@@ -263,7 +263,7 @@ def _attach_insurance(records: List[Dict[str, Any]], visa_map: Dict[str, Dict[st
             res.setdefault("flags", []).insert(0, "비자정보 매칭 실패 — 내국인 기준으로 산정(현장 onboarding 확인 필요)")
         if info and info.get("visa_expiry"):
             res["visa_expiry"] = info["visa_expiry"]
-        r["insurance"] = res
+        r["insurance_assessment"] = res
 
 
 async def fetch_aisystem_regular(month: str) -> List[Dict[str, Any]]:
