@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from datetime import date
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -58,12 +59,58 @@ def _last4(acct: Optional[str]) -> str:
 
 
 def _is_internal(tx: HyphenBankTx, own_last4: Set[str]) -> bool:
-    """내부거래 판정 — 상대계좌가 우리 보유계좌이거나, 적요/상대명에 회사 별칭 포함."""
+    """내부거래 1차 판정(단건) — 상대계좌가 우리 보유계좌이거나, 적요/상대명에 회사 별칭 포함."""
     cp4 = _last4(tx.counterparty_acct)
     if cp4 and cp4 in own_last4:
         return True
     hay = f"{tx.tr_name or ''} {tx.counterparty_name or ''} {tx.memo or ''}".lower()
     return any(a.lower() in hay for a in _COMPANY_ALIASES)
+
+
+def _acct_key(tx: HyphenBankTx) -> str:
+    return (tx.acct_no or "") or (tx.acct_last4 or "") or "?"
+
+
+def detect_internal(txs: List[HyphenBankTx], own_last4: Set[str]) -> Set[str]:
+    """내부거래(계좌 간 자금이동) tx_hash 집합.
+
+    상대계좌 필드가 비는 은행이 많아 단건판정(_is_internal)만으론 과소집계 →
+    같은 날·같은 금액의 '우리 계좌 출금' ↔ '우리 다른 계좌 입금'을 1:1로 짝지어 쌍 제거.
+    (대표 패턴: 매출풀→운영 메꿈 / 운영→매출풀 회수)
+    """
+    internal: Set[str] = set()
+    outs: Dict[Tuple[date, int], List[HyphenBankTx]] = defaultdict(list)
+    ins: Dict[Tuple[date, int], List[HyphenBankTx]] = defaultdict(list)
+    for tx in txs:
+        d = _parse_trdate(tx.tr_date)
+        if not d:
+            continue
+        o = round(float(tx.out_amt or 0))
+        i = round(float(tx.in_amt or 0))
+        if o > 0:
+            outs[(d, o)].append(tx)
+        if i > 0:
+            ins[(d, i)].append(tx)
+    for key, olist in outs.items():
+        ilist = ins.get(key)
+        if not ilist:
+            continue
+        for otx in olist:
+            if otx.dedup_hash in internal:
+                continue
+            for itx in ilist:
+                if itx.dedup_hash in internal:
+                    continue
+                # 서로 다른 우리 계좌 간 이동만 내부거래로
+                if _acct_key(otx) != _acct_key(itx):
+                    internal.add(otx.dedup_hash)
+                    internal.add(itx.dedup_hash)
+                    break
+    # 단건 판정도 합집합
+    for tx in txs:
+        if _is_internal(tx, own_last4):
+            internal.add(tx.dedup_hash)
+    return internal
 
 
 def _auto_line(tx: HyphenBankTx) -> str:
@@ -149,6 +196,7 @@ async def build_pivot(db: AsyncSession, year: int) -> Dict[str, Any]:
 
     classes = await _load_classes(db, [t.dedup_hash for t in txs])
     own4 = await _own_last4(db)
+    internal_hashes = detect_internal(txs, own4)
 
     # cells[line]["M-X"] = {"in": , "out": }
     cells: Dict[str, Dict[str, Dict[str, float]]] = {k: {} for k in CF_LINE_KEYS}
@@ -161,7 +209,7 @@ async def build_pivot(db: AsyncSession, year: int) -> Dict[str, Any]:
         d = _parse_trdate(tx.tr_date)
         if not d or d.year != year:
             continue
-        if _is_internal(tx, own4):
+        if tx.dedup_hash in internal_hashes:
             internal_ct += 1
             continue
         line = classes.get(tx.dedup_hash) or _auto_line(tx)
@@ -212,12 +260,13 @@ async def list_bucket_txs(
     )).scalars().all()
     classes = await _load_classes(db, [t.dedup_hash for t in txs])
     own4 = await _own_last4(db)
+    internal_hashes = detect_internal(txs, own4)
     out = []
     for tx in txs:
         d = _parse_trdate(tx.tr_date)
         if not d or d.year != year or d.month != month or xun_of(d.day) != xun:
             continue
-        if _is_internal(tx, own4):
+        if tx.dedup_hash in internal_hashes:
             continue
         manual = classes.get(tx.dedup_hash)
         cur = manual or _auto_line(tx)
