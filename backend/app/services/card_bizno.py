@@ -59,7 +59,7 @@ async def earliest_blank(db, floor: str) -> Optional[str]:
     f = _ymd(floor)
     rows = (await db.execute(
         select(func.min(HyphenCardTx.use_dt)).where(
-            _blank(HyphenCardTx.store_biz_no),
+            or_(_blank(HyphenCardTx.store_biz_no), HyphenCardTx.biz_src == "inferred"),
             func.replace(HyphenCardTx.use_dt, "-", "") >= f,
         )
     )).scalar()
@@ -147,24 +147,29 @@ async def fill_from_purchase(
     cert = await ext.get_company_cert(db)
     client = get_hyphen_client()
     accts = (await db.execute(select(HyphenCardAccount).order_by(HyphenCardAccount.id))).scalars().all()
-    # CERT 로그인 카드(BC 010)는 561에서 LOGIN-C04로 실패 -> ID로그인 카드만, 그리고 범위 내 공백이 있는 카드만
-    blank_last4 = {digits(c)[-4:] for c in (await db.execute(select(HyphenCardTx.card_no).where(
-        _blank(HyphenCardTx.store_biz_no),
-        func.replace(HyphenCardTx.use_dt, "-", "") >= _ymd(start_date),
-        func.replace(HyphenCardTx.use_dt, "-", "") <= _ymd(end_date)).distinct())).scalars().all()}
-    accts = [a for a in accts if a.login_method.upper() == "ID" and digits(a.card_no)[-4:] in blank_last4]
+    # CERT 로그인 카드(BC 010)는 561에서 LOGIN-C04로 실패 -> ID로그인 카드만.
+    # 561은 조회기간 최대 3개월 -> 카드별로 '공백/추정' 행이 있는 날짜만 90일 창으로 묶어 호출(불필요한 콜 제거).
+    accts = [a for a in accts if a.login_method.upper() == "ID"]
     if max_cards:
         accts = accts[:max_cards]
-    s0, e0 = date.fromisoformat(_iso(start_date)), date.fromisoformat(_iso(end_date))
-    windows = []
-    if chunk_days and chunk_days > 0:
-        cur = s0
-        while cur <= e0:
-            nxt = min(cur + timedelta(days=chunk_days - 1), e0)
-            windows.append((cur.isoformat(), nxt.isoformat()))
-            cur = nxt + timedelta(days=1)
-    else:
-        windows = [(s0.isoformat(), e0.isoformat())]
+    span = chunk_days if chunk_days and chunk_days > 0 else 89
+    pend = (await db.execute(select(HyphenCardTx.card_no, HyphenCardTx.use_dt).where(
+        or_(_blank(HyphenCardTx.store_biz_no), HyphenCardTx.biz_src == "inferred"),
+        func.replace(HyphenCardTx.use_dt, "-", "") >= _ymd(start_date),
+        func.replace(HyphenCardTx.use_dt, "-", "") <= _ymd(end_date)))).all()
+    pend_by4: Dict[str, List[date]] = {}
+    for cn, ud in pend:
+        pend_by4.setdefault(digits(cn)[-4:], []).append(date.fromisoformat(_iso(ud)))
+
+    def windows_for(a) -> List[tuple]:
+        ds = sorted(pend_by4.get(digits(a.card_no)[-4:], []))
+        out, i = [], 0
+        while i < len(ds):
+            w0 = ds[i]; w1 = w0 + timedelta(days=span)
+            out.append((w0.isoformat(), min(w1, ds[-1]).isoformat()))
+            while i < len(ds) and ds[i] <= w1:
+                i += 1
+        return out
 
     calls = filled = fetched = matched_rows = tax_filled = 0
     results = []
@@ -173,7 +178,10 @@ async def fill_from_purchase(
         last4 = (a.card_no or "")[-4:]
         card_rows: List[Dict[str, Any]] = []
         err = None
-        for (ws, we) in windows:
+        win = windows_for(a)
+        if not win:
+            continue
+        for (ws, we) in win:
             calls += 1
             try:
                 data = await client.card_transactions(
@@ -287,7 +295,7 @@ async def fill_stats(db, floor: str = FLOOR_DEFAULT) -> List[Dict[str, Any]]:
 async def run_monthly(
     db, *, start_date: Optional[str] = None, end_date: Optional[str] = None,
     floor: str = FLOOR_DEFAULT, chunk_days: int = 0, include_retry: bool = True,
-    max_cards: Optional[int] = None, nts: bool = True,
+    max_cards: Optional[int] = None, nts: bool = True, use_hometax: bool = True,
 ) -> Dict[str, Any]:
     from app.services import nts_client
     if not start_date or not end_date:
@@ -297,7 +305,7 @@ async def run_monthly(
         if eb and _ymd(eb) < _ymd(start_date):
             start_date = eb
     before = await fill_stats(db, floor)
-    ht = await fill_from_hometax(db, start_date=start_date, end_date=end_date)
+    ht = await fill_from_hometax(db, start_date=start_date, end_date=end_date) if use_hometax else {"calls": 0, "skipped": True}
     res = await fill_from_purchase(db, start_date=start_date, end_date=end_date,
                                    chunk_days=chunk_days, max_cards=max_cards)
     inf = await infer_blanks(db, floor=floor)

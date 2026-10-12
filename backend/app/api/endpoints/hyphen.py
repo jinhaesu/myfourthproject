@@ -862,6 +862,7 @@ async def hyphen_cron_biz_fill(
     max_cards: Optional[int] = None,
     retry: int = 1,
     wait: int = 0,
+    hometax: int = 1,
 ):
     """월 1회 가맹점 사업자번호 채움 배치 (Cloud Scheduler 매월 1일 KST 06:00).
     기본 범위 = 직전 달 전체 + 이전 공백 재시도(가장 오래된 공백일까지, floor 이후). 카드 1장당 매입내역(561) 1콜.
@@ -881,7 +882,8 @@ async def hyphen_cron_biz_fill(
         try:
             async with _dbm.async_session_factory() as s:
                 res = await _cb.run_monthly(s, start_date=start_date, end_date=end_date, floor=floor,
-                                            chunk_days=chunk_days, include_retry=bool(retry), max_cards=max_cards)
+                                            chunk_days=chunk_days, include_retry=bool(retry), max_cards=max_cards,
+                                            use_hometax=bool(hometax))
             _cb.STATE["last"] = {"ok": True, "at": datetime.utcnow().isoformat(), **res}
             return res
         except Exception as e:  # noqa: BLE001
