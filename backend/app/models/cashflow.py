@@ -18,12 +18,13 @@ from app.core.database import Base
 # 현금흐름표 라인 정의 — (키, 표시명, 방향). 방향: in=유입, out=유출, both=투자/재무(부호는 거래 in/out로).
 CF_LINES = [
     ("op_income",   "영업수입",         "in"),
+    ("op_advance",  "선정산(선입금)",    "in"),
     ("op_cogs",     "영업지출(매출원가)", "out"),
     ("op_sga",      "판매관리비",        "out"),
     ("non_op_in",   "영업외수입",        "in"),
     ("non_op_out",  "영업외지출(세금 등)", "out"),
     ("investing",   "투자활동",          "both"),
-    ("financing",   "재무활동",          "both"),
+    ("financing",   "재무활동(차입·상환)", "both"),
     ("uncat",       "미분류",            "both"),
 ]
 CF_LINE_KEYS = [k for k, _, _ in CF_LINES]

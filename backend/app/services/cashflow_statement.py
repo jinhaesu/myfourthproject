@@ -26,12 +26,17 @@ logger = logging.getLogger(__name__)
 # 회사 자기명의 별칭(내부거래 판정 보조) — internal_transfers._COMPANY_ALIASES 와 동일 취지
 _COMPANY_ALIASES = ("조인앤조인", "조인앤", "joinandjoin", "join&join", "(주)조인앤조인")
 
-# ── 자동분류 키워드 규칙(출금) ──
-_KW_FINANCING = ("이자", "대출", "차입", "상환", "원리금", "리스료", "배당")
+# ── 자동분류 키워드 규칙 ──
+# 재무활동(차입/상환/이자) — 입·출 공통
+_KW_FINANCING = ("이자", "대출", "차입", "상환", "원리금", "리스료", "할부금", "운전자금",
+                 "시설자금", "증권담보", "스탁론", "론", "여신", "금융")
 _KW_TAX = ("법인세", "부가세", "부가가치세", "원천세", "지방소득세", "주민세", "국세", "세무서",
-           "4대보험", "국민연금", "건강보험", "고용보험", "산재", "장기요양")
-_KW_INVEST = ("설비", "기계", "취득", "증권매입", "예적금가입", "정기예금", "펀드")
-_KW_INCOME_NONOP = ("환급", "이자입금", "배당금")
+           "4대보험", "국민연금", "건강보험", "고용보험", "산재", "장기요양", "연금공단", "건강보험공단")
+_KW_INVEST = ("설비", "기계", "취득", "증권매입", "예적금가입", "정기예금", "펀드", "출자", "보증금")
+# 선정산(선입금) — 팩토링/선지급 정산 입금
+_KW_ADVANCE = ("선정산", "선지급", "정산선", "팩토링", "선정산금", "셀러론", "에스크로선정산",
+               "선입금정산", "조기정산")
+_KW_INCOME_NONOP = ("환급", "부가세환급", "국세환급", "지원금", "보조금", "이자입금", "배당금")
 
 
 def xun_of(day: int) -> int:
@@ -78,9 +83,10 @@ def detect_internal(txs: List[HyphenBankTx], own_last4: Set[str]) -> Set[str]:
     같은 날·같은 금액의 '우리 계좌 출금' ↔ '우리 다른 계좌 입금'을 1:1로 짝지어 쌍 제거.
     (대표 패턴: 매출풀→운영 메꿈 / 운영→매출풀 회수)
     """
+    from datetime import timedelta
     internal: Set[str] = set()
     outs: Dict[Tuple[date, int], List[HyphenBankTx]] = defaultdict(list)
-    ins: Dict[Tuple[date, int], List[HyphenBankTx]] = defaultdict(list)
+    ins_by_amt: Dict[int, List[Tuple[date, HyphenBankTx]]] = defaultdict(list)
     for tx in txs:
         d = _parse_trdate(tx.tr_date)
         if not d:
@@ -90,23 +96,23 @@ def detect_internal(txs: List[HyphenBankTx], own_last4: Set[str]) -> Set[str]:
         if o > 0:
             outs[(d, o)].append(tx)
         if i > 0:
-            ins[(d, i)].append(tx)
-    for key, olist in outs.items():
-        ilist = ins.get(key)
-        if not ilist:
+            ins_by_amt[i].append((d, tx))
+    for (od, amt), olist in outs.items():
+        cand = ins_by_amt.get(amt)
+        if not cand:
             continue
         for otx in olist:
             if otx.dedup_hash in internal:
                 continue
-            for itx in ilist:
+            for (idt, itx) in cand:
                 if itx.dedup_hash in internal:
                     continue
-                # 서로 다른 우리 계좌 간 이동만 내부거래로
-                if _acct_key(otx) != _acct_key(itx):
+                # 같은 금액 · ±1일 이내 · 서로 다른 우리 계좌 간 이동 = 내부거래 쌍
+                if abs((idt - od).days) <= 1 and _acct_key(otx) != _acct_key(itx):
                     internal.add(otx.dedup_hash)
                     internal.add(itx.dedup_hash)
                     break
-    # 단건 판정도 합집합
+    # 단건 판정(상대계좌=자기계좌 / 적요에 회사별칭)도 합집합
     for tx in txs:
         if _is_internal(tx, own_last4):
             internal.add(tx.dedup_hash)
@@ -114,17 +120,23 @@ def detect_internal(txs: List[HyphenBankTx], own_last4: Set[str]) -> Set[str]:
 
 
 def _auto_line(tx: HyphenBankTx) -> str:
-    """거래 → 현금흐름 라인 자동분류(규칙). 수동분류 없을 때만 사용."""
+    """거래 → 현금흐름 라인 자동분류(규칙). 수동분류 없을 때만 사용.
+
+    핵심: 차입/상환은 재무, 선정산(선입금)은 별도 라인으로 빼서 '영업수입' 거품 제거.
+    """
     in_amt = float(tx.in_amt or 0)
     out_amt = float(tx.out_amt or 0)
     hay = f"{tx.tr_name or ''} {tx.counterparty_name or ''} {tx.memo or ''}"
+    # 재무(차입/상환)는 입·출 모두 financing 으로 먼저 분기
+    if any(k in hay for k in _KW_FINANCING):
+        return "financing"
     if in_amt > 0 and in_amt >= out_amt:
+        if any(k in hay for k in _KW_ADVANCE):
+            return "op_advance"
         if any(k in hay for k in _KW_INCOME_NONOP):
             return "non_op_in"
         return DEFAULT_IN_LINE  # op_income
     # 출금
-    if any(k in hay for k in _KW_FINANCING):
-        return "financing"
     if any(k in hay for k in _KW_TAX):
         return "non_op_out"
     if any(k in hay for k in _KW_INVEST):
