@@ -856,6 +856,8 @@ async def hyphen_debug_accounts(request: Request, db: AsyncSession = Depends(get
 async def hyphen_card_debug(
     request: Request,
     days: int = 30,
+    path: Optional[str] = None,
+    only_cd: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """하이픈 지원팀 제출용: 실패하는 카드 승인내역 호출의 요청/응답 원본(마스킹) 캡처.
@@ -881,10 +883,12 @@ async def hyphen_card_debug(
         by_cd.setdefault(a.card_cd, a)
     out = []
     for card_cd, rep in by_cd.items():
+        if only_cd and card_cd != only_cd:
+            continue
         sign = cert if (rep.login_method == "CERT" and cert) else (None, None, None)
         cap = await client.card_transactions_debug(
             card_cd=card_cd, card_no=rep.card_no, biz_no=ext_svc.COMPANY_BIZ_NO,
-            start_date=start, end_date=end,
+            start_date=start, end_date=end, path=path,
             sign_cert=sign[0], sign_pri=sign[1], sign_pw=sign[2],
             user_id=creds_svc._dec(rep.enc_user_id),
             user_pw=creds_svc._dec(rep.enc_user_pw),
