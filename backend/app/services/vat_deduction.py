@@ -57,6 +57,19 @@ def valid_biz_no(v: Optional[str]) -> bool:
     return (10 - s % 10) % 10 == int(d[9])
 
 
+_PREAUTH_NAME = re.compile(r"가승인|선승인")
+
+
+def preauth_reason(store_name: Optional[str], amount: Optional[float]) -> Optional[str]:
+    """0원 거래, 또는 가승인/선승인 명칭이면서 금액 <= 0 이면 실제 결제가 아님(목록에는 그대로 표시)."""
+    if amount is None:
+        return None
+    a = float(amount)
+    if a == 0 or (a <= 0 and _PREAUTH_NAME.search(store_name or "")):
+        return "0원 가승인·선승인 — 실제 결제 아님"
+    return None
+
+
 def nonvat_reason(store_name: Optional[str], biz_no: Optional[str] = None) -> Optional[str]:
     """세금·공과금·사회보험료 납부는 부가세 거래가 아님. 해당하면 사유 텍스트, 아니면 None.
     (보증보험료 등 일반 보험은 면세 거래이므로 여기에 넣지 않는다.)"""
@@ -119,6 +132,7 @@ def judge(
     account_name: Optional[str] = None,
     tx_date: Optional[str] = None,
     store_name: Optional[str] = None,
+    amount: Optional[float] = None,
 ) -> Dict[str, Any]:
     """returns {tax_kind, tax_kind_src, status, deduct: 공제|불공제|확인필요, reason}"""
     d = digits(biz_no)
@@ -144,7 +158,7 @@ def judge(
         return {"tax_kind": kind or KIND_UNKNOWN, "tax_kind_src": ksrc, "status": status,
                 "deduct": deduct, "reason": reason}
 
-    nv = nonvat_reason(store_name, d)
+    nv = preauth_reason(store_name, amount) or nonvat_reason(store_name, d)
     if nv:   # 세금·사회보험료·과태료 납부는 어떤 계정이든 부가세 거래 아님
         r = out(NONVAT, nv)
         r["tax_kind"] = "해당없음"
