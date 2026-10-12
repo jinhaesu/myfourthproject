@@ -6,8 +6,14 @@ def test_fmt():
     assert fmt_biz("") is None
 
 
-def test_no_biz_is_nondeductible():
-    assert judge(None)["deduct"] == "불공제"
+def test_no_biz_needs_check():
+    r = judge(None)
+    assert r["deduct"] == "확인필요" and r["reason"] == "사업자번호 없음 — 증빙 확인 필요"
+
+
+def test_no_biz_but_entertainment_nondeductible():
+    assert judge(None, account_code="813")["deduct"] == "불공제"
+    assert judge("", account_code="953")["deduct"] == "불공제"
 
 
 def test_entertainment_nondeductible():

@@ -3,8 +3,8 @@
 원장·부가세 신고에는 자동 반영하지 않는다.
 
 판정 우선순위:
-  1) 사업자번호 없음 -> 불공제
-  2) 법정 불공제 계정(접대비/기업업무추진비, 기부금) -> 불공제
+  1) 법정 불공제 계정(접대비/기업업무추진비, 기부금) -> 불공제 (번호 유무 무관)
+  2) 사업자번호 없음 -> 확인필요
   3) 가맹점 과세유형: 면세 -> 불공제 / 간이(세금계산서 비발급) -> 불공제 / 폐업(거래일 이후) -> 불공제
   4) 차량 관련 계정(차량유지비 등) -> 확인필요 (차종 미상)
   5) 일반과세자(또는 세금계산서 발급 간이) -> 공제
@@ -108,13 +108,13 @@ def judge(
         return {"tax_kind": kind or KIND_UNKNOWN, "tax_kind_src": ksrc, "status": status,
                 "deduct": deduct, "reason": reason}
 
-    if len(d) != 10:
-        return out("불공제", "사업자번호 없음(증빙 불가)")
-
     code = (account_code or "").strip()
     name = account_name or ""
+    # 접대비/기부금은 가맹점·번호 유무와 무관하게 불공제
     if code in NONDEDUCT_CODES or (name and _NONDEDUCT_NAME.search(name)):
         return out("불공제", f"법정 불공제 계정: {NONDEDUCT_CODES.get(code) or name}")
+    if len(d) != 10:
+        return out("확인필요", "사업자번호 없음 — 증빙 확인 필요")
 
     # 홈택스 '선택불공제'는 공제 대상이나 아직 공제 선택을 안 한 상태(법정 불공제 아님) -> 판정에 쓰지 않음.
     # 당연불공제/면세불공제/간이불공제만 법정 불공제로 반영.
