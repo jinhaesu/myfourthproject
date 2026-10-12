@@ -64,7 +64,7 @@ export default function MyCardsPage() {
 
   const listQuery = useQuery({
     queryKey: ['my-cards', month],
-    queryFn: () => cardsApi.list(from, to, true).then((r) => r.data.cards),
+    queryFn: () => cardsApi.list(from, to, true).then((r) => r.data),
   })
   const closingsQuery = useQuery({
     queryKey: ['my-card-closings', month],
@@ -76,7 +76,8 @@ export default function MyCardsPage() {
     enabled: !!selectedCard,
   })
 
-  const cards: CardInfo[] = listQuery.data || []
+  const cards: CardInfo[] = listQuery.data?.cards || []
+  const isAdmin = !!listQuery.data?.is_admin
   const txs: CardTransaction[] = useMemo(() => txQuery.data || [], [txQuery.data])
 
   // 미분류 건의 분류 추천(지난 이력 우선, 없으면 명확한 가맹점만 AI). 눌러야 입력된다.
@@ -551,7 +552,13 @@ export default function MyCardsPage() {
                           <td className="px-2 py-1 max-w-[240px]">
                             <div className="truncate text-ink-900 dark:text-ink-50 font-medium">{t.store_name || '(가맹점 미확인)'}</div>
                             {t.granter_category && <div className="text-2xs text-ink-400 truncate">{t.granter_category}</div>}
-                            <CardBizInfo bizNo={t.store_biz_no} src={t.biz_src} vat={t.vat} />
+                            <CardBizInfo bizNo={t.store_biz_no} src={t.biz_src} vat={t.vat} editable={!!tid && !!selectedCard} isAdmin={isAdmin}
+                              onSave={async (b) => {
+                                const r = await cardsApi.setBizNo(tid!, selectedCard!, b)
+                                toast.success(`사업자번호 저장 · 같은 가맹점 ${r.data.propagated}건 반영`)
+                                qc.invalidateQueries({ queryKey: ['my-card-tx'] })
+                              }}
+                              onClear={async () => { await cardsApi.clearBizNo(tid!); qc.invalidateQueries({ queryKey: ['my-card-tx'] }) }} />
                           </td>
                           <td className="px-2 py-1 text-right font-mono font-semibold text-ink-900 dark:text-ink-50 whitespace-nowrap">
                             {formatCurrency(t.amount, false)}

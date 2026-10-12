@@ -126,7 +126,10 @@ async def fill_from_hometax(db, *, start_date: str, end_date: str) -> Dict[str, 
                 continue
         biz = digits(pick.get("mrntTxprDscmNoEncCntn"))
         was_blank = not (t.store_biz_no or "").strip()
-        if was_blank or t.biz_src == "inferred":
+        if was_blank or t.biz_src in ("inferred", "manual"):
+            if t.biz_src == "manual" and digits(t.store_biz_no) != biz:
+                from app.services.merchant_biz import log_conflict, manual_key
+                await log_conflict(db, manual_key(t.use_store), digits(t.store_biz_no), biz, "hometax")
             t.store_biz_no, t.biz_src = biz, "hometax"
             filled += 1
         elif digits(t.store_biz_no) != biz:
@@ -231,7 +234,7 @@ async def fill_from_purchase(
             cand = by_full.get((_ymd(str(r.get("useDt") or "")), appr, amt)) or by_loose.get((appr, amt)) or []
             for t in cand:
                 matched_rows += 1
-                if not (t.store_biz_no or "").strip() or t.biz_src == "inferred":
+                if not (t.store_biz_no or "").strip() or t.biz_src in ("inferred", "manual"):
                     t.store_biz_no = biz
                     t.biz_src = "hyphen"
                     c_fill += 1
@@ -247,8 +250,17 @@ async def fill_from_purchase(
             "tax_type_filled": tax_filled, "cards": len(accts), "results": results}
 
 
-async def infer_blanks(db, *, floor: str = FLOOR_DEFAULT) -> Dict[str, int]:
+async def infer_blanks(db, *, floor: str = FLOOR_DEFAULT, reset: bool = False) -> Dict[str, int]:
     """공백 행을 동일 가맹점명(다른 행) 또는 세금계산서 매입 공급자명으로 추정 채움. biz_src='inferred'."""
+    from app.services.vat_deduction import nonvat_reason
+    cleared = 0
+    if reset:   # 추정값 전부 비우고 (이름 기준으로만) 다시 계산
+        for t in (await db.execute(select(HyphenCardTx).where(
+                HyphenCardTx.biz_src == "inferred",
+                func.replace(HyphenCardTx.use_dt, "-", "") >= _ymd(floor)))).scalars().all():
+            t.store_biz_no, t.biz_src = None, None
+            cleared += 1
+        await db.flush()
     known: Dict[str, set] = {}
     for store, biz in (await db.execute(
         select(HyphenCardTx.use_store, HyphenCardTx.store_biz_no).where(
@@ -267,7 +279,7 @@ async def infer_blanks(db, *, floor: str = FLOOR_DEFAULT) -> Dict[str, int]:
     n_card = n_tax = 0
     for t in rows:
         k = _norm_store(t.use_store)
-        if not k:
+        if not k or nonvat_reason(t.use_store):   # 세금·4대보험 납부는 가맹점이 아니므로 추정 금지
             continue
         s = known.get(k)
         if s and len(s) == 1:
@@ -279,7 +291,7 @@ async def infer_blanks(db, *, floor: str = FLOOR_DEFAULT) -> Dict[str, int]:
             t.store_biz_no, t.biz_src = next(iter(s)), "inferred"
             n_tax += 1
     await db.commit()
-    return {"from_card_rows": n_card, "from_tax_invoices": n_tax, "blank_scanned": len(rows)}
+    return {"cleared": cleared, "from_card_rows": n_card, "from_tax_invoices": n_tax, "blank_scanned": len(rows)}
 
 
 async def fill_stats(db, floor: str = FLOOR_DEFAULT) -> List[Dict[str, Any]]:
@@ -308,12 +320,14 @@ async def run_monthly(
     ht = await fill_from_hometax(db, start_date=start_date, end_date=end_date) if use_hometax else {"calls": 0, "skipped": True}
     res = await fill_from_purchase(db, start_date=start_date, end_date=end_date,
                                    chunk_days=chunk_days, max_cards=max_cards)
-    inf = await infer_blanks(db, floor=floor)
+    from app.services.merchant_biz import apply_mappings
+    manual_n = await apply_mappings(db, floor=floor)
+    inf = await infer_blanks(db, floor=floor, reset=True)
     nts_res = None
     if nts:
         nums = [digits(x) for x in (await db.execute(
             select(HyphenCardTx.store_biz_no).where(~_blank(HyphenCardTx.store_biz_no)).distinct())).scalars().all()]
         nts_res = await nts_client.refresh_statuses(db, nums)
     after = await fill_stats(db, floor)
-    return {"range": [start_date, end_date], "hometax": ht, "purchase": res, "inferred": inf, "nts": nts_res,
+    return {"range": [start_date, end_date], "hometax": ht, "purchase": res, "manual_applied": manual_n, "inferred": inf, "nts": nts_res,
             "before": before, "after": after}

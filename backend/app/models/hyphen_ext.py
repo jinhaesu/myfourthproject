@@ -55,11 +55,25 @@ class HyphenCardTx(Base):
     # 사업자번호 출처: 'hometax'(홈택스 279)/'hyphen'(카드사 561) 확정 / 'inferred'(동일 가맹점명·세금계산서로 추정)
     biz_src: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)
     # 홈택스 사업용신용카드 매입내역(in0076000279)이 알려주는 가맹점 사업자유형/공제여부/사유
+    biz_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)   # 수동 입력자
+    biz_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)  # 수동 입력 시각
     ht_kind: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     ht_deduct: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     ht_reason: Mapped[Optional[str]] = mapped_column(String(60), nullable=True)
     dedup_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class MerchantBizManual(Base):
+    """가맹점명(정규화) -> 사업자번호 수동 입력 매핑. 전 카드·전 월·미래 행에 자동 적용."""
+    __tablename__ = "merchant_biz_manual"
+    __table_args__ = {"extend_existing": True}
+
+    norm_name: Mapped[str] = mapped_column(String(200), primary_key=True)
+    biz_no: Mapped[str] = mapped_column(String(10))
+    entered_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    entered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    conflict_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class MerchantBizStatus(Base):

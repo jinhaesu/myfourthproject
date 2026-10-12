@@ -19,6 +19,12 @@ VEHICLE_CODES = {"822": "차량유지비"}
 _NONDEDUCT_NAME = re.compile(r"접대|기업업무추진|기부")
 _VEHICLE_NAME = re.compile(r"차량|유류|주유|렌트|리스료|자동차")
 
+NONVAT = "부가세 대상 아님"
+_NONVAT_TAX = re.compile(r"국세|지방세|지자체\s*세입금|세입금|세외수입|관세|지방자치단체")
+_NONVAT_INS = re.compile(r"건강보험|국민연금|고용보험|산재보험|근로복지공단|4대\s*보험|사회보험")
+_NONVAT_FINE = re.compile(r"과태료|범칙금|공과금|우체국.*(공과|납부)|도로교통공단")
+NONVAT_BIZ_NOS = {"2208201439"}   # 국민건강보험공단 (홈택스가 국세·지자체세입금 결제도 이 번호로 내려줌)
+
 KIND_GENERAL = "일반과세자"
 KIND_SIMPLE = "간이과세자"
 KIND_SIMPLE_INV = "간이과세자(세금계산서)"
@@ -33,6 +39,35 @@ def digits(v: Optional[str]) -> str:
 def fmt_biz(v: Optional[str]) -> Optional[str]:
     d = digits(v)
     return f"{d[:3]}-{d[3:5]}-{d[5:]}" if len(d) == 10 else None
+
+
+def manual_key(name: Optional[str]) -> str:
+    """가맹점명 정규화: '/' 앞 기본명(카드 동기화가 '/법인명'을 덧붙임) -> 공백 정리 -> 대문자."""
+    base = (name or "").split("/")[0]
+    return re.sub(r"\s+", " ", base).strip().upper()
+
+
+def valid_biz_no(v: Optional[str]) -> bool:
+    """사업자등록번호 10자리 체크섬."""
+    d = digits(v)
+    if len(d) != 10:
+        return False
+    w = [1, 3, 7, 1, 3, 7, 1, 3, 5]
+    s = sum(int(d[i]) * w[i] for i in range(9)) + (int(d[8]) * 5) // 10
+    return (10 - s % 10) % 10 == int(d[9])
+
+
+def nonvat_reason(store_name: Optional[str], biz_no: Optional[str] = None) -> Optional[str]:
+    """세금·공과금·사회보험료 납부는 부가세 거래가 아님. 해당하면 사유 텍스트, 아니면 None.
+    (보증보험료 등 일반 보험은 면세 거래이므로 여기에 넣지 않는다.)"""
+    n = store_name or ""
+    if _NONVAT_TAX.search(n) or _NONVAT_INS.search(n):
+        return "세금·4대보험 납부 — 부가세 거래 아님"
+    if _NONVAT_FINE.search(n):
+        return "과태료·공과금 납부 — 부가세 거래 아님"
+    if digits(biz_no) in NONVAT_BIZ_NOS:
+        return "세금·4대보험 납부 — 부가세 거래 아님"
+    return None
 
 
 def kind_from_number(biz_no: str) -> Optional[str]:
@@ -83,6 +118,7 @@ def judge(
     account_code: Optional[str] = None,
     account_name: Optional[str] = None,
     tx_date: Optional[str] = None,
+    store_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """returns {tax_kind, tax_kind_src, status, deduct: 공제|불공제|확인필요, reason}"""
     d = digits(biz_no)
@@ -107,6 +143,12 @@ def judge(
     def out(deduct, reason):
         return {"tax_kind": kind or KIND_UNKNOWN, "tax_kind_src": ksrc, "status": status,
                 "deduct": deduct, "reason": reason}
+
+    nv = nonvat_reason(store_name, d)
+    if nv:   # 세금·사회보험료·과태료 납부는 어떤 계정이든 부가세 거래 아님
+        r = out(NONVAT, nv)
+        r["tax_kind"] = "해당없음"
+        return r
 
     code = (account_code or "").strip()
     name = account_name or ""
@@ -147,7 +189,7 @@ def judge(
 def vat_split(amount: float, kind: Optional[str]) -> Dict[str, float]:
     """VAT 포함 카드금액 -> 공급가/부가세 (amount/11). 면세사업자는 부가세 0."""
     a = float(amount or 0)
-    if kind == KIND_EXEMPT:
+    if kind in (KIND_EXEMPT, "해당없음"):
         return {"supply": a, "vat": 0.0}
     vat = round(a / 11.0)
     return {"supply": a - vat, "vat": float(vat)}

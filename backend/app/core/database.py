@@ -353,6 +353,15 @@ async def init_db():
         )""",
         "CREATE INDEX IF NOT EXISTS ix_hyphen_cardtx_dt ON hyphen_card_tx(use_dt)",
         "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS biz_src VARCHAR(12)",
+        "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS biz_by VARCHAR(100)",
+        "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS biz_at TIMESTAMP",
+        """CREATE TABLE IF NOT EXISTS merchant_biz_manual (
+            norm_name VARCHAR(200) PRIMARY KEY,
+            biz_no VARCHAR(10) NOT NULL,
+            entered_by VARCHAR(100),
+            entered_at TIMESTAMP DEFAULT NOW(),
+            conflict_note TEXT
+        )""",
         "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS ht_kind VARCHAR(20)",
         "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS ht_deduct VARCHAR(10)",
         "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS ht_reason VARCHAR(60)",

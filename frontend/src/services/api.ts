@@ -1238,7 +1238,7 @@ export interface CardVatInfo {
   tax_kind: string            // 일반과세자/간이과세자/간이과세자(세금계산서)/면세사업자/미확인
   tax_kind_src: string | null // 국세청/카드사/번호추정
   status: string | null       // 계속/휴업/폐업
-  deduct: '공제' | '불공제' | '확인필요'
+  deduct: '공제' | '불공제' | '확인필요' | '부가세 대상 아님'
   reason: string
 }
 export interface VatSummary { [deduct: string]: { count: number; amount: number; supply: number; vat: number } }
@@ -1303,6 +1303,13 @@ export const cardsApi = {
       classified_by: string; closed: boolean
       store_biz_no: string | null; biz_src: string | null; tax_kind: string; deduct: string; deduct_reason: string
     }[]; vat_summary: VatSummary }>('/cards/classifications/export', { params: { month }, timeout: 120_000 }),
+  // 확인필요(번호 없음) 행 사업자번호 수동 입력 - 저장 즉시 국세청 조회·재판정·동일 가맹점명 전파
+  setBizNo: (ticket_id: string, card_key: string, biz_no: string) =>
+    api.put<{ biz_no: string; propagated: number; nts_checked: boolean; store_biz_no: string | null; biz_src: string | null; vat: CardVatInfo }>(
+      '/cards/transactions/biz-no', { ticket_id, card_key, biz_no }, { timeout: 60_000 }),
+  clearBizNo: (ticket_id: string) =>
+    api.delete<{ cleared: number; store_biz_no: string | null; biz_src: string | null; vat: CardVatInfo }>(
+      '/cards/transactions/biz-no', { params: { ticket_id } }),
   // 월별 분류 마감
   listClosings: (month?: string) =>
     api.get<{ closings: CardClosing[] }>('/cards/closings', { params: { month } }),

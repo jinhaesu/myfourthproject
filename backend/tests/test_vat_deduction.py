@@ -58,3 +58,31 @@ def test_vat_split():
     assert vat_split(11000, "면세사업자")["vat"] == 0
     s = summarize([{"amount": 11000, "deduct": "공제", "tax_kind": "일반과세자"}])
     assert s["공제"]["vat"] == 1000.0
+
+
+def test_manual_key_and_checksum():
+    from app.services.vat_deduction import manual_key, valid_biz_no
+    assert manual_key("  컬리_AD / 주식회사 컬리페이 ") == "컬리_AD"
+    assert manual_key("컬리_AD") == manual_key("컬리_AD/주식회사 컬리페이")
+    assert manual_key("A   b") == "A B"
+    assert valid_biz_no("503-87-01038")
+    assert not valid_biz_no("503-87-01039")
+    assert not valid_biz_no("123")
+
+
+def test_nonvat_payments():
+    from app.services.vat_deduction import NONVAT
+    for nm in ["국세", "국세(인터넷납부)", "지방세", "지자체세입금(온라인)", "세입금", "포털_건강보험공단", "국민연금", "근로복지공단", "과태료"]:
+        r = judge("2208201439", store_name=nm, account_code="830")
+        assert r["deduct"] == NONVAT, nm
+    r = judge(None, store_name="국세")
+    assert r["deduct"] == NONVAT and "부가세 거래 아님" in r["reason"]
+    # 보증보험은 면세 -> 불공제 (부가세 대상 아님 아님)
+    r = judge("1068100235", store_name="서울보증보험", status_row={"tax_kind": "면세사업자"})
+    assert r["deduct"] == "불공제"
+
+
+def test_nonvat_excluded_from_totals_line():
+    s = summarize([{"amount": 11000, "deduct": "부가세 대상 아님", "tax_kind": "해당없음"},
+                   {"amount": 11000, "deduct": "공제", "tax_kind": "일반과세자"}])
+    assert s["부가세 대상 아님"]["vat"] == 0 and s["공제"]["vat"] == 1000.0

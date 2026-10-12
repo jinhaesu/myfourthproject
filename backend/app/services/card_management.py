@@ -666,6 +666,7 @@ async def attach_vat_info(db: AsyncSession, rows: List[Dict[str, Any]]) -> None:
             ht_kind=htk, ht_deduct=htd, ht_reason=htr,
             account_code=cls.get("account_code"), account_name=cls.get("account_name"),
             tx_date=(r.get("transact_at") or "")[:10],
+            store_name=r.get("store_name"),
         )
         if r.get("biz_src") == "inferred":
             j["reason"] = f"{j['reason']} (사업자번호 추정값)"
@@ -764,7 +765,7 @@ async def export_month_classifications(
                        ht_kind=(h.ht_kind if h else None), ht_deduct=(h.ht_deduct if h else None),
                        ht_reason=(h.ht_reason if h else None),
                        account_code=r.account_code, account_name=r.account_name or r.category,
-                       tx_date=(r.transact_at or "")[:10])
+                       tx_date=(r.transact_at or "")[:10], store_name=r.store_name)
         if h and h.biz_src == "inferred":
             vj["reason"] += " (사업자번호 추정값)"
         out.append({

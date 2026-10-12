@@ -441,3 +441,77 @@ async def monthly_summary(
     elif not is_accounting_admin(user):
         raise HTTPException(status_code=403, detail="회계 관리자 권한이 필요합니다.")
     return {"months": await get_monthly_summary(db, card_key, months)}
+
+
+# ============ 가맹점 사업자번호 수동 입력 (확인필요 행) ============
+
+class BizNoBody(BaseModel):
+    ticket_id: str
+    card_key: str
+    biz_no: str
+
+
+async def _rejudged_row(db: AsyncSession, ticket_id: str) -> dict:
+    """저장 직후 해당 행의 사업자번호/공제 판정을 다시 계산해 UI에 즉시 반영."""
+    from sqlalchemy import select as _sel
+    from app.models.hyphen_ext import HyphenCardTx
+    from app.models.card_classification import CardUsageClassification
+    from app.services.card_management import attach_vat_info
+    from app.services.vat_deduction import fmt_biz
+    t = (await db.execute(_sel(HyphenCardTx).where(HyphenCardTx.dedup_hash == ticket_id))).scalar_one()
+    c = (await db.execute(_sel(CardUsageClassification).where(CardUsageClassification.ticket_id == ticket_id))).scalar_one_or_none()
+    row = {
+        "transact_at": t.use_dt, "store_name": t.use_store, "amount": float(t.use_amt or 0),
+        "store_biz_no": fmt_biz(t.store_biz_no), "biz_src": t.biz_src,
+        "_hy_tax_type": t.tax_type, "_ht": (t.ht_kind, t.ht_deduct, t.ht_reason),
+        "classification": {"account_code": c.account_code, "account_name": c.account_name} if c else None,
+    }
+    await attach_vat_info(db, [row])
+    return {"store_biz_no": row["store_biz_no"], "biz_src": row["biz_src"], "vat": row["vat"]}
+
+
+async def _tx_card_key(db: AsyncSession, ticket_id: str) -> str:
+    from sqlalchemy import select as _sel
+    from app.models.hyphen_ext import HyphenCardTx
+    from app.services.hyphen_sync_ext import _card_key
+    t = (await db.execute(_sel(HyphenCardTx).where(HyphenCardTx.dedup_hash == ticket_id))).scalar_one_or_none()
+    if t is None:
+        raise HTTPException(status_code=404, detail="거래를 찾을 수 없습니다.")
+    return _card_key(t.card_cd, t.card_no)
+
+
+@router.put("/transactions/biz-no")
+async def set_transaction_biz_no(
+    body: BizNoBody,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """확인필요(번호 없음) 행에 사업자번호 수동 입력. 직원=배정 카드만, 관리자=전체(수정 포함).
+    저장 즉시 국세청 조회 + 재판정, 동일 가맹점명의 모든 공백 행에 전파."""
+    from app.services import merchant_biz as mb
+    await _ensure_card_access(db, user, body.card_key)
+    if await _tx_card_key(db, body.ticket_id) != body.card_key:
+        raise HTTPException(status_code=400, detail="해당 카드의 거래가 아닙니다.")
+    try:
+        res = await mb.set_manual(db, ticket_id=body.ticket_id, biz_no=body.biz_no,
+                                  user_email=user.email, is_admin=is_accounting_admin(user))
+    except mb.BizError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {**res, **(await _rejudged_row(db, body.ticket_id))}
+
+
+@router.delete("/transactions/biz-no")
+async def clear_transaction_biz_no(
+    ticket_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """수동 입력 해제 (관리자 전용) - 같은 가맹점명의 수동 입력 행 전체를 공백으로."""
+    from app.services import merchant_biz as mb
+    if not is_accounting_admin(user):
+        raise HTTPException(status_code=403, detail="관리자 전용")
+    try:
+        res = await mb.clear_manual(db, ticket_id=ticket_id, user_email=user.email)
+    except mb.BizError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {**res, **(await _rejudged_row(db, ticket_id))}
