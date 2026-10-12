@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select, or_, func
 
-from app.models.hyphen_ext import HyphenCardTx, HyphenCardAccount, HyphenTaxInvoice
+from app.models.hyphen_ext import HyphenCardTx, HyphenCardAccount, HyphenTaxInvoice, HyphenCardCompanyLogin
 from app.services import hyphen_sync_ext as ext
 from app.services.hyphen_client import get_hyphen_client, HyphenAPIError
 from app.services.hyphen_credentials import _dec
@@ -143,22 +143,38 @@ async def fill_from_hometax(db, *, start_date: str, end_date: str) -> Dict[str, 
             "ht_updated": updated, "ambiguous": ambiguous, "unmatched": unmatched}
 
 
+async def company_logins(db) -> Dict[str, tuple]:
+    """카드사코드 -> (아이디, 비밀번호) 복호화 (561용 기업회원 로그인)."""
+    out = {}
+    for r in (await db.execute(select(HyphenCardCompanyLogin))).scalars().all():
+        out[r.card_cd] = (_dec(r.enc_user_id), _dec(r.enc_user_pw))
+    return out
+
+
 async def fill_from_purchase(
     db, *, start_date: str, end_date: str, chunk_days: int = 0, max_cards: Optional[int] = None,
+    since: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """561 매입내역으로 사업자번호/과세유형 채움. 반환에 콜 수 포함."""
-    cert = await ext.get_company_cert(db)
+    """561 매입내역으로 사업자번호/과세유형 채움. 반환에 콜 수 포함.
+    ID로그인 카드(하나 등) + 카드사 기업회원 로그인이 저장된 카드사(BC)만. 공백/추정 행이 있는 카드만, ≤3개월 창.
+    since: 이 날짜 이후의 공백/추정 행만 대상(홈택스가 아직 못 채운 최근분)."""
     client = get_hyphen_client()
     accts = (await db.execute(select(HyphenCardAccount).order_by(HyphenCardAccount.id))).scalars().all()
-    # CERT 로그인 카드(BC 010)는 561에서 LOGIN-C04로 실패 -> ID로그인 카드만.
-    # 561은 조회기간 최대 3개월 -> 카드별로 '공백/추정' 행이 있는 날짜만 90일 창으로 묶어 호출(불필요한 콜 제거).
-    accts = [a for a in accts if a.login_method.upper() == "ID"]
+    logins = await company_logins(db)
+    use = []
+    for a in accts:
+        if a.login_method.upper() == "ID":
+            use.append((a, _dec(a.enc_user_id), _dec(a.enc_user_pw)))
+        elif a.card_cd in logins:
+            use.append((a, logins[a.card_cd][0], logins[a.card_cd][1]))
     if max_cards:
-        accts = accts[:max_cards]
+        use = use[:max_cards]
     span = chunk_days if chunk_days and chunk_days > 0 else 89
+    lo = _ymd(since) if since else _ymd(start_date)
+    lo = max(lo, _ymd(start_date))
     pend = (await db.execute(select(HyphenCardTx.card_no, HyphenCardTx.use_dt).where(
         or_(_blank(HyphenCardTx.store_biz_no), HyphenCardTx.biz_src == "inferred"),
-        func.replace(HyphenCardTx.use_dt, "-", "") >= _ymd(start_date),
+        func.replace(HyphenCardTx.use_dt, "-", "") >= lo,
         func.replace(HyphenCardTx.use_dt, "-", "") <= _ymd(end_date)))).all()
     pend_by4: Dict[str, List[date]] = {}
     for cn, ud in pend:
@@ -176,8 +192,10 @@ async def fill_from_purchase(
 
     calls = filled = fetched = matched_rows = tax_filled = 0
     results = []
-    for a in accts:
-        sign = cert if (a.login_method == "CERT" and cert) else (None, None, None)
+    failed_cds: set = set()   # 로그인 실패한 카드사는 나머지 카드 호출 중단(계정 잠금/콜 낭비 방지)
+    for a, uid, upw in use:
+        if a.card_cd in failed_cds:
+            continue
         last4 = (a.card_no or "")[-4:]
         card_rows: List[Dict[str, Any]] = []
         err = None
@@ -189,9 +207,8 @@ async def fill_from_purchase(
             try:
                 data = await client.card_transactions(
                     card_cd=a.card_cd, card_no=a.card_no, biz_no=ext.COMPANY_BIZ_NO,
-                    start_date=ws, end_date=we, sign_cert=sign[0], sign_pri=sign[1], sign_pw=sign[2],
-                    user_id=_dec(a.enc_user_id), user_pw=_dec(a.enc_user_pw),
-                    login_method=a.login_method, path=CARD_PURCHASE_PATH,
+                    start_date=ws, end_date=we,
+                    user_id=uid, user_pw=upw, login_method="ID", path=CARD_PURCHASE_PATH,
                 )
             except HyphenAPIError as e:
                 err = str(e)[:120]
@@ -202,6 +219,8 @@ async def fill_from_purchase(
                 break
             card_rows.extend(ext._extract_list(data))
         if err and not card_rows:
+            if "LOGIN" in err.upper() or "로그인" in err or "비밀번호" in err:
+                failed_cds.add(a.card_cd)
             results.append({"card": last4, "ok": False, "error": err})
             continue
         fetched += len(card_rows)
@@ -247,7 +266,7 @@ async def fill_from_purchase(
         results.append({"card": last4, "ok": True, "fetched": len(card_rows), "filled": c_fill,
                         **({"partial_error": err} if err else {})})
     return {"calls": calls, "fetched": fetched, "matched": matched_rows, "filled": filled,
-            "tax_type_filled": tax_filled, "cards": len(accts), "results": results}
+            "tax_type_filled": tax_filled, "cards": len(use), "results": results}
 
 
 async def infer_blanks(db, *, floor: str = FLOOR_DEFAULT, reset: bool = False) -> Dict[str, int]:
@@ -317,9 +336,15 @@ async def run_monthly(
         if eb and _ymd(eb) < _ymd(start_date):
             start_date = eb
     before = await fill_stats(db, floor)
+    # 561은 홈택스가 아직 못 채운 최근분만 (직전 달 시작 ~ 홈택스 확정 마지막 날 이후 중 이른 쪽)
+    ht_max = (await db.execute(select(func.max(HyphenCardTx.use_dt)).where(HyphenCardTx.biz_src == "hometax"))).scalar()
+    since = prev_month_range()[0]
+    if ht_max:
+        nxt = (date.fromisoformat(_iso(ht_max)) + timedelta(days=1)).isoformat()
+        since = min(since, nxt)
     ht = await fill_from_hometax(db, start_date=start_date, end_date=end_date) if use_hometax else {"calls": 0, "skipped": True}
     res = await fill_from_purchase(db, start_date=start_date, end_date=end_date,
-                                   chunk_days=chunk_days, max_cards=max_cards)
+                                   chunk_days=chunk_days, max_cards=max_cards, since=since)
     from app.services.merchant_biz import apply_mappings
     manual_n = await apply_mappings(db, floor=floor)
     inf = await infer_blanks(db, floor=floor, reset=True)
@@ -331,3 +356,30 @@ async def run_monthly(
     after = await fill_stats(db, floor)
     return {"range": [start_date, end_date], "hometax": ht, "purchase": res, "manual_applied": manual_n, "inferred": inf, "nts": nts_res,
             "before": before, "after": after}
+
+
+async def test_company_login(db, card_cd: str) -> Dict[str, Any]:
+    """저장 후 시험 조회 - 해당 카드사 카드 1장, 최근 30일, 561 1콜. 성공/행수/사업자번호 포함 행수/오류 반환."""
+    logins = await company_logins(db)
+    if card_cd not in logins:
+        return {"ok": False, "error": "저장된 로그인이 없습니다."}
+    a = (await db.execute(select(HyphenCardAccount).where(HyphenCardAccount.card_cd == card_cd)
+                          .order_by(HyphenCardAccount.id))).scalars().first()
+    if a is None:
+        return {"ok": False, "error": "해당 카드사로 등록된 카드가 없습니다."}
+    end = (datetime.utcnow() + timedelta(hours=9)).date()
+    start = end - timedelta(days=30)
+    try:
+        data = await get_hyphen_client().card_transactions(
+            card_cd=card_cd, card_no=a.card_no, biz_no=ext.COMPANY_BIZ_NO,
+            start_date=start.isoformat(), end_date=end.isoformat(),
+            user_id=logins[card_cd][0], user_pw=logins[card_cd][1], login_method="ID", path=CARD_PURCHASE_PATH)
+    except HyphenAPIError as e:
+        return {"ok": False, "calls": 1, "error": str(e)[:200]}
+    common = (data or {}).get("common") if isinstance(data, dict) else {}
+    if isinstance(common, dict) and common.get("errYn") == "Y":
+        return {"ok": False, "calls": 1, "error": str(common.get("errMsg"))[:200]}
+    rows = ext._extract_list(data)
+    return {"ok": True, "calls": 1, "card_last4": (a.card_no or "")[-4:], "rows": len(rows),
+            "with_biz_no": sum(1 for r in rows if len(digits(str(r.get("storeBizNo") or ""))) == 10),
+            "range": [start.isoformat(), end.isoformat()]}

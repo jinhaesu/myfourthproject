@@ -1391,6 +1391,13 @@ export const hyphenApi = {
     api.post<{ cards: { card_no: string; card_nm: string; card_brand: string; valid_date: string; active_yn: string }[] }>(
       '/hyphen/cards/discover', body, { timeout: 180_000 },
     ),
+  cardLoginStatus: () =>
+    api.get<{ logins: { card_cd: string; saved: boolean; id_hint: string | null; updated_at: string | null; updated_by: string | null }[] }>('/hyphen/card-login'),
+  saveCardLogin: (body: { card_cd: string; user_id: string; user_pw: string }) =>
+    api.put<{ card_cd: string; saved: boolean; id_hint: string; updated_at: string }>('/hyphen/card-login', body),
+  testCardLogin: (card_cd: string) =>
+    api.post<{ ok: boolean; error?: string; rows?: number; with_biz_no?: number; card_last4?: string; calls?: number }>(
+      '/hyphen/card-login/test', null, { params: { card_cd }, timeout: 120_000 }),
   registerCard: (body: { card_cd: string; card_no: string; label?: string; login_method?: string; user_id?: string; user_pw?: string }) =>
     api.post<{ id: number }>('/hyphen/cards', body),
   deleteCard: (id: number) => api.delete(`/hyphen/cards/${id}`),

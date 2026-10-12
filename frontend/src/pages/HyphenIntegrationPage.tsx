@@ -11,6 +11,7 @@ import {
   CreditCardIcon,
 } from '@heroicons/react/24/outline'
 import { hyphenApi, type HyphenCredential } from '@/services/api'
+import CardCompanyLoginSection from '@/components/CardCompanyLoginSection'
 import { formatCurrency } from '@/utils/format'
 
 // 하이픈 은행코드 (개발가이드 코드집)
@@ -792,6 +793,7 @@ function CardPanel() {
           </div>
         </div>
       )}
+      <CardCompanyLoginSection />
       {cards.length > 0 && (
         <div className="mb-2">
           <div className="flex items-center justify-between mb-1">
