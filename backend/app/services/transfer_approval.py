@@ -15,7 +15,7 @@ from app.models.payable_transfer import PayableItem, TransferApproval
 
 logger = logging.getLogger(__name__)
 
-SCM_API_BASE = os.getenv("SCM_API_BASE", "https://myfirstproject-production.up.railway.app")
+SCM_API_BASE = os.getenv("SCM_API_BASE", "https://myfirstproject-api-557811875995.asia-northeast3.run.app")
 
 
 def _num(v: Any) -> float:
