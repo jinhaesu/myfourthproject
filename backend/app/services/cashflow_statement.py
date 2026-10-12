@@ -145,6 +145,44 @@ def _auto_line(tx: HyphenBankTx) -> str:
     return DEFAULT_OUT_LINE  # op_sga
 
 
+# ── 계정과목 1차 자동분류 (CF운영 시트 02/03 계정체계 참고 + 적요 키워드) ──
+# 출금 라인에만 키워드 적용. 매칭 실패 시 라인 기본 계정과목.
+_SUB_KW_RULES = [
+    (("급여", "임금", "상여", "노무", "인건", "월급", "퇴직"), "급여"),
+    (("카드", "비씨", "하나카드", "고위드", "카드대금", "신용카드"), "카드대금"),
+    (("임대", "월세", "임차", "렌트", "리스"), "지급임차료"),
+    (("통신", "kt", "skt", "유플러스", "인터넷", "전화"), "통신비"),
+    (("운반", "택배", "물류", "용차", "3pl", "퀵", "화물", "운송", "로직스"), "운반비"),
+    (("광고", "마케팅", "네이버", "카카오", "메타", "구글", "인스타", "퍼포먼스", "넵다"), "광고선전비"),
+    (("원재료", "분말", "아몬드", "계란", "농장", "농산", "컴파운드", "원료"), "원재료"),
+    (("포장", "비닐", "박스", "부자재", "부재료"), "부재료"),
+    (("상품", "사입", "완제품"), "상품"),
+    (("보험료", "4대보험", "국민연금", "건강보험", "고용보험", "산재"), "보험료"),
+    (("이자", "원리금"), "이자비용"),
+    (("수수료", "용역", "컨설팅", "법무", "회계", "세무대리"), "지급수수료"),
+    (("복리", "식대", "경조", "회식", "간식"), "복리후생비"),
+    (("전기", "수도", "가스", "관리비"), "수도광열비"),
+    (("소모품", "비품", "사무용품"), "소모품비"),
+    (("여비", "교통", "출장", "주유"), "여비교통비"),
+]
+_LINE_DEFAULT_SUB = {
+    "op_income": "외상매출금", "op_advance": "선정산", "op_cogs": "원재료",
+    "op_sga": "지급수수료", "non_op_in": "기타수입", "non_op_out": "세금과공과금",
+    "financing": "차입금", "investing": "유형자산", "uncat": "(미지정)", "exclude": "내부이체",
+}
+
+
+def _auto_sub(tx: HyphenBankTx, line: str) -> str:
+    """계정과목 1차 자동분류. 유입계열은 라인 기본값, 출금계열은 키워드 매칭."""
+    if line in ("op_income", "op_advance", "non_op_in"):
+        return _LINE_DEFAULT_SUB.get(line, "(미지정)")
+    hay = f"{tx.tr_name or ''} {tx.counterparty_name or ''} {tx.memo or ''}"
+    for kws, acct in _SUB_KW_RULES:
+        if any(k in hay for k in kws):
+            return acct
+    return _LINE_DEFAULT_SUB.get(line, "(미지정)")
+
+
 async def _own_last4(db: AsyncSession) -> Set[str]:
     """우리 보유계좌 last4 집합 — hyphen_bank_tx 에 존재하는 자기계좌(동기화 대상)."""
     rows = (await db.execute(select(func.distinct(HyphenBankTx.acct_last4)))).scalars().all()
@@ -249,7 +287,7 @@ async def build_pivot(db: AsyncSession, year: int) -> Dict[str, Any]:
         cell = cells[line].setdefault(bucket, {"in": 0.0, "out": 0.0})
         cell["in"] += i
         cell["out"] += o
-        sub = subs_map.get(tx.dedup_hash) or "(미지정)"
+        sub = subs_map.get(tx.dedup_hash) or _auto_sub(tx, line)
         scell = subcells[line].setdefault(sub, {}).setdefault(bucket, {"in": 0.0, "out": 0.0})
         scell["in"] += i
         scell["out"] += o
@@ -324,7 +362,7 @@ async def list_bucket_txs(
             "out_amt": float(tx.out_amt or 0),
             "cf_line": cur,
             "cf_line_label": CF_LINE_LABEL.get(cur, cur),
-            "cf_sub": subs_map.get(tx.dedup_hash),
+            "cf_sub": subs_map.get(tx.dedup_hash) or _auto_sub(tx, cur),
             "source": src,
         })
     out.sort(key=lambda r: (r["date"], -(r["in_amt"] + r["out_amt"])))
