@@ -920,53 +920,6 @@ async def hyphen_cron_nts_refresh(request: Request, floor: str = "2026-01-01", m
             "cache_distribution": [{"tax_kind": k, "status": s, "n": n} for k, s, n in kinds]}
 
 
-class CardLoginBody(BaseModel):
-    card_cd: str
-    user_id: str
-    user_pw: str
-
-
-def _id_hint(uid: str) -> str:
-    u = (uid or "").strip()
-    return (u[:2] + "***") if u else ""
-
-
-@router.get("/card-login")
-async def card_login_status(db: AsyncSession = Depends(get_db)):
-    """카드사 매입내역(561)용 기업회원 로그인 저장 현황 - 비밀번호는 절대 반환하지 않음."""
-    from app.models.hyphen_ext import HyphenCardCompanyLogin as _L
-    rows = (await db.execute(_select(_L))).scalars().all()
-    return {"logins": [{"card_cd": r.card_cd, "saved": True, "id_hint": r.id_hint,
-                        "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-                        "updated_by": r.updated_by} for r in rows]}
-
-
-@router.put("/card-login")
-async def card_login_save(body: CardLoginBody, db: AsyncSession = Depends(get_db), user=Depends(get_current_user)):
-    """카드사 로그인(아이디/비밀번호) 암호화 저장. 카드 등록행·card_key·분류는 건드리지 않음."""
-    from app.models.hyphen_ext import HyphenCardCompanyLogin as _L
-    if not body.user_id.strip() or not body.user_pw:
-        raise HTTPException(status_code=400, detail="아이디와 비밀번호를 입력하세요.")
-    row = (await db.execute(_select(_L).where(_L.card_cd == body.card_cd))).scalar_one_or_none()
-    if row is None:
-        row = _L(card_cd=body.card_cd, enc_user_id="", enc_user_pw="")
-        db.add(row)
-    row.enc_user_id = creds_svc._enc(body.user_id.strip())
-    row.enc_user_pw = creds_svc._enc(body.user_pw)
-    row.id_hint = _id_hint(body.user_id)
-    row.updated_by = getattr(user, "email", None)
-    row.updated_at = datetime.utcnow()
-    await db.commit()
-    return {"card_cd": body.card_cd, "saved": True, "id_hint": row.id_hint, "updated_at": row.updated_at.isoformat()}
-
-
-@router.post("/card-login/test")
-async def card_login_test(card_cd: str = "010", db: AsyncSession = Depends(get_db)):
-    """저장 후 시험 조회 - 561 1콜(카드 1장, 최근 30일)."""
-    from app.services import card_bizno as _cb
-    return await _cb.test_company_login(db, card_cd)
-
-
 @public_router.post("/cron/reinfer")
 async def hyphen_cron_reinfer(request: Request, floor: str = "2026-01-01", db: AsyncSession = Depends(get_db)):
     """추정값 전부 비우고 수동 매핑 -> 이름기준 추정을 재계산 (Hyphen 호출 없음). X-Cron-Secret 게이트."""
