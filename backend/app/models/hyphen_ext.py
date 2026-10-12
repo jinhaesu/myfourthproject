@@ -52,8 +52,24 @@ class HyphenCardTx(Base):
     inst_mon: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # 할부개월
     store_biz_no: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     tax_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    # 사업자번호 출처: 'hyphen'(매입내역 561 확정) / 'inferred'(동일 가맹점명·세금계산서로 추정)
+    biz_src: Mapped[Optional[str]] = mapped_column(String(12), nullable=True)
     dedup_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class MerchantBizStatus(Base):
+    """가맹점 사업자번호별 과세유형/상태 캐시 (국세청 상태조회 결과). 부가세 공제 참고판정용."""
+    __tablename__ = "merchant_biz_status"
+    __table_args__ = {"extend_existing": True}
+
+    biz_no: Mapped[str] = mapped_column(String(10), primary_key=True)   # 숫자 10자리
+    tax_kind: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)  # 일반과세자/간이과세자/간이과세자(세금계산서)/면세사업자/기타
+    status: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)    # 계속/휴업/폐업
+    end_dt: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)     # 폐업일 YYYYMMDD
+    raw_tax_type: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    source: Mapped[str] = mapped_column(String(12), default="nts")              # nts / hyphen
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class HyphenCashReceipt(Base):

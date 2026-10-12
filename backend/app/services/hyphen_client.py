@@ -399,7 +399,7 @@ class HyphenClient:
         self, *, card_cd: str, card_no: str, biz_no: str, start_date: str, end_date: str,
         sign_cert=None, sign_pri=None, sign_pw=None,
         user_id=None, user_pw=None, login_method: str = "CERT",
-        gustation: bool = False, path: Optional[str] = None,
+        gustation: bool = False, path: Optional[str] = None, drop: Optional[list] = None,
     ) -> Dict[str, Any]:
         """하이픈 지원팀 제출용: 카드 승인내역 호출의 요청/응답 원본을 마스킹해 반환(예외 미발생)."""
         p = path or os.getenv("HYPHEN_CARD_TX_PATH", "/in0007000559")
@@ -409,6 +409,8 @@ class HyphenClient:
             "useArea": os.getenv("HYPHEN_CARD_USEAREA", "D"),
             "cardNoFilter": os.getenv("HYPHEN_CARD_NOFILTER", "Y"), "orApprYn": "N",
         }
+        for k in (drop or []):
+            payload.pop(k, None)
         if login_method.upper() == "CERT":
             self._apply_cert(payload, sign_cert, sign_pri, sign_pw)
         else:
