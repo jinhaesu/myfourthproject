@@ -143,10 +143,17 @@ async def fill_from_hometax(db, *, start_date: str, end_date: str) -> Dict[str, 
             "ht_updated": updated, "ambiguous": ambiguous, "unmatched": unmatched}
 
 
-async def company_logins(db) -> Dict[str, tuple]:
+# 561 응답에 storeBizNo/가맹점 상세를 주지 않는 카드사(2026-10-12 실측: BC 010 - storeBizNo·storeCeo·storeAddr 전부 빈값).
+# 콜만 낭비하므로 월 배치에서 제외. 다른 카드사는 company login 저장 시 그대로 사용.
+NO_BIZ_IN_561 = {"010"}
+
+
+async def company_logins(db, batch: bool = False) -> Dict[str, tuple]:
     """카드사코드 -> (아이디, 비밀번호) 복호화 (561용 기업회원 로그인)."""
     out = {}
     for r in (await db.execute(select(HyphenCardCompanyLogin))).scalars().all():
+        if batch and r.card_cd in NO_BIZ_IN_561:
+            continue
         out[r.card_cd] = (_dec(r.enc_user_id), _dec(r.enc_user_pw))
     return out
 
@@ -160,7 +167,7 @@ async def fill_from_purchase(
     since: 이 날짜 이후의 공백/추정 행만 대상(홈택스가 아직 못 채운 최근분)."""
     client = get_hyphen_client()
     accts = (await db.execute(select(HyphenCardAccount).order_by(HyphenCardAccount.id))).scalars().all()
-    logins = await company_logins(db)
+    logins = await company_logins(db, batch=True)
     use = []
     for a in accts:
         if a.login_method.upper() == "ID":
