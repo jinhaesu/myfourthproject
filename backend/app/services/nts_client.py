@@ -33,7 +33,7 @@ async def fetch_status(biz_nos: List[str]) -> Dict[str, Dict]:
             stt = (it.get("b_stt") or "").strip()
             status = "폐업" if "폐업" in stt else "휴업" if "휴업" in stt else "계속" if "계속" in stt else None
             out[b] = {
-                "tax_kind": kind_from_nts(it.get("tax_type_cd"), raw),
+                "tax_kind": kind_from_nts(it.get("tax_type_cd"), raw, it.get("invoice_apply_dt")),
                 "status": status, "end_dt": (it.get("end_dt") or "")[:8] or None,
                 "raw_tax_type": raw[:80] or None,
             }

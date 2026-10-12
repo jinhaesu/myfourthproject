@@ -49,14 +49,14 @@ def kind_from_number(biz_no: str) -> Optional[str]:
     return None
 
 
-def kind_from_nts(tax_type_cd: Optional[str], raw_text: Optional[str]) -> Optional[str]:
+def kind_from_nts(tax_type_cd: Optional[str], raw_text: Optional[str], invoice_apply_dt: Optional[str] = None) -> Optional[str]:
     raw = raw_text or ""
     if "일반" in raw:
         return KIND_GENERAL
     if "면세" in raw:
         return KIND_EXEMPT
     if "간이" in raw:
-        return KIND_SIMPLE_INV if ("세금계산서" in raw or tax_type_cd == "06") else KIND_SIMPLE
+        return KIND_SIMPLE_INV if ("세금계산서" in raw or tax_type_cd == "06" or (invoice_apply_dt or "").strip()) else KIND_SIMPLE
     return None
 
 

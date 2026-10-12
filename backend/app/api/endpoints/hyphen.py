@@ -899,6 +899,27 @@ async def hyphen_cron_biz_fill(
     return {"started": True}
 
 
+@public_router.post("/cron/nts-refresh")
+async def hyphen_cron_nts_refresh(request: Request, floor: str = "2026-01-01", max_age_days: int = 0,
+                                  db: AsyncSession = Depends(get_db)):
+    """카드 가맹점 사업자번호(floor 이후) 전체를 국세청 상태조회(100건/콜)로 갱신·캐시. X-Cron-Secret 게이트."""
+    import os as _os
+    from sqlalchemy import select as _sel, func as _fn
+    from app.models.hyphen_ext import HyphenCardTx as _T, MerchantBizStatus as _M
+    from app.services import nts_client as _nts
+    from app.services.vat_deduction import digits as _dg
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if not secret or request.headers.get("x-cron-secret", "") != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    raw = (await db.execute(_sel(_T.store_biz_no).where(
+        _fn.replace(_T.use_dt, "-", "") >= floor.replace("-", ""), _T.store_biz_no.isnot(None)).distinct())).scalars().all()
+    nums = sorted({_dg(x) for x in raw if len(_dg(x)) == 10})
+    res = await _nts.refresh_statuses(db, nums, max_age_days=max_age_days)
+    kinds = (await db.execute(_sel(_M.tax_kind, _M.status, _fn.count()).group_by(_M.tax_kind, _M.status))).all()
+    return {"unique_numbers": len(nums), "calls": -(-len(nums) // 100), **res,
+            "cache_distribution": [{"tax_kind": k, "status": s, "n": n} for k, s, n in kinds]}
+
+
 @public_router.get("/cron/biz-fill-status")
 async def hyphen_cron_biz_fill_status(request: Request, db: AsyncSession = Depends(get_db)):
     import os as _os
