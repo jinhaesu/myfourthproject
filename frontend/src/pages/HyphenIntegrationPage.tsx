@@ -484,6 +484,11 @@ const CARD_CODES: { cd: string; name: string }[] = [
 const cardName = (cd: string) => CARD_CODES.find((c) => c.cd === cd)?.name || cd
 // 카드번호 유효 길이 — 일반 법인카드 16자리, 고위드 BC카드 15자리
 const CARD_LEN_OK = (n: number) => n === 15 || n === 16
+// 카드번호 전체 표기 — 4자리 단위 그룹(15자리는 4-4-4-3)
+const fmtCardNo = (raw: string) => {
+  const d = (raw || '').replace(/\D/g, '')
+  return d.replace(/(.{4})/g, '$1 ').trim()
+}
 
 function last3mRange() {
   const to = new Date(); const from = new Date(); from.setMonth(to.getMonth() - 3)
@@ -809,7 +814,7 @@ function CardPanel() {
           <div className="flex flex-wrap gap-1.5">
             {cards.map((c) => (
               <span key={c.id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs border border-ink-200 dark:border-ink-800">
-                {cardName(c.card_cd)} {c.card_no.slice(-4)} {c.label && `· ${c.label}`}
+                {cardName(c.card_cd)} <span className="font-mono">{fmtCardNo(c.card_no)}</span> {c.label && `· ${c.label}`}
                 <button onClick={() => delMut.mutate(c.id)} className="text-rose-500 ml-0.5">×</button>
               </span>
             ))}

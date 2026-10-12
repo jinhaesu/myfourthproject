@@ -238,8 +238,13 @@ async def fetch_aisystem_settlement(month: str, worker_type: str) -> List[Dict[s
     if not data:
         return []
 
-    # 시급 조회
+    # 시급 조회 — workers/lite 는 이름을 name_ko 로 내려줌(name 키 없음).
+    # 이름(name_ko) 매칭 + 전화번호(숫자만) 보조 매칭. (과거 w.get("name")→전건 미스→금액 0 버그)
+    def _digits(s: Any) -> str:
+        return "".join(c for c in str(s or "") if c.isdigit())
+
     rates: Dict[str, float] = {}
+    rates_by_phone: Dict[str, float] = {}
     lite = await _aisystem_get("/api/workers/lite", {})
     if isinstance(lite, dict):
         workers = lite.get("workers") or lite.get("data") or []
@@ -248,14 +253,20 @@ async def fetch_aisystem_settlement(month: str, worker_type: str) -> List[Dict[s
     else:
         workers = []
     for w in workers:
-        nm = (w.get("name") or "").strip()
+        nm = (w.get("name_ko") or w.get("name") or "").strip()
+        rate = _num(w.get("hourly_rate"))
         if nm:
-            rates[nm] = _num(w.get("hourly_rate"))
+            rates[nm] = rate
+        ph = _digits(w.get("phone"))
+        if ph:
+            rates_by_phone[ph] = rate
 
     out = []
     for p in data.get("results", []):
         name = (p.get("name") or "").strip()
-        rate = rates.get(name, 0.0)
+        rate = rates.get(name)
+        if not rate:
+            rate = rates_by_phone.get(_digits(p.get("phone")), 0.0)
         hours = (
             _num(p.get("regular_hours")) + _num(p.get("overtime_hours")) * 1.5
             + _num(p.get("night_hours")) * 0.5 + _num(p.get("weekly_holiday_hours"))
