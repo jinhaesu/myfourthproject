@@ -352,6 +352,19 @@ async def init_db():
             synced_at TIMESTAMP DEFAULT NOW()
         )""",
         "CREATE INDEX IF NOT EXISTS ix_hyphen_cardtx_dt ON hyphen_card_tx(use_dt)",
+        "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS biz_src VARCHAR(12)",
+        "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS ht_kind VARCHAR(20)",
+        "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS ht_deduct VARCHAR(10)",
+        "ALTER TABLE hyphen_card_tx ADD COLUMN IF NOT EXISTS ht_reason VARCHAR(60)",
+        """CREATE TABLE IF NOT EXISTS merchant_biz_status (
+            biz_no VARCHAR(10) PRIMARY KEY,
+            tax_kind VARCHAR(30),
+            status VARCHAR(10),
+            end_dt VARCHAR(8),
+            raw_tax_type VARCHAR(80),
+            source VARCHAR(12) DEFAULT 'nts',
+            checked_at TIMESTAMP DEFAULT NOW()
+        )""",
         # 하이픈 동기화 커버리지 (한 번 당긴 범위 재호출 방지)
         """CREATE TABLE IF NOT EXISTS hyphen_sync_coverage (
             id SERIAL PRIMARY KEY,

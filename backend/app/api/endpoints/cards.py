@@ -333,7 +333,10 @@ async def export_classifications_api(
     if not is_accounting_admin(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="관리자 전용")
     rows = await export_month_classifications(db, month)
-    return {"month": month, "rows": rows, "count": len(rows)}
+    from app.services.vat_deduction import summarize
+    return {"month": month, "rows": rows, "count": len(rows),
+            "vat_summary": summarize([{"amount": r.get("amount"), "deduct": r.get("deduct"),
+                                       "tax_kind": r.get("tax_kind")} for r in rows])}
 
 
 @router.get("/closings")
@@ -396,11 +399,15 @@ async def closing_detail(
     """마감 상세 — 그 달 건별 내역 + 분류 (관리자 검토용)."""
     await _ensure_card_access(db, user, card_key)
     start, end = _month_range(month)
+    txs = await list_transactions(db, card_key, start, end)
+    from app.services.vat_deduction import summarize
     return {
         "card_key": card_key,
         "month": month,
         "closing": next(iter(await list_closings(db, month=month, only_card_keys=[card_key])), None),
-        "transactions": await list_transactions(db, card_key, start, end),
+        "transactions": txs,
+        "vat_summary": summarize([{"amount": t["amount"], "deduct": (t.get("vat") or {}).get("deduct"),
+                                   "tax_kind": (t.get("vat") or {}).get("tax_kind")} for t in txs]),
     }
 
 

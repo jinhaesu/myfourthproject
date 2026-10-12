@@ -852,10 +852,113 @@ async def hyphen_debug_accounts(request: Request, db: AsyncSession = Depends(get
             "merged_hyphen_only_count": len(merged_bank), "merged_hyphen_only": merged_bank}
 
 
+@public_router.post("/cron/biz-fill")
+async def hyphen_cron_biz_fill(
+    request: Request,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    floor: str = "2026-01-01",
+    chunk_days: int = 0,
+    max_cards: Optional[int] = None,
+    retry: int = 1,
+    wait: int = 0,
+    hometax: int = 1,
+):
+    """월 1회 가맹점 사업자번호 채움 배치 (Cloud Scheduler 매월 1일 KST 06:00).
+    기본 범위 = 직전 달 전체 + 이전 공백 재시도(가장 오래된 공백일까지, floor 이후). 카드 1장당 매입내역(561) 1콜.
+    wait=0이면 백그라운드 실행 후 즉시 반환(상태는 GET /cron/biz-fill-status). X-Cron-Secret 게이트."""
+    import os as _os
+    import asyncio as _asyncio
+    from app.core import database as _dbm
+    from app.services import card_bizno as _cb
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if not secret or request.headers.get("x-cron-secret", "") != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    if _cb.STATE["running"]:
+        return {"started": False, "reason": "already running"}
+
+    async def _job():
+        _cb.STATE["running"] = True
+        try:
+            async with _dbm.async_session_factory() as s:
+                res = await _cb.run_monthly(s, start_date=start_date, end_date=end_date, floor=floor,
+                                            chunk_days=chunk_days, include_retry=bool(retry), max_cards=max_cards,
+                                            use_hometax=bool(hometax))
+            _cb.STATE["last"] = {"ok": True, "at": datetime.utcnow().isoformat(), **res}
+            return res
+        except Exception as e:  # noqa: BLE001
+            logger.exception("biz-fill 실패")
+            _cb.STATE["last"] = {"ok": False, "at": datetime.utcnow().isoformat(), "error": str(e)[:300]}
+            return _cb.STATE["last"]
+        finally:
+            _cb.STATE["running"] = False
+
+    if wait:
+        return await _job()
+    _asyncio.create_task(_job())
+    return {"started": True}
+
+
+@public_router.get("/cron/biz-fill-status")
+async def hyphen_cron_biz_fill_status(request: Request, db: AsyncSession = Depends(get_db)):
+    import os as _os
+    from app.services import card_bizno as _cb
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if not secret or request.headers.get("x-cron-secret", "") != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return {"running": _cb.STATE["running"], "last": _cb.STATE["last"], "stats": await _cb.fill_stats(db)}
+
+
+@public_router.post("/cron/hometax-probe")
+async def hyphen_hometax_probe(
+    request: Request,
+    paths: str,
+    days: int = 30,
+    extra: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """홈택스(in0076xxxxxx) 엔드포인트 탐색용 — 현금영수증과 같은 CERT 페이로드로 호출하고 응답 구조만 요약.
+    paths=in0076000276,in0076000277 (쉼표). extra='{"k":"v"}' 추가 파라미터. X-Cron-Secret 게이트."""
+    import os as _os
+    import json as _json
+    from datetime import date as _date, timedelta as _td
+    secret = _os.getenv("HYPHEN_CRON_SECRET", "")
+    if not secret or request.headers.get("x-cron-secret", "") != secret:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    cert = await ext_svc.get_company_cert(db)
+    client = get_hyphen_client()
+    today = _date.today()
+    out = []
+    for pth in [x.strip() for x in paths.split(",") if x.strip()]:
+        payload: Dict[str, Any] = {
+            "loginMethod": "CERT", "bizNo": ext_svc.COMPANY_BIZ_NO,
+            "inqrDtStrt": (today - _td(days=days)).strftime("%Y%m%d"), "inqrDtEnd": today.strftime("%Y%m%d"),
+            "detailYn": "N",
+        }
+        if extra:
+            payload.update(_json.loads(extra))
+        client._apply_cert(payload, cert[0], cert[1], cert[2])
+        try:
+            data = await client.call_bank(payload=payload, path="/" + pth.lstrip("/"), gustation=False)
+        except Exception as e:  # noqa: BLE001
+            out.append({"path": pth, "error": str(e)[:200]})
+            continue
+        d = data.get("data") if isinstance(data, dict) else None
+        lst = ext_svc._extract_list(data)
+        out.append({"path": pth, "common": (data or {}).get("common"),
+                    "data_keys": list(d.keys()) if isinstance(d, dict) else type(d).__name__,
+                    "rows": len(lst), "row_keys": sorted(lst[0].keys()) if lst else None,
+                    "sample": ({k: v for k, v in lst[0].items()} if lst else None)})
+    return out
+
+
 @public_router.post("/cron/card-debug")
 async def hyphen_card_debug(
     request: Request,
     days: int = 30,
+    path: Optional[str] = None,
+    only_cd: Optional[str] = None,
+    drop: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
     """하이픈 지원팀 제출용: 실패하는 카드 승인내역 호출의 요청/응답 원본(마스킹) 캡처.
@@ -881,10 +984,13 @@ async def hyphen_card_debug(
         by_cd.setdefault(a.card_cd, a)
     out = []
     for card_cd, rep in by_cd.items():
+        if only_cd and card_cd != only_cd:
+            continue
         sign = cert if (rep.login_method == "CERT" and cert) else (None, None, None)
         cap = await client.card_transactions_debug(
             card_cd=card_cd, card_no=rep.card_no, biz_no=ext_svc.COMPANY_BIZ_NO,
-            start_date=start, end_date=end,
+            start_date=start, end_date=end, path=path,
+            drop=[x for x in (drop or '').split(',') if x],
             sign_cert=sign[0], sign_pri=sign[1], sign_pw=sign[2],
             user_id=creds_svc._dec(rep.enc_user_id),
             user_pw=creds_svc._dec(rep.enc_user_pw),
