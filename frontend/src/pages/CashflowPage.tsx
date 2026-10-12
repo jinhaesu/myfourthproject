@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { cashflowApi, type CashflowTx } from '@/services/api'
+import { cashflowApi, cardsApi, type CashflowTx } from '@/services/api'
 
 const won = (n: number) => {
   const v = Math.round(n || 0)
@@ -16,6 +16,7 @@ export default function CashflowPage() {
   const [year, setYear] = useState(thisYear)
   const [showXun, setShowXun] = useState(false)
   const [drill, setDrill] = useState<{ month: number; xun?: number } | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   const pivotQ = useQuery({
     queryKey: ['cashflow-pivot', year],
@@ -33,6 +34,13 @@ export default function CashflowPage() {
     if (x) { const v = c[`${m}-${x}`]; return v ? v.in - v.out : 0 }
     return XUNS.reduce((s, xx) => { const v = c[`${m}-${xx}`]; return s + (v ? v.in - v.out : 0) }, 0)
   }
+  const subCellNet = (lineKey: string, sub: string, m: number, x?: number) => {
+    const sc = pivot?.subcells?.[lineKey]?.[sub]
+    if (!sc) return 0
+    if (x) { const v = sc[`${m}-${x}`]; return v ? v.in - v.out : 0 }
+    return XUNS.reduce((s, xx) => { const v = sc[`${m}-${xx}`]; return s + (v ? v.in - v.out : 0) }, 0)
+  }
+  const subsOf = (lineKey: string) => Object.keys(pivot?.subcells?.[lineKey] || {})
   const netCell = (m: number, x?: number) =>
     x ? (pivot?.net[`${m}-${x}`] || 0) : XUNS.reduce((s, xx) => s + (pivot?.net[`${m}-${xx}`] || 0), 0)
   const closingCell = (m: number, x?: number) => pivot?.closing[`${m}-${x || 30}`] ?? 0
@@ -90,21 +98,49 @@ export default function CashflowPage() {
               </tr>
             </thead>
             <tbody>
-              {lineDefs.map((l) => (
-                <tr key={l.key} className="border-t border-ink-100 dark:border-ink-900 hover:bg-canvas-50/50 dark:hover:bg-ink-950/40">
-                  <td className="px-2 py-1 sticky left-0 bg-white dark:bg-ink-950 font-medium">{l.label}</td>
-                  {cols.map((c, i) => {
-                    const v = cellNet(l.key, c.m, c.x)
-                    return (
-                      <td key={i}
-                        onClick={() => setDrill({ month: c.m, xun: c.x })}
-                        className={`px-2 py-1 text-right font-mono cursor-pointer hover:underline ${!c.x ? 'bg-ink-50/60 dark:bg-ink-900/50 font-semibold' : ''} ${v < 0 ? 'text-rose-600' : v > 0 ? 'text-ink-800 dark:text-ink-200' : 'text-ink-300'}`}>
-                        {v ? won(v) : '-'}
-                      </td>
+              {lineDefs.flatMap((l) => {
+                const subs = subsOf(l.key)
+                const isOpen = expanded.has(l.key)
+                const rows = [
+                  <tr key={l.key} className="border-t border-ink-100 dark:border-ink-900 hover:bg-canvas-50/50 dark:hover:bg-ink-950/40">
+                    <td className="px-2 py-1 sticky left-0 bg-white dark:bg-ink-950 font-medium">
+                      {subs.length > 0 && (
+                        <button onClick={() => setExpanded((p) => { const n = new Set(p); n.has(l.key) ? n.delete(l.key) : n.add(l.key); return n })}
+                          className="mr-1 text-ink-400">{isOpen ? '▾' : '▸'}</button>
+                      )}
+                      {l.label}
+                    </td>
+                    {cols.map((c, i) => {
+                      const v = cellNet(l.key, c.m, c.x)
+                      return (
+                        <td key={i} onClick={() => setDrill({ month: c.m, xun: c.x })}
+                          className={`px-2 py-1 text-right font-mono cursor-pointer hover:underline ${!c.x ? 'bg-ink-50/60 dark:bg-ink-900/50 font-semibold' : ''} ${v < 0 ? 'text-rose-600' : v > 0 ? 'text-ink-800 dark:text-ink-200' : 'text-ink-300'}`}>
+                          {v ? won(v) : '-'}
+                        </td>
+                      )
+                    })}
+                  </tr>,
+                ]
+                if (isOpen) {
+                  for (const sub of subs) {
+                    rows.push(
+                      <tr key={`${l.key}::${sub}`} className="border-t border-ink-50 dark:border-ink-900/50 bg-canvas-50/40 dark:bg-ink-950/30">
+                        <td className="px-2 py-0.5 pl-7 sticky left-0 bg-canvas-50 dark:bg-ink-950 text-ink-500 dark:text-ink-400 truncate max-w-[120px]" title={sub}>{sub}</td>
+                        {cols.map((c, i) => {
+                          const v = subCellNet(l.key, sub, c.m, c.x)
+                          return (
+                            <td key={i} onClick={() => setDrill({ month: c.m, xun: c.x })}
+                              className={`px-2 py-0.5 text-right font-mono text-ink-500 cursor-pointer hover:underline ${!c.x ? 'bg-ink-50/40 dark:bg-ink-900/30' : ''}`}>
+                              {v ? won(v) : ''}
+                            </td>
+                          )
+                        })}
+                      </tr>,
                     )
-                  })}
-                </tr>
-              ))}
+                  }
+                }
+                return rows
+              })}
               <tr className="border-t-2 border-ink-300 dark:border-ink-700 bg-canvas-50 dark:bg-ink-950 font-bold">
                 <td className="px-2 py-1 sticky left-0 bg-canvas-50 dark:bg-ink-950">순현금증감</td>
                 {cols.map((c, i) => {
@@ -143,11 +179,13 @@ function DrillPanel({ year, month, xun, lineDefs, onClose, onChanged }: {
   const qc = useQueryClient()
   const key = ['cashflow-tx', year, month, xun ?? 'all'] as const
   const txQ = useQuery({ queryKey: key, queryFn: () => cashflowApi.transactions(year, month, xun).then((r) => r.data.items) })
+  const acctQ = useQuery({ queryKey: ['cf-accounts'], queryFn: () => cardsApi.accounts().then((r: any) => r.data.accounts as { code: string; name: string }[]) })
+  const accounts = acctQ.data || []
   const [sel, setSel] = useState<Set<string>>(new Set())
   const [bulkLine, setBulkLine] = useState('op_sga')
 
   const classifyMut = useMutation({
-    mutationFn: (v: { hash: string; line: string }) => cashflowApi.classify(v.hash, v.line),
+    mutationFn: (v: { hash: string; line: string; sub?: string }) => cashflowApi.classify(v.hash, v.line, v.sub),
     onSuccess: () => { qc.invalidateQueries({ queryKey: key }); onChanged() },
   })
   const bulkMut = useMutation({
@@ -182,6 +220,7 @@ function DrillPanel({ year, month, xun, lineDefs, onClose, onChanged }: {
               <th className="text-right px-1 py-1">입금</th>
               <th className="text-right px-1 py-1">출금</th>
               <th className="text-left px-1 py-1">분류</th>
+              <th className="text-left px-1 py-1">계정과목</th>
             </tr>
           </thead>
           <tbody>
@@ -193,9 +232,16 @@ function DrillPanel({ year, month, xun, lineDefs, onClose, onChanged }: {
                 <td className="px-1 py-1 text-right font-mono text-emerald-600">{t.in_amt ? won(t.in_amt) : ''}</td>
                 <td className="px-1 py-1 text-right font-mono text-rose-600">{t.out_amt ? won(t.out_amt) : ''}</td>
                 <td className="px-1 py-1">
-                  <select value={t.cf_line} onChange={(e) => classifyMut.mutate({ hash: t.tx_hash, line: e.target.value })}
+                  <select value={t.cf_line} onChange={(e) => classifyMut.mutate({ hash: t.tx_hash, line: e.target.value, sub: t.cf_sub || undefined })}
                     className={`border rounded px-1 py-0.5 bg-transparent ${t.source === 'manual' ? 'border-brand-500 text-brand-600' : 'border-ink-200 dark:border-ink-800'}`}>
                     {lineDefs.map((l) => <option key={l.key} value={l.key}>{l.label}</option>)}
+                  </select>
+                </td>
+                <td className="px-1 py-1">
+                  <select value={t.cf_sub || ''} onChange={(e) => classifyMut.mutate({ hash: t.tx_hash, line: t.cf_line, sub: e.target.value || undefined })}
+                    className="border border-ink-200 dark:border-ink-800 rounded px-1 py-0.5 bg-transparent max-w-[140px]">
+                    <option value="">(미지정)</option>
+                    {accounts.map((a) => <option key={a.code} value={a.name}>{a.name}</option>)}
                   </select>
                 </td>
               </tr>

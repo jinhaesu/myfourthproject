@@ -208,11 +208,18 @@ async def build_pivot(db: AsyncSession, year: int) -> Dict[str, Any]:
     )).scalars().all()
 
     classes = await _load_classes(db, [t.dedup_hash for t in txs])
+    # 계정과목(cf_sub) — 수동 지정된 것만(소수). 라인 하위 세부행 집계용.
+    sub_rows = (await db.execute(
+        select(CashflowClass.tx_hash, CashflowClass.cf_sub).where(CashflowClass.cf_sub.isnot(None))
+    )).all()
+    subs_map = {h: s for h, s in sub_rows if s}
     own4 = await _own_last4(db)
     internal_hashes = detect_internal(txs, own4)
 
     # cells[line]["M-X"] = {"in": , "out": }
     cells: Dict[str, Dict[str, Dict[str, float]]] = {k: {} for k in CF_LINE_KEYS}
+    # subcells[line][계정과목]["M-X"] = {"in": , "out": } — 시트처럼 계정과목 세부행
+    subcells: Dict[str, Dict[str, Dict[str, Dict[str, float]]]] = {k: {} for k in CF_LINE_KEYS}
     # 旬 순증감 net["M-X"], 내부거래/미인식 카운트
     net: Dict[str, float] = {}
     internal_ct = 0
@@ -237,11 +244,15 @@ async def build_pivot(db: AsyncSession, year: int) -> Dict[str, Any]:
             if line not in cells:
                 line = "uncat"
         bucket = f"{d.month}-{xun_of(d.day)}"
-        cell = cells[line].setdefault(bucket, {"in": 0.0, "out": 0.0})
         i = float(tx.in_amt or 0)
         o = float(tx.out_amt or 0)
+        cell = cells[line].setdefault(bucket, {"in": 0.0, "out": 0.0})
         cell["in"] += i
         cell["out"] += o
+        sub = subs_map.get(tx.dedup_hash) or "(미지정)"
+        scell = subcells[line].setdefault(sub, {}).setdefault(bucket, {"in": 0.0, "out": 0.0})
+        scell["in"] += i
+        scell["out"] += o
         net[bucket] = net.get(bucket, 0.0) + (i - o)
         used += 1
 
@@ -263,6 +274,7 @@ async def build_pivot(db: AsyncSession, year: int) -> Dict[str, Any]:
         "lines": [{"key": k, "label": CF_LINE_LABEL[k], "dir": d} for k, _, d in CF_LINES],
         "buckets": buckets_order,
         "cells": cells,
+        "subcells": subcells,
         "net": net_full,
         "closing": closing,
         "opening": opening,
@@ -280,6 +292,10 @@ async def list_bucket_txs(
         select(HyphenBankTx).where(HyphenBankTx.tr_date.like(f"{year}%"))
     )).scalars().all()
     classes = await _load_classes(db, [t.dedup_hash for t in txs])
+    sub_rows = (await db.execute(
+        select(CashflowClass.tx_hash, CashflowClass.cf_sub).where(CashflowClass.cf_sub.isnot(None))
+    )).all()
+    subs_map = {h: s for h, s in sub_rows if s}
     own4 = await _own_last4(db)
     internal_hashes = detect_internal(txs, own4)
     out = []
@@ -308,6 +324,7 @@ async def list_bucket_txs(
             "out_amt": float(tx.out_amt or 0),
             "cf_line": cur,
             "cf_line_label": CF_LINE_LABEL.get(cur, cur),
+            "cf_sub": subs_map.get(tx.dedup_hash),
             "source": src,
         })
     out.sort(key=lambda r: (r["date"], -(r["in_amt"] + r["out_amt"])))

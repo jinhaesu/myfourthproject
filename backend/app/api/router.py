@@ -43,6 +43,8 @@ from app.api.endpoints import (
     payroll,
     purchase,
     cashflow,
+    transfer_approval,
+    insurance,
 )
 
 api_router = APIRouter()
@@ -93,3 +95,5 @@ api_router.include_router(daily_cash_report.router, prefix="/daily-cash-report",
 api_router.include_router(auto_voucher.router, prefix="/auto-voucher", tags=["자동전표"], dependencies=ADMIN_ONLY)
 api_router.include_router(payroll.router, prefix="/payroll", tags=["급여관리"], dependencies=ADMIN_ONLY)
 api_router.include_router(cashflow.router, prefix="/cashflow", tags=["현금흐름"], dependencies=ADMIN_ONLY)
+api_router.include_router(transfer_approval.router, prefix="/transfer-approval", tags=["이체승인"], dependencies=ADMIN_ONLY)
+api_router.include_router(insurance.router, prefix="/insurance", tags=["4대보험"], dependencies=ADMIN_ONLY)

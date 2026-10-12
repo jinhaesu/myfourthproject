@@ -1572,6 +1572,7 @@ export interface CashflowPivot {
   lines: { key: string; label: string; dir: string }[]
   buckets: string[]
   cells: Record<string, Record<string, { in: number; out: number }>>
+  subcells: Record<string, Record<string, Record<string, { in: number; out: number }>>>
   net: Record<string, number>
   closing: Record<string, number>
   opening: number
@@ -1581,7 +1582,7 @@ export interface CashflowPivot {
 }
 export interface CashflowTx {
   tx_hash: string; date: string; acct_last4?: string; name: string
-  in_amt: number; out_amt: number; cf_line: string; cf_line_label: string; source: string
+  in_amt: number; out_amt: number; cf_line: string; cf_line_label: string; cf_sub?: string | null; source: string
 }
 export const cashflowApi = {
   pivot: (year: number) =>
@@ -1596,6 +1597,37 @@ export const cashflowApi = {
     api.post('/cashflow/classify/bulk', { tx_hashes, cf_line }, { params: { by } }),
   setOpening: (year: number, opening_balance: number | null) =>
     api.put('/cashflow/opening', { year, opening_balance }),
+}
+
+export interface PayableItem {
+  id: number; source: 'scm' | 'excel'; vendor: string
+  debt_date: string | null; debt_month: number | null
+  account_code: string | null; account_name: string | null; bank_name: string | null
+  amount: number; paid_amount: number; remaining: number
+  due_date: string | null; xun: number | null; manager: string | null
+  status: 'pending' | 'approved' | 'paid'; memo: string | null
+}
+export interface TransferGroup { xun: number; items: PayableItem[]; subtotal: number; count: number; approval: 'pending' | 'approved' }
+export const transferApprovalApi = {
+  payables: (year?: number, month?: number, status?: string) =>
+    api.get<{ items: PayableItem[]; count: number }>('/transfer-approval/payables', { params: { year, month, status } }),
+  transferList: (year: number, month: number, xun?: number) =>
+    api.get<{ year: number; month: number; groups: TransferGroup[]; total: number; count: number }>('/transfer-approval/transfer-list', { params: { year, month, xun }, timeout: 60_000 }),
+  syncScm: () => api.post<{ ok: boolean; new: number; updated: number; asof?: string; warnings?: string[]; error?: string }>('/transfer-approval/sync-scm', {}, { timeout: 120_000 }),
+  importRows: (rows: any[]) => api.post<{ ok: boolean; new: number; updated: number; skipped: number }>('/transfer-approval/import', { rows }),
+  approve: (year: number, month: number, xun: number, by?: string) =>
+    api.post('/transfer-approval/approve', { year, month, xun }, { params: { by } }),
+  markPaid: (id: number, paid_amount?: number) =>
+    api.post<{ ok: boolean; id: number; status: string; scm_notified: boolean; note: string | null }>(`/transfer-approval/payables/${id}/paid`, { paid_amount }),
+}
+
+export const insuranceApi = {
+  policy: () => api.get('/insurance/policy'),
+  preview: (params: { nationality: string; visa?: string; gross: number; age?: number; ltc_applied?: boolean; ui_opt_in?: boolean; country_excluded?: boolean }) =>
+    api.get('/insurance/preview', { params }),
+  putRates: (body: any) => api.put('/insurance/rates', body),
+  putVisaRule: (body: any) => api.put('/insurance/visa-rule', body),
+  putWorkerOverride: (body: any) => api.put('/insurance/worker-override', body),
 }
 
 export const payrollApi = {

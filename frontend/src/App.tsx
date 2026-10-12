@@ -53,6 +53,8 @@ const ChannelProfitabilityPage = lazyRetry(() => import('@/pages/ChannelProfitab
 const ContactScoringPage = lazyRetry(() => import('@/pages/ContactScoringPage'))
 const CashflowForecastPage = lazyRetry(() => import('@/pages/CashflowForecastPage'))
 const CashflowPage = lazyRetry(() => import('@/pages/CashflowPage'))
+const TransferApprovalPage = lazyRetry(() => import('@/pages/TransferApprovalPage'))
+const InsurancePolicyPage = lazyRetry(() => import('@/pages/InsurancePolicyPage'))
 const AuditReportPage = lazyRetry(() => import('@/pages/AuditReportPage'))
 const ExchangeRatesPage = lazyRetry(() => import('@/pages/ExchangeRatesPage'))
 const ArApPage = lazyRetry(() => import('@/pages/ArApPage'))
@@ -137,6 +139,8 @@ function App() {
           <Route path="contact-scoring" element={<AdminRoute><ContactScoringPage /></AdminRoute>} />
           <Route path="cashflow-forecast" element={<AdminRoute><CashflowForecastPage /></AdminRoute>} />
           <Route path="cashflow" element={<AdminRoute><CashflowPage /></AdminRoute>} />
+          <Route path="transfer-approval" element={<AdminRoute><TransferApprovalPage /></AdminRoute>} />
+          <Route path="insurance-policy" element={<AdminRoute><InsurancePolicyPage /></AdminRoute>} />
           <Route path="audit-report" element={<AdminRoute><AuditReportPage /></AdminRoute>} />
           <Route path="ar-ap" element={<AdminRoute><ArApPage /></AdminRoute>} />
           <Route path="payroll" element={<AdminRoute><PayrollPage /></AdminRoute>} />

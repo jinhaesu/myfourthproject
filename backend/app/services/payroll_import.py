@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 from jose import jwt
 
+from app.services import insurance_policy as pol
+
 logger = logging.getLogger(__name__)
 
 PAYDAY = 10  # 매달 급여일
@@ -170,6 +172,98 @@ async def _aisystem_get(path: str, params: Dict[str, Any]) -> Any:
     except Exception:
         logger.exception(f"aisystem {path} 호출 실패")
         return None
+
+
+async def fetch_onboarding_visa_map() -> Dict[str, Dict[str, Any]]:
+    """현장시스템 onboarding(정규직)에서 국적/비자 맵 — 이름·id_number 양쪽 키로 반환."""
+    data = await _aisystem_get("/api/onboarding", {})
+    items = []
+    if isinstance(data, dict):
+        items = data.get("items") or data.get("data") or []
+    elif isinstance(data, list):
+        items = data
+    out: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        info = {
+            "nationality": it.get("nationality"),
+            "visa_type": it.get("visa_type"),
+            "visa_expiry": it.get("visa_expiry"),
+            "monthly_salary": _num(it.get("monthly_salary")),
+        }
+        nm = (it.get("name") or it.get("name_ko") or "").strip()
+        idn = "".join(c for c in str(it.get("id_number") or "") if c.isalnum())
+        if nm:
+            out[nm] = info
+        if idn:
+            out[idn] = info
+    return out
+
+
+# ──────────────── 4대보험 기준(DB) 로드 — 없으면 코드 기본값 ────────────────
+async def _load_insurance_from_db():
+    """(rates|None, rules|None, overrides{key:obj}) — DB 미시드 시 None→기본값 사용."""
+    try:
+        from app.core.database import async_session_factory
+        from sqlalchemy import select
+        from app.models.insurance import InsuranceRate, InsuranceVisaRule, InsuranceWorkerOverride
+    except Exception:
+        return None, None, {}
+    if async_session_factory is None:
+        return None, None, {}
+    try:
+        async with async_session_factory() as db:
+            y = date.today().year
+            rr = (await db.execute(select(InsuranceRate).where(InsuranceRate.year == y))).scalar_one_or_none()
+            rates = None
+            if rr:
+                rates = {"pension_emp": rr.pension_emp, "health_emp": rr.health_emp,
+                         "ltc_on_health": rr.ltc_on_health, "employment_ui_emp": rr.employment_ui_emp,
+                         "pension_base_min": rr.pension_base_min, "pension_base_max": rr.pension_base_max}
+            vrows = (await db.execute(select(InsuranceVisaRule))).scalars().all()
+            rules = None
+            if vrows:
+                rules = {v.visa_type: {"pension": v.pension, "health": v.health, "employment": v.employment,
+                                       "ltc_exclusion_eligible": v.ltc_exclusion_eligible, "label": v.label}
+                         for v in vrows}
+            ovs = (await db.execute(select(InsuranceWorkerOverride))).scalars().all()
+            overrides = {o.worker_key: o for o in ovs}
+            return rates, rules, overrides
+    except Exception:
+        logger.exception("4대보험 기준 DB 로드 실패 — 기본값 사용")
+        return None, None, {}
+
+
+def _attach_insurance(records: List[Dict[str, Any]], visa_map: Dict[str, Dict[str, Any]],
+                      rates, rules, overrides) -> None:
+    """정규직 레코드에 기준기반 4대보험 산정(근거포함) 첨부. 알바/파견은 대상아님."""
+    for r in records:
+        wt = r.get("worker_type", "")
+        if wt in pol.NON_APPLICABLE:
+            r["insurance"] = {"applicable": False, "reason": pol.NON_APPLICABLE[wt]}
+            continue
+        if r.get("cost_type") == "COGS" and "정규직" not in wt:
+            r["insurance"] = {"applicable": False, "reason": "4대보험 대상 아님"}
+            continue
+        name = (r.get("name") or "").strip()
+        info = visa_map.get(name)
+        ov = overrides.get(name)
+        matched = info is not None
+        nationality = (info or {}).get("nationality")
+        visa_type = (info or {}).get("visa_type")
+        res = pol.assess(
+            nationality=nationality, visa_type=visa_type, gross_monthly=r.get("gross_pay", 0),
+            rates=rates, db_rules=rules,
+            ltc_exclusion_applied=bool(ov and ov.ltc_exclusion_applied),
+            ui_opt_in=bool(ov and ov.ui_opt_in),
+            pension_country_excluded=bool(ov and ov.pension_country_excluded),
+        )
+        res["applicable"] = True
+        res["matched"] = matched
+        if not matched:
+            res.setdefault("flags", []).insert(0, "비자정보 매칭 실패 — 내국인 기준으로 산정(현장 onboarding 확인 필요)")
+        if info and info.get("visa_expiry"):
+            res["visa_expiry"] = info["visa_expiry"]
+        r["insurance"] = res
 
 
 async def fetch_aisystem_regular(month: str) -> List[Dict[str, Any]]:
@@ -329,13 +423,21 @@ async def build_payroll_summary(month: Optional[str] = None) -> Dict[str, Any]:
     target = month or confirmed_payroll_month()
 
     import asyncio
-    hr, ai_reg, ai_alba, ai_disp = await asyncio.gather(
+    hr, ai_reg, ai_alba, ai_disp, visa_map = await asyncio.gather(
         fetch_hr_salary(target),
         fetch_aisystem_regular(target),
         fetch_aisystem_settlement(target, "사업소득"),
         fetch_aisystem_settlement(target, "파견"),
+        fetch_onboarding_visa_map(),
     )
     records = [*hr, *ai_reg, *ai_alba, *ai_disp]
+
+    # 4대보험 기준(DB) 로드 후 정규직 레코드에 산정근거 첨부
+    try:
+        _rates, _rules, _overrides = await _load_insurance_from_db()
+        _attach_insurance(records, visa_map or {}, _rates, _rules, _overrides)
+    except Exception:
+        logger.exception("4대보험 산정 첨부 실패 — 급여요약은 정상 반환")
 
     # 부서별 집계
     by_dept: Dict[str, Dict[str, Any]] = {}

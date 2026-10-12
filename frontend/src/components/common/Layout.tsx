@@ -70,6 +70,7 @@ const baseNavigation: NavItem[] = [
   { name: '채널별 수익성', href: '/channel-profitability', icon: ShoppingBagIcon },
   { name: '거래처 스코어링', href: '/contact-scoring', icon: StarIcon },
   { name: '현금흐름(旬)', href: '/cashflow', icon: ArrowTrendingUpIcon },
+  { name: '이체 승인', href: '/transfer-approval', icon: BanknotesIcon },
   { name: '감사·컴플라이언스', href: '/audit-report', icon: ShieldCheckIcon },
 
   { name: '전표 처리', section: true },
@@ -78,6 +79,7 @@ const baseNavigation: NavItem[] = [
   { name: '전표관리', href: '/vouchers', icon: DocumentTextIcon },
   { name: 'AI 분류·학습', href: '/ai-classification', icon: CpuChipIcon },
   { name: '급여·노무비 통합', href: '/payroll-import', icon: BanknotesIcon },
+  { name: '4대보험 기준', href: '/insurance-policy', icon: ShieldCheckIcon },
 
   { name: '회계 / 분석', section: true },
   { name: '계정별 원장', href: '/ledger', icon: BookOpenIcon },
