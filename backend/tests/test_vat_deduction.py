@@ -86,3 +86,14 @@ def test_nonvat_excluded_from_totals_line():
     s = summarize([{"amount": 11000, "deduct": "부가세 대상 아님", "tax_kind": "해당없음"},
                    {"amount": 11000, "deduct": "공제", "tax_kind": "일반과세자"}])
     assert s["부가세 대상 아님"]["vat"] == 0 and s["공제"]["vat"] == 1000.0
+
+
+def test_zero_preauth_is_not_vat():
+    from app.services.vat_deduction import NONVAT
+    r = judge(None, store_name="카카오T택시_가승인", amount=0)
+    assert r["deduct"] == NONVAT and r["reason"] == "0원 가승인·선승인 — 실제 결제 아님"
+    assert judge(None, store_name="아무가게", amount=0)["deduct"] == NONVAT
+    assert judge("5038701038", store_name="카카오_택시_선승인", amount=-500)["deduct"] == NONVAT
+    # 양수 금액의 가승인 명칭 / 일반 취소(음수)는 기존 로직 유지
+    assert judge(None, store_name="카카오T택시_가승인", amount=5000)["deduct"] == "확인필요"
+    assert judge(None, store_name="아무가게", amount=-5000)["deduct"] == "확인필요"
