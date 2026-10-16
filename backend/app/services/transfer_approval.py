@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.payable_transfer import PayableItem, TransferApproval
+from app.models.payable_transfer import (
+    PayableItem, TransferApproval, TransferBatch, TransferBatchItem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -289,3 +291,205 @@ async def mark_paid(db: AsyncSession, item_id: int,
         note = "SCM 통보 대기(SCM_API_KEY 미설정) — 로컬 지급완료만 처리됨"
     return {"ok": True, "id": it.id, "paid_amount": _num(it.paid_amount),
             "status": it.status, "scm_notified": scm_notified, "note": note}
+
+
+# ==================== 이체 보고서 워크플로우 (회계팀 작성 → 대표 제출 → 대표 결재) ====================
+
+def _batch_dict(b: TransferBatch, item_count: int = 0, total: float = 0.0) -> Dict[str, Any]:
+    return {
+        "id": b.id, "year": b.year, "month": b.month, "xun": b.xun, "title": b.title,
+        "status": b.status, "note": b.note, "created_by": b.created_by,
+        "submitted_at": b.submitted_at.isoformat() if b.submitted_at else None,
+        "reviewed_at": b.reviewed_at.isoformat() if b.reviewed_at else None,
+        "created_at": b.created_at.isoformat() if b.created_at else None,
+        "item_count": item_count, "total_amount": total,
+    }
+
+
+def _item_dict(it: TransferBatchItem) -> Dict[str, Any]:
+    return {
+        "id": it.id, "batch_id": it.batch_id, "payable_id": it.payable_id,
+        "vendor": it.vendor, "amount": _num(it.amount),
+        "account_name": it.account_name, "bank_name": it.bank_name, "due_date": it.due_date,
+        "disposition": it.disposition, "priority": it.priority,
+        "dept_request": it.dept_request, "memo": it.memo,
+        "ceo_action": it.ceo_action, "ceo_comment": it.ceo_comment,
+        "ceo_acted_at": it.ceo_acted_at.isoformat() if it.ceo_acted_at else None,
+    }
+
+
+async def create_batch(db: AsyncSession, year: int, month: int, xun: int,
+                       title: Optional[str] = None, created_by: Optional[str] = None) -> Dict[str, Any]:
+    """draft 배치 생성 — 같은 (year,month,xun) draft 있으면 재사용."""
+    existing = (await db.execute(
+        select(TransferBatch).where(
+            TransferBatch.year == year, TransferBatch.month == month,
+            TransferBatch.xun == xun, TransferBatch.status == "draft",
+        )
+    )).scalar_one_or_none()
+    if existing:
+        return {"ok": True, "batch_id": existing.id, "reused": True}
+    b = TransferBatch(year=year, month=month, xun=xun,
+                      title=title or f"{year}-{month:02d} {xun}일 이체리스트",
+                      status="draft", created_by=created_by)
+    db.add(b)
+    await db.commit()
+    await db.refresh(b)
+    return {"ok": True, "batch_id": b.id, "reused": False}
+
+
+async def _batch_totals(db: AsyncSession, batch_id: int) -> tuple:
+    items = (await db.execute(
+        select(TransferBatchItem).where(TransferBatchItem.batch_id == batch_id)
+    )).scalars().all()
+    return len(items), sum(_num(i.amount) for i in items)
+
+
+async def list_batches(db: AsyncSession, year: Optional[int] = None,
+                       month: Optional[int] = None, status: Optional[str] = None) -> Dict[str, Any]:
+    q = select(TransferBatch)
+    if year is not None:
+        q = q.where(TransferBatch.year == year)
+    if month is not None:
+        q = q.where(TransferBatch.month == month)
+    if status:
+        q = q.where(TransferBatch.status == status)
+    batches = (await db.execute(q.order_by(TransferBatch.year.desc(), TransferBatch.month.desc(), TransferBatch.xun))).scalars().all()
+    out = []
+    for b in batches:
+        cnt, tot = await _batch_totals(db, b.id)
+        out.append(_batch_dict(b, cnt, tot))
+    return {"items": out}
+
+
+async def get_batch(db: AsyncSession, batch_id: int) -> Dict[str, Any]:
+    b = (await db.execute(select(TransferBatch).where(TransferBatch.id == batch_id))).scalar_one_or_none()
+    if b is None:
+        return {"ok": False, "error": "배치 없음"}
+    items = (await db.execute(
+        select(TransferBatchItem).where(TransferBatchItem.batch_id == batch_id)
+        .order_by(TransferBatchItem.priority, TransferBatchItem.id)
+    )).scalars().all()
+    cnt, tot = len(items), sum(_num(i.amount) for i in items)
+    return {"batch": _batch_dict(b, cnt, tot), "items": [_item_dict(i) for i in items]}
+
+
+async def add_to_batch(db: AsyncSession, batch_id: int,
+                       payable_ids: Optional[List[int]] = None,
+                       items: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """풀(PayableItem)에서 복사 추가 + 수동항목 추가. payable_id 중복은 skip."""
+    b = (await db.execute(select(TransferBatch).where(TransferBatch.id == batch_id))).scalar_one_or_none()
+    if b is None:
+        return {"ok": False, "error": "배치 없음"}
+    existing_pids = set((await db.execute(
+        select(TransferBatchItem.payable_id).where(
+            TransferBatchItem.batch_id == batch_id, TransferBatchItem.payable_id.isnot(None))
+    )).scalars().all())
+    added = 0
+    for pid in (payable_ids or []):
+        if pid in existing_pids:
+            continue
+        p = (await db.execute(select(PayableItem).where(PayableItem.id == pid))).scalar_one_or_none()
+        if p is None:
+            continue
+        db.add(TransferBatchItem(
+            batch_id=batch_id, payable_id=p.id, vendor=p.vendor,
+            amount=_remaining(p) if _remaining(p) > 0 else _num(p.amount),
+            account_name=p.account_name, bank_name=p.bank_name, due_date=p.due_date,
+            disposition="pay", priority=2,
+        ))
+        existing_pids.add(pid)
+        added += 1
+    for m in (items or []):
+        vendor = (m.get("vendor") or "").strip()
+        if not vendor:
+            continue
+        db.add(TransferBatchItem(
+            batch_id=batch_id, payable_id=None, vendor=vendor, amount=_num(m.get("amount")),
+            account_name=m.get("account_name"), bank_name=m.get("bank_name"), due_date=m.get("due_date"),
+            disposition=m.get("disposition") or "pay", priority=int(m.get("priority") or 2),
+            dept_request=m.get("dept_request"), memo=m.get("memo"),
+        ))
+        added += 1
+    await db.commit()
+    return {"ok": True, "added": added}
+
+
+async def update_batch_item(db: AsyncSession, item_id: int, patch: Dict[str, Any]) -> Dict[str, Any]:
+    it = (await db.execute(select(TransferBatchItem).where(TransferBatchItem.id == item_id))).scalar_one_or_none()
+    if it is None:
+        return {"ok": False, "error": "항목 없음"}
+    for f in ("disposition", "dept_request", "memo", "account_name", "bank_name", "due_date"):
+        if f in patch and patch[f] is not None:
+            setattr(it, f, patch[f])
+    if patch.get("priority") is not None:
+        it.priority = int(patch["priority"])
+    if patch.get("amount") is not None:
+        it.amount = _num(patch["amount"])
+    await db.commit()
+    return {"ok": True}
+
+
+async def delete_batch_item(db: AsyncSession, item_id: int) -> Dict[str, Any]:
+    it = (await db.execute(select(TransferBatchItem).where(TransferBatchItem.id == item_id))).scalar_one_or_none()
+    if it is None:
+        return {"ok": False, "error": "항목 없음"}
+    await db.delete(it)
+    await db.commit()
+    return {"ok": True}
+
+
+async def submit_batch(db: AsyncSession, batch_id: int, by: Optional[str] = None) -> Dict[str, Any]:
+    b = (await db.execute(select(TransferBatch).where(TransferBatch.id == batch_id))).scalar_one_or_none()
+    if b is None:
+        return {"ok": False, "error": "배치 없음"}
+    b.status = "submitted"
+    b.submitted_at = datetime.utcnow()
+    await db.commit()
+    return {"ok": True, "status": b.status}
+
+
+async def item_action(db: AsyncSession, item_id: int, action: str,
+                      comment: Optional[str] = None, by: Optional[str] = None) -> Dict[str, Any]:
+    if action not in ("approved", "rejected", "query"):
+        return {"ok": False, "error": f"unknown action: {action}"}
+    it = (await db.execute(select(TransferBatchItem).where(TransferBatchItem.id == item_id))).scalar_one_or_none()
+    if it is None:
+        return {"ok": False, "error": "항목 없음"}
+    it.ceo_action = action
+    it.ceo_comment = comment
+    it.ceo_acted_at = datetime.utcnow()
+    await db.commit()
+    return {"ok": True, "id": it.id, "ceo_action": action}
+
+
+async def review_batch(db: AsyncSession, batch_id: int, by: Optional[str] = None) -> Dict[str, Any]:
+    b = (await db.execute(select(TransferBatch).where(TransferBatch.id == batch_id))).scalar_one_or_none()
+    if b is None:
+        return {"ok": False, "error": "배치 없음"}
+    b.status = "reviewed"
+    b.reviewed_at = datetime.utcnow()
+    await db.commit()
+    return {"ok": True, "status": b.status}
+
+
+async def batch_report(db: AsyncSession, batch_id: int) -> Dict[str, Any]:
+    """대표용 커스텀 보고서 — 이체할곳/미룸/예정 그룹 + 결재상태 집계."""
+    b = (await db.execute(select(TransferBatch).where(TransferBatch.id == batch_id))).scalar_one_or_none()
+    if b is None:
+        return {"ok": False, "error": "배치 없음"}
+    items = (await db.execute(
+        select(TransferBatchItem).where(TransferBatchItem.batch_id == batch_id)
+        .order_by(TransferBatchItem.priority, TransferBatchItem.id)
+    )).scalars().all()
+    groups = {"pay": [], "defer": [], "scheduled": []}
+    totals = {"pay": 0.0, "defer": 0.0, "scheduled": 0.0,
+              "approved": 0, "rejected": 0, "query": 0, "pending": 0}
+    for it in items:
+        d = _item_dict(it)
+        grp = it.disposition if it.disposition in groups else "pay"
+        groups[grp].append(d)
+        totals[grp] += _num(it.amount)
+        totals[it.ceo_action] = totals.get(it.ceo_action, 0) + 1
+    cnt, tot = len(items), sum(_num(i.amount) for i in items)
+    return {"batch": _batch_dict(b, cnt, tot), "groups": groups, "totals": totals, "count": cnt}

@@ -1619,6 +1619,38 @@ export const transferApprovalApi = {
     api.post('/transfer-approval/approve', { year, month, xun }, { params: { by } }),
   markPaid: (id: number, paid_amount?: number) =>
     api.post<{ ok: boolean; id: number; status: string; scm_notified: boolean; note: string | null }>(`/transfer-approval/payables/${id}/paid`, { paid_amount }),
+  // ── 2단계 워크플로우 (회계팀 작성 → 대표 제출 → 승인/질의/반려) ──
+  batches: (year?: number, month?: number, status?: string) =>
+    api.get<{ items: TransferBatch[] }>('/transfer-approval/batches', { params: { year, month, status } }),
+  getBatch: (id: number) =>
+    api.get<{ batch: TransferBatch; items: TransferBatchItem[] }>(`/transfer-approval/batches/${id}`),
+  createBatch: (year: number, month: number, xun: number, title?: string, by?: string) =>
+    api.post<{ ok: boolean; batch_id: number; reused: boolean }>('/transfer-approval/batches', { year, month, xun, title }, { params: { by } }),
+  addToBatch: (id: number, payable_ids: number[]) =>
+    api.post<{ added: number }>(`/transfer-approval/batches/${id}/add`, { payable_ids }),
+  updateItem: (id: number, patch: Partial<Pick<TransferBatchItem, 'disposition' | 'priority' | 'dept_request' | 'memo' | 'amount' | 'account_name' | 'bank_name' | 'due_date'>>) =>
+    api.put(`/transfer-approval/batch-items/${id}`, patch),
+  deleteItem: (id: number) => api.delete(`/transfer-approval/batch-items/${id}`),
+  submitBatch: (id: number, by?: string) => api.post(`/transfer-approval/batches/${id}/submit`, {}, { params: { by } }),
+  itemAction: (id: number, action: 'approved' | 'rejected' | 'query', comment?: string, by?: string) =>
+    api.post(`/transfer-approval/batch-items/${id}/action`, { action, comment }, { params: { by } }),
+  reviewBatch: (id: number, by?: string) => api.post(`/transfer-approval/batches/${id}/review`, {}, { params: { by } }),
+  batchReport: (id: number) =>
+    api.get<{ batch: TransferBatch; groups: { pay: TransferBatchItem[]; defer: TransferBatchItem[]; scheduled: TransferBatchItem[] }; totals: Record<string, number>; count: number }>(`/transfer-approval/batches/${id}/report`),
+}
+
+export interface TransferBatch {
+  id: number; year: number; month: number; xun: number; title: string
+  status: 'draft' | 'submitted' | 'reviewed'
+  created_by: string | null; submitted_at: string | null; reviewed_at: string | null
+  note: string | null; created_at: string; item_count?: number; total_amount?: number
+}
+export interface TransferBatchItem {
+  id: number; batch_id: number; payable_id: number | null
+  vendor: string; amount: number; account_name: string | null; bank_name: string | null; due_date: string | null
+  disposition: 'pay' | 'defer' | 'scheduled'; priority: number
+  dept_request: string | null; memo: string | null
+  ceo_action: 'pending' | 'approved' | 'rejected' | 'query'; ceo_comment: string | null; ceo_acted_at: string | null
 }
 
 export const insuranceApi = {
