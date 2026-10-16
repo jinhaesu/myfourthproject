@@ -1628,6 +1628,8 @@ export const transferApprovalApi = {
     api.post<{ ok: boolean; batch_id: number; reused: boolean }>('/transfer-approval/batches', { year, month, xun, title }, { params: { by } }),
   addToBatch: (id: number, payable_ids: number[]) =>
     api.post<{ added: number }>(`/transfer-approval/batches/${id}/add`, { payable_ids }),
+  addItems: (id: number, items: Array<{ vendor: string; amount: number; account_name?: string; bank_name?: string; due_date?: string; disposition?: string; priority?: number; dept_request?: string; memo?: string }>) =>
+    api.post<{ added: number }>(`/transfer-approval/batches/${id}/add`, { items }),
   updateItem: (id: number, patch: Partial<Pick<TransferBatchItem, 'disposition' | 'priority' | 'dept_request' | 'memo' | 'amount' | 'account_name' | 'bank_name' | 'due_date'>>) =>
     api.put(`/transfer-approval/batch-items/${id}`, patch),
   deleteItem: (id: number) => api.delete(`/transfer-approval/batch-items/${id}`),
@@ -1637,6 +1639,12 @@ export const transferApprovalApi = {
   reviewBatch: (id: number, by?: string) => api.post(`/transfer-approval/batches/${id}/review`, {}, { params: { by } }),
   batchReport: (id: number) =>
     api.get<{ batch: TransferBatch; groups: { pay: TransferBatchItem[]; defer: TransferBatchItem[]; scheduled: TransferBatchItem[] }; totals: Record<string, number>; count: number }>(`/transfer-approval/batches/${id}/report`),
+  markItemPaid: (id: number, paid = true, by?: string) => api.post(`/transfer-approval/batch-items/${id}/paid`, { paid }, { params: { by } }),
+  payAllBatch: (id: number, by?: string) => api.post<{ ok: boolean; count: number }>(`/transfer-approval/batches/${id}/paid-all`, {}, { params: { by } }),
+  history: (year?: number, month?: number, status?: string) =>
+    api.get<{ items: (TransferBatch & { approved_count: number; rejected_count: number; query_count: number; paid_count: number })[] }>('/transfer-approval/history', { params: { year, month, status } }),
+  completed: (year?: number, month?: number) =>
+    api.get<{ items: CompletedTransfer[] }>('/transfer-approval/completed', { params: { year, month } }),
 }
 
 export interface TransferBatch {
@@ -1651,6 +1659,11 @@ export interface TransferBatchItem {
   disposition: 'pay' | 'defer' | 'scheduled'; priority: number
   dept_request: string | null; memo: string | null
   ceo_action: 'pending' | 'approved' | 'rejected' | 'query'; ceo_comment: string | null; ceo_acted_at: string | null
+  paid?: boolean; paid_at?: string | null; paid_by?: string | null
+}
+export interface CompletedTransfer {
+  id: number; vendor: string; amount: number; account_name: string | null; bank_name: string | null
+  due_date: string | null; paid_at: string | null; paid_by: string | null; batch_title: string; batch_id: number
 }
 
 export const insuranceApi = {

@@ -8,7 +8,7 @@ import os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.payable_transfer import (
@@ -315,7 +315,34 @@ def _item_dict(it: TransferBatchItem) -> Dict[str, Any]:
         "dept_request": it.dept_request, "memo": it.memo,
         "ceo_action": it.ceo_action, "ceo_comment": it.ceo_comment,
         "ceo_acted_at": it.ceo_acted_at.isoformat() if it.ceo_acted_at else None,
+        "paid": bool(getattr(it, "paid", False)),
+        "paid_at": getattr(it, "paid_at", None).isoformat() if getattr(it, "paid_at", None) else None,
+        "paid_by": getattr(it, "paid_by", None),
     }
+
+
+_paid_cols_ensured = False
+
+
+async def _ensure_paid_columns(db: AsyncSession) -> None:
+    """기존 transfer_batch_item 테이블에 paid 컬럼 보장(create_all은 ALTER 안 함). Postgres IF NOT EXISTS 멱등."""
+    global _paid_cols_ensured
+    if _paid_cols_ensured:
+        return
+    for s in (
+        "ALTER TABLE transfer_batch_item ADD COLUMN IF NOT EXISTS paid BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE transfer_batch_item ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP",
+        "ALTER TABLE transfer_batch_item ADD COLUMN IF NOT EXISTS paid_by VARCHAR(120)",
+    ):
+        try:
+            await db.execute(text(s))
+        except Exception:
+            logger.exception("paid 컬럼 보장 실패(무시): %s", s)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+    _paid_cols_ensured = True
 
 
 async def create_batch(db: AsyncSession, year: int, month: int, xun: int,
@@ -484,12 +511,107 @@ async def batch_report(db: AsyncSession, batch_id: int) -> Dict[str, Any]:
     )).scalars().all()
     groups = {"pay": [], "defer": [], "scheduled": []}
     totals = {"pay": 0.0, "defer": 0.0, "scheduled": 0.0,
-              "approved": 0, "rejected": 0, "query": 0, "pending": 0}
+              "approved": 0, "rejected": 0, "query": 0, "pending": 0, "paid": 0}
     for it in items:
         d = _item_dict(it)
         grp = it.disposition if it.disposition in groups else "pay"
         groups[grp].append(d)
         totals[grp] += _num(it.amount)
         totals[it.ceo_action] = totals.get(it.ceo_action, 0) + 1
+        if bool(getattr(it, "paid", False)):
+            totals["paid"] += 1
     cnt, tot = len(items), sum(_num(i.amount) for i in items)
     return {"batch": _batch_dict(b, cnt, tot), "groups": groups, "totals": totals, "count": cnt}
+
+
+async def mark_batch_item_paid(db: AsyncSession, item_id: int, paid: bool = True,
+                               by: Optional[str] = None) -> Dict[str, Any]:
+    """대표 승인된 항목을 회계팀이 은행이체 후 이체완료 처리. 승인 안 된 항목은 거부."""
+    await _ensure_paid_columns(db)
+    it = (await db.execute(select(TransferBatchItem).where(TransferBatchItem.id == item_id))).scalar_one_or_none()
+    if it is None:
+        return {"ok": False, "error": "항목 없음"}
+    if paid and it.ceo_action != "approved":
+        return {"ok": False, "error": "대표 승인된 항목만 이체완료 처리할 수 있습니다", "code": 400}
+    it.paid = bool(paid)
+    it.paid_at = datetime.utcnow() if paid else None
+    it.paid_by = by if paid else None
+    await db.commit()
+    return {"ok": True, "id": it.id, "paid": bool(it.paid)}
+
+
+async def pay_all(db: AsyncSession, batch_id: int, by: Optional[str] = None) -> Dict[str, Any]:
+    """배치 내 승인완료·미이체 항목 일괄 이체완료."""
+    await _ensure_paid_columns(db)
+    items = (await db.execute(
+        select(TransferBatchItem).where(TransferBatchItem.batch_id == batch_id,
+                                        TransferBatchItem.ceo_action == "approved")
+    )).scalars().all()
+    n = 0
+    for it in items:
+        if not bool(getattr(it, "paid", False)):
+            it.paid = True
+            it.paid_at = datetime.utcnow()
+            it.paid_by = by
+            n += 1
+    await db.commit()
+    return {"ok": True, "count": n}
+
+
+async def history(db: AsyncSession, year: Optional[int] = None, month: Optional[int] = None,
+                  status: Optional[str] = None) -> Dict[str, Any]:
+    """지난 내역 — 제출/검토완료 배치 목록 + 각 배치 결재·이체완료 집계."""
+    await _ensure_paid_columns(db)
+    q = select(TransferBatch).where(TransferBatch.status != "draft")
+    if year is not None:
+        q = q.where(TransferBatch.year == year)
+    if month is not None:
+        q = q.where(TransferBatch.month == month)
+    if status:
+        q = q.where(TransferBatch.status == status)
+    batches = (await db.execute(
+        q.order_by(TransferBatch.year.desc(), TransferBatch.month.desc(), TransferBatch.xun)
+    )).scalars().all()
+    out = []
+    for b in batches:
+        items = (await db.execute(
+            select(TransferBatchItem).where(TransferBatchItem.batch_id == b.id)
+        )).scalars().all()
+        d = _batch_dict(b, len(items), sum(_num(i.amount) for i in items))
+        d["approved_count"] = sum(1 for i in items if i.ceo_action == "approved")
+        d["rejected_count"] = sum(1 for i in items if i.ceo_action == "rejected")
+        d["query_count"] = sum(1 for i in items if i.ceo_action == "query")
+        d["paid_count"] = sum(1 for i in items if bool(getattr(i, "paid", False)))
+        out.append(d)
+    return {"items": out}
+
+
+async def completed(db: AsyncSession, year: Optional[int] = None,
+                    month: Optional[int] = None) -> Dict[str, Any]:
+    """이체완료된 항목 평면 리스트."""
+    await _ensure_paid_columns(db)
+    bq = select(TransferBatch)
+    if year is not None:
+        bq = bq.where(TransferBatch.year == year)
+    if month is not None:
+        bq = bq.where(TransferBatch.month == month)
+    batches = {b.id: b for b in (await db.execute(bq)).scalars().all()}
+    if not batches:
+        return {"items": []}
+    items = (await db.execute(
+        select(TransferBatchItem).where(TransferBatchItem.batch_id.in_(list(batches.keys())))
+    )).scalars().all()
+    out = []
+    for it in items:
+        if not bool(getattr(it, "paid", False)):
+            continue
+        b = batches.get(it.batch_id)
+        out.append({
+            "id": it.id, "vendor": it.vendor, "amount": _num(it.amount),
+            "account_name": it.account_name, "bank_name": it.bank_name, "due_date": it.due_date,
+            "paid_at": getattr(it, "paid_at", None).isoformat() if getattr(it, "paid_at", None) else None,
+            "paid_by": getattr(it, "paid_by", None),
+            "batch_title": b.title if b else None, "batch_id": it.batch_id,
+        })
+    out.sort(key=lambda r: (r["paid_at"] or ""), reverse=True)
+    return {"items": out}

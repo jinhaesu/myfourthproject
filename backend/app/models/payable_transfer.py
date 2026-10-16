@@ -116,4 +116,9 @@ class TransferBatchItem(Base):
     ceo_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     ceo_acted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+    # 회계팀 이체완료(승인건 은행이체 후 마감)
+    paid: Mapped[bool] = mapped_column(default=False)
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    paid_by: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

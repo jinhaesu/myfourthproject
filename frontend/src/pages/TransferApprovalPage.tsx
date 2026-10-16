@@ -11,7 +11,7 @@ const PRIO: Record<number, string> = { 1: '높음', 2: '보통', 3: '낮음' }
 const now = new Date()
 
 export default function TransferApprovalPage() {
-  const [mode, setMode] = useState<'compose' | 'approve'>('approve')
+  const [mode, setMode] = useState<'compose' | 'approve' | 'history'>('approve')
   const [year, setYear] = useState(now.getFullYear())
   const [month, setMonth] = useState(now.getMonth() + 1)
 
@@ -21,7 +21,8 @@ export default function TransferApprovalPage() {
         <h1 className="text-lg font-bold">이체 승인</h1>
         <div className="flex rounded overflow-hidden border border-ink-200 dark:border-ink-800 text-2xs">
           <button onClick={() => setMode('approve')} className={`px-3 py-1 ${mode === 'approve' ? 'bg-brand-600 text-white' : 'bg-transparent'}`}>대표 결재</button>
-          <button onClick={() => setMode('compose')} className={`px-3 py-1 ${mode === 'compose' ? 'bg-brand-600 text-white' : 'bg-transparent'}`}>회계팀 작성</button>
+          <button onClick={() => setMode('compose')} className={`px-3 py-1 border-l border-ink-200 dark:border-ink-800 ${mode === 'compose' ? 'bg-brand-600 text-white' : 'bg-transparent'}`}>회계팀 작성</button>
+          <button onClick={() => setMode('history')} className={`px-3 py-1 border-l border-ink-200 dark:border-ink-800 ${mode === 'history' ? 'bg-brand-600 text-white' : 'bg-transparent'}`}>이체·내역</button>
         </div>
         <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="border border-ink-200 dark:border-ink-800 rounded px-2 py-1 text-sm bg-transparent">
           {[now.getFullYear() + 1, now.getFullYear(), now.getFullYear() - 1].map((y) => <option key={y} value={y}>{y}년</option>)}
@@ -30,7 +31,93 @@ export default function TransferApprovalPage() {
           {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}월</option>)}
         </select>
       </div>
-      {mode === 'compose' ? <ComposeMode year={year} month={month} /> : <ApproveMode year={year} month={month} />}
+      {mode === 'compose' ? <ComposeMode year={year} month={month} />
+        : mode === 'history' ? <HistoryMode year={year} month={month} />
+          : <ApproveMode year={year} month={month} />}
+    </div>
+  )
+}
+
+/* ───────────── 이체·내역 모드 (회계팀 이체완료 처리 + 완료 내역) ───────────── */
+function HistoryMode({ year, month }: { year: number; month: number }) {
+  const qc = useQueryClient()
+  const [openId, setOpenId] = useState<number | null>(null)
+  const histQ = useQuery({ queryKey: ['tb-hist', year, month], queryFn: () => api.history(year, month).then((r) => r.data.items) })
+  const compQ = useQuery({ queryKey: ['tb-comp', year, month], queryFn: () => api.completed(year, month).then((r) => r.data.items) })
+  const batchQ = useQuery({ queryKey: ['tb-hist-one', openId], queryFn: () => api.getBatch(openId!).then((r) => r.data), enabled: !!openId })
+  const bust = () => { qc.invalidateQueries({ queryKey: ['tb-hist-one', openId] }); qc.invalidateQueries({ queryKey: ['tb-hist', year, month] }); qc.invalidateQueries({ queryKey: ['tb-comp', year, month] }) }
+  const paidMut = useMutation({ mutationFn: (id: number) => api.markItemPaid(id, true), onSuccess: bust })
+  const payAllMut = useMutation({ mutationFn: () => api.payAllBatch(openId!), onSuccess: bust })
+
+  if (openId && batchQ.data) {
+    const items = batchQ.data.items.filter((i) => i.ceo_action === 'approved')
+    const unpaid = items.filter((i) => !i.paid)
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <button onClick={() => setOpenId(null)} className="btn-secondary text-2xs">← 목록</button>
+          <h2 className="font-bold text-sm">{batchQ.data.batch.title} · 승인분 이체 처리</h2>
+          {unpaid.length > 0 && <button onClick={() => { if (confirm(`승인된 미이체 ${unpaid.length}건을 일괄 이체완료 처리할까요?`)) payAllMut.mutate() }} className="btn-primary text-2xs ml-auto">승인분 일괄 이체완료</button>}
+        </div>
+        <div className="border border-ink-100 dark:border-ink-800 rounded overflow-x-auto">
+          <table className="min-w-full text-2xs">
+            <thead className="text-ink-500"><tr><th className="text-left px-2 py-1">거래처</th><th className="text-right px-2 py-1">금액</th><th className="text-left px-2 py-1">계좌은행</th><th className="text-left px-2 py-1">계정과목</th><th className="px-2 py-1">상태</th></tr></thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id} className="border-t border-ink-50 dark:border-ink-900">
+                  <td className="px-2 py-1 max-w-[180px] truncate" title={it.vendor}>{it.vendor}</td>
+                  <td className="px-2 py-1 text-right font-mono">{won(it.amount)}</td>
+                  <td className="px-2 py-1">{it.bank_name || '-'}</td>
+                  <td className="px-2 py-1">{it.account_name || '-'}</td>
+                  <td className="px-2 py-1 text-center">
+                    {it.paid
+                      ? <span className="text-emerald-600 dark:text-emerald-400">✓ 이체완료{it.paid_at ? ` (${String(it.paid_at).slice(5, 10)})` : ''}</span>
+                      : <button onClick={() => paidMut.mutate(it.id)} disabled={paidMut.isPending} className="btn-secondary text-3xs">이체완료 처리</button>}
+                  </td>
+                </tr>
+              ))}
+              {items.length === 0 && <tr><td colSpan={5} className="px-2 py-3 text-center text-ink-400">대표 승인된 항목이 없습니다.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase mb-1">배치 내역 ({month}월)</div>
+        {(histQ.data || []).length === 0 && <div className="text-sm text-ink-400">제출된 배치가 없습니다.</div>}
+        <div className="space-y-1">
+          {(histQ.data || []).map((b) => (
+            <button key={b.id} onClick={() => setOpenId(b.id)} className="w-full text-left border border-ink-100 dark:border-ink-800 rounded px-3 py-2 hover:bg-canvas-50 dark:hover:bg-ink-950 flex items-center justify-between">
+              <span className="text-sm font-medium">{b.title} <span className="text-2xs text-ink-400">[{b.status === 'reviewed' ? '검토완료' : '결재대기'}]</span></span>
+              <span className="text-2xs text-ink-500">{b.item_count ?? 0}건 · 승인 {b.approved_count} · 이체완료 {b.paid_count} · 반려 {b.rejected_count} · <span className="font-mono">{won(b.total_amount ?? 0)}</span></span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase mb-1">이체완료 내역 ({month}월 · {(compQ.data || []).length}건)</div>
+        <div className="border border-ink-100 dark:border-ink-800 rounded overflow-x-auto">
+          <table className="min-w-full text-2xs">
+            <thead className="text-ink-500"><tr><th className="text-left px-2 py-1">이체일</th><th className="text-left px-2 py-1">거래처</th><th className="text-right px-2 py-1">금액</th><th className="text-left px-2 py-1">계정과목</th><th className="text-left px-2 py-1">배치</th></tr></thead>
+            <tbody>
+              {(compQ.data || []).map((c) => (
+                <tr key={c.id} className="border-t border-ink-50 dark:border-ink-900">
+                  <td className="px-2 py-1 whitespace-nowrap">{c.paid_at ? String(c.paid_at).slice(0, 10) : '-'}</td>
+                  <td className="px-2 py-1 max-w-[180px] truncate" title={c.vendor}>{c.vendor}</td>
+                  <td className="px-2 py-1 text-right font-mono">{won(c.amount)}</td>
+                  <td className="px-2 py-1">{c.account_name || '-'}</td>
+                  <td className="px-2 py-1 text-ink-400">{c.batch_title}</td>
+                </tr>
+              ))}
+              {(compQ.data || []).length === 0 && <tr><td colSpan={5} className="px-2 py-3 text-center text-ink-400">이체완료 내역이 없습니다.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   )
 }
@@ -56,6 +143,20 @@ function ComposeMode({ year, month }: { year: number; month: number }) {
   const updMut = useMutation({ mutationFn: (v: { id: number; patch: any }) => api.updateItem(v.id, v.patch), onSuccess: bust })
   const delMut = useMutation({ mutationFn: (id: number) => api.deleteItem(id), onSuccess: bust })
   const submitMut = useMutation({ mutationFn: () => api.submitBatch(batchId!), onSuccess: () => { setMsg('대표께 제출되었습니다'); bust() } })
+  const [manual, setManual] = useState({ vendor: '', amount: '', due_date: '', bank_name: '', account_name: '' })
+  const addItemMut = useMutation({
+    mutationFn: () => api.addItems(batchId!, [{ vendor: manual.vendor.trim(), amount: Number(manual.amount) || 0, due_date: manual.due_date || undefined, bank_name: manual.bank_name || undefined, account_name: manual.account_name || undefined }]),
+    onSuccess: () => { setManual({ vendor: '', amount: '', due_date: '', bank_name: '', account_name: '' }); bust() },
+  })
+  const downloadTemplate = () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['거래처명', '채무기준일', '채무금액', '이체예정일', '계좌은행', '계정과목', '담당자'],
+      ['(주)예시거래처', '2026-10-01', 1000000, '2026-10-10', '기업은행', '원재료', '홍길동'],
+    ])
+    ws['!cols'] = [{ wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 10 }]
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, '이체리스트')
+    XLSX.writeFile(wb, '이체리스트_업로드양식.xlsx')
+  }
 
   const onFile = async (f: File) => {
     const wb = XLSX.read(await f.arrayBuffer()); const ws = wb.Sheets[wb.SheetNames[0]]
@@ -101,8 +202,9 @@ function ComposeMode({ year, month }: { year: number; month: number }) {
               <span className="text-2xs font-semibold">매입채무 풀 ({pool.length})</span>
               <div className="flex gap-1">
                 <button onClick={() => syncMut.mutate()} disabled={syncMut.isPending} className="btn-secondary text-3xs">SCM 동기화</button>
+                <button onClick={downloadTemplate} className="btn-secondary text-3xs" title="엑셀 업로드 양식 다운로드">양식 ↓</button>
                 <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.currentTarget.value = '' }} />
-                <button onClick={() => fileRef.current?.click()} className="btn-secondary text-3xs">엑셀</button>
+                <button onClick={() => fileRef.current?.click()} className="btn-secondary text-3xs">엑셀 업로드</button>
                 <button onClick={() => addMut.mutate()} disabled={sel.size === 0} className="btn-primary text-3xs">선택 {sel.size}건 담기</button>
               </div>
             </div>
@@ -129,8 +231,19 @@ function ComposeMode({ year, month }: { year: number; month: number }) {
               <span className="text-2xs font-semibold">{batch.title} · {items.length}건 · <span className="font-mono">{won(items.reduce((s, i) => s + i.amount, 0))}</span></span>
               {batch.status === 'draft'
                 ? <button onClick={() => { if (confirm('대표께 제출할까요? 제출 후 결재 대기됩니다.')) submitMut.mutate() }} disabled={items.length === 0} className="btn-primary text-3xs">대표께 제출</button>
-                : <span className="text-3xs px-2 py-0.5 rounded bg-sky-100 dark:bg-sky-950/40 text-sky-700">{batch.status === 'submitted' ? '제출됨(결재대기)' : '검토완료'}</span>}
+                : <span className="text-3xs px-2 py-0.5 rounded bg-sky-100 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300">{batch.status === 'submitted' ? '제출됨(결재대기)' : '검토완료'}</span>}
             </div>
+            {batch.status === 'draft' && (
+              <div className="flex items-center gap-1 px-2 py-1.5 border-b border-ink-100 dark:border-ink-800 flex-wrap text-2xs bg-canvas-50/50 dark:bg-ink-950/50">
+                <span className="text-ink-400">직접추가</span>
+                <input placeholder="거래처" value={manual.vendor} onChange={(e) => setManual({ ...manual, vendor: e.target.value })} className="border border-ink-200 dark:border-ink-800 rounded px-1 py-0.5 bg-transparent w-24" />
+                <input placeholder="금액" inputMode="numeric" value={manual.amount} onChange={(e) => setManual({ ...manual, amount: e.target.value.replace(/[^0-9]/g, '') })} className="border border-ink-200 dark:border-ink-800 rounded px-1 py-0.5 bg-transparent w-20 font-mono" />
+                <input type="date" value={manual.due_date} onChange={(e) => setManual({ ...manual, due_date: e.target.value })} className="border border-ink-200 dark:border-ink-800 rounded px-1 py-0.5 bg-transparent" />
+                <input placeholder="은행" value={manual.bank_name} onChange={(e) => setManual({ ...manual, bank_name: e.target.value })} className="border border-ink-200 dark:border-ink-800 rounded px-1 py-0.5 bg-transparent w-16" />
+                <input placeholder="계정과목" value={manual.account_name} onChange={(e) => setManual({ ...manual, account_name: e.target.value })} className="border border-ink-200 dark:border-ink-800 rounded px-1 py-0.5 bg-transparent w-20" />
+                <button onClick={() => { if (manual.vendor && manual.amount) addItemMut.mutate() }} disabled={!manual.vendor || !manual.amount || addItemMut.isPending} className="btn-primary text-3xs">+ 추가</button>
+              </div>
+            )}
             <div className="max-h-[60vh] overflow-y-auto">
               <table className="min-w-full text-2xs">
                 <thead className="text-ink-500 sticky top-0 bg-white dark:bg-ink-950"><tr>

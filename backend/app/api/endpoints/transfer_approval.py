@@ -10,7 +10,7 @@
 """
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -156,3 +156,35 @@ class ActionReq(BaseModel):
 @router.post("/batch-items/{item_id}/action")
 async def item_action(item_id: int, req: ActionReq, by: Optional[str] = Query(default=None), db: AsyncSession = Depends(get_db)):
     return await svc.item_action(db, item_id, req.action, req.comment, by)
+
+
+# ===== 이체완료(회계팀 마감) + 지난 내역 =====
+
+class ItemPaidReq(BaseModel):
+    paid: bool = True
+
+
+@router.post("/batch-items/{item_id}/paid")
+async def mark_item_paid(item_id: int, req: ItemPaidReq, by: Optional[str] = Query(default=None),
+                         db: AsyncSession = Depends(get_db)):
+    res = await svc.mark_batch_item_paid(db, item_id, req.paid, by)
+    if not res.get("ok") and res.get("code") == 400:
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+
+@router.post("/batches/{batch_id}/paid-all")
+async def pay_all(batch_id: int, by: Optional[str] = Query(default=None), db: AsyncSession = Depends(get_db)):
+    return await svc.pay_all(db, batch_id, by)
+
+
+@router.get("/history")
+async def history(year: Optional[int] = Query(default=None), month: Optional[int] = Query(default=None),
+                  status: Optional[str] = Query(default=None), db: AsyncSession = Depends(get_db)):
+    return await svc.history(db, year, month, status)
+
+
+@router.get("/completed")
+async def completed(year: Optional[int] = Query(default=None), month: Optional[int] = Query(default=None),
+                    db: AsyncSession = Depends(get_db)):
+    return await svc.completed(db, year, month)
