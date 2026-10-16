@@ -9,9 +9,21 @@ import { payrollImportApi, PayrollImportRecord } from '@/services/api'
 import { formatCurrency } from '@/utils/format'
 import toast from 'react-hot-toast'
 
-const COST_BADGE: Record<string, { label: string; cls: string }> = {
-  COGS: { label: '원가(노무비)', cls: 'bg-orange-50 dark:bg-orange-950 text-orange-700 dark:text-orange-300 border-orange-200 dark:border-orange-800' },
-  SGA: { label: '판관비(급여)', cls: 'bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800' },
+// 고용형태별 지급일 (정규직 10일 / 알바 15일 / 파견 20~23일)
+const PAYDAY: Record<string, string> = {
+  '정규직': '매월 10일', '정규직(노무)': '매월 10일',
+  '사업소득(알바)': '매월 15일', '파견(거래처지급)': '매월 20~23일',
+}
+const WT_ORDER = ['정규직', '정규직(노무)', '사업소득(알바)', '파견(거래처지급)']
+// 중복 이름(진해수 등)에도 유일한 행 키 — 고용형태+이름+부서
+const rowKey = (r: PayrollImportRecord) => `${r.worker_type}|${r.name}|${r.department}`
+// 4대보험 구성 분해 (detail.deductions 기준)
+function insParts(r: PayrollImportRecord): string {
+  const ded = (r as any).detail?.deductions as { label: string; amount: number }[] | undefined
+  if (!ded) return ''
+  const pick = (kw: string) => ded.find((d) => (d.label || '').includes(kw))?.amount || 0
+  const m: [string, number][] = [['연금', pick('국민연금')], ['건강', pick('건강')], ['장기', pick('장기')], ['고용', pick('고용')]]
+  return m.filter(([, v]) => v > 0).map(([k, v]) => `${k} ${formatCurrency(v, false)}`).join(' · ')
 }
 
 export default function PayrollImportPage() {
@@ -48,6 +60,7 @@ export default function PayrollImportPage() {
   const [detailRec, setDetailRec] = useState<PayrollImportRecord | null>(null)
   const [deptFilter, setDeptFilter] = useState<string>('')
   const [typeFilter, setTypeFilter] = useState<string>('')
+  const [hideZero, setHideZero] = useState(true)
   const data = summaryQuery.data
   const allRecords = data?.records || []
   const cogsTotal = data?.by_cost_type.find((c) => c.cost_type === 'COGS')?.gross || 0
@@ -61,7 +74,7 @@ export default function PayrollImportPage() {
   const filteredDepts = (data?.by_department || []).filter((d) => !deptFilter || d.department === deptFilter)
 
   function startEdit(rec: PayrollImportRecord) {
-    setEditing(rec.name)
+    setEditing(rowKey(rec))
     setOvrForm({
       income_tax: String(rec.income_tax || ''),
       local_tax: String(rec.local_tax || ''),
@@ -206,89 +219,109 @@ export default function PayrollImportPage() {
             </div>
           </div>
 
-          {/* 전체 리스트 */}
-          <div className="panel overflow-hidden">
-            <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">
-              전체 급여 리스트 ({records.length}명) — 세금 확정값 입력 가능
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-2xs text-ink-500 dark:text-ink-400 border-b border-ink-100 dark:border-ink-800">
-                    <th className="text-left px-3 py-1.5">이름</th>
-                    <th className="text-left px-2 py-1.5">구분</th>
-                    <th className="text-left px-2 py-1.5">부서</th>
-                    <th className="text-right px-2 py-1.5">세전</th>
-                    <th className="text-right px-2 py-1.5">소득세</th>
-                    <th className="text-right px-2 py-1.5">지방세</th>
-                    <th className="text-right px-2 py-1.5">보험</th>
-                    <th className="text-right px-2 py-1.5">실지급</th>
-                    <th className="px-2 py-1.5"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-50 dark:divide-ink-800">
-                  {records.map((r) => {
-                    const badge = COST_BADGE[r.cost_type]
-                    const isEditing = editing === r.name
-                    return (
-                      <Fragment key={r.name}>
-                        <tr className="hover:bg-canvas-50 dark:hover:bg-ink-800">
-                          <td className="px-3 py-1.5 font-medium text-ink-900 dark:text-ink-50">
-                            <button onClick={() => setDetailRec(r)} className="hover:text-blue-600 hover:underline">
-                              {r.name}
-                            </button>
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <span className={`text-2xs px-1.5 py-0.5 rounded-full border ${badge.cls}`}>{r.worker_type}</span>
-                          </td>
-                          <td className="px-2 py-1.5 text-ink-600 dark:text-ink-400">{r.department}</td>
-                          <td className="px-2 py-1.5 text-right font-mono text-ink-900 dark:text-ink-50">{formatCurrency(r.gross_pay, false)}</td>
-                          <td className="px-2 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">
-                            {formatCurrency(r.income_tax, false)}
-                            {r.tax_source === 'override' && <span className="text-emerald-600 dark:text-emerald-400 ml-0.5" title="외부 확정값">✓</span>}
-                          </td>
-                          <td className="px-2 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{formatCurrency(r.local_tax, false)}</td>
-                          <td className="px-2 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{r.insurance > 0 ? formatCurrency(r.insurance, false) : '-'}</td>
-                          <td className="px-2 py-1.5 text-right font-mono font-semibold text-ink-900 dark:text-ink-50">{formatCurrency(r.net_pay, false)}</td>
-                          <td className="px-2 py-1.5 text-right">
-                            <button onClick={() => startEdit(r)} className="text-ink-400 hover:text-blue-600" title="세금 확정값 입력">
-                              <PencilSquareIcon className="h-3.5 w-3.5" />
-                            </button>
-                          </td>
-                        </tr>
-                        {isEditing && (
-                          <tr className="bg-canvas-50 dark:bg-ink-950">
-                            <td colSpan={9} className="px-3 py-2">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-2xs text-ink-500 dark:text-ink-400">외부 확정값 입력:</span>
-                                {(['income_tax', 'local_tax', 'insurance'] as const).map((f) => (
-                                  <label key={f} className="text-2xs text-ink-600 dark:text-ink-400 flex items-center gap-1">
-                                    {f === 'income_tax' ? '소득세' : f === 'local_tax' ? '지방세' : '보험'}
-                                    <input type="number" value={ovrForm[f]}
-                                      onChange={(e) => setOvrForm({ ...ovrForm, [f]: e.target.value })}
-                                      className="w-24 px-1.5 py-0.5 text-2xs rounded border border-ink-300 dark:border-ink-700 font-mono" />
-                                  </label>
-                                ))}
-                                <input type="text" value={ovrForm.memo} placeholder="메모"
-                                  onChange={(e) => setOvrForm({ ...ovrForm, memo: e.target.value })}
-                                  className="flex-1 min-w-[120px] px-1.5 py-0.5 text-2xs rounded border border-ink-300 dark:border-ink-700" />
-                                <button onClick={() => overrideMut.mutate(r)} disabled={overrideMut.isPending}
-                                  className="px-2 py-1 text-2xs rounded bg-emerald-500 text-white font-semibold hover:bg-emerald-600">
-                                  <CheckIcon className="h-3 w-3 inline" /> 저장
-                                </button>
-                                <button onClick={() => setEditing(null)}
-                                  className="px-2 py-1 text-2xs rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400">취소</button>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+          {/* 급여 리스트 — 고용형태별 그룹 */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-2xs font-semibold text-ink-500 dark:text-ink-400 uppercase">급여 리스트 (고용형태별 · 지급일)</span>
+            <label className="text-2xs flex items-center gap-1 cursor-pointer text-ink-500 dark:text-ink-400">
+              <input type="checkbox" checked={hideZero} onChange={(e) => setHideZero(e.target.checked)} className="w-3 h-3" />
+              0원(미지급·미마감) 숨김
+            </label>
+            <span className="text-2xs text-ink-400 ml-auto">표시 {records.filter((r) => !hideZero || r.gross_pay > 0).length}명 / 전체 {records.length}명</span>
           </div>
+          {(() => {
+            const vis = records.filter((r) => !hideZero || r.gross_pay > 0)
+            const present = Array.from(new Set(vis.map((r) => r.worker_type)))
+            const order = [...WT_ORDER.filter((w) => present.includes(w)), ...present.filter((w) => !WT_ORDER.includes(w))]
+            return order.map((wt) => {
+              const rows = vis.filter((r) => r.worker_type === wt)
+              const sub = rows.reduce((a, r) => ({ gross: a.gross + r.gross_pay, ded: a.ded + r.income_tax + r.local_tax + r.insurance, net: a.net + r.net_pay }), { gross: 0, ded: 0, net: 0 })
+              return (
+                <div key={wt} className="panel overflow-hidden">
+                  <div className="px-3 py-2 border-b border-ink-200 dark:border-ink-800 flex items-center gap-2 flex-wrap bg-canvas-50 dark:bg-ink-950">
+                    <span className="text-xs font-bold text-ink-900 dark:text-ink-50">{wt}</span>
+                    <span className="text-2xs px-1.5 py-0.5 rounded bg-brand-50 dark:bg-brand-950/40 text-brand-700 dark:text-brand-300">지급일 {PAYDAY[wt] || '-'}</span>
+                    <span className="text-2xs text-ink-500 dark:text-ink-400">{rows.length}명</span>
+                    <span className="text-2xs text-ink-500 dark:text-ink-400 ml-auto">세전 <b className="font-mono text-ink-800 dark:text-ink-100">{formatCurrency(sub.gross, false)}</b> · 공제 <span className="font-mono text-rose-600 dark:text-rose-400">{formatCurrency(sub.ded, false)}</span> · 실지급 <b className="font-mono text-ink-800 dark:text-ink-100">{formatCurrency(sub.net, false)}</b></span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-2xs text-ink-500 dark:text-ink-400 border-b border-ink-100 dark:border-ink-800">
+                          <th className="text-left px-3 py-1.5">이름</th>
+                          <th className="text-left px-2 py-1.5">부서</th>
+                          <th className="text-right px-2 py-1.5">세전</th>
+                          <th className="text-right px-2 py-1.5">소득세</th>
+                          <th className="text-right px-2 py-1.5">지방세</th>
+                          <th className="text-right px-2 py-1.5">보험(구성)</th>
+                          <th className="text-right px-2 py-1.5">실지급</th>
+                          <th className="px-2 py-1.5"></th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-ink-50 dark:divide-ink-800">
+                        {rows.map((r) => {
+                          const isEditing = editing === rowKey(r)
+                          const parts = insParts(r)
+                          return (
+                            <Fragment key={rowKey(r)}>
+                              <tr className="hover:bg-canvas-50 dark:hover:bg-ink-800">
+                                <td className="px-3 py-1.5 font-medium text-ink-900 dark:text-ink-50">
+                                  <button onClick={() => setDetailRec(r)} className="hover:text-blue-600 hover:underline">{r.name}</button>
+                                  {r.position ? <span className="text-3xs text-ink-400 ml-1">{r.position}</span> : null}
+                                </td>
+                                <td className="px-2 py-1.5 text-ink-600 dark:text-ink-400">{r.department}</td>
+                                <td className="px-2 py-1.5 text-right font-mono text-ink-900 dark:text-ink-50">{formatCurrency(r.gross_pay, false)}</td>
+                                <td className="px-2 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">
+                                  {formatCurrency(r.income_tax, false)}
+                                  {r.tax_source === 'override' && <span className="text-emerald-600 dark:text-emerald-400 ml-0.5" title="외부 확정값">✓</span>}
+                                </td>
+                                <td className="px-2 py-1.5 text-right font-mono text-ink-600 dark:text-ink-400">{formatCurrency(r.local_tax, false)}</td>
+                                <td className="px-2 py-1.5 text-right">
+                                  <div className="font-mono text-ink-600 dark:text-ink-400">{r.insurance > 0 ? formatCurrency(r.insurance, false) : '-'}</div>
+                                  {parts && <div className="text-3xs text-ink-400">{parts}</div>}
+                                </td>
+                                <td className="px-2 py-1.5 text-right font-mono font-semibold text-ink-900 dark:text-ink-50">{formatCurrency(r.net_pay, false)}</td>
+                                <td className="px-2 py-1.5 text-right">
+                                  <button onClick={() => startEdit(r)} className="text-ink-400 hover:text-blue-600" title="세금 확정값 입력">
+                                    <PencilSquareIcon className="h-3.5 w-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                              {isEditing && (
+                                <tr className="bg-canvas-50 dark:bg-ink-950">
+                                  <td colSpan={8} className="px-3 py-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-2xs text-ink-500 dark:text-ink-400">외부 확정값 입력:</span>
+                                      {(['income_tax', 'local_tax', 'insurance'] as const).map((f) => (
+                                        <label key={f} className="text-2xs text-ink-600 dark:text-ink-400 flex items-center gap-1">
+                                          {f === 'income_tax' ? '소득세' : f === 'local_tax' ? '지방세' : '보험'}
+                                          <input type="number" value={ovrForm[f]}
+                                            onChange={(e) => setOvrForm({ ...ovrForm, [f]: e.target.value })}
+                                            className="w-24 px-1.5 py-0.5 text-2xs rounded border border-ink-300 dark:border-ink-700 font-mono" />
+                                        </label>
+                                      ))}
+                                      <input type="text" value={ovrForm.memo} placeholder="메모"
+                                        onChange={(e) => setOvrForm({ ...ovrForm, memo: e.target.value })}
+                                        className="flex-1 min-w-[120px] px-1.5 py-0.5 text-2xs rounded border border-ink-300 dark:border-ink-700" />
+                                      <button onClick={() => overrideMut.mutate(r)} disabled={overrideMut.isPending}
+                                        className="px-2 py-1 text-2xs rounded bg-emerald-500 text-white font-semibold hover:bg-emerald-600">
+                                        <CheckIcon className="h-3 w-3 inline" /> 저장
+                                      </button>
+                                      <button onClick={() => setEditing(null)}
+                                        className="px-2 py-1 text-2xs rounded border border-ink-200 dark:border-ink-800 text-ink-600 dark:text-ink-400">취소</button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )
+            })
+          })()}
         </>
       )}
 
