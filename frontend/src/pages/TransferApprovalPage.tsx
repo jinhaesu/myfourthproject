@@ -210,6 +210,15 @@ function ComposeMode({ year, month }: { year: number; month: number }) {
             </div>
             <div className="max-h-[60vh] overflow-y-auto">
               <table className="min-w-full text-2xs">
+                <thead className="text-ink-500 sticky top-0 bg-white dark:bg-ink-950">
+                  <tr>
+                    <th className="w-5"></th>
+                    <th className="text-left px-1 py-1">거래처</th>
+                    <th className="text-left px-1 py-1">이체예정일</th>
+                    <th className="text-right px-1 py-1">잔여채무</th>
+                    <th className="text-left px-1 py-1">출처</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {pool.map((p: PayableItem) => (
                     <tr key={p.id} className={`border-t border-ink-50 dark:border-ink-900 ${inBatch.has(p.id) ? 'opacity-40' : ''}`}>

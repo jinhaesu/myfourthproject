@@ -48,6 +48,11 @@ async def sync_scm(db: AsyncSession = Depends(get_db)):
     return await svc.sync_from_scm(db)
 
 
+@router.post("/dedup-cleanup")
+async def dedup_cleanup(db: AsyncSession = Depends(get_db)):
+    return await svc.dedup_cleanup(db)
+
+
 class ImportReq(BaseModel):
     rows: List[Dict[str, Any]]
 

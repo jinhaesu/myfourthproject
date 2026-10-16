@@ -54,8 +54,10 @@ def _month_from_date(d: Optional[str]) -> Optional[int]:
 
 
 def make_dedup_key(vendor: str, debt_date: Optional[str], amount: float,
-                   account: Optional[str]) -> str:
-    return f"{(vendor or '').strip()}|{debt_date or ''}|{int(round(_num(amount)))}|{(account or '').strip()}"
+                   account: Optional[str] = None) -> str:
+    # 안정키 — 거래처|채무기준일|금액. 계정과목(account)은 동기화마다 변동(/records 매칭)해
+    # 과거엔 키에 포함돼 재동기화 때 중복 생성됐음 → 식별자에서 제외(보완필드로만 사용).
+    return f"{(vendor or '').strip()}|{debt_date or ''}|{int(round(_num(amount)))}"
 
 
 def _remaining(it: PayableItem) -> float:
@@ -171,6 +173,32 @@ async def sync_from_scm(db: AsyncSession) -> Dict[str, Any]:
             upd_ct += res == "update"
     await db.commit()
     return {"ok": True, "new": new_ct, "updated": upd_ct, "asof": asof, "warnings": errors}
+
+
+async def dedup_cleanup(db: AsyncSession) -> Dict[str, Any]:
+    """기존 중복 매입채무 정리 — 안정키(거래처|기준일|금액) 기준 병합.
+    배치에 담긴 건(referenced) 또는 최소 id를 keeper로 남기고 나머지 미참조건 삭제. 멱등."""
+    rows = (await db.execute(select(PayableItem))).scalars().all()
+    ref = set((await db.execute(
+        select(TransferBatchItem.payable_id).where(TransferBatchItem.payable_id.isnot(None))
+    )).scalars().all())
+    groups: Dict[str, List[PayableItem]] = {}
+    for it in rows:
+        groups.setdefault(make_dedup_key(it.vendor, it.debt_date, _num(it.amount)), []).append(it)
+    deleted = fixed = 0
+    for k, items in groups.items():
+        items.sort(key=lambda x: (x.id not in ref, x.id))  # 참조건 우선, 그다음 최소 id
+        keeper = items[0]
+        if keeper.dedup_key != k:
+            keeper.dedup_key = k
+            fixed += 1
+        for dup in items[1:]:
+            if dup.id in ref:
+                continue  # 다른 배치가 참조 중 → 삭제 보류(FK 보호)
+            await db.delete(dup)
+            deleted += 1
+    await db.commit()
+    return {"ok": True, "groups": len(groups), "deleted": deleted, "fixed_keys": fixed}
 
 
 async def import_rows(db: AsyncSession, rows: List[Dict[str, Any]]) -> Dict[str, Any]:

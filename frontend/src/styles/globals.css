@@ -17,6 +17,17 @@
     color-scheme: dark;
   }
 
+  /* 네이티브 드롭다운 가독성 — 다크모드에서 option 흰바탕·흰글씨 방지(전 메뉴 공통) */
+  option {
+    background-color: #ffffff;
+    color: #18181b;
+  }
+  html.dark select,
+  html.dark option {
+    background-color: #1f1f23;
+    color: #fafafa;
+  }
+
   body {
     @apply bg-canvas-50 dark:bg-ink-950 text-ink-900 dark:text-ink-50 text-sm;
   }
