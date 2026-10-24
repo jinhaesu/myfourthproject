@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 SCM_API_BASE = os.getenv("SCM_API_BASE", "https://myfirstproject-api-557811875995.asia-northeast3.run.app")
 
 
+def _scm_read_headers() -> Dict[str, str]:
+    """SCM 조회용 인증 헤더. SCM API는 2026-10-24부터 조회도 인증 필수.
+
+    SCM_READ_API_KEY(조회 전용으로 주입)를 쓰고, 없으면 SCM_API_KEY로 대체한다.
+    SCM_API_KEY는 지급완료 SCM 통보(쓰기)를 켜는 스위치이기도 해서 조회용 키와 분리했다.
+    """
+    key = os.getenv("SCM_READ_API_KEY") or os.getenv("SCM_API_KEY")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 def _num(v: Any) -> float:
     try:
         return float(v or 0)
@@ -124,7 +134,7 @@ async def sync_from_scm(db: AsyncSession) -> Dict[str, Any]:
     asof = date.today().isoformat()
     new_ct = upd_ct = 0
     errors: List[str] = []
-    async with httpx.AsyncClient(timeout=40) as c:
+    async with httpx.AsyncClient(timeout=40, headers=_scm_read_headers()) as c:
         try:
             r = await c.get(f"{SCM_API_BASE}/api/purchase/ap-aging", params={"asof": asof})
             r.raise_for_status()
