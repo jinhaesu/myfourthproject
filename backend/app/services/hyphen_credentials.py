@@ -53,13 +53,31 @@ def _looks_pem(data: bytes) -> bool:
 # ============ CRUD + 만료 정리 ============
 
 async def purge_expired(db: AsyncSession) -> int:
-    """30일 경과 인증정보 삭제. 삭제 건수 반환."""
+    """TTL 경과 인증정보의 **비밀값만 폐기**하고 은행 행은 남긴다(비밀 폐기 건수 반환).
+
+    과거: 만료 시 행 자체를 DELETE → 은행이 목록에서 통째로 사라져 재등록이 번거롭고,
+    (카드·세금계산서가 공유하는) 법인 공동인증서까지 조용히 없어졌다(2026-10-20 사고).
+    현재: 만료되면 enc_* 비밀필드만 NULL로 지우고(보안: 비밀은 TTL대로 at-rest 폐기),
+    bank_cd/acct_no/last_balance/상태는 유지 → 목록에 '재인증 필요'로 계속 보인다.
+    과거 거래(hyphen_bank_tx)는 어차피 별도 보관이라 영향 없음."""
     now = datetime.utcnow()
-    res = await db.execute(sa_delete(HyphenCredential).where(HyphenCredential.expires_at <= now))
-    await db.commit()
-    n = res.rowcount or 0
+    rows = (await db.execute(select(HyphenCredential).where(
+        HyphenCredential.expires_at <= now,
+        HyphenCredential.enc_sign_cert.isnot(None),  # 아직 비밀을 들고 있는 만료행만
+    ))).scalars().all()
+    n = 0
+    for c in rows:
+        c.enc_sign_cert = None
+        c.enc_sign_pri = None
+        c.enc_sign_pw = None
+        c.enc_acct_pw = None
+        c.enc_user_id = None
+        c.enc_user_pw = None
+        c.last_status = "만료 — 재인증 필요(인증서 자동 폐기됨)"
+        n += 1
     if n:
-        logger.info("하이픈 인증정보 만료 삭제 %d건", n)
+        await db.commit()
+        logger.info("하이픈 인증정보 비밀 폐기(행 유지) %d건", n)
     return n
 
 
