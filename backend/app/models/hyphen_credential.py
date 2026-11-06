@@ -33,6 +33,8 @@ class HyphenCredential(Base):
     acct_no: Mapped[str] = mapped_column(String(50))
     acct_last4: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     login_method: Mapped[str] = mapped_column(String(10), default="CERT")  # CERT / ID
+    # 외화계좌 통화코드(예: USD). 하이픈이 외화계좌 거래조회 시 curCd 필수 요구.
+    cur_cd: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
 
     # 암호화 저장 필드 (Fernet)
     enc_sign_cert: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # 인증서 PEM

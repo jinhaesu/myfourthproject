@@ -256,6 +256,7 @@ async def run_account_transactions(
             gubun=gubun,
             sort=sort,
             filter_type=filter_type,
+            cur_cd=cred.cur_cd,  # 외화계좌(예: USD)면 필수. 원화계좌는 None.
             encrypt_secrets=False,  # 하이픈이 평문 수신 후 자체 처리(TLS 보호)
             gustation=gustation,
         )
