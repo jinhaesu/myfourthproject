@@ -1,9 +1,14 @@
 """
-하이픈 은행 스크래핑 인증정보 — 서버 암호화 보관 (30일 후 자동 삭제 → 재인증).
+하이픈 은행 스크래핑 인증정보 — 서버 암호화 보관 (기본 90일 후 자동 삭제 → 재인증).
 
 민감필드(signCert/signPri/signPw/acctPw/userPw)는 app.core.security.data_encryption
 (Fernet AES-256, SECRET_KEY 파생)으로 암호화해 저장. 평문 컬럼은 식별/표시용만.
+
+⚠️ 이 테이블은 은행 인증서뿐 아니라 카드·세금계산서가 재사용하는 법인 공동인증서
+(get_company_cert)의 유일한 보관처다. TTL 경과로 폐기되면 통장·카드·세금계산서가
+'전부 동시에' 멈추므로(2026-10-20 사고), TTL은 넉넉히 둔다.
 """
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 from sqlalchemy import Integer, String, Text, DateTime, Numeric
@@ -11,8 +16,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
-# 인증정보 보관 기간 — 경과 시 삭제하고 재인증 요구
-HYPHEN_CRED_TTL_DAYS = 30
+# 인증정보 보관 기간 — 경과 시 삭제하고 재인증 요구.
+# env HYPHEN_CRED_TTL_DAYS로 재배포 없이 조절 가능(기본 90일).
+HYPHEN_CRED_TTL_DAYS = int(os.getenv("HYPHEN_CRED_TTL_DAYS", "90"))
 
 
 class HyphenCredential(Base):
